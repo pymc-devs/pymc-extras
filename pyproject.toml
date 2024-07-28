@@ -1,3 +1,72 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pymc_experimental"
+authors = [
+  {name = "PyMC Developers", email = "pymc.devs@gmail.com"},
+]
+description = "A home for new additions to PyMC, which may include unusual probability distributions, advanced model fitting algorithms, or any code that may be inappropriate to include in the pymc repository, but may want to be made available to users."
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: Apache Software License",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Mathematics",
+  "Operating System :: OS Independent",
+]
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = [
+  "probability",
+  "machine learning",
+  "statistics",
+  "mcmc",
+  "sampling",
+  "bayesian",
+]
+license = {file = "LICENSE"}
+dynamic = ["version"]  # specify the version in the __init__.py file
+dependencies = [
+  "pymc>=5.16.1",
+  "scikit-learn",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=6.0",
+  "dask[all]",
+  "blackjax>1.0.0",
+  "statsmodels",
+]
+docs = [
+  "nbsphinx>=0.4.2",
+  "pydata-sphinx-theme>=0.6.3",
+  "sphinx>=4.0",
+  "pymc-sphinx-theme@git+https://github.com/pymc-devs/pymc-sphinx-theme",
+]
+
+[project.urls]
+Documentation = "https://www.pymc.io/projects/experimental/"
+Repository = "https://github.com/pymc-devs/pymc-experimental.git"
+Issues = "https://github.com/pymc-devs/pymc-experimental/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pymc_experimental"]
+exclude = ["tests", "notebooks"]
+# Additional install requirements for running tests
+namespaces = false
+
+[tool.setuptools.dynamic]
+version = {attr = "pymc_experimental.__version__"}
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 xfail_strict = true
