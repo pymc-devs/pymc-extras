@@ -6,7 +6,7 @@ import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
 
-from model.modular.utilities import ColumnType, hierarchical_prior_to_requested_depth
+from model.modular.utilities import ColumnType, get_X_data, hierarchical_prior_to_requested_depth
 from patsy import dmatrix
 
 POOLING_TYPES = Literal["none", "complete", "partial"]
@@ -105,7 +105,6 @@ class Intercept(GLMModel):
         prior_params: dict | None = None,
     ):
         """
-        TODO: Update signature docs
         Class to represent an intercept term in a GLM model.
 
         By intercept, it is meant any constant term in the model that is not a function of any input data. This can be
@@ -116,21 +115,15 @@ class Intercept(GLMModel):
         ----------
         name: str, optional
             Name of the intercept term. If None, a default name is generated based on the index_data.
-        index_data: Series or DataFrame, optional
-            Index data used to build hierarchical priors. If there are multiple columns, the columns are treated as
-            levels of a "telescoping" hierarchy, with the leftmost column representing the top level of the hierarchy,
-            and depth increasing to the right.
-
-            The index of the index_data must match the index of the observed data.
-        prior: str, optional
-            Name of the PyMC distribution to use for the intercept term. Default is "Normal".
+        pooling_cols: str or list of str, optional
+            Columns of the independent data to use as labels for pooling. These columns will be treated as categorical.
+            If None, no pooling is applied. If a list is provided, a "telescoping" hierarchy is constructed from left
+            to right, with the mean of each subsequent level centered on the mean of the previous level.
         pooling: str, one of ["none", "complete", "partial"], default "complete"
             Type of pooling to use for the intercept term. If "none", no pooling is applied, and each group in the
             index_data is treated as independent. If "complete", complete pooling is applied, and all data are treated
             as coming from the same group. If "partial", a hierarchical prior is constructed that shares information
             across groups in the index_data.
-        prior_params: dict, optional
-            Additional keyword arguments to pass to the PyMC distribution specified by the prior argument.
         hierarchical_params: dict, optional
             Additional keyword arguments to configure priors in the hierarchical_prior_to_requested_depth function.
             Options include:
@@ -141,6 +134,11 @@ class Intercept(GLMModel):
                     Default is {"alpha": 2, "beta": 1}
                 offset_dist: str, one of ["zerosum", "normal", "laplace"]
                     Name of the distribution to use for the offset distribution. Default is "zerosum"
+        prior: str, optional
+            Name of the PyMC distribution to use for the intercept term. Default is "Normal".
+        prior_params: dict, optional
+            Additional keyword arguments to pass to the PyMC distribution specified by the prior argument.
+
         """
         _validate_pooling_params(pooling_cols, pooling)
 
@@ -158,25 +156,25 @@ class Intercept(GLMModel):
 
         data_name = ", ".join(pooling_cols)
         self.name = name or f"Constant(pooling_cols={data_name})"
+
         super().__init__()
 
-    def build(self, model=None):
+    def build(self, model: pm.Model | None = None):
         model = pm.modelcontext(model)
         with model:
             if self.pooling == "complete":
                 intercept = getattr(pm, self.prior)(f"{self.name}", **self.prior_params)
                 return intercept
 
-            [i for i, col in enumerate(model.coords["feature"]) if col in self.pooling_cols]
-
             intercept = hierarchical_prior_to_requested_depth(
                 self.name,
-                model.X_df[self.pooling_cols],  # TODO: Reconsider this
+                df=get_X_data(model)[self.pooling_cols],
                 model=model,
                 dims=None,
                 no_pooling=self.pooling == "none",
                 **self.hierarchical_params,
             )
+
         return intercept
 
 

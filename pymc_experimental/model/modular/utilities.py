@@ -37,6 +37,10 @@ def _get_x_cols(
     return model["X_data"][:, cols_idx]
 
 
+def get_X_data(model, data_name="X_data"):
+    return model[data_name]
+
+
 def make_level_maps(df: pd.DataFrame, ordered_levels: list[str]):
     """
     For each row of data, create a mapping between levels of a arbitrary set of levels defined by `ordered_levels`.
