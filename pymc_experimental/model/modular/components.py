@@ -7,6 +7,7 @@ from model.modular.utilities import (
     PRIOR_DEFAULT_KWARGS,
     ColumnType,
     PoolingType,
+    at_least_list,
     get_X_data,
     make_hierarchical_prior,
     select_data_columns,
@@ -112,13 +113,8 @@ class Intercept(GLMModel):
 
         self.prior = prior
         self.prior_params = prior_params if prior_params is not None else {}
+        self.pooling_columns = at_least_list(pooling_columns)
 
-        if pooling_columns is None:
-            pooling_columns = []
-        elif isinstance(pooling_columns, str):
-            pooling_columns = [pooling_columns]
-
-        self.pooling_columns = pooling_columns
         name = name or f"Intercept(pooling_cols={pooling_columns})"
 
         super().__init__(name=name)
@@ -158,7 +154,7 @@ class Regression(GLMModel):
         pooling: PoolingType = "complete",
         pooling_columns: ColumnType | None = None,
         hierarchical_params: dict | None = None,
-        **prior_params,
+        prior_params: dict | None = None,
     ):
         """
         Class to represent a regression component in a GLM model.
@@ -197,12 +193,13 @@ class Regression(GLMModel):
         prior_params:
             Additional keyword arguments to pass to the PyMC distribution specified by the prior argument.
         """
-        self.feature_columns = feature_columns
+        self.feature_columns = at_least_list(feature_columns)
         self.pooling = pooling
-        self.pooling_columns = pooling_columns
+        self.pooling_columns = at_least_list(pooling_columns)
 
         self.prior = prior
-        self.prior_params = prior_params
+        self.prior_params = {} if prior_params is None else prior_params
+        self.hierarchical_params = {} if hierarchical_params is None else hierarchical_params
 
         name = name if name else f"Regression({feature_columns})"
 
@@ -213,23 +210,27 @@ class Regression(GLMModel):
         feature_dim = f"{self.name}_features"
 
         if feature_dim not in model.coords:
-            model.add_coord(feature_dim, self.X.columns)
+            model.add_coord(feature_dim, self.feature_columns)
 
         with model:
-            X = select_data_columns(get_X_data(model), self.feature_columns)
+            full_X = get_X_data(model)
+            X = select_data_columns(self.feature_columns, model, squeeze=False)
 
             if self.pooling == "complete":
-                beta = getattr(pm, self.prior)(
-                    f"{self.name}", **self.prior_params, dims=[feature_dim]
-                )
+                prior_params = PRIOR_DEFAULT_KWARGS[self.prior].copy()
+                prior_params.update(self.prior_params)
+
+                beta = getattr(pm, self.prior)(f"{self.name}", **prior_params, dims=[feature_dim])
                 return X @ beta
 
             beta = make_hierarchical_prior(
-                self.name,
-                self.index_data,
+                name=self.name,
+                X=full_X,
+                pooling=self.pooling,
+                pooling_columns=self.pooling_columns,
                 model=model,
                 dims=[feature_dim],
-                no_pooling=self.pooling == "none",
+                **self.hierarchical_params,
             )
 
             regression_effect = (X * beta.T).sum(axis=-1)

@@ -42,6 +42,7 @@ def select_data_columns(
     cols: str | Sequence[str] | None,
     model: pm.Model | None = None,
     data_name: str = "X_data",
+    squeeze=True,
 ) -> pt.TensorVariable | None:
     """
     Create a tensor variable representing a subset of independent data columns.
@@ -72,7 +73,7 @@ def select_data_columns(
     cols_idx = [model.coords["feature"].index(col) for col in cols]
 
     # Single columns are returned as 1d arrays
-    if len(cols_idx) == 1:
+    if len(cols_idx) == 1 and squeeze:
         cols_idx = cols_idx[0]
 
     return get_X_data(model, data_name=data_name)[:, cols_idx]
@@ -108,6 +109,14 @@ def encode_categoricals(df, coords):
             )
 
     return df, coords
+
+
+def at_least_list(columns: ColumnType):
+    if columns is None:
+        columns = []
+    elif isinstance(columns, str):
+        columns = [columns]
+    return columns
 
 
 def make_level_maps(X: SharedVariable, coords: dict[str, tuple | None], ordered_levels: list[str]):
@@ -304,7 +313,7 @@ def make_partial_pooled_hierarchy(
     prior_params.update(prior_kwargs)
 
     with model:
-        beta = Prior(f"{name}_effect", **prior_params, dims=dims)
+        beta = Prior(f"{name}", **prior_params, dims=dims)
 
         for i, (last_level, level) in enumerate(itertools.pairwise([None, *pooling_columns])):
             if i == 0:
@@ -359,13 +368,17 @@ def make_unpooled_hierarchy(
         beta = Prior(f"{name}_mu", **prior_kwargs, dims=dims)
 
         for i, (last_level, level) in enumerate(itertools.pairwise([None, *levels])):
-            sigma = make_sigma(f"{name}_{level}_sigma", sigma_dist, sigma_kwargs, dims)
+            if i == 0:
+                sigma_dims = dims
+            else:
+                sigma_dims = [*dims, last_level] if dims is not None else [last_level]
+            beta_dims = [*dims, level] if dims is not None else [level]
+
+            sigma = make_sigma(f"{name}_{level}_effect", sigma_dist, sigma_kwargs, sigma_dims)
 
             prior_kwargs["mu"] = beta[..., idx_maps[i]]
             scale_name = "b" if prior == "Laplace" else "sigma"
-            prior_kwargs[scale_name] = sigma
-
-            beta_dims = [*dims, level] if dims is not None else [level]
+            prior_kwargs[scale_name] = sigma[..., idx_maps[i]]
 
             beta = Prior(f"{name}_{level}_effect", **prior_kwargs, dims=beta_dims)
 
