@@ -1,27 +1,29 @@
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from typing import Literal, get_args
 
 import pandas as pd
 import pymc as pm
-import pytensor.tensor as pt
 
-from model.modular.utilities import ColumnType, get_X_data, hierarchical_prior_to_requested_depth
+from model.modular.utilities import (
+    ColumnType,
+    get_X_data,
+    hierarchical_prior_to_requested_depth,
+    select_data_columns,
+)
 from patsy import dmatrix
 
-POOLING_TYPES = Literal["none", "complete", "partial"]
-valid_pooling = get_args(POOLING_TYPES)
+PoolingType = Literal["none", "complete", "partial", None]
+valid_pooling = get_args(PoolingType)
 
 
-def _validate_pooling_params(pooling_columns: ColumnType, pooling: POOLING_TYPES):
+def _validate_pooling_params(pooling_columns: ColumnType, pooling: PoolingType):
     """
     Helper function to validate inputs to a GLM component.
 
     Parameters
     ----------
-    index_data: Series or DataFrame
-        Index data used to build hierarchical priors
-
+    pooling_columns: str or list of str
+        Data columns used to construct a hierarchical prior
     pooling: str
         Type of pooling to use in the component
 
@@ -38,25 +40,13 @@ def _validate_pooling_params(pooling_columns: ColumnType, pooling: POOLING_TYPES
         )
 
 
-def _get_x_cols(
-    cols: str | Sequence[str],
-    model: pm.Model | None = None,
-) -> pt.TensorVariable:
-    model = pm.modelcontext(model)
-    # Don't upcast a single column to a colum matrix
-    if isinstance(cols, str):
-        [cols_idx] = [i for i, col in enumerate(model.coords["feature"]) if col == cols]
-    else:
-        cols_idx = [i for i, col in enumerate(model.coords["feature"]) if col is cols]
-    return model["X_data"][:, cols_idx]
-
-
 class GLMModel(ABC):
     """Base class for GLM components. Subclasses should implement the build method to construct the component."""
 
-    def __init__(self):
+    def __init__(self, name):
         self.model = None
         self.compiled = False
+        self.name = name
 
     @abstractmethod
     def build(self, model=None):
@@ -67,6 +57,9 @@ class GLMModel(ABC):
 
     def __mul__(self, other):
         return MultiplicativeGLMComponent(self, other)
+
+    def __str__(self):
+        return self.name
 
 
 class AdditiveGLMComponent(GLMModel):
@@ -99,7 +92,7 @@ class Intercept(GLMModel):
         name: str | None = None,
         *,
         pooling_cols: ColumnType = None,
-        pooling: POOLING_TYPES = "complete",
+        pooling: PoolingType = "complete",
         hierarchical_params: dict | None = None,
         prior: str = "Normal",
         prior_params: dict | None = None,
@@ -154,16 +147,15 @@ class Intercept(GLMModel):
         elif isinstance(pooling_cols, str):
             pooling_cols = [pooling_cols]
 
-        data_name = ", ".join(pooling_cols)
-        self.name = name or f"Constant(pooling_cols={data_name})"
+        name = name or f"Intercept(pooling_cols={pooling_cols})"
 
-        super().__init__()
+        super().__init__(name=name)
 
     def build(self, model: pm.Model | None = None):
         model = pm.modelcontext(model)
         with model:
             if self.pooling == "complete":
-                intercept = getattr(pm, self.prior)(f"{self.name}", **self.prior_params)
+                intercept = getattr(pm, self.prior.title())(f"{self.name}", **self.prior_params)
                 return intercept
 
             intercept = hierarchical_prior_to_requested_depth(
@@ -181,11 +173,13 @@ class Intercept(GLMModel):
 class Regression(GLMModel):
     def __init__(
         self,
-        name: str,
-        X: pd.DataFrame,
+        name: str | None = None,
+        *,
+        feature_columns: ColumnType | None = None,
         prior: str = "Normal",
-        index_data: pd.Series = None,
-        pooling: POOLING_TYPES = "complete",
+        pooling: PoolingType = "complete",
+        pooling_columns: ColumnType | None = None,
+        hierarchical_params: dict | None = None,
         **prior_params,
     ):
         """
@@ -199,15 +193,8 @@ class Regression(GLMModel):
         ----------
         name: str, optional
             Name of the intercept term. If None, a default name is generated based on the index_data.
-        X: DataFrame
-            Exogenous data used to build the regression component. Each column of the DataFrame represents a feature
-            used in the regression. Index of the DataFrame should match the index of the observed data.
-        index_data: Series or DataFrame, optional
-            Index data used to build hierarchical priors. If there are multiple columns, the columns are treated as
-            levels of a "telescoping" hierarchy, with the leftmost column representing the top level of the hierarchy,
-            and depth increasing to the right.
-
-            The index of the index_data must match the index of the observed data.
+        feature_columns: str or list of str
+            Columns of the independent data to use in the regression.
         prior: str, optional
             Name of the PyMC distribution to use for the intercept term. Default is "Normal".
         pooling: str, one of ["none", "complete", "partial"], default "complete"
@@ -215,10 +202,10 @@ class Regression(GLMModel):
             index_data is treated as independent. If "complete", complete pooling is applied, and all data are treated
             as coming from the same group. If "partial", a hierarchical prior is constructed that shares information
             across groups in the index_data.
-        curve_type: str, one of ["log", "abc", "ns", "nss", "box-cox"]
-            Type of curve to build. For details, see the build_curve function.
-        prior_params: dict, optional
-            Additional keyword arguments to pass to the PyMC distribution specified by the prior argument.
+        pooling_columns: str or list of str, optional
+            Columns of the independent data to use as labels for pooling. These columns will be treated as categorical.
+            If None, no pooling is applied. If a list is provided, a "telescoping" hierarchy is constructed from left
+            to right, with the mean of each subsequent level centered on the mean of the previous level.
         hierarchical_params: dict, optional
             Additional keyword arguments to configure priors in the hierarchical_prior_to_requested_depth function.
             Options include:
@@ -229,34 +216,37 @@ class Regression(GLMModel):
                     Default is {"alpha": 2, "beta": 1}
                 offset_dist: str, one of ["zerosum", "normal", "laplace"]
                     Name of the distribution to use for the offset distribution. Default is "zerosum"
+        prior_params:
+            Additional keyword arguments to pass to the PyMC distribution specified by the prior argument.
         """
-        _validate_pooling_params(index_data, pooling)
+        _validate_pooling_params(pooling_columns, pooling)
 
-        self.name = name
-        self.X = X
-        self.index_data = index_data
+        self.feature_columns = feature_columns
         self.pooling = pooling
+        self.pooling_columns = pooling_columns
 
         self.prior = prior
         self.prior_params = prior_params
 
-        super().__init__()
+        name = name if name else f"Regression({feature_columns})"
+
+        super().__init__(name=name)
 
     def build(self, model=None):
         model = pm.modelcontext(model)
         feature_dim = f"{self.name}_features"
-        obs_dim = self.X.index.name
 
         if feature_dim not in model.coords:
             model.add_coord(feature_dim, self.X.columns)
 
         with model:
-            X_pt = pm.Data(f"{self.name}_data", self.X.values, dims=[obs_dim, feature_dim])
+            X = select_data_columns(get_X_data(model), self.feature_columns)
+
             if self.pooling == "complete":
                 beta = getattr(pm, self.prior)(
                     f"{self.name}", **self.prior_params, dims=[feature_dim]
                 )
-                return X_pt @ beta
+                return X @ beta
 
             beta = hierarchical_prior_to_requested_depth(
                 self.name,
@@ -266,7 +256,7 @@ class Regression(GLMModel):
                 no_pooling=self.pooling == "none",
             )
 
-            regression_effect = (X_pt * beta.T).sum(axis=-1)
+            regression_effect = (X * beta.T).sum(axis=-1)
             return regression_effect
 
 
@@ -274,11 +264,12 @@ class Spline(Regression):
     def __init__(
         self,
         name: str,
+        *,
+        feature_column: str | None = None,
         n_knots: int = 10,
-        spline_data: pd.Series | pd.DataFrame | None = None,
         prior: str = "Normal",
         index_data: pd.Series | None = None,
-        pooling: POOLING_TYPES = "complete",
+        pooling: PoolingType = "complete",
         **prior_params,
     ):
         """
@@ -297,10 +288,8 @@ class Spline(Regression):
             Name of the intercept term. If None, a default name is generated based on the index_data.
         n_knots: int, default 10
             Number of knots to use in the spline basis.
-        spline_data: Series or DataFrame
-            Exogenous data to be interpolated using basis splines. If Series, must have a name attribute. If dataframe,
-            must have exactly one column. In either case, the index of the data should match the index of the observed
-            data.
+        feature_column: str
+            Column of the independent data to use in the spline.
         index_data: Series or DataFrame, optional
             Index data used to build hierarchical priors. If there are multiple columns, the columns are treated as
             levels of a "telescoping" hierarchy, with the leftmost column representing the top level of the hierarchy,
@@ -330,17 +319,46 @@ class Spline(Regression):
                     Name of the distribution to use for the offset distribution. Default is "zerosum"
         """
         _validate_pooling_params(index_data, pooling)
+        self.name = name if name else f"Spline({feature_column})"
+        self.feature_column = feature_column
+        self.n_knots = n_knots
+        self.prior = prior
+        self.prior_params = prior_params
 
-        spline_features = dmatrix(
-            f"bs(maturity_years, df={n_knots}, degree=3) - 1",
-            {"maturity_years": spline_data},
-        )
-        X = pd.DataFrame(
-            spline_features,
-            index=spline_data.index,
-            columns=[f"Spline_{i}" for i in range(n_knots)],
-        )
+        super().__init__(name=name)
 
-        super().__init__(
-            name=name, X=X, prior=prior, index_data=index_data, pooling=pooling, **prior_params
-        )
+    def build(self, model: pm.Model | None = None):
+        model = pm.modelcontext(model)
+        model.add_coord(f"{self.name}_spline", range(self.n_knots))
+
+        with model:
+            spline_data = {
+                self.feature_column: select_data_columns(
+                    get_X_data(model).get_value(), self.feature_column
+                )
+            }
+
+            X_spline = dmatrix(
+                f"bs({self.feature_column}, df={self.n_knots}, degree=3) - 1",
+                data=spline_data,
+                return_type="dataframe",
+            )
+
+            if self.pooling == "complete":
+                beta = getattr(pm, self.prior)(
+                    f"{self.name}", **self.prior_params, dims=f"{self.feature_column}_spline"
+                )
+                return X_spline @ beta
+
+            elif self.pooling_columns is not None:
+                X = select_data_columns(self.pooling_columns, model)
+                beta = hierarchical_prior_to_requested_depth(
+                    name=self.name,
+                    X=X,
+                    model=model,
+                    dims=[f"{self.feature_column}_spline"],
+                    no_pooling=self.pooling == "none",
+                )
+
+            spline_effect = (X_spline * beta.T).sum(axis=-1)
+            return spline_effect

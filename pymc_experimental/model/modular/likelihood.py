@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from typing import Literal, get_args
 
 import arviz as az
+import numpy as np
 import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
@@ -44,7 +45,11 @@ class Likelihood(ABC):
         # TODO: Reconsider this (two sources of nearly the same info not good)
         X_df = data.drop(columns=[target_col])
 
-        self.column_labels = {}
+        self.obs_dim = data.index.name
+        self.coords = {
+            self.obs_dim: data.index.values,
+        }
+
         for col, dtype in X_df.dtypes.to_dict().items():
             if dtype.name.startswith("float"):
                 pass
@@ -52,26 +57,31 @@ class Likelihood(ABC):
                 # TODO: We definitely need to save these if we want to factorize predict data
                 col_array, labels = pd.factorize(X_df[col], sort=True)
                 X_df[col] = col_array.astype("float64")
-                self.column_labels[col] = {label: i for i, label in enumerate(labels.values)}
+                self.coords[col] = labels
             elif dtype.name.startswith("int"):
+                _data = X_df[col].copy()
                 X_df[col] = X_df[col].astype("float64")
+                assert np.all(
+                    _data == X_df[col].astype("int")
+                ), "Information was lost in conversion to float"
+
             else:
                 raise NotImplementedError(
                     f"Haven't decided how to handle the following type: {dtype.name}"
                 )
 
-        self.obs_dim = data.index.name
-        coords = {
-            self.obs_dim: data.index.values,
-            "feature": list(X_df.columns),
-        }
-        with self._get_model_class(coords) as self.model:
+        numeric_cols = [
+            col for col, dtype in X_df.dtypes.to_dict().items() if dtype.name.startswith("float")
+        ]
+        self.coords["feature"] = numeric_cols
+
+        with self._get_model_class(self.coords) as self.model:
             pm.Data(f"{target_col}_observed", data[target_col], dims=self.obs_dim)
             pm.Data(
                 "X_data",
                 X_df,
                 dims=(self.obs_dim, "feature"),
-                shape=(None, len(coords["feature"])),
+                shape=(None, len(self.coords["feature"])),
             )
 
         self._predict_fn = None  # We are caching function for faster predictions

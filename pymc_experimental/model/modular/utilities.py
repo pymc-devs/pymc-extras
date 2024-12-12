@@ -2,11 +2,12 @@ import itertools
 
 from collections.abc import Sequence
 
-import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
 
-ColumnType = str | Sequence[str] | None
+from pytensor.compile import SharedVariable
+
+ColumnType = str | list[str]
 
 # Dictionary to define offset distributions for hierarchical models
 OFFSET_DIST_FACTORY = {
@@ -24,33 +25,60 @@ SIGMA_DEFAULT_KWARGS = {
 }
 
 
-def _get_x_cols(
-    cols: str | Sequence[str],
+def select_data_columns(
+    cols: str | Sequence[str] | None,
     model: pm.Model | None = None,
-) -> pt.TensorVariable:
+    data_name: str = "X_data",
+) -> pt.TensorVariable | None:
+    """
+    Create a tensor variable representing a subset of independent data columns.
+
+    Parameters
+    ----------
+    cols: str or list of str
+        Column names to select from the independent data
+    model: Model, optional
+        PyMC model object. If None, the model is taken from the context.
+
+    Returns
+    -------
+    X: TensorVariable
+        A tensor variable representing the selected columns of the independent data
+    """
     model = pm.modelcontext(model)
-    # Don't upcast a single column to a colum matrix
+    if isinstance(cols, None):
+        return
+
     if isinstance(cols, str):
-        [cols_idx] = [i for i, col in enumerate(model.coords["feature"]) if col == cols]
-    else:
-        cols_idx = [i for i, col in enumerate(model.coords["feature"]) if col is cols]
-    return model["X_data"][:, cols_idx]
+        cols = [cols]
+
+    missing_cols = [col for col in cols if col not in model.coords["feature"]]
+    if missing_cols:
+        raise ValueError(f"Columns {missing_cols} not found in the model")
+
+    cols_idx = [model.coords["feature"].index(col) for col in cols]
+
+    # Single columns are returned as 1d arrays
+    if len(cols_idx) == 1:
+        cols_idx = cols_idx[0]
+
+    return get_X_data(model, data_name=data_name)[:, cols_idx]
 
 
-def get_X_data(model, data_name="X_data"):
+def get_X_data(model, data_name="X_data") -> SharedVariable:
     return model[data_name]
 
 
-def make_level_maps(df: pd.DataFrame, ordered_levels: list[str]):
-    """
+def make_level_maps(X: SharedVariable, coords: dict[str, tuple | None], ordered_levels: list[str]):
+    r"""
     For each row of data, create a mapping between levels of a arbitrary set of levels defined by `ordered_levels`.
 
     Consider a set of levels (A, B, C) with members A: [A], B: [B1, B2], C: [C1, C2, C3, C4] arraged in a tree, like:
                 A
-             /      \
-            B1      B2
-           /  \\    /   \
-         C1   C2  C3    C4
+             /     \
+            B1     B2
+           /  \   /   \
+         C1   C2  C3   C4
 
     A "deep hierarchy" will have the following priors:
         A ~ F(...)
@@ -63,40 +91,36 @@ def make_level_maps(df: pd.DataFrame, ordered_levels: list[str]):
 
     Parameters
     ----------
-    df: pd.DataFrame
+    X: pt.TensorVariable
         It's data OK?
 
+    coords: dict[str, list[str]]
+        Dictionary of levels and their members. In the above example,
+        ``coords = {'A': ['A'], 'B': ['B1', 'B2'], 'C': ['C1', 'C2', 'C3', 'C4']}``
+
     ordered_levels: list[str]
-        Sequence of level names, ordered from highest to lowest. In the above example, ordered_levels = ['A', 'B', 'C']
+        Sequence of level names, ordered from highest to lowest. In the above example,
+        ordered_levels = ['A', 'B', 'C']
 
     Returns
     -------
-    labels: list[pd.Index]
-        Unique labels generated for each level, sorted alphabetically. Ordering corresponds to the integers in the corresponding mapping, à la pd.factorize
-
-    mappings: list[np.ndarray]
-        `len(ordered_levels) - 1` list of arrays indexing each previous level to the next level. The i-th array in the list has shape len(df[ordered_levels[i+1]].unique())
+    mappings: list[pt.TensorVariable]
+        `len(ordered_levels) - 1` list of arrays indexing each previous level to the next level.
+         The i-th array in the list has shape len(df[ordered_levels[i+1]].unique())
     """
-    # TODO: Raise an error if there are one-to-many mappings between levels?
-    if not all([level in df for level in ordered_levels]):
-        missing = set(ordered_levels) - set(df.columns)
-        raise ValueError(f'Requested levels were not in provided dataframe: {", ".join(missing)}')
 
-    level_pairs = itertools.pairwise(ordered_levels)
-    mappings = []
-    labels = []
+    level_idxs = [coords["feature"].index(level) for level in ordered_levels]
+    level_pairs = itertools.pairwise(level_idxs)
+
+    mappings = [None]
+
     for pair in level_pairs:
-        _, level_labels = pd.factorize(df[pair[0]], sort=True)
-        edges = df[list(pair)].drop_duplicates().set_index(pair[1])[pair[0]].sort_index()
-        idx = edges.map({k: i for i, k in enumerate(level_labels)}).values
-        labels.append(level_labels)
-        mappings.append(idx)
+        edges = pt.unique(X[:, list(pair)], axis=0)
+        sorted_idx = pt.argsort(edges[:, 1])
+        mappings.append(edges[sorted_idx, 0].astype(int))
 
-    last_map, last_labels = pd.factorize(df[ordered_levels[-1]], sort=True)
-    labels.append(last_labels)
-    mappings.append(last_map)
-
-    return labels, mappings
+    mappings.append(X[:, level_idxs[-1]].astype(int))
+    return mappings
 
 
 def make_next_level_hierarchy_variable(
@@ -145,12 +169,13 @@ def make_next_level_hierarchy_variable(
 
 def hierarchical_prior_to_requested_depth(
     name: str,
-    df: pd.DataFrame,
+    X: SharedVariable,
+    pooling_columns: ColumnType = None,
     model: pm.Model = None,
     dims: list[str] | None = None,
     no_pooling: bool = False,
     **hierarchy_kwargs,
-):
+) -> pt.TensorVariable:
     """
     Given a dataframe of categorical data, construct a hierarchical prior that pools data telescopically, moving from
     left to right across the columns of the dataframe.
@@ -179,9 +204,12 @@ def hierarchical_prior_to_requested_depth(
     This will construct a two-level hierarchy. The first level will pool all rows of data with the same 'fruit' value,
     and the second level will pool color values within each fruit. The structure of the hierarchy will be:
 
+    .. code-block::
+
                  Apple             Banana
-                /     \\           /    \
+                /     \\            /    \
             Red       Green    Yellow   Brown
+
 
     That is, estimates for each of "red" and "green" will be centered on the estimate of "apple", and estimates for
     "yellow" and "brown" will be centered on the estimate of "banana".
@@ -196,9 +224,12 @@ def hierarchical_prior_to_requested_depth(
     ----------
     name: str
         Name of the variable to construct
-    df: DataFrame
-        DataFrame of categorical data. Each column represents a level of the hierarchy, with the leftmost column
-        representing the top level of the hierarchy, with depth increasing to the right.
+    X: SharedVariable
+        Feature data associated with the GLM model. Encoded categorical features used to form the hierarchical prior
+        are expected to be columns in this data.
+    pooling_columns: str or list of str
+        Columns of the dataframe to use as the index of the hierarchy. If a list is provided, the hierarchy will be
+        constructed from left to right across the columns.
     model: pm.Model, optional
         PyMC model to add the variable to. If None, the model on the current context stack is used.
     dims: list of str, optional
@@ -225,36 +256,19 @@ def hierarchical_prior_to_requested_depth(
         (n_obs, *dims, df.loc[:, -1].nunique())
     """
 
-    if isinstance(df, pd.Series):
-        df = df.to_frame()
-
     model = pm.modelcontext(model)
+    coords = model.coords
+
     sigma_dist = hierarchy_kwargs.pop("sigma_dist", "Gamma")
     sigma_kwargs = hierarchy_kwargs.pop("sigma_kwargs", {"alpha": 2, "beta": 1})
     offset_dist = hierarchy_kwargs.pop("offset_dist", "zerosum")
 
-    levels = [None, *df.columns.tolist()]
-    n_levels = len(levels) - 1
-    idx_maps = None
-    if n_levels > 1:
-        labels, idx_maps = make_level_maps(df, levels[1:])
-
-    if idx_maps:
-        idx_maps = [None, *idx_maps]
-    else:
-        idx_maps = [None]
-
-    for level_dim in levels[1:]:
-        _, labels = pd.factorize(df[level_dim], sort=True)
-        if level_dim not in model.coords:
-            model.add_coord(level_dim, labels)
-
-    # Danger zone, this assumes we factorized the same way here and in X_data
-    deepest_map = _get_x_cols(df.columns[-1]).astype("int")
+    idx_maps = make_level_maps(X, coords, pooling_columns)
+    deepest_map = idx_maps[-1]
 
     with model:
         beta = pm.Normal(f"{name}_effect", 0, 1, dims=dims)
-        for i, (level, last_level) in enumerate(zip(levels[1:], levels[:-1])):
+        for i, (last_level, level) in enumerate(itertools.pairwise([None, *pooling_columns])):
             if i == 0:
                 sigma_dims = dims
             else:
