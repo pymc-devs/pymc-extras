@@ -5,7 +5,7 @@ import pytest
 
 from model.modular.utilities import at_least_list, encode_categoricals
 
-from pymc_experimental.model.modular.components import Intercept, PoolingType, Regression
+from pymc_experimental.model.modular.components import Intercept, PoolingType, Regression, Spline
 
 
 @pytest.fixture(scope="session")
@@ -91,3 +91,16 @@ def test_regression(pooling: PoolingType, prior, feature_columns, model):
         assert np.unique(beta_val).shape[0] == len(model.coords["city"]) * n_features
     else:
         assert np.unique(beta_val).shape[0] == n_features
+
+
+@pytest.mark.parametrize("pooling", ["partial", "none", "complete"], ids=str)
+@pytest.mark.parametrize("prior", ["Normal", "Laplace", "StudentT"], ids=str)
+def test_spline(pooling: PoolingType, prior, model):
+    spline = Spline(
+        name=None, feature_column="income", prior=prior, pooling=pooling, pooling_columns="city"
+    )
+
+    temp_model = model.copy()
+    xb = spline.build(temp_model)
+
+    assert "Spline(income, df=10, degree=3)_knots" in temp_model.coords.keys()

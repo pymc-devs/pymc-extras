@@ -63,8 +63,7 @@ def select_data_columns(
     if cols is None:
         return
 
-    if isinstance(cols, str):
-        cols = [cols]
+    cols = at_least_list(cols)
 
     missing_cols = [col for col in cols if col not in model.coords["feature"]]
     if missing_cols:
@@ -407,6 +406,7 @@ def make_hierarchical_prior(
     **hierarchy_kwargs,
 ):
     model = pm.modelcontext(model)
+    pooling_columns = at_least_list(pooling_columns)
 
     if pooling == "none":
         return make_unpooled_hierarchy(
