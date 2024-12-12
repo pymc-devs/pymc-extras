@@ -1,43 +1,17 @@
 from abc import ABC, abstractmethod
-from typing import Literal, get_args
 
 import pandas as pd
 import pymc as pm
 
 from model.modular.utilities import (
+    PRIOR_DEFAULT_KWARGS,
     ColumnType,
+    PoolingType,
     get_X_data,
-    hierarchical_prior_to_requested_depth,
+    make_hierarchical_prior,
     select_data_columns,
 )
 from patsy import dmatrix
-
-PoolingType = Literal["none", "complete", "partial", None]
-valid_pooling = get_args(PoolingType)
-
-
-def _validate_pooling_params(pooling_columns: ColumnType, pooling: PoolingType):
-    """
-    Helper function to validate inputs to a GLM component.
-
-    Parameters
-    ----------
-    pooling_columns: str or list of str
-        Data columns used to construct a hierarchical prior
-    pooling: str
-        Type of pooling to use in the component
-
-    Returns
-    -------
-    None
-    """
-    if pooling_columns is not None and pooling == "complete":
-        raise ValueError("Index data provided but complete pooling was requested")
-    if pooling_columns is None and pooling != "complete":
-        raise ValueError(
-            "Index data must be provided for partial pooling (pooling = 'partial') or no pooling "
-            "(pooling = 'none')"
-        )
 
 
 class GLMModel(ABC):
@@ -91,7 +65,7 @@ class Intercept(GLMModel):
         self,
         name: str | None = None,
         *,
-        pooling_cols: ColumnType = None,
+        pooling_columns: ColumnType = None,
         pooling: PoolingType = "complete",
         hierarchical_params: dict | None = None,
         prior: str = "Normal",
@@ -108,7 +82,7 @@ class Intercept(GLMModel):
         ----------
         name: str, optional
             Name of the intercept term. If None, a default name is generated based on the index_data.
-        pooling_cols: str or list of str, optional
+        pooling_columns: str or list of str, optional
             Columns of the independent data to use as labels for pooling. These columns will be treated as categorical.
             If None, no pooling is applied. If a list is provided, a "telescoping" hierarchy is constructed from left
             to right, with the mean of each subsequent level centered on the mean of the previous level.
@@ -133,21 +107,19 @@ class Intercept(GLMModel):
             Additional keyword arguments to pass to the PyMC distribution specified by the prior argument.
 
         """
-        _validate_pooling_params(pooling_cols, pooling)
-
-        self.pooling_cols = pooling_cols
         self.hierarchical_params = hierarchical_params if hierarchical_params is not None else {}
-        self.pooling = pooling if pooling_cols is not None else "complete"
+        self.pooling = pooling
 
         self.prior = prior
         self.prior_params = prior_params if prior_params is not None else {}
 
-        if pooling_cols is None:
-            pooling_cols = []
-        elif isinstance(pooling_cols, str):
-            pooling_cols = [pooling_cols]
+        if pooling_columns is None:
+            pooling_columns = []
+        elif isinstance(pooling_columns, str):
+            pooling_columns = [pooling_columns]
 
-        name = name or f"Intercept(pooling_cols={pooling_cols})"
+        self.pooling_columns = pooling_columns
+        name = name or f"Intercept(pooling_cols={pooling_columns})"
 
         super().__init__(name=name)
 
@@ -155,15 +127,21 @@ class Intercept(GLMModel):
         model = pm.modelcontext(model)
         with model:
             if self.pooling == "complete":
-                intercept = getattr(pm, self.prior.title())(f"{self.name}", **self.prior_params)
+                prior_params = PRIOR_DEFAULT_KWARGS[self.prior].copy()
+                prior_params.update(self.prior_params)
+
+                intercept = getattr(pm, self.prior)(f"{self.name}", **prior_params)
                 return intercept
 
-            intercept = hierarchical_prior_to_requested_depth(
+            intercept = make_hierarchical_prior(
                 self.name,
-                df=get_X_data(model)[self.pooling_cols],
+                X=get_X_data(model),
                 model=model,
+                pooling_columns=self.pooling_columns,
                 dims=None,
-                no_pooling=self.pooling == "none",
+                pooling=self.pooling,
+                prior=self.prior,
+                prior_kwargs=self.prior_params,
                 **self.hierarchical_params,
             )
 
@@ -219,8 +197,6 @@ class Regression(GLMModel):
         prior_params:
             Additional keyword arguments to pass to the PyMC distribution specified by the prior argument.
         """
-        _validate_pooling_params(pooling_columns, pooling)
-
         self.feature_columns = feature_columns
         self.pooling = pooling
         self.pooling_columns = pooling_columns
@@ -248,7 +224,7 @@ class Regression(GLMModel):
                 )
                 return X @ beta
 
-            beta = hierarchical_prior_to_requested_depth(
+            beta = make_hierarchical_prior(
                 self.name,
                 self.index_data,
                 model=model,
@@ -318,7 +294,6 @@ class Spline(Regression):
                 offset_dist: str, one of ["zerosum", "normal", "laplace"]
                     Name of the distribution to use for the offset distribution. Default is "zerosum"
         """
-        _validate_pooling_params(index_data, pooling)
         self.name = name if name else f"Spline({feature_column})"
         self.feature_column = feature_column
         self.n_knots = n_knots
@@ -352,7 +327,7 @@ class Spline(Regression):
 
             elif self.pooling_columns is not None:
                 X = select_data_columns(self.pooling_columns, model)
-                beta = hierarchical_prior_to_requested_depth(
+                beta = make_hierarchical_prior(
                     name=self.name,
                     X=X,
                     model=model,

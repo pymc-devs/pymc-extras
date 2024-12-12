@@ -3,7 +3,6 @@ from collections.abc import Sequence
 from typing import Literal, get_args
 
 import arviz as az
-import numpy as np
 import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
@@ -14,7 +13,7 @@ from pymc.pytensorf import reseed_rngs
 from pytensor.tensor.random.type import RandomType
 
 from pymc_experimental.model.marginal.marginal_model import MarginalModel
-from pymc_experimental.model.modular.utilities import ColumnType
+from pymc_experimental.model.modular.utilities import ColumnType, encode_categoricals
 
 LIKELIHOOD_TYPES = Literal["lognormal", "logt", "mixture", "unmarginalized-mixture"]
 valid_likelihoods = get_args(LIKELIHOOD_TYPES)
@@ -42,7 +41,6 @@ class Likelihood(ABC):
             [target_col] = target_col
         self.target_col = target_col
 
-        # TODO: Reconsider this (two sources of nearly the same info not good)
         X_df = data.drop(columns=[target_col])
 
         self.obs_dim = data.index.name
@@ -50,25 +48,7 @@ class Likelihood(ABC):
             self.obs_dim: data.index.values,
         }
 
-        for col, dtype in X_df.dtypes.to_dict().items():
-            if dtype.name.startswith("float"):
-                pass
-            elif dtype.name == "object":
-                # TODO: We definitely need to save these if we want to factorize predict data
-                col_array, labels = pd.factorize(X_df[col], sort=True)
-                X_df[col] = col_array.astype("float64")
-                self.coords[col] = labels
-            elif dtype.name.startswith("int"):
-                _data = X_df[col].copy()
-                X_df[col] = X_df[col].astype("float64")
-                assert np.all(
-                    _data == X_df[col].astype("int")
-                ), "Information was lost in conversion to float"
-
-            else:
-                raise NotImplementedError(
-                    f"Haven't decided how to handle the following type: {dtype.name}"
-                )
+        X_df, self.coords = encode_categoricals(X_df, self.coords)
 
         numeric_cols = [
             col for col, dtype in X_df.dtypes.to_dict().items() if dtype.name.startswith("float")

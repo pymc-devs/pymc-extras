@@ -1,13 +1,20 @@
 import itertools
 
 from collections.abc import Sequence
+from copy import deepcopy
+from typing import Literal, get_args
 
+import numpy as np
+import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
 
 from pytensor.compile import SharedVariable
 
 ColumnType = str | list[str]
+
+PoolingType = Literal["none", "complete", "partial", None]
+valid_pooling = get_args(PoolingType)
 
 # Dictionary to define offset distributions for hierarchical models
 OFFSET_DIST_FACTORY = {
@@ -22,6 +29,12 @@ SIGMA_DEFAULT_KWARGS = {
     "Exponential": {"lam": 1},
     "HalfNormal": {"sigma": 1},
     "HalfCauchy": {"beta": 1},
+}
+
+PRIOR_DEFAULT_KWARGS = {
+    "Normal": {"mu": 0, "sigma": 1},
+    "Laplace": {"mu": 0, "b": 1},
+    "StudentT": {"nu": 3, "mu": 0, "sigma": 1},
 }
 
 
@@ -46,7 +59,7 @@ def select_data_columns(
         A tensor variable representing the selected columns of the independent data
     """
     model = pm.modelcontext(model)
-    if isinstance(cols, None):
+    if cols is None:
         return
 
     if isinstance(cols, str):
@@ -67,6 +80,34 @@ def select_data_columns(
 
 def get_X_data(model, data_name="X_data") -> SharedVariable:
     return model[data_name]
+
+
+def encode_categoricals(df, coords):
+    df = df.copy()
+    coords = deepcopy(coords)
+
+    for col, dtype in df.dtypes.items():
+        if dtype.name.startswith("float"):
+            pass
+
+        elif dtype.name == "object":
+            col_array, labels = pd.factorize(df[col], sort=True)
+            df[col] = col_array.astype("float64")
+            coords[col] = labels
+
+        elif dtype.name.startswith("int"):
+            _data = df[col].copy()
+            df[col] = df[col].astype("float64")
+            assert np.all(
+                _data == df[col].astype("int")
+            ), "Information was lost in conversion to float"
+
+        else:
+            raise NotImplementedError(
+                f"Haven't decided how to handle the following type: {dtype.name}"
+            )
+
+    return df, coords
 
 
 def make_level_maps(X: SharedVariable, coords: dict[str, tuple | None], ordered_levels: list[str]):
@@ -108,19 +149,29 @@ def make_level_maps(X: SharedVariable, coords: dict[str, tuple | None], ordered_
         `len(ordered_levels) - 1` list of arrays indexing each previous level to the next level.
          The i-th array in the list has shape len(df[ordered_levels[i+1]].unique())
     """
-
     level_idxs = [coords["feature"].index(level) for level in ordered_levels]
-    level_pairs = itertools.pairwise(level_idxs)
-
     mappings = [None]
 
-    for pair in level_pairs:
-        edges = pt.unique(X[:, list(pair)], axis=0)
+    for level_im1, level_i in itertools.pairwise(level_idxs):
+        edges = pt.unique(X[:, [level_im1, level_i]], axis=0)
         sorted_idx = pt.argsort(edges[:, 1])
         mappings.append(edges[sorted_idx, 0].astype(int))
 
     mappings.append(X[:, level_idxs[-1]].astype(int))
     return mappings
+
+
+def make_sigma(name, sigma_dist, sigma_kwargs, sigma_dims):
+    d_sigma = getattr(pm, sigma_dist)
+
+    if sigma_kwargs is None:
+        if sigma_dist not in SIGMA_DEFAULT_KWARGS:
+            raise NotImplementedError(
+                f"No defaults implemented for {sigma_dist}. Pass sigma_kwargs explictly."
+            )
+        sigma_kwargs = SIGMA_DEFAULT_KWARGS[sigma_dist]
+
+    return d_sigma(f"{name}_sigma", **sigma_kwargs, dims=sigma_dims)
 
 
 def make_next_level_hierarchy_variable(
@@ -132,25 +183,8 @@ def make_next_level_hierarchy_variable(
     sigma_dims=None,
     offset_dims=None,
     offset_dist="Normal",
-    no_pooling=False,
 ):
-    if no_pooling:
-        if mapping is None:
-            return pm.Deterministic(f"{name}", mu[..., None], dims=offset_dims)
-        else:
-            return pm.Deterministic(f"{name}", mu[..., mapping], dims=offset_dims)
-
-    d_sigma = getattr(pm, sigma_dist)
-
-    if sigma_kwargs is None:
-        if sigma_dist not in SIGMA_DEFAULT_KWARGS:
-            raise NotImplementedError(
-                f"No defaults implemented for {sigma_dist}. Pass sigma_kwargs explictly."
-            )
-        sigma_kwargs = SIGMA_DEFAULT_KWARGS[sigma_dist]
-
-    sigma_ = d_sigma(f"{name}_sigma", **sigma_kwargs, dims=sigma_dims)
-
+    sigma_ = make_sigma(name, sigma_dist, sigma_kwargs, sigma_dims)
     offset_dist = offset_dist.lower()
     if offset_dist not in OFFSET_DIST_FACTORY:
         raise NotImplementedError()
@@ -167,16 +201,17 @@ def make_next_level_hierarchy_variable(
         )
 
 
-def hierarchical_prior_to_requested_depth(
+def make_partial_pooled_hierarchy(
     name: str,
     X: SharedVariable,
+    model: pm.Model,
     pooling_columns: ColumnType = None,
-    model: pm.Model = None,
+    prior: str = "Normal",
+    prior_kwargs: dict = {},
     dims: list[str] | None = None,
-    no_pooling: bool = False,
     **hierarchy_kwargs,
 ) -> pt.TensorVariable:
-    """
+    r"""
     Given a dataframe of categorical data, construct a hierarchical prior that pools data telescopically, moving from
     left to right across the columns of the dataframe.
 
@@ -207,7 +242,7 @@ def hierarchical_prior_to_requested_depth(
     .. code-block::
 
                  Apple             Banana
-                /     \\            /    \
+                /     \            /    \
             Red       Green    Yellow   Brown
 
 
@@ -236,9 +271,6 @@ def hierarchical_prior_to_requested_depth(
         Additional dimensions to add to the variable. These are treated as batch dimensions, and are added to the
         left of the hierarchy dimensions. For example, if dims=['feature'], and df has one column named "country",
          the returned variables will have dimensions ['feature', 'country']
-    no_pooling: bool, optional
-        If True, no pooling is applied to the variable. Each level of the hierarchy is treated as independent, with no
-        informaton shared across level members of a given level.
     hierarchy_kwargs: dict
         Additional keyword arguments to pass to the underlying PyMC distribution. Options include:
             sigma_dist: str
@@ -255,9 +287,10 @@ def hierarchical_prior_to_requested_depth(
         PyMC distribution representing the hierarchical prior. The shape of the distribution will be
         (n_obs, *dims, df.loc[:, -1].nunique())
     """
-
-    model = pm.modelcontext(model)
     coords = model.coords
+
+    if X.ndim == 1:
+        X = X[:, None]
 
     sigma_dist = hierarchy_kwargs.pop("sigma_dist", "Gamma")
     sigma_kwargs = hierarchy_kwargs.pop("sigma_kwargs", {"alpha": 2, "beta": 1})
@@ -266,8 +299,13 @@ def hierarchical_prior_to_requested_depth(
     idx_maps = make_level_maps(X, coords, pooling_columns)
     deepest_map = idx_maps[-1]
 
+    Prior = getattr(pm, prior)
+    prior_params = deepcopy(PRIOR_DEFAULT_KWARGS.get(prior))
+    prior_params.update(prior_kwargs)
+
     with model:
-        beta = pm.Normal(f"{name}_effect", 0, 1, dims=dims)
+        beta = Prior(f"{name}_effect", **prior_params, dims=dims)
+
         for i, (last_level, level) in enumerate(itertools.pairwise([None, *pooling_columns])):
             if i == 0:
                 sigma_dims = dims
@@ -288,7 +326,88 @@ def hierarchical_prior_to_requested_depth(
                 sigma_dims=sigma_dims,
                 offset_dims=offset_dims,
                 offset_dist=offset_dist,
-                no_pooling=no_pooling,
             )
 
     return beta[..., deepest_map]
+
+
+def make_unpooled_hierarchy(
+    name: str,
+    X: SharedVariable,
+    model: pm.Model = None,
+    prior: str = "Normal",
+    levels: str | list[str] | None = None,
+    dims: list[str] | None = None,
+    **hierarchy_kwargs,
+):
+    coords = model.coords
+
+    sigma_dist = hierarchy_kwargs.pop("sigma_dist", "Gamma")
+    sigma_kwargs = hierarchy_kwargs.pop("sigma_kwargs", {"alpha": 2, "beta": 1})
+
+    if X.ndim == 1:
+        X = X[:, None]
+
+    idx_maps = make_level_maps(X, coords, levels)
+    deepest_map = idx_maps[-1]
+
+    Prior = getattr(pm, prior)
+    prior_kwargs = deepcopy(PRIOR_DEFAULT_KWARGS.get(prior))
+    prior_kwargs.update(prior_kwargs)
+
+    with model:
+        beta = Prior(f"{name}_mu", **prior_kwargs, dims=dims)
+
+        for i, (last_level, level) in enumerate(itertools.pairwise([None, *levels])):
+            sigma = make_sigma(f"{name}_{level}_sigma", sigma_dist, sigma_kwargs, dims)
+
+            prior_kwargs["mu"] = beta[..., idx_maps[i]]
+            scale_name = "b" if prior == "Laplace" else "sigma"
+            prior_kwargs[scale_name] = sigma
+
+            beta_dims = [*dims, level] if dims is not None else [level]
+
+            beta = Prior(f"{name}_{level}_effect", **prior_kwargs, dims=beta_dims)
+
+    return beta[..., deepest_map]
+
+
+def make_completely_pooled_hierarchy(
+    name: str,
+    model: pm.Model,
+    dims: list[str] | None = None,
+):
+    with model:
+        beta = pm.Normal(f"{name}_mu", 0, 1, dims=dims)
+
+    return beta
+
+
+def make_hierarchical_prior(
+    name: str,
+    X: SharedVariable,
+    pooling: PoolingType,
+    prior: str = "Normal",
+    pooling_columns: ColumnType = None,
+    model: pm.Model = None,
+    dims: list[str] | None = None,
+    **hierarchy_kwargs,
+):
+    model = pm.modelcontext(model)
+
+    if pooling == "none":
+        return make_unpooled_hierarchy(
+            name=name, X=X, model=model, levels=pooling_columns, prior=prior, dims=dims
+        )
+    elif pooling == "partial":
+        return make_partial_pooled_hierarchy(
+            name=name,
+            X=X,
+            pooling_columns=pooling_columns,
+            model=model,
+            prior=prior,
+            dims=dims,
+            **hierarchy_kwargs,
+        )
+    else:
+        raise NotImplementedError(f"{pooling} pooling not yet implemented")

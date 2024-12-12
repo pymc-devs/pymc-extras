@@ -7,9 +7,11 @@ import pytest
 from numpy.testing import assert_allclose
 
 from pymc_experimental.model.modular.utilities import (
-    hierarchical_prior_to_requested_depth,
+    encode_categoricals,
     make_level_maps,
     make_next_level_hierarchy_variable,
+    make_partial_pooled_hierarchy,
+    make_unpooled_hierarchy,
     select_data_columns,
 )
 
@@ -61,18 +63,7 @@ def df(rng):
 
 @pytest.fixture(scope="session")
 def encoded_df_and_coords(df):
-    df_encoded = df.copy()
-    coords = {}
-    for col in df_encoded:
-        if df_encoded[col].dtype == "object":
-            idx, labels = pd.factorize(df_encoded[col], sort=True)
-            coords[col] = labels.tolist()
-            df_encoded[col] = idx
-
-    coords["feature"] = df.drop(columns=["sales"]).columns.tolist()
-    coords["obs_idx"] = df.index.tolist()
-
-    return df_encoded, coords
+    return encode_categoricals(df, {"feature": df.columns.tolist(), "obs_idx": df.index.tolist()})
 
 
 @pytest.fixture(scope="session")
@@ -162,20 +153,22 @@ def test_make_two_level_hierarchical_variable():
 
 
 def test_make_next_level_no_pooling():
-    with pm.Model(coords={"level_0": ["A", "B", "C"]}) as m:
-        effect_mu = pm.Normal("effect_mu", shape=(3,))
-        mu = make_next_level_hierarchy_variable(
+    data = pd.DataFrame({"level_0": np.random.choice(["A", "B", "C"], size=(10,))})
+    data, coords = encode_categoricals(data, {"feature": data.columns, "obs_idx": data.index})
+
+    with pm.Model(coords=coords) as m:
+        X = pm.Data("X_data", data, dims=["obs_idx", "feature"])
+        mu = make_unpooled_hierarchy(
             "effect",
-            mu=effect_mu,
-            offset_dims="level_0",
+            X=X,
+            levels=["level_0"],
+            model=m,
             sigma_dims=None,
-            mapping=[0, 0, 0, 1, 1, 1, 2, 2, 2],
-            no_pooling=True,
         )
 
     assert "effect_sigma" not in m.named_vars
     assert "effect_offset" not in m.named_vars
-    assert mu.shape.eval() == (9,)
+    assert mu.shape.eval() == (10,)
 
 
 @pytest.mark.parametrize(
@@ -184,8 +177,8 @@ def test_make_next_level_no_pooling():
 def test_hierarchical_prior_to_requested_depth(model, encoded_df_and_coords, pooling_columns):
     temp_model = model.copy()
     with temp_model:
-        intercept = hierarchical_prior_to_requested_depth(
-            name="intercept", X=model["X"], pooling_columns=pooling_columns
+        intercept = make_partial_pooled_hierarchy(
+            name="intercept", X=model["X"], pooling_columns=pooling_columns, model=temp_model
         )
 
     intercept = intercept.eval()
