@@ -1,11 +1,13 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from io import StringIO
 from typing import Literal, get_args
 
 import arviz as az
 import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
+import rich
 
 from pymc.backends.arviz import apply_function_over_dataset
 from pymc.model.fgraph import clone_model
@@ -14,6 +16,7 @@ from pytensor.tensor.random.type import RandomType
 
 from pymc_experimental.model.marginal.marginal_model import MarginalModel
 from pymc_experimental.model.modular.utilities import ColumnType, encode_categoricals
+from pymc_experimental.printing import model_table
 
 LIKELIHOOD_TYPES = Literal["lognormal", "logt", "mixture", "unmarginalized-mixture"]
 valid_likelihoods = get_args(LIKELIHOOD_TYPES)
@@ -43,7 +46,7 @@ class Likelihood(ABC):
 
         X_df = data.drop(columns=[target_col])
 
-        self.obs_dim = data.index.name
+        self.obs_dim = data.index.name if data.index.name is not None else "obs_idx"
         self.coords = {
             self.obs_dim: data.index.values,
         }
@@ -69,6 +72,10 @@ class Likelihood(ABC):
     def sample(self, **sample_kwargs):
         with self.model:
             return pm.sample(**sample_kwargs)
+
+    def sample_prior_predictive(self, **sample_kwargs):
+        with self.model:
+            return pm.sample_prior_predictive(**sample_kwargs)
 
     def predict(
         self,
@@ -137,47 +144,47 @@ class Likelihood(ABC):
         """Return the type on model used by the likelihood function"""
         raise NotImplementedError
 
-    def register_mu(
-        self,
-        *,
-        df: pd.DataFrame,
-        mu=None,
-    ):
+    def register_mu(self, mu=None):
         with self.model:
             if mu is not None:
-                return pm.Deterministic("mu", mu.build(df=df), dims=[self.obs_dim])
+                return pm.Deterministic("mu", mu.build(self.model), dims=[self.obs_dim])
             return pm.Normal("mu", 0, 100)
 
-    def register_sigma(
-        self,
-        *,
-        df: pd.DataFrame,
-        sigma=None,
-    ):
+    def register_sigma(self, sigma=None):
         with self.model:
             if sigma is not None:
-                return pm.Deterministic("sigma", pt.exp(sigma.build(df=df)), dims=[self.obs_dim])
+                return pm.Deterministic(
+                    "sigma", pt.exp(sigma.build(self.model)), dims=[self.obs_dim]
+                )
             return pm.Exponential("sigma", lam=1)
 
+    def __repr__(self):
+        table = model_table(self.model)
+        buffer = StringIO()
+        rich.print(table, file=buffer)
 
-class LogNormalLikelihood(Likelihood):
-    """Class to represent a log-normal likelihood function for a GLM component."""
+        return buffer.getvalue()
 
-    def __init__(
-        self,
-        mu,
-        sigma,
-        target_col: ColumnType,
-        data: pd.DataFrame,
-    ):
+    def to_graphviz(self):
+        return self.model.to_graphviz()
+
+    # def _repr_html_(self):
+    #     return model_table(self.model)
+
+
+class NormalLikelihood(Likelihood):
+    """
+    A model with normally distributed errors
+    """
+
+    def __init__(self, mu, sigma, target_col: ColumnType, data: pd.DataFrame):
         super().__init__(target_col=target_col, data=data)
 
         with self.model:
-            self.register_data(data[target_col])
             mu = self.register_mu(mu)
             sigma = self.register_sigma(sigma)
 
-            pm.LogNormal(
+            pm.Normal(
                 target_col,
                 mu=mu,
                 sigma=sigma,
@@ -187,162 +194,3 @@ class LogNormalLikelihood(Likelihood):
 
     def _get_model_class(self, coords: dict[str, Sequence]) -> pm.Model | MarginalModel:
         return pm.Model(coords=coords)
-
-
-class LogTLikelihood(Likelihood):
-    """
-    Class to represent a log-t likelihood function for a GLM component.
-    """
-
-    def __init__(
-        self,
-        mu,
-        *,
-        sigma=None,
-        nu=None,
-        target_col: ColumnType,
-        data: pd.DataFrame,
-    ):
-        def log_student_t(nu, mu, sigma, shape=None):
-            return pm.math.exp(pm.StudentT.dist(mu=mu, sigma=sigma, nu=nu, shape=shape))
-
-        super().__init__(target_col=target_col, data=data)
-
-        with self.model:
-            mu = self.register_mu(mu=mu, df=data)
-            sigma = self.register_sigma(sigma=sigma, df=data)
-            nu = self.register_nu(nu=nu, df=data)
-
-            pm.CustomDist(
-                target_col,
-                nu,
-                mu,
-                sigma,
-                observed=self.model[f"{target_col}_observed"],
-                shape=mu.shape,
-                dims=[self.obs_dim],
-                dist=log_student_t,
-                class_name="LogStudentT",
-            )
-
-    def register_nu(self, *, df, nu=None):
-        with self.model:
-            if nu is not None:
-                return pm.Deterministic("nu", pt.exp(nu.build(df=df)), dims=[self.obs_dim])
-            return pm.Uniform("nu", 2, 30)
-
-    def _get_model_class(self, coords: dict[str, Sequence]) -> pm.Model | MarginalModel:
-        return pm.Model(coords=coords)
-
-
-class BaseMixtureLikelihood(Likelihood):
-    """
-    Base class for mixture likelihood functions to hold common methods for registering parameters.
-    """
-
-    def register_sigma(self, *, df, sigma=None):
-        with self.model:
-            if sigma is None:
-                sigma_not_outlier = pm.Exponential("sigma_not_outlier", lam=1)
-            else:
-                sigma_not_outlier = pm.Deterministic(
-                    "sigma_not_outlier", pt.exp(sigma.build(df=df)), dims=[self.obs_dim]
-                )
-            sigma_outlier_offset = pm.Gamma("sigma_outlier_offset", mu=0.2, sigma=0.5)
-            sigma = pm.Deterministic(
-                "sigma",
-                pt.as_tensor([sigma_not_outlier, sigma_not_outlier * (1 + sigma_outlier_offset)]),
-                dims=["outlier"],
-            )
-
-            return sigma
-
-    def register_p_outlier(self, *, df, p_outlier=None, **param_kwargs):
-        mean_p = param_kwargs.get("mean_p", 0.1)
-        concentration = param_kwargs.get("concentration", 50)
-
-        with self.model:
-            if p_outlier is not None:
-                return pm.Deterministic(
-                    "p_outlier", pt.sigmoid(p_outlier.build(df=df)), dims=[self.obs_dim]
-                )
-            return pm.Beta("p_outlier", mean_p * concentration, (1 - mean_p) * concentration)
-
-    def _get_model_class(self, coords: dict[str, Sequence]) -> pm.Model | MarginalModel:
-        coords["outlier"] = [False, True]
-        return MarginalModel(coords=coords)
-
-
-class MixtureLikelihood(BaseMixtureLikelihood):
-    """
-    Class to represent a mixture likelihood function for a GLM component. The mixture is implemented using pm.Mixture,
-    and does not allow for automatic marginalization of components.
-    """
-
-    def __init__(
-        self,
-        mu,
-        sigma,
-        p_outlier,
-        target_col: ColumnType,
-        data: pd.DataFrame,
-    ):
-        super().__init__(target_col=target_col, data=data)
-
-        with self.model:
-            mu = self.register_mu(mu)
-            sigma = self.register_sigma(sigma)
-            p_outlier = self.register_p_outlier(p_outlier)
-
-            pm.Mixture(
-                target_col,
-                w=[1 - p_outlier, p_outlier],
-                comp_dists=pm.LogNormal.dist(mu[..., None], sigma=sigma.T),
-                shape=mu.shape,
-                observed=self.model[f"{target_col}_observed"],
-                dims=[self.obs_dim],
-            )
-
-
-class UnmarginalizedMixtureLikelihood(BaseMixtureLikelihood):
-    """
-    Class to represent an unmarginalized mixture likelihood function for a GLM component. The mixture is implemented using
-    a MarginalModel, and allows for automatic marginalization of components.
-    """
-
-    def __init__(
-        self,
-        mu,
-        sigma,
-        p_outlier,
-        target_col: ColumnType,
-        data: pd.DataFrame,
-    ):
-        super().__init__(target_col=target_col, data=data)
-
-        with self.model:
-            mu = self.register_mu(mu)
-            sigma = self.register_sigma(sigma)
-            p_outlier = self.register_p_outlier(p_outlier)
-
-            is_outlier = pm.Bernoulli(
-                "is_outlier",
-                p_outlier,
-                dims=["cusip"],
-                # shape=X_pt.shape[0],  # Uncomment after https://github.com/pymc-devs/pymc-experimental/pull/304
-            )
-
-            pm.LogNormal(
-                target_col,
-                mu=mu,
-                sigma=pm.math.switch(is_outlier, sigma[1], sigma[0]),
-                observed=self.model[f"{target_col}_observed"],
-                shape=mu.shape,
-                dims=[data.index.name],
-            )
-
-        self.model.marginalize(["is_outlier"])
-
-    def _get_model_class(self, coords: dict[str, Sequence]) -> pm.Model | MarginalModel:
-        coords["outlier"] = [False, True]
-        return MarginalModel(coords=coords)

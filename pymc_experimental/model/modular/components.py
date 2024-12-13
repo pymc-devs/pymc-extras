@@ -4,7 +4,10 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 
-from model.modular.utilities import (
+from patsy import dmatrix
+from pytensor.graph import Apply, Op
+
+from pymc_experimental.model.modular.utilities import (
     PRIOR_DEFAULT_KWARGS,
     ColumnType,
     PoolingType,
@@ -13,14 +16,12 @@ from model.modular.utilities import (
     make_hierarchical_prior,
     select_data_columns,
 )
-from patsy import dmatrix
-from pytensor.graph import Apply, Op
 
 
 class GLMModel(ABC):
     """Base class for GLM components. Subclasses should implement the build method to construct the component."""
 
-    def __init__(self, name):
+    def __init__(self, name=None):
         self.model = None
         self.compiled = False
         self.name = name

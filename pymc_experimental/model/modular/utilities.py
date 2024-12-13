@@ -56,7 +56,6 @@ def select_data_columns(
 
     Returns
     -------
-    X: TensorVariable
         A tensor variable representing the selected columns of the independent data
     """
     model = pm.modelcontext(model)
@@ -350,9 +349,6 @@ def make_unpooled_hierarchy(
 ):
     coords = model.coords
 
-    sigma_dist = hierarchy_kwargs.pop("sigma_dist", "Gamma")
-    sigma_kwargs = hierarchy_kwargs.pop("sigma_kwargs", {"alpha": 2, "beta": 1})
-
     if X.ndim == 1:
         X = X[:, None]
 
@@ -367,17 +363,8 @@ def make_unpooled_hierarchy(
         beta = Prior(f"{name}_mu", **prior_kwargs, dims=dims)
 
         for i, (last_level, level) in enumerate(itertools.pairwise([None, *levels])):
-            if i == 0:
-                sigma_dims = dims
-            else:
-                sigma_dims = [*dims, last_level] if dims is not None else [last_level]
             beta_dims = [*dims, level] if dims is not None else [level]
-
-            sigma = make_sigma(f"{name}_{level}_effect", sigma_dist, sigma_kwargs, sigma_dims)
-
             prior_kwargs["mu"] = beta[..., idx_maps[i]]
-            scale_name = "b" if prior == "Laplace" else "sigma"
-            prior_kwargs[scale_name] = sigma[..., idx_maps[i]]
 
             beta = Prior(f"{name}_{level}_effect", **prior_kwargs, dims=beta_dims)
 
