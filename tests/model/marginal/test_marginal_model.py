@@ -400,8 +400,8 @@ class TestNotSupportedMixedDims:
             idx = pm.Bernoulli("idx", p=0.7, shape=2)
             y = pm.Normal("y", mu=idx @ idx.T)
 
-        with pytest.raises(NotImplementedError):
-            marginalize(m, idx)
+        with pytest.raises(RuntimeError):
+            marginalize(m, idx).logp()
 
     def test_mixed_dims_via_indexing(self):
         mean = pt.as_tensor([[0.1, 0.9], [0.6, 0.4]])
@@ -409,14 +409,14 @@ class TestNotSupportedMixedDims:
         with Model() as m:
             idx = pm.Bernoulli("idx", p=0.7, shape=2)
             y = pm.Normal("y", mu=mean[idx, :] + mean[:, idx])
-        with pytest.raises(NotImplementedError):
-            marginalize(m, idx)
+        with pytest.raises(RuntimeError):
+            marginalize(m, idx).logp()
 
         with Model() as m:
             idx = pm.Bernoulli("idx", p=0.7, shape=2)
             y = pm.Normal("y", mu=mean[idx, None] + mean[None, idx])
-        with pytest.raises(NotImplementedError):
-            marginalize(m, idx)
+        with pytest.raises(RuntimeError):
+            marginalize(m, idx).logp()
 
         with Model() as m:
             idx = pm.Bernoulli("idx", p=0.7, shape=2)
@@ -424,34 +424,34 @@ class TestNotSupportedMixedDims:
                 mean[None, :][:, idx], 0
             )
             y = pm.Normal("y", mu=mu)
-        with pytest.raises(NotImplementedError):
-            marginalize(m, idx)
+        with pytest.raises(RuntimeError):
+            marginalize(m, idx).logp()
 
         with Model() as m:
             idx = pm.Bernoulli("idx", p=0.7, shape=2)
             y = pm.Normal("y", mu=idx[0] + idx[1])
-        with pytest.raises(NotImplementedError):
-            marginalize(m, idx)
+        with pytest.raises(RuntimeError):
+            marginalize(m, idx).logp()
 
     def test_mixed_dims_via_vector_indexing(self):
         with Model() as m:
             idx = pm.Bernoulli("idx", p=0.7, shape=2)
             y = pm.Normal("y", mu=idx[[0, 1, 0, 0]])
-        with pytest.raises(NotImplementedError):
-            marginalize(m, idx)
+        with pytest.raises(RuntimeError):
+            marginalize(m, idx).logp()
 
         with Model() as m:
             idx = pm.Categorical("key", p=[0.1, 0.3, 0.6], shape=(2, 2))
             y = pm.Normal("y", pt.as_tensor([[0, 1], [2, 3]])[idx.astype(bool)])
-        with pytest.raises(NotImplementedError):
-            marginalize(m, idx)
+        with pytest.raises(RuntimeError):
+            marginalize(m, idx).logp()
 
     def test_mixed_dims_via_support_dimension(self):
         with Model() as m:
             x = pm.Bernoulli("x", p=0.7, shape=3)
             y = pm.Dirichlet("y", a=x * 10 + 1)
-        with pytest.raises(NotImplementedError):
-            marginalize(m, x)
+        with pytest.raises(RuntimeError):
+            marginalize(m, x).logp()
 
     def test_mixed_dims_via_nested_marginalization(self):
         with Model() as m:
@@ -459,8 +459,8 @@ class TestNotSupportedMixedDims:
             y = pm.Bernoulli("y", p=0.7, shape=(2,))
             z = pm.Normal("z", mu=pt.add.outer(x, y), shape=(3, 2))
 
-        with pytest.raises(NotImplementedError):
-            marginalize(m, [x, y])
+        with pytest.raises(RuntimeError):
+            marginalize(m, [x, y]).logp()
 
 
 def test_marginalized_deterministic_and_potential():
