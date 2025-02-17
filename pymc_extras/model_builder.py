@@ -650,8 +650,11 @@ class ModelBuilder:
             if extend_idata:
                 self.idata.extend(post_pred, join="right")
 
+        # Determine the correct group dynamically
+        group_name = "predictions" if kwargs.get("predictions", False) else "posterior_predictive"
+
         posterior_predictive_samples = az.extract(
-            post_pred, "posterior_predictive", combined=combined
+            post_pred, group_name, combined=combined
         )
 
         return posterior_predictive_samples
