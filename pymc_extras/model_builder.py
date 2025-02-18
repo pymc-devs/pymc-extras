@@ -530,7 +530,7 @@ class ModelBuilder:
         self,
         X_pred: np.ndarray | pd.DataFrame | pd.Series,
         extend_idata: bool = True,
-        predictions: bool = False,
+        predictions: bool = True,
         **kwargs,
     ) -> np.ndarray:
         """
@@ -704,7 +704,7 @@ class ModelBuilder:
         X_pred: np.ndarray | pd.DataFrame | pd.Series,
         extend_idata: bool = True,
         combined: bool = True,
-        predictions: bool = False,
+        predictions: bool = True,
         **kwargs,
     ) -> xr.DataArray:
         """
