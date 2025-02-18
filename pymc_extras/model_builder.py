@@ -543,6 +543,9 @@ class ModelBuilder:
             The input data used for prediction.
         extend_idata : Boolean determining whether the predictions should be added to inference data object.
             Defaults to True.
+        predictions : bool
+            Whether to use the predictions group for posterior predictive sampling.
+            Defaults to True.
         **kwargs: Additional arguments to pass to pymc.sample_posterior_predictive
 
         Returns
@@ -651,7 +654,6 @@ class ModelBuilder:
             if extend_idata:
                 self.idata.extend(post_pred, join="right")
 
-        # Determine the correct group
         group_name = "predictions" if predictions else "posterior_predictive"
 
         posterior_predictive_samples = az.extract(
@@ -717,6 +719,8 @@ class ModelBuilder:
         extend_idata : Boolean determining whether the predictions should be added to inference data object.
             Defaults to True.
         combined: Combine chain and draw dims into sample. Won't work if a dim named sample already exists.
+            Defaults to True.
+        predictions : Boolean determing whether to use the predictions group for posterior predictive sampling.
             Defaults to True.
         **kwargs: Additional arguments to pass to pymc.sample_posterior_predictive
 
