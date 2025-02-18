@@ -530,6 +530,7 @@ class ModelBuilder:
         self,
         X_pred: np.ndarray | pd.DataFrame | pd.Series,
         extend_idata: bool = True,
+        predictions: bool = False,
         **kwargs,
     ) -> np.ndarray:
         """
@@ -559,7 +560,7 @@ class ModelBuilder:
         """
 
         posterior_predictive_samples = self.sample_posterior_predictive(
-            X_pred, extend_idata, combined=False, **kwargs
+            X_pred, extend_idata, predictions, combined=False, **kwargs
         )
 
         if self.output_var not in posterior_predictive_samples:
@@ -624,7 +625,7 @@ class ModelBuilder:
 
         return prior_predictive_samples
 
-    def sample_posterior_predictive(self, X_pred, extend_idata, combined, **kwargs):
+    def sample_posterior_predictive(self, X_pred, extend_idata, predictions, combined, **kwargs):
         """
         Sample from the model's posterior predictive distribution.
 
@@ -646,12 +647,12 @@ class ModelBuilder:
         self._data_setter(X_pred)
 
         with self.model:  # sample with new input data
-            post_pred = pm.sample_posterior_predictive(self.idata, **kwargs)
+            post_pred = pm.sample_posterior_predictive(self.idata, predictions=predictions, **kwargs)
             if extend_idata:
                 self.idata.extend(post_pred, join="right")
 
-        # Determine the correct group dynamically
-        group_name = "predictions" if kwargs.get("predictions", False) else "posterior_predictive"
+        # Determine the correct group
+        group_name = "predictions" if predictions else "posterior_predictive"
 
         posterior_predictive_samples = az.extract(
             post_pred, group_name, combined=combined
@@ -703,6 +704,7 @@ class ModelBuilder:
         X_pred: np.ndarray | pd.DataFrame | pd.Series,
         extend_idata: bool = True,
         combined: bool = True,
+        predictions: bool = False,
         **kwargs,
     ) -> xr.DataArray:
         """
@@ -726,7 +728,7 @@ class ModelBuilder:
 
         X_pred = self._validate_data(X_pred)
         posterior_predictive_samples = self.sample_posterior_predictive(
-            X_pred, extend_idata, combined, **kwargs
+            X_pred, extend_idata, predictions, combined, **kwargs
         )
 
         if self.output_var not in posterior_predictive_samples:
