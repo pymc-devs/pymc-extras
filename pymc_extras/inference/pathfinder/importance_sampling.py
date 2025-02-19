@@ -20,7 +20,7 @@ class ImportanceSamplingResult:
     samples: NDArray
     pareto_k: float | None = None
     warnings: list[str] = field(default_factory=list)
-    method: str = "none"
+    method: str = "psis"
 
 
 def importance_sampling(
@@ -28,7 +28,7 @@ def importance_sampling(
     logP: NDArray,
     logQ: NDArray,
     num_draws: int,
-    method: Literal["psis", "psir", "identity", "none"] | None,
+    method: Literal["psis", "psir", "identity"] | None,
     random_seed: int | None = None,
 ) -> ImportanceSamplingResult:
     """Pareto Smoothed Importance Resampling (PSIR)
@@ -44,8 +44,15 @@ def importance_sampling(
         log probability values of proposal distribution, shape (L, M)
     num_draws : int
         number of draws to return where num_draws <= samples.shape[0]
-    method : str, optional
-        importance sampling method to use. Options are "psis" (default), "psir", "identity", "none. Pareto Smoothed Importance Sampling (psis) is recommended in many cases for more stable results than Pareto Smoothed Importance Resampling (psir). identity applies the log importance weights directly without resampling. none applies no importance sampling weights and returns the samples as is of size num_draws_per_path * num_paths.
+    method : str, None, optional
+        Method to apply sampling based on log importance weights (logP - logQ).
+        Options are:
+        "psis" : Pareto Smoothed Importance Sampling (default)
+                Recommended for more stable results.
+        "psir" : Pareto Smoothed Importance Resampling
+                Less stable than PSIS.
+        "identity" : Applies log importance weights directly without resampling.
+        None : No importance sampling weights. Returns raw samples of size (num_paths, num_draws_per_path, N) where N is number of model parameters. Other methods return samples of size (num_draws, N).
     random_seed : int | None
 
     Returns
@@ -71,11 +78,11 @@ def importance_sampling(
     warnings = []
     num_paths, _, N = samples.shape
 
-    if method == "none":
+    if method is None:
         warnings.append(
             "Importance sampling is disabled. The samples are returned as is which may include samples from failed paths with non-finite logP or logQ values. It is recommended to use importance_sampling='psis' for better stability."
         )
-        return ImportanceSamplingResult(samples=samples, warnings=warnings)
+        return ImportanceSamplingResult(samples=samples, warnings=warnings, method=method)
     else:
         samples = samples.reshape(-1, N)
         logP = logP.ravel()
@@ -91,17 +98,16 @@ def importance_sampling(
             _warnings.filterwarnings(
                 "ignore", category=RuntimeWarning, message="overflow encountered in exp"
             )
-            if method == "psis":
-                replace = False
-                logiw, pareto_k = az.psislw(logiw)
-            elif method == "psir":
-                replace = True
-                logiw, pareto_k = az.psislw(logiw)
-            elif method == "identity":
-                replace = False
-                pareto_k = None
-            else:
-                raise ValueError(f"Invalid importance sampling method: {method}")
+            match method:
+                case "psis":
+                    replace = False
+                    logiw, pareto_k = az.psislw(logiw)
+                case "psir":
+                    replace = True
+                    logiw, pareto_k = az.psislw(logiw)
+                case "identity":
+                    replace = False
+                    pareto_k = None
 
     # NOTE: Pareto k is normally bad for Pathfinder even when the posterior is close to the NUTS posterior or closer to NUTS than ADVI.
     # Pareto k may not be a good diagnostic for Pathfinder.

@@ -156,7 +156,7 @@ def convert_flat_trace_to_idata(
     postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
     inference_backend: Literal["pymc", "blackjax"] = "pymc",
     model: Model | None = None,
-    importance_sampling: Literal["psis", "psir", "identity", "none"] = "psis",
+    importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
 ) -> az.InferenceData:
     """convert flattened samples to arviz InferenceData format.
 
@@ -181,7 +181,7 @@ def convert_flat_trace_to_idata(
         arviz inference data object
     """
 
-    if importance_sampling == "none":
+    if importance_sampling is None:
         # samples.ndim == 3 in this case, otherwise ndim == 2
         num_paths, num_pdraws, N = samples.shape
         samples = samples.reshape(-1, N)
@@ -220,7 +220,7 @@ def convert_flat_trace_to_idata(
         fn.trust_input = True
         result = fn(*list(trace.values()))
 
-        if importance_sampling == "none":
+        if importance_sampling is None:
             result = [res.reshape(num_paths, num_pdraws, *res.shape[2:]) for res in result]
 
     elif inference_backend == "blackjax":
@@ -1189,7 +1189,7 @@ class MultiPathfinderResult:
     elbo_argmax: NDArray | None = None
     lbfgs_status: Counter = field(default_factory=Counter)
     path_status: Counter = field(default_factory=Counter)
-    importance_sampling: str = "none"
+    importance_sampling: str | None = "psis"
     warnings: list[str] = field(default_factory=list)
     pareto_k: float | None = None
 
@@ -1258,7 +1258,7 @@ class MultiPathfinderResult:
     def with_importance_sampling(
         self,
         num_draws: int,
-        method: Literal["psis", "psir", "identity", "none"] | None,
+        method: Literal["psis", "psir", "identity"] | None,
         random_seed: int | None = None,
     ) -> Self:
         """perform importance sampling"""
@@ -1424,7 +1424,7 @@ def multipath_pathfinder(
     num_elbo_draws: int,
     jitter: float,
     epsilon: float,
-    importance_sampling: Literal["psis", "psir", "identity", "none"] | None,
+    importance_sampling: Literal["psis", "psir", "identity"] | None,
     progressbar: bool,
     concurrent: Literal["thread", "process"] | None,
     random_seed: RandomSeed,
@@ -1460,8 +1460,14 @@ def multipath_pathfinder(
         Amount of jitter to apply to initial points (default is 2.0). Note that Pathfinder may be highly sensitive to the jitter value. It is recommended to increase num_paths when increasing the jitter value.
     epsilon: float
         value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if delta_theta[l] * delta_grad[l] > epsilon * L2_norm(delta_grad[l]) for each l in L. (default is 1e-8).
-    importance_sampling : str, optional
-        importance sampling method to use which applies sampling based on the log importance weights equal to logP - logQ. Options are "psis" (default), "psir", "identity", "none". Pareto Smoothed Importance Sampling (psis) is recommended in many cases for more stable results than Pareto Smoothed Importance Resampling (psir). identity applies the log importance weights directly without resampling. none applies no importance sampling weights and returns the samples as is of size (num_paths, num_draws_per_path, N) where N is the number of model parameters, otherwise sample size is (num_draws, N).
+    importance_sampling : str, None, optional
+        Method to apply sampling based on log importance weights (logP - logQ).
+        "psis" : Pareto Smoothed Importance Sampling (default)
+                Recommended for more stable results.
+        "psir" : Pareto Smoothed Importance Resampling
+                Less stable than PSIS.
+        "identity" : Applies log importance weights directly without resampling.
+        None : No importance sampling weights. Returns raw samples of size (num_paths, num_draws_per_path, N) where N is number of model parameters. Other methods return samples of size (num_draws, N).
     progressbar : bool, optional
         Whether to display a progress bar (default is False). Setting this to True will likely increase the computation time.
     random_seed : RandomSeed, optional
@@ -1482,12 +1488,6 @@ def multipath_pathfinder(
     MultiPathfinderResult
         The result containing samples and other information from the Multi-Path Pathfinder algorithm.
     """
-
-    valid_importance_sampling = ["psis", "psir", "identity", "none", None]
-    if importance_sampling is None:
-        importance_sampling = "none"
-    if importance_sampling.lower() not in valid_importance_sampling:
-        raise ValueError(f"Invalid importance sampling method: {importance_sampling}")
 
     *path_seeds, choice_seed = _get_seeds_per_chain(random_seed, num_paths + 1)
 
@@ -1622,7 +1622,7 @@ def fit_pathfinder(
     num_elbo_draws: int = 10,  # K
     jitter: float = 2.0,
     epsilon: float = 1e-8,
-    importance_sampling: Literal["psis", "psir", "identity", "none"] = "psis",
+    importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
     progressbar: bool = True,
     concurrent: Literal["thread", "process"] | None = None,
     random_seed: RandomSeed | None = None,
@@ -1662,8 +1662,15 @@ def fit_pathfinder(
         Amount of jitter to apply to initial points (default is 2.0). Note that Pathfinder may be highly sensitive to the jitter value. It is recommended to increase num_paths when increasing the jitter value.
     epsilon: float
         value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if delta_theta[l] * delta_grad[l] > epsilon * L2_norm(delta_grad[l]) for each l in L. (default is 1e-8).
-    importance_sampling : str, optional
-        importance sampling method to use which applies sampling based on the log importance weights equal to logP - logQ. Options are "psis" (default), "psir", "identity", "none". Pareto Smoothed Importance Sampling (psis) is recommended in many cases for more stable results than Pareto Smoothed Importance Resampling (psir). identity applies the log importance weights directly without resampling. none applies no importance sampling weights and returns the samples as is of size (num_paths, num_draws_per_path, N) where N is the number of model parameters, otherwise sample size is (num_draws, N).
+    importance_sampling : str, None, optional
+        Method to apply sampling based on log importance weights (logP - logQ).
+        Options are:
+        "psis" : Pareto Smoothed Importance Sampling (default)
+                Recommended for more stable results.
+        "psir" : Pareto Smoothed Importance Resampling
+                Less stable than PSIS.
+        "identity" : Applies log importance weights directly without resampling.
+        None : No importance sampling weights. Returns raw samples of size (num_paths, num_draws_per_path, N) where N is number of model parameters. Other methods return samples of size (num_draws, N).
     progressbar : bool, optional
         Whether to display a progress bar (default is True). Setting this to False will likely reduce the computation time.
     random_seed : RandomSeed, optional
@@ -1690,6 +1697,15 @@ def fit_pathfinder(
     """
 
     model = modelcontext(model)
+
+    valid_importance_sampling = {"psis", "psir", "identity", None}
+
+    if importance_sampling is not None:
+        importance_sampling = importance_sampling.lower()
+
+    if importance_sampling not in valid_importance_sampling:
+        raise ValueError(f"Invalid importance sampling method: {importance_sampling}")
+
     N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
 
     if maxcor is None:

@@ -44,8 +44,8 @@ def reference_idata():
     with model:
         idata = pmx.fit(
             method="pathfinder",
-            num_paths=50,
-            jitter=10.0,
+            num_paths=10,
+            jitter=12.0,
             random_seed=41,
             inference_backend="pymc",
         )
@@ -62,15 +62,15 @@ def test_pathfinder(inference_backend, reference_idata):
         with model:
             idata = pmx.fit(
                 method="pathfinder",
-                num_paths=50,
-                jitter=10.0,
+                num_paths=10,
+                jitter=12.0,
                 random_seed=41,
                 inference_backend=inference_backend,
             )
     else:
         idata = reference_idata
-        np.testing.assert_allclose(idata.posterior["mu"].mean(), 5.0, atol=1.6)
-        np.testing.assert_allclose(idata.posterior["tau"].mean(), 4.15, atol=1.5)
+        np.testing.assert_allclose(idata.posterior["mu"].mean(), 5.0, atol=0.95)
+        np.testing.assert_allclose(idata.posterior["tau"].mean(), 4.15, atol=1.35)
 
     assert idata.posterior["mu"].shape == (1, 1000)
     assert idata.posterior["tau"].shape == (1, 1000)
@@ -83,8 +83,8 @@ def test_concurrent_results(reference_idata, concurrent):
     with model:
         idata_conc = pmx.fit(
             method="pathfinder",
-            num_paths=50,
-            jitter=10.0,
+            num_paths=10,
+            jitter=12.0,
             random_seed=41,
             inference_backend="pymc",
             concurrent=concurrent,
@@ -108,7 +108,7 @@ def test_seed(reference_idata):
     with model:
         idata_41 = pmx.fit(
             method="pathfinder",
-            num_paths=50,
+            num_paths=4,
             jitter=10.0,
             random_seed=41,
             inference_backend="pymc",
@@ -116,7 +116,7 @@ def test_seed(reference_idata):
 
         idata_123 = pmx.fit(
             method="pathfinder",
-            num_paths=50,
+            num_paths=4,
             jitter=10.0,
             random_seed=123,
             inference_backend="pymc",
@@ -171,3 +171,33 @@ def test_bfgs_sample():
     assert gamma.eval().shape == (L, 2 * J, 2 * J)
     assert phi.eval().shape == (L, num_samples, N)
     assert logq.eval().shape == (L, num_samples)
+
+
+@pytest.mark.parametrize("importance_sampling", ["psis", "psir", "identity", None])
+def test_pathfinder_importance_sampling(importance_sampling):
+    model = eight_schools_model()
+
+    num_paths = 4
+    num_draws_per_path = 300
+    num_draws = 750
+
+    with model:
+        idata = pmx.fit(
+            method="pathfinder",
+            num_paths=num_paths,
+            num_draws_per_path=num_draws_per_path,
+            num_draws=num_draws,
+            maxiter=5,
+            random_seed=41,
+            inference_backend="pymc",
+            importance_sampling=importance_sampling,
+        )
+
+    if importance_sampling is None:
+        assert idata.posterior["mu"].shape == (num_paths, num_draws_per_path)
+        assert idata.posterior["tau"].shape == (num_paths, num_draws_per_path)
+        assert idata.posterior["theta"].shape == (num_paths, num_draws_per_path, 8)
+    else:
+        assert idata.posterior["mu"].shape == (1, num_draws)
+        assert idata.posterior["tau"].shape == (1, num_draws)
+        assert idata.posterior["theta"].shape == (1, num_draws, 8)
