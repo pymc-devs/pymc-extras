@@ -21,7 +21,7 @@ filterwarnings =[
   # Warning coming from blackjax
   'ignore:jax\.tree_map is deprecated:DeprecationWarning',
 
-  # Ignore PyMC use of numpy.core
+  # PyMC uses numpy.core functions, which emits an warning as of numpy>2.0
   'ignore:numpy\.core\.numeric is deprecated:DeprecationWarning',
 ]
 
