@@ -638,6 +638,8 @@ class ModelBuilder:
             The input data used for prediction using prior distribution..
         extend_idata : Boolean determining whether the predictions should be added to inference data object.
             Defaults to False.
+        predictions : Boolean determing whether to use the predictions group for posterior predictive sampling.
+            Defaults to True.
         combined: Combine chain and draw dims into sample. Won't work if a dim named sample already exists.
             Defaults to True.
         **kwargs: Additional arguments to pass to pymc.sample_posterior_predictive
