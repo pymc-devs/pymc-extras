@@ -563,7 +563,7 @@ class ModelBuilder:
         """
 
         posterior_predictive_samples = self.sample_posterior_predictive(
-            X_pred, extend_idata, predictions, combined=False, **kwargs
+            X_pred, extend_idata, combined=False, predictions=predictions, **kwargs
         )
 
         if self.output_var not in posterior_predictive_samples:
@@ -628,7 +628,7 @@ class ModelBuilder:
 
         return prior_predictive_samples
 
-    def sample_posterior_predictive(self, X_pred, extend_idata, predictions, combined, **kwargs):
+    def sample_posterior_predictive(self, X_pred, extend_idata, combined, predictions = True, **kwargs):
         """
         Sample from the model's posterior predictive distribution.
 
@@ -734,7 +734,7 @@ class ModelBuilder:
 
         X_pred = self._validate_data(X_pred)
         posterior_predictive_samples = self.sample_posterior_predictive(
-            X_pred, extend_idata, predictions, combined, **kwargs
+            X_pred, extend_idata, combined, predictions=predictions, **kwargs
         )
 
         if self.output_var not in posterior_predictive_samples:
