@@ -28,7 +28,6 @@ from pymc_extras.statespace.filters import (
 )
 from pymc_extras.statespace.filters.distributions import (
     LinearGaussianStateSpace,
-    MvNormalSVD,
     SequenceMvNormal,
 )
 from pymc_extras.statespace.filters.utilities import stabilize
@@ -2233,7 +2232,9 @@ class PyMCStateSpace:
             if shock_trajectory is None:
                 shock_trajectory = pt.zeros((n_steps, self.k_posdef))
                 if Q is not None:
-                    init_shock = MvNormalSVD("initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM])
+                    init_shock = pm.MvNormal(
+                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method="svd"
+                    )
                 else:
                     init_shock = pm.Deterministic(
                         "initial_shock",
