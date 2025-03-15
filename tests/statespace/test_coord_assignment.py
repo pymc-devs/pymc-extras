@@ -8,6 +8,7 @@ import pytensor.tensor as pt
 import pytest
 
 from pymc_extras.statespace.models import structural
+from pymc_extras.statespace.models.structural import LevelTrendComponent
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     FILTER_OUTPUT_NAMES,
@@ -114,3 +115,31 @@ def test_data_index_is_coord(f, warning, create_model):
     with warning:
         pymc_model = create_model(f)
     assert TIME_DIM in pymc_model.coords
+
+
+def test_integer_index():
+    a = pd.DataFrame(
+        index=np.arange(8), columns=["A", "B", "C", "D"], data=np.arange(32).reshape(8, 4)
+    )
+
+    mod = LevelTrendComponent(order=2, innovations_order=[0, 1])
+    ss_mod = mod.build(name="a", verbose=False)
+
+    initial_trend_dims, sigma_trend_dims, P0_dims = ss_mod.param_dims.values()
+    coords = ss_mod.coords
+
+    with pm.Model(coords=coords) as model_1:
+        P0_diag = pm.Gamma("P0_diag", alpha=5, beta=5)
+        P0 = pm.Deterministic("P0", pt.eye(ss_mod.k_states) * P0_diag, dims=P0_dims)
+
+        initial_trend = pm.Normal("initial_trend", dims=initial_trend_dims)
+        sigma_trend = pm.Gamma("sigma_trend", alpha=2, beta=50, dims=sigma_trend_dims)
+
+        with pytest.warns(UserWarning, match="No time index found on the supplied data"):
+            ss_mod.build_statespace_graph(
+                a["A"],
+                mode="JAX",
+            )
+
+    assert TIME_DIM in model_1.coords
+    np.testing.assert_allclose(model_1.coords[TIME_DIM], a.index)

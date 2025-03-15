@@ -87,18 +87,18 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
     col_names = data.columns
     _validate_data_shape(data.shape, n_obs, obs_coords, check_column_names, col_names)
 
-    if isinstance(data.index, pd.RangeIndex):
-        if obs_coords is not None:
-            warnings.warn(NO_TIME_INDEX_WARNING)
-        return preprocess_numpy_data(data.values, n_obs, obs_coords)
-
-    elif isinstance(data.index, pd.DatetimeIndex):
+    if isinstance(data.index, pd.DatetimeIndex):
         if data.index.freq is None:
             warnings.warn(NO_FREQ_INFO_WARNING)
             data.index.freq = data.index.inferred_freq
 
         index = data.index
         return data.values, index
+
+    elif isinstance(data.index, pd.Index):
+        if obs_coords is not None:
+            warnings.warn(NO_TIME_INDEX_WARNING)
+        return preprocess_numpy_data(data.values, n_obs, obs_coords)
 
     else:
         raise IndexError(
