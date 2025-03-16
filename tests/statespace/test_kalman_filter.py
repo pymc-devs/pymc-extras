@@ -178,6 +178,10 @@ def test_output_with_deterministic_observation_equation(filter_func, rng):
         assert (
             outputs[output_idx].shape == expected_output
         ), f"Shape of {name} does not match expected"
+# basically need that to work with an additional batch dim
+# maybe with pt.vectorize
+# that would be the easiest
+# just try to do pytensor.graph.rewriting.vectorize_graph, replacing all the input with ndim + 1
 
 
 @pytest.mark.parametrize(
