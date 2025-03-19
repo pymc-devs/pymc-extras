@@ -114,9 +114,6 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
         if not np.issubdtype(index.dtype, np.integer):
             raise IndexError("Provided index is not an integer index.")
 
-        if not index.is_monotonic_increasing:
-            raise IndexError("Provided index is not monotonic increasing.")
-
         index_diff = index.to_series().diff().dropna().values
         if not (index_diff == 1).all():
             raise IndexError("Provided index is not monotonic increasing.")
