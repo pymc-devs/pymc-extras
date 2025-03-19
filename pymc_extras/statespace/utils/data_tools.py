@@ -95,15 +95,33 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
         index = data.index
         return data.values, index
 
-    elif isinstance(data.index, pd.Index):
+    elif isinstance(data.index, pd.RangeIndex):
         if obs_coords is not None:
             warnings.warn(NO_TIME_INDEX_WARNING)
         return preprocess_numpy_data(data.values, n_obs, obs_coords)
 
+    elif isinstance(data.index, pd.MultiIndex):
+        if obs_coords is not None:
+            warnings.warn(NO_TIME_INDEX_WARNING)
+
+        raise NotImplementedError("MultiIndex panel data is not currently supported.")
+
     else:
-        raise IndexError(
-            f"Expected pd.DatetimeIndex or pd.RangeIndex on data, found {type(data.index)}"
-        )
+        if obs_coords is not None:
+            warnings.warn(NO_TIME_INDEX_WARNING)
+
+        index = data.index
+        if not np.issubdtype(index.dtype, np.integer):
+            raise IndexError("Provided index is not an integer index.")
+
+        if not index.is_monotonic_increasing:
+            raise IndexError("Provided index is not monotonic increasing.")
+
+        index_diff = index.to_series().diff().dropna().values
+        if not (index_diff == 1).all():
+            raise IndexError("Provided index is not monotonic increasing.")
+
+        return preprocess_numpy_data(data.values, n_obs, obs_coords)
 
 
 def add_data_to_active_model(values, index, data_dims=None):

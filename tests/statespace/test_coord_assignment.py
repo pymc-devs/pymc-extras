@@ -117,10 +117,9 @@ def test_data_index_is_coord(f, warning, create_model):
     assert TIME_DIM in pymc_model.coords
 
 
-def test_integer_index():
-    a = pd.DataFrame(
-        index=np.arange(8), columns=["A", "B", "C", "D"], data=np.arange(32).reshape(8, 4)
-    )
+def make_model(index):
+    n = len(index)
+    a = pd.DataFrame(index=index, columns=["A", "B", "C", "D"], data=np.arange(n * 4).reshape(n, 4))
 
     mod = LevelTrendComponent(order=2, innovations_order=[0, 1])
     ss_mod = mod.build(name="a", verbose=False)
@@ -128,7 +127,7 @@ def test_integer_index():
     initial_trend_dims, sigma_trend_dims, P0_dims = ss_mod.param_dims.values()
     coords = ss_mod.coords
 
-    with pm.Model(coords=coords) as model_1:
+    with pm.Model(coords=coords) as model:
         P0_diag = pm.Gamma("P0_diag", alpha=5, beta=5)
         P0 = pm.Deterministic("P0", pt.eye(ss_mod.k_states) * P0_diag, dims=P0_dims)
 
@@ -140,6 +139,43 @@ def test_integer_index():
                 a["A"],
                 mode="JAX",
             )
+    return model
 
-    assert TIME_DIM in model_1.coords
-    np.testing.assert_allclose(model_1.coords[TIME_DIM], a.index)
+
+def test_integer_index():
+    index = np.arange(8).astype(int)
+    model = make_model(index)
+    assert TIME_DIM in model.coords
+    np.testing.assert_allclose(model.coords[TIME_DIM], index)
+
+
+def test_float_index_raises():
+    index = np.linspace(0, 1, 8)
+
+    with pytest.raises(IndexError, match="Provided index is not an integer index"):
+        make_model(index)
+
+
+def test_non_strictly_monotone_index_raises():
+    # Decreases
+    index = [0, 1, 2, 1, 2, 3]
+    with pytest.raises(IndexError, match="Provided index is not monotonic increasing"):
+        make_model(index)
+
+    # Has gaps
+    index = [0, 1, 2, 3, 5, 6]
+    with pytest.raises(IndexError, match="Provided index is not monotonic increasing"):
+        make_model(index)
+
+    # Has duplicates
+    index = [0, 1, 1, 2, 3, 4]
+    with pytest.raises(IndexError, match="Provided index is not monotonic increasing"):
+        make_model(index)
+
+
+def test_multiindex_raises():
+    index = pd.MultiIndex.from_tuples([(0, 0), (1, 1), (2, 2), (3, 3)])
+    with pytest.raises(
+        NotImplementedError, match="MultiIndex panel data is not currently supported"
+    ):
+        make_model(index)
