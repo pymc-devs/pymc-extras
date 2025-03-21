@@ -263,3 +263,19 @@ def test_fit_laplace(fit_in_unconstrained_space, mode, gradient_backend: Gradien
         else:
             assert idata.fit.rows.values.tolist() == ["mu", "sigma"]
             np.testing.assert_allclose(idata.fit.mean_vector.values, np.array([3.0, 1.5]), atol=0.1)
+
+
+def test_laplace_scalar():
+    # Example model from Statistical Rethinking
+    data = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1])
+
+    with pm.Model():
+        p = pm.Uniform("p", 0, 1)
+        w = pm.Binomial("w", n=len(data), p=p, observed=data.sum())
+
+        idata_laplace = pmx.fit_laplace(progressbar=False)
+
+    assert idata_laplace.fit.mean_vector.shape == (1,)
+    assert idata_laplace.fit.covariance_matrix.shape == (1, 1)
+
+    np.testing.assert_allclose(idata_laplace.fit.mean_vector.values.item(), data.mean(), atol=0.1)

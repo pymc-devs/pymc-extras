@@ -377,7 +377,10 @@ def sample_laplace_posterior(
     posterior_dist = stats.multivariate_normal(
         mean=mu.data, cov=H_inv, allow_singular=True, seed=rng
     )
+
     posterior_draws = posterior_dist.rvs(size=(chains, draws))
+    if mu.data.shape == (1,):
+        posterior_draws = np.expand_dims(posterior_draws, -1)
 
     if transform_samples:
         constrained_rvs, unconstrained_vector = _unconstrained_vector_to_constrained_rvs(model)
