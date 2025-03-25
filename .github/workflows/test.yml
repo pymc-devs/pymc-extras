@@ -21,7 +21,10 @@ jobs:
         os: [ubuntu-latest]
         python-version: ["3.10"]
         test-subset:
-          - tests
+          - tests/model
+          - tests/statespace
+          - tests/distributions
+          - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions 
       fail-fast: false
     runs-on: ${{ matrix.os }}
     env:
@@ -59,7 +62,10 @@ jobs:
         os: [windows-latest]
         python-version: ["3.12"]
         test-subset:
-          - tests
+          - tests/model
+          - tests/statespace
+          - tests/distributions
+          - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions 
       fail-fast: false
     runs-on: ${{ matrix.os }}
     env:
