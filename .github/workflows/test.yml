@@ -24,7 +24,7 @@ jobs:
           - tests/model
           - tests/statespace
           - tests/distributions
-          - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions 
+          - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions
       fail-fast: false
     runs-on: ${{ matrix.os }}
     env:
@@ -65,7 +65,7 @@ jobs:
           - tests/model
           - tests/statespace
           - tests/distributions
-          - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions 
+          - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions
       fail-fast: false
     runs-on: ${{ matrix.os }}
     env:
