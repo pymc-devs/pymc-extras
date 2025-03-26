@@ -104,3 +104,12 @@ jobs:
           env_vars: TEST_SUBSET
           name: ${{ matrix.os }}
           fail_ci_if_error: false
+
+  all_tests:
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    needs: [ ubuntu, windows ]
+    steps:
+      - name: Check build matrix status
+        if: ${{ needs.ubuntu.result != 'success' || needs.windows.result != 'success' }}
+        run: exit 1
