@@ -110,6 +110,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: [ ubuntu, windows ]
     steps:
-      - name: Check build matrix status
+      - name: Check all tests pass
         if: ${{ needs.ubuntu.result != 'success' || needs.windows.result != 'success' }}
         run: exit 1
