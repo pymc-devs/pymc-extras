@@ -397,3 +397,103 @@ class Skellam:
             class_name="Skellam",
             **kwargs,
         )
+
+
+class GrassiaIIGeometricRV(RandomVariable):
+    name = "g2g"
+    signature = "(),()->()"
+
+    dtype = "int64"
+    _print_name = ("GrassiaIIGeometric", "\\operatorname{GrassiaIIGeometric}")
+
+    def __call__(self, r, alpha, size=None, **kwargs):
+        return super().__call__(r, alpha, size=size, **kwargs)
+
+    @classmethod
+    def rng_fn(cls, rng, r, alpha, size):
+        if size is None:
+            size = np.broadcast_shapes(r.shape, alpha.shape)
+
+        r = np.asarray(r)
+        alpha = np.asarray(alpha)
+
+        r = np.broadcast_to(r, size)
+        alpha = np.broadcast_to(alpha, size)
+
+        output = np.zeros(shape=size + (1,))  # noqa:RUF005
+
+        lam = rng.gamma(shape=r, scale=1 / alpha, size=size)
+
+        def sim_data(lam):
+            # TODO: To support time-varying covariates, covariate vector may need to be added
+            p = 1 - np.exp(-lam)
+
+            t = rng.geometric(p)
+
+            return np.array([t])
+
+        for index in np.ndindex(*size):
+            output[index] = sim_data(lam[index])
+
+        return output
+
+
+g2g = GrassiaIIGeometricRV()
+
+
+class GrassiaIIGeometric(UnitContinuous):
+    r"""Grassia(II)-Geometric distribution for a discrete-time, contractual customer population.
+
+    Described by Hardie and Fader in [1]_, this distribution is comprised by the following PMF and survival functions:
+
+    .. math::
+        \mathbb{P}T=t|r,\alpha,\beta;Z(t)) = (\frac{\alpha}{\alpha+C(t-1)})^{r} - (\frac{\alpha}{\alpha+C(t)})^{r}  \\
+        \begin{align}
+        \mathbb{S}(t|r,\alpha,\beta;Z(t)) = (\frac{\alpha}{\alpha+C(t)})^{r} \\
+        \end{align}
+    ========  ===============================================
+    Support   :math:`0 < t <= T` for :math: `t = 1, 2, \dots, T`
+    ========  ===============================================
+
+    Parameters
+    ----------
+    r : tensor_like of float
+        Shape parameter of Gamma distribution describing customer heterogeneity. (r > 0)
+    alpha : tensor_like of float
+        Scale parameter of Gamma distribution describing customer heterogeneity. (alpha > 0)
+
+    References
+    ----------
+    .. [1] Fader, Peter & G. S. Hardie, Bruce (2020).
+       "Incorporating Time-Varying Covariates in a Simple Mixture Model for Discrete-Time Duration Data."
+       https://www.brucehardie.com/notes/037/time-varying_covariates_in_BG.pdf
+    """
+
+    rv_op = g2g
+
+    @classmethod
+    def dist(cls, r, alpha, *args, **kwargs):
+        r = pt.as_tensor_variable(r)
+        alpha = pt.as_tensor_variable(alpha)
+        return super().dist([r, alpha], *args, **kwargs)
+
+    def logp(value, r, alpha):
+        logp = -r * (pt.log(alpha + value - 1) + pt.log(alpha + value))
+
+        return check_parameters(
+            logp,
+            r > 0,
+            alpha > 0,
+            msg="s > 0, alpha > 0",
+        )
+
+    def logcdf(value, r, alpha):
+        # TODO: Math may not be correct here
+        logcdf = r * (pt.log(value) - pt.log(alpha + value))
+
+        return check_parameters(
+            logcdf,
+            r > 0,
+            alpha > 0,
+            msg="s > 0, alpha > 0",
+        )
