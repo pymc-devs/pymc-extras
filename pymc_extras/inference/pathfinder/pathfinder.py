@@ -21,11 +21,9 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum, auto
-from importlib.util import find_spec
 from typing import Literal, TypeAlias
 
 import arviz as az
-import blackjax
 import filelock
 import jax
 import numpy as np
@@ -1736,8 +1734,8 @@ def fit_pathfinder(
         )
         pathfinder_samples = mp_result.samples
     elif inference_backend == "blackjax":
-        if find_spec("blackjax") is None:
-            raise RuntimeError("Need BlackJAX to use `pathfinder`")
+        import blackjax
+
         if version.parse(blackjax.__version__).major < 1:
             raise ImportError("fit_pathfinder requires blackjax 1.0 or above")
 
