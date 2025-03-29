@@ -11,9 +11,10 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
+import arviz as az
 
 
-def fit(method, **kwargs):
+def fit(method: str, **kwargs) -> az.InferenceData:
     """
     Fit a model with an inference algorithm
 
