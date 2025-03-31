@@ -44,6 +44,16 @@ Distributions
    histogram_approximation
 
 
+Transforms
+==========
+
+.. currentmodule:: pymc_extras.distributions.transforms
+.. autosummary::
+   :toctree: generated/
+
+   PartialOrder
+
+
 Utils
 =====
 
