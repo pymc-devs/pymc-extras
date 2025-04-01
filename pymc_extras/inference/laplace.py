@@ -509,7 +509,7 @@ def fit_laplace(
 
     Returns
     -------
-    idata: az.InferenceData
+    :class:`~arviz.InferenceData`
         An InferenceData object containing the approximated posterior samples.
 
     Examples
