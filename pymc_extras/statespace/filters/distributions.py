@@ -370,6 +370,44 @@ class SequenceMvNormal(Continuous):
     def dist(cls, mus, covs, logp, method="svd", **kwargs):
         return super().dist([mus, covs, logp], method=method, **kwargs)
 
+    # @classmethod
+    # def rv_op(cls, mus, covs, logp, method="svd", size=None):
+    #     # Batch dimensions (if any) will be on the far left, but scan requires time to be there instead
+    #     mus_, covs_ = mus.type(), covs.type()
+
+    #     logp_ = logp.type()
+    #     rng = pytensor.shared(np.random.default_rng())
+
+    #     def step(mu, cov, rng):
+    #         new_rng, mvn = pm.MvNormal.dist(mu=mu, cov=cov, rng=rng, method=method).owner.outputs
+    #         return mvn, {rng: new_rng}
+
+    #     def recursion(mus, covs, rng):
+    #         if mus.ndim > 2:
+    #             mus = pt.moveaxis(mus, -2, 0)
+    #         if covs.ndim > 3:
+    #             covs = pt.moveaxis(covs, -3, 0)
+
+    #         mvn_seq, updates = pytensor.scan(
+    #             step, sequences=[mus, covs], non_sequences=[rng], strict=True, n_steps=mus.shape[0]
+    #         )
+    #         mvn_seq = pt.specify_shape(mvn_seq, mus.type.shape)
+
+    #         # Move time axis back to position -2 so batches are on the left
+    #         if mvn_seq.ndim > 2:
+    #             mvn_seq = pt.moveaxis(mvn_seq, 0, -2)
+
+    #         (seq_mvn_rng,) = tuple(updates.values())
+
+    #         return [seq_mvn_rng, mvn_seq]
+
+    #     mvn_seq_op = KalmanFilterRV(
+    #         inputs=[mus_, covs_, logp_, rng], outputs=recursion(mus_, covs_, rng), ndim_supp=2
+    #     )
+
+    #     mvn_seq = mvn_seq_op(mus, covs, logp, rng)
+    #     return mvn_seq
+
     @classmethod
     def rv_op(cls, mus, covs, logp, method="svd", size=None):
         # Batch dimensions (if any) will be on the far left, but scan requires time to be there instead
@@ -408,9 +446,10 @@ class SequenceMvNormal(Continuous):
 
 @_logprob.register(KalmanFilterRV)
 def sequence_mvnormal_logp(op, values, mus, covs, logp, rng, **kwargs):
+    print(values[0].type.shape, mus.type.shape, covs.type.shape)
     return check_parameters(
         logp,
-        pt.eq(values[0].shape[0], mus.shape[0]),
-        pt.eq(covs.shape[0], mus.shape[0]),
-        msg="Observed data and parameters must have the same number of timesteps (dimension 0)",
+        pt.eq(values[0].shape[-2], mus.shape[-2]),
+        pt.eq(covs.shape[-3], mus.shape[-2]),
+        msg="Observed data and parameters must have the same number of timesteps",
     )

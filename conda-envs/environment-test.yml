@@ -18,3 +18,4 @@ dependencies:
   - pip:
       - jax
       - blackjax
+      - -e .
