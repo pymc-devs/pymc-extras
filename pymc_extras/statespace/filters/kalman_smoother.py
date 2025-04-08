@@ -2,13 +2,15 @@ import pytensor
 import pytensor.tensor as pt
 
 from pytensor.tensor.nlinalg import matrix_dot
-
+from pytensor.graph.replace import vectorize_graph
 from pymc_extras.statespace.filters.utilities import (
     quad_form_sym,
     split_vars_into_seq_and_nonseq,
     stabilize,
 )
 from pymc_extras.statespace.utils.constants import JITTER_DEFAULT
+
+SMOOTHER_CORE_NDIM = (2, 2, 2, 2, 3)
 
 
 class KalmanSmoother:
@@ -61,10 +63,39 @@ class KalmanSmoother:
 
         return a, P, a_smooth, P_smooth, T, R, Q
 
+    def has_batched_input(self, T, R, Q, filtered_states, filtered_covariances):
+        """
+        Check if any of the inputs are batched.
+        """
+        return any(
+            x.ndim > SMOOTHER_CORE_NDIM[i]
+            for i, x in enumerate([T, R, Q, filtered_states, filtered_covariances])
+        )
+
+    def get_dummy_core_inputs(self, T, R, Q, filtered_states, filtered_covariances):
+        """
+        Get dummy inputs for the core parameters.
+        """
+        out = []
+        for x, core_ndim in zip(
+            [T, R, Q, filtered_states, filtered_covariances], SMOOTHER_CORE_NDIM
+        ):
+            out.append(
+                pt.tensor(f"{x.name}_core_case", dtype=x.dtype, shape=x.type.shape[-core_ndim:])
+            )
+        return out
+
     def build_graph(
         self, T, R, Q, filtered_states, filtered_covariances, cov_jitter=JITTER_DEFAULT
     ):
         self.cov_jitter = cov_jitter
+
+        is_batched = self.has_batched_input(T, R, Q, filtered_states, filtered_covariances)
+        if is_batched:
+            batched_inputs = [T, R, Q, filtered_states, filtered_covariances]
+            T, R, Q, filtered_states, filtered_covariances = self.get_dummy_core_inputs(
+                *batched_inputs
+            )
 
         n, k = filtered_states.type.shape
 
@@ -94,6 +125,12 @@ class KalmanSmoother:
         smoothed_covariances = pt.concatenate(
             [smoothed_covariances[::-1], pt.expand_dims(P_last, axis=(0,))], axis=0
         )
+        smoothed_states.dprint()
+        if is_batched:
+            vec_subs = dict(zip([T, R, Q, filtered_states, filtered_covariances], batched_inputs))
+            smoothed_states, smoothed_covariances = vectorize_graph(
+                [smoothed_states, smoothed_covariances], vec_subs
+            )
 
         smoothed_states.name = "smoothed_states"
         smoothed_covariances.name = "smoothed_covariances"

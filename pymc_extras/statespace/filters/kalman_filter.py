@@ -9,6 +9,7 @@ from pytensor.graph.basic import Variable
 from pytensor.raise_op import Assert
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.slinalg import solve_triangular
+from pytensor.graph.replace import vectorize_graph
 
 from pymc_extras.statespace.filters.utilities import (
     quad_form_sym,
@@ -19,6 +20,7 @@ from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL
 
 MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
 PARAM_NAMES = ["c", "d", "T", "Z", "R", "H", "Q"]
+CORE_NDIM = (2, 1, 2, 1, 1, 2, 2, 2, 2, 2)
 
 assert_time_varying_dim_correct = Assert(
     "The first dimension of a time varying matrix (the time dimension) must be "
@@ -62,6 +64,23 @@ class BaseFilter(ABC):
         Apply any checks on validity of inputs. For most filters this is just the identity function.
         """
         return data, a0, P0, c, d, T, Z, R, H, Q
+
+    def has_batched_input(self, data, a0, P0, c, d, T, Z, R, H, Q):
+        """
+        Check if any of the inputs are batched.
+        """
+        return any(x.ndim > CORE_NDIM[i] for i, x in enumerate([data, a0, P0, c, d, T, Z, R, H, Q]))
+
+    def get_dummy_core_inputs(self, data, a0, P0, c, d, T, Z, R, H, Q):
+        """
+        Get dummy inputs for the core parameters.
+        """
+        out = []
+        for x, core_ndim in zip([data, a0, P0, c, d, T, Z, R, H, Q], CORE_NDIM):
+            out.append(
+                pt.tensor(f"{x.name}_core_case", dtype=x.dtype, shape=x.type.shape[-core_ndim:])
+            )
+        return out
 
     @staticmethod
     def add_check_on_time_varying_shapes(
@@ -187,12 +206,17 @@ class BaseFilter(ABC):
 
         self.missing_fill_value = missing_fill_value
         self.cov_jitter = cov_jitter
+        is_batched = self.has_batched_input(data, a0, P0, c, d, T, Z, R, H, Q)
 
         [R_shape] = constant_fold([R.shape], raise_not_constant=False)
         [Z_shape] = constant_fold([Z.shape], raise_not_constant=False)
 
         self.n_states, self.n_shocks = R_shape[-2:]
         self.n_endog = Z_shape[-2]
+
+        if is_batched:
+            batched_inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
+            data, a0, P0, c, d, T, Z, R, H, Q = self.get_dummy_core_inputs(*batched_inputs)
 
         data, a0, P0, *params = self.check_params(data, a0, P0, c, d, T, Z, R, H, Q)
 
@@ -217,8 +241,13 @@ class BaseFilter(ABC):
 
         filter_results = self._postprocess_scan_results(results, a0, P0, n=data.type.shape[0])
 
+        if is_batched:
+            vec_subs = dict(zip([data, a0, P0, c, d, T, Z, R, H, Q], batched_inputs))
+            filter_results = vectorize_graph(filter_results, vec_subs)
+
         if return_updates:
             return filter_results, updates
+
         return filter_results
 
     def _postprocess_scan_results(self, results, a0, P0, n) -> list[TensorVariable]:
