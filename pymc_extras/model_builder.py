@@ -558,6 +558,7 @@ class ModelBuilder:
         >>> pred_mean = model.predict(prediction_data)
         """
 
+        X_pred = self._validate_data(X_pred)
         posterior_predictive_samples = self.sample_posterior_predictive(
             X_pred, extend_idata, combined=False, **kwargs
         )
