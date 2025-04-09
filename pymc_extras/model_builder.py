@@ -524,6 +524,8 @@ class ModelBuilder:
             )
             self.idata.add_groups(fit_data=combined_data.to_xarray())  # type: ignore
 
+        self.is_fitted_ = True
+        
         return self.idata  # type: ignore
 
     def predict(
