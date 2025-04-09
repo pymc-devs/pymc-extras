@@ -594,6 +594,11 @@ def test_autoregressive_model(order, rng):
 @pytest.mark.parametrize("s", [10, 25, 50])
 @pytest.mark.parametrize("innovations", [True, False])
 @pytest.mark.parametrize("remove_first_state", [True, False])
+@pytest.mark.filterwarnings(
+    "ignore:divide by zero encountered in matmul:RuntimeWarning",
+    "ignore:overflow encountered in matmul:RuntimeWarning",
+    "ignore:invalid value encountered in matmul:RuntimeWarning",
+)
 def test_time_seasonality(s, innovations, remove_first_state, rng):
     def random_word(rng):
         return "".join(rng.choice(list("abcdefghijklmnopqrstuvwxyz")) for _ in range(5))

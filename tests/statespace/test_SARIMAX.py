@@ -252,6 +252,9 @@ def test_make_SARIMA_transition_matrix(p, d, q, P, D, Q, S):
     "ignore:Non-stationary starting autoregressive parameters found",
     "ignore:Non-invertible starting seasonal moving average",
     "ignore:Non-stationary starting seasonal autoregressive",
+    "ignore:divide by zero encountered in matmul:RuntimeWarning",
+    "ignore:overflow encountered in matmul:RuntimeWarning",
+    "ignore:invalid value encountered in matmul:RuntimeWarning",
 )
 def test_SARIMAX_update_matches_statsmodels(p, d, q, P, D, Q, S, data, rng):
     sm_sarimax = sm.tsa.SARIMAX(data, order=(p, d, q), seasonal_order=(P, D, Q, S))
@@ -361,6 +364,9 @@ def test_interpretable_states_are_interpretable(arima_mod_interp, pymc_mod_inter
     "ignore:Non-invertible starting MA parameters found.",
     "ignore:Non-stationary starting autoregressive parameters found",
     "ignore:Maximum Likelihood optimization failed to converge.",
+    "ignore:divide by zero encountered in matmul:RuntimeWarning",
+    "ignore:overflow encountered in matmul:RuntimeWarning",
+    "ignore:invalid value encountered in matmul:RuntimeWarning",
 )
 def test_representations_are_equivalent(p, d, q, P, D, Q, S, data, rng):
     if (d + D) > 0:
