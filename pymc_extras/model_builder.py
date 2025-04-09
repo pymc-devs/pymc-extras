@@ -444,6 +444,7 @@ class ModelBuilder:
             sampler_config=json.loads(idata.attrs["sampler_config"]),
         )
         model.idata = idata
+        model.is_fitted_ = True
         dataset = idata.fit_data.to_dataframe()
         X = dataset.drop(columns=[model.output_var])
         y = dataset[model.output_var]
