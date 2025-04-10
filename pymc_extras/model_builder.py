@@ -444,6 +444,7 @@ class ModelBuilder:
             sampler_config=json.loads(idata.attrs["sampler_config"]),
         )
         model.idata = idata
+        model.is_fitted_ = True
         dataset = idata.fit_data.to_dataframe()
         X = dataset.drop(columns=[model.output_var])
         y = dataset[model.output_var]
@@ -524,6 +525,8 @@ class ModelBuilder:
             )
             self.idata.add_groups(fit_data=combined_data.to_xarray())  # type: ignore
 
+        self.is_fitted_ = True
+        
         return self.idata  # type: ignore
 
     def predict(
@@ -558,6 +561,7 @@ class ModelBuilder:
         >>> pred_mean = model.predict(prediction_data)
         """
 
+        X_pred = self._validate_data(X_pred)
         posterior_predictive_samples = self.sample_posterior_predictive(
             X_pred, extend_idata, combined=False, **kwargs
         )
