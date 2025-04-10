@@ -1027,6 +1027,9 @@ class PyMCStateSpace:
             provided when the model was built.
         data_dims: str or tuple of str, optional
             Dimension names associated with the model data. If None, defaults to ("time", "obs_state")
+        scenario: dict[str, pd.DataFrame], optional
+            Dictionary of out-of-sample scenario dataframes. If provided, it must have values for all data variables
+            in the model. pm.set_data is used to replace training data with new values.
 
         Returns
         -------
@@ -2060,6 +2063,7 @@ class PyMCStateSpace:
 
         with pm.Model(coords=temp_coords) as forecast_model:
             (_, _, *matrices), grouped_outputs = self._kalman_filter_outputs_from_dummy_graph(
+                scenario=scenario,
                 data_dims=["data_time", OBS_STATE_DIM],
             )
 
@@ -2072,17 +2076,6 @@ class PyMCStateSpace:
             P0 = pm.Deterministic(
                 "P0_slice", cov[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
             )
-
-            if scenario is not None:
-                sub_dict = {
-                    forecast_model[data_name]: pt.as_tensor_variable(
-                        scenario.get(data_name), name=data_name
-                    )
-                    for data_name in self.data_names
-                }
-
-                matrices = graph_replace(matrices, replace=sub_dict, strict=True)
-                [setattr(matrix, "name", name) for name, matrix in zip(MATRIX_NAMES[2:], matrices)]
 
             _ = LinearGaussianStateSpace(
                 "forecast",
