@@ -18,7 +18,9 @@ import numpy as np
 import pymc as pm
 import pytest
 
-pytestmark = pytest.mark.filterwarnings("ignore:compile_pymc was renamed to compile:FutureWarning")
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:The same einsum subscript is used for a broadcastable and non-broadcastable dimension:UserWarning"
+)
 
 import pymc_extras as pmx
 
