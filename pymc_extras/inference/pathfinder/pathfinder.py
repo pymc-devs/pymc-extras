@@ -15,7 +15,6 @@
 import collections
 import logging
 import time
-import warnings as _warnings
 
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -76,11 +75,6 @@ from pymc_extras.inference.pathfinder.lbfgs import (
 )
 
 logger = logging.getLogger(__name__)
-_warnings.filterwarnings(
-    "ignore",
-    category=UserWarning,
-    message="The same einsum subscript is used for a broadcastable and non-broadcastable dimension",
-)
 
 REGULARISATION_TERM = 1e-8
 DEFAULT_LINKER = "cvm_nogc"
@@ -504,7 +498,10 @@ def bfgs_sample_dense(
 
     logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
 
-    mu = x - pt.einsum("ijk,ik->ij", H_inv, g)
+    # mu = x - pt.einsum("ijk,ik->ij", H_inv, g) # causes error: Multiple destroyers of g
+
+    batched_dot = pt.vectorize(pt.dot, signature="(ijk),(ilk)->(ij)")
+    mu = x - batched_dot(H_inv, pt.matrix_transpose(g[..., None]))
 
     phi = pt.matrix_transpose(
         # (L, N, 1)
@@ -578,7 +575,10 @@ def bfgs_sample_sparse(
     H_inv = alpha_diag + (beta @ gamma @ pt.matrix_transpose(beta))
 
     # NOTE: changed the sign from "x + " to "x -" of the expression to match Stan which differs from Zhang et al., (2022). same for dense version.
-    mu = x - pt.einsum("ijk,ik->ij", H_inv, g)
+    # mu = x - pt.einsum("ijk,ik->ij", H_inv, g) # causes error: Multiple destroyers of g
+
+    batched_dot = pt.vectorize(pt.dot, signature="(ijk),(ilk)->(ij)")
+    mu = x - batched_dot(H_inv, pt.matrix_transpose(g[..., None]))
 
     phi = pt.matrix_transpose(
         # (L, N, 1)

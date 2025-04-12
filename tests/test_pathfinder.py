@@ -18,10 +18,6 @@ import numpy as np
 import pymc as pm
 import pytest
 
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:The same einsum subscript is used for a broadcastable and non-broadcastable dimension:UserWarning"
-)
-
 import pymc_extras as pmx
 
 
@@ -55,6 +51,7 @@ def reference_idata():
 
 
 @pytest.mark.parametrize("inference_backend", ["pymc", "blackjax"])
+@pytest.mark.filterwarnings("ignore:JAXopt is no longer maintained.:DeprecationWarning")
 def test_pathfinder(inference_backend, reference_idata):
     if inference_backend == "blackjax" and sys.platform == "win32":
         pytest.skip("JAX not supported on windows")
