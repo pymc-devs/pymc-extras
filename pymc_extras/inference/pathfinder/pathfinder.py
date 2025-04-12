@@ -575,6 +575,7 @@ def bfgs_sample_sparse(
     H_inv = alpha_diag + (beta @ gamma @ pt.matrix_transpose(beta))
 
     # NOTE: changed the sign from "x + " to "x -" of the expression to match Stan which differs from Zhang et al., (2022). same for dense version.
+
     # mu = x - pt.einsum("ijk,ik->ij", H_inv, g) # causes error: Multiple destroyers of g
 
     batched_dot = pt.vectorize(pt.dot, signature="(ijk),(ilk)->(ij)")
