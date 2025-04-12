@@ -485,6 +485,7 @@ def bfgs_sample_dense(
     shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
     """
 
+    _warnings.simplefilter("ignore", category=FutureWarning)
     N = x.shape[-1]
     IdN = pt.eye(N)[None, ...]
 
@@ -560,6 +561,7 @@ def bfgs_sample_sparse(
     shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
     """
 
+    _warnings.simplefilter("ignore", category=FutureWarning)
     # qr_input: (L, N, 2J)
     qr_input = inv_sqrt_alpha_diag @ beta
     (Q, R), _ = pytensor.scan(fn=pt.nlinalg.qr, sequences=[qr_input], allow_gc=False)
