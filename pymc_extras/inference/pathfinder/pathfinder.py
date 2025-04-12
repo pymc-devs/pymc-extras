@@ -485,7 +485,6 @@ def bfgs_sample_dense(
     shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
     """
 
-    _warnings.simplefilter("ignore", category=FutureWarning)
     N = x.shape[-1]
     IdN = pt.eye(N)[None, ...]
 
@@ -503,7 +502,9 @@ def bfgs_sample_dense(
 
     logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
 
-    mu = x - pt.batched_dot(H_inv, g)
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", category=FutureWarning)
+        mu = x - pt.batched_dot(H_inv, g)
 
     phi = pt.matrix_transpose(
         # (L, N, 1)
@@ -561,7 +562,6 @@ def bfgs_sample_sparse(
     shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
     """
 
-    _warnings.simplefilter("ignore", category=FutureWarning)
     # qr_input: (L, N, 2J)
     qr_input = inv_sqrt_alpha_diag @ beta
     (Q, R), _ = pytensor.scan(fn=pt.nlinalg.qr, sequences=[qr_input], allow_gc=False)
@@ -574,14 +574,16 @@ def bfgs_sample_sparse(
     logdet += pt.sum(pt.log(alpha), axis=-1)
 
     # NOTE: changed the sign from "x + " to "x -" of the expression to match Stan which differs from Zhang et al., (2022). same for dense version.
-    mu = x - (
-        # (L, N), (L, N) -> (L, N)
-        pt.batched_dot(alpha_diag, g)
-        # beta @ gamma @ beta.T
-        # (L, N, 2J), (L, 2J, 2J), (L, 2J, N) -> (L, N, N)
-        # (L, N, N), (L, N) -> (L, N)
-        + pt.batched_dot((beta @ gamma @ pt.matrix_transpose(beta)), g)
-    )
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", category=FutureWarning)
+        mu = x - (
+            # (L, N), (L, N) -> (L, N)
+            pt.batched_dot(alpha_diag, g)
+            # beta @ gamma @ beta.T
+            # (L, N, 2J), (L, 2J, 2J), (L, 2J, N) -> (L, N, N)
+            # (L, N, N), (L, N) -> (L, N)
+            + pt.batched_dot((beta @ gamma @ pt.matrix_transpose(beta)), g)
+        )
 
     phi = pt.matrix_transpose(
         # (L, N, 1)
