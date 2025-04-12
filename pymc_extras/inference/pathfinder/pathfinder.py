@@ -587,8 +587,6 @@ def bfgs_sample_sparse(
         # (L, N, N), (L, N, M) -> (L, N, M)
         + sqrt_alpha_diag
         @ (
-            # (L, N, 2J), (L, 2J, M) -> (L, N, M)
-            # intermediate calcs below
             # (L, N, 2J), (L, 2J, 2J) -> (L, N, 2J)
             (Q @ (Lchol - IdN))
             # (L, 2J, N), (L, N, M) -> (L, 2J, M)
@@ -1565,8 +1563,9 @@ def multipath_pathfinder(
                         task,
                         description=desc.format(path_idx=path_idx),
                         completed=path_idx,
-                        refresh=True,
                     )
+            # Ensure the progress bar visually reaches 100% and shows 'Completed'
+            progress.update(task, completed=num_paths, description="Completed")
     except (KeyboardInterrupt, StopIteration) as e:
         # if exception is raised here, MultiPathfinderResult will collect all the successful results and report the results. User is free to abort the process earlier and the results will still be collected and return az.InferenceData.
         if isinstance(e, StopIteration):
