@@ -18,7 +18,10 @@ import numpy as np
 import pymc as pm
 import pytest
 
-pytestmark = pytest.mark.filterwarnings("ignore:compile_pymc was renamed to compile:FutureWarning")
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:compile_pymc was renamed to compile:FutureWarning",
+    "ignore:batched_dot is deprecated:FutureWarning",
+)
 
 import pymc_extras as pmx
 
