@@ -15,7 +15,6 @@
 import collections
 import logging
 import time
-import warnings as _warnings
 
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -40,7 +39,7 @@ from pymc.initial_point import make_initial_point_fn
 from pymc.model import modelcontext
 from pymc.model.core import Point
 from pymc.pytensorf import (
-    compile_pymc,
+    compile,
     find_rng_nodes,
     reseed_rngs,
 )
@@ -76,9 +75,6 @@ from pymc_extras.inference.pathfinder.lbfgs import (
 )
 
 logger = logging.getLogger(__name__)
-_warnings.filterwarnings(
-    "ignore", category=FutureWarning, message="compile_pymc was renamed to compile"
-)
 
 REGULARISATION_TERM = 1e-8
 DEFAULT_LINKER = "cvm_nogc"
@@ -142,7 +138,7 @@ def get_logp_dlogp_of_ravel_inputs(
         [model.logp(jacobian=jacobian), model.dlogp(jacobian=jacobian)],
         model.value_vars,
     )
-    logp_dlogp_fn = compile_pymc([inputs], (logP, dlogP), **compile_kwargs)
+    logp_dlogp_fn = compile([inputs], (logP, dlogP), **compile_kwargs)
     logp_dlogp_fn.trust_input = True
 
     return logp_dlogp_fn
@@ -502,7 +498,10 @@ def bfgs_sample_dense(
 
     logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
 
-    mu = x - pt.batched_dot(H_inv, g)
+    # mu = x - pt.einsum("ijk,ik->ij", H_inv, g) # causes error: Multiple destroyers of g
+
+    batched_dot = pt.vectorize(pt.dot, signature="(ijk),(ilk)->(ij)")
+    mu = x - batched_dot(H_inv, pt.matrix_transpose(g[..., None]))
 
     phi = pt.matrix_transpose(
         # (L, N, 1)
@@ -571,15 +570,16 @@ def bfgs_sample_sparse(
     logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
     logdet += pt.sum(pt.log(alpha), axis=-1)
 
+    # inverse Hessian
+    # (L, N, N) + (L, N, 2J), (L, 2J, 2J), (L, 2J, N) -> (L, N, N)
+    H_inv = alpha_diag + (beta @ gamma @ pt.matrix_transpose(beta))
+
     # NOTE: changed the sign from "x + " to "x -" of the expression to match Stan which differs from Zhang et al., (2022). same for dense version.
-    mu = x - (
-        # (L, N), (L, N) -> (L, N)
-        pt.batched_dot(alpha_diag, g)
-        # beta @ gamma @ beta.T
-        # (L, N, 2J), (L, 2J, 2J), (L, 2J, N) -> (L, N, N)
-        # (L, N, N), (L, N) -> (L, N)
-        + pt.batched_dot((beta @ gamma @ pt.matrix_transpose(beta)), g)
-    )
+
+    # mu = x - pt.einsum("ijk,ik->ij", H_inv, g) # causes error: Multiple destroyers of g
+
+    batched_dot = pt.vectorize(pt.dot, signature="(ijk),(ilk)->(ij)")
+    mu = x - batched_dot(H_inv, pt.matrix_transpose(g[..., None]))
 
     phi = pt.matrix_transpose(
         # (L, N, 1)
@@ -587,8 +587,6 @@ def bfgs_sample_sparse(
         # (L, N, N), (L, N, M) -> (L, N, M)
         + sqrt_alpha_diag
         @ (
-            # (L, N, 2J), (L, 2J, M) -> (L, N, M)
-            # intermediate calcs below
             # (L, N, 2J), (L, 2J, 2J) -> (L, N, 2J)
             (Q @ (Lchol - IdN))
             # (L, 2J, N), (L, N, M) -> (L, 2J, M)
@@ -853,7 +851,7 @@ def make_pathfinder_body(
 
     # return psi, logP_psi, logQ_psi, elbo_argmax
 
-    pathfinder_body_fn = compile_pymc(
+    pathfinder_body_fn = compile(
         [x_full, g_full],
         [psi, logP_psi, logQ_psi, elbo_argmax],
         **compile_kwargs,
@@ -1565,8 +1563,9 @@ def multipath_pathfinder(
                         task,
                         description=desc.format(path_idx=path_idx),
                         completed=path_idx,
-                        refresh=True,
                     )
+            # Ensure the progress bar visually reaches 100% and shows 'Completed'
+            progress.update(task, completed=num_paths, description="Completed")
     except (KeyboardInterrupt, StopIteration) as e:
         # if exception is raised here, MultiPathfinderResult will collect all the successful results and report the results. User is free to abort the process earlier and the results will still be collected and return az.InferenceData.
         if isinstance(e, StopIteration):
