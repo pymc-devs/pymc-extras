@@ -442,25 +442,49 @@ g2g = GrassiaIIGeometricRV()
 
 
 class GrassiaIIGeometric(UnitContinuous):
-    r"""Grassia(II)-Geometric distribution for a discrete-time, contractual customer population.
+    r"""Grassia(II)-Geometric distribution.
 
-    Described by Hardie and Fader in [1]_, this distribution is comprised by the following PMF and survival functions:
+    This distribution is a flexible alternative to the Geometric distribution for the
+    number of trials until a discrete event, and can be easily extended to support both static
+    and time-varying covariates.
+
+    Hardie and Fader describe this distribution with the following PMF and survival functions in [1]_:
 
     .. math::
         \mathbb{P}T=t|r,\alpha,\beta;Z(t)) = (\frac{\alpha}{\alpha+C(t-1)})^{r} - (\frac{\alpha}{\alpha+C(t)})^{r}  \\
         \begin{align}
         \mathbb{S}(t|r,\alpha,\beta;Z(t)) = (\frac{\alpha}{\alpha+C(t)})^{r} \\
         \end{align}
+
+    .. plot::
+        :context: close-figs
+
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import scipy.stats as st
+        import arviz as az
+        plt.style.use('arviz-darkgrid')
+        t = np.arange(1, 11)
+        alpha_vals = [1., 1., 2., 2.]
+        r_vals = [.1, .25, .5, 1.]
+        for alpha, r in zip(alpha_vals, r_vals):
+            pmf = (alpha/(alpha + t - 1))**r - (alpha/(alpha+t))**r
+            plt.plot(t, pmf, '-o', label=r'$\alpha$ = {}, $r$ = {}'.format(alpha, r))
+        plt.xlabel('t', fontsize=12)
+        plt.ylabel('p(t)', fontsize=12)
+        plt.legend(loc=1)
+        plt.show()
+
     ========  ===============================================
-    Support   :math:`0 < t <= T` for :math: `t = 1, 2, \dots, T`
+    Support   :math:`t \in \mathbb{N}_{>0}`
     ========  ===============================================
 
     Parameters
     ----------
     r : tensor_like of float
-        Shape parameter of Gamma distribution describing customer heterogeneity. (r > 0)
+        Shape parameter (r > 0).
     alpha : tensor_like of float
-        Scale parameter of Gamma distribution describing customer heterogeneity. (alpha > 0)
+        Scale parameter (alpha > 0).
 
     References
     ----------
