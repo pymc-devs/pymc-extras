@@ -16,7 +16,8 @@ import arviz as az
 
 def fit(method: str, **kwargs) -> az.InferenceData:
     """
-    Fit a model with an inference algorithm
+    Fit a model with an inference algorithm.
+    See :func:`fit_pathfinder` and :func:`fit_laplace` for more details.
 
     Parameters
     ----------
@@ -24,11 +25,11 @@ def fit(method: str, **kwargs) -> az.InferenceData:
         Which inference method to run.
         Supported: pathfinder or laplace
 
-    kwargs are passed on.
+    kwargs: keyword arguments are passed on to the inference method.
 
     Returns
     -------
-    arviz.InferenceData
+    :class:`~arviz.InferenceData`
     """
     if method == "pathfinder":
         from pymc_extras.inference.pathfinder import fit_pathfinder

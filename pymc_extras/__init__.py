@@ -15,9 +15,7 @@ import logging
 
 from pymc_extras import gp, statespace, utils
 from pymc_extras.distributions import *
-from pymc_extras.inference.find_map import find_MAP
-from pymc_extras.inference.fit import fit
-from pymc_extras.inference.laplace import fit_laplace
+from pymc_extras.inference import find_MAP, fit, fit_laplace, fit_pathfinder
 from pymc_extras.model.marginal.marginal_model import (
     MarginalModel,
     marginalize,

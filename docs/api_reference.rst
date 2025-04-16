@@ -23,7 +23,10 @@ Inference
 .. autosummary::
    :toctree: generated/
 
+   find_MAP
    fit
+   fit_laplace
+   fit_pathfinder
 
 
 Distributions

@@ -200,3 +200,15 @@ def test_pathfinder_importance_sampling(importance_sampling):
         assert idata.posterior["mu"].shape == (1, num_draws)
         assert idata.posterior["tau"].shape == (1, num_draws)
         assert idata.posterior["theta"].shape == (1, num_draws, 8)
+
+
+def test_pathfinder_initvals():
+    # Run a model with an ordered transform that will fail unless initvals are in place
+    with pm.Model() as mdl:
+        pm.Normal("ordered", size=10, transform=pm.distributions.transforms.ordered)
+        idata = pmx.fit_pathfinder(initvals={"ordered": np.linspace(0, 1, 10)})
+
+    # Check that the samples are ordered to make sure transform was applied
+    assert np.all(
+        idata.posterior["ordered"][..., 1:].values > idata.posterior["ordered"][..., :-1].values
+    )
