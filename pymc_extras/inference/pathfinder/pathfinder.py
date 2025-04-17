@@ -489,6 +489,7 @@ def bfgs_sample_dense(
 
     N = x.shape[-1]
     IdN = pt.eye(N)[None, ...]
+    IdN += IdN * REGULARISATION_TERM
 
     # inverse Hessian
     H_inv = (
@@ -568,9 +569,13 @@ def bfgs_sample_sparse(
     # qr_input: (L, N, 2J)
     qr_input = inv_sqrt_alpha_diag @ beta
     (Q, R), _ = pytensor.scan(fn=pt.nlinalg.qr, sequences=[qr_input], allow_gc=False)
+
     IdN = pt.eye(R.shape[1])[None, ...]
+    IdN += IdN * REGULARISATION_TERM
+
     Lchol_input = IdN + R @ gamma @ pt.matrix_transpose(R)
 
+    # TODO: make robust Lchol calcs more robust, ie. try exceptions, increase REGULARISATION_TERM if non-finite exists
     Lchol = pt.linalg.cholesky(Lchol_input, lower=False, check_finite=False, on_error="nan")
 
     logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
