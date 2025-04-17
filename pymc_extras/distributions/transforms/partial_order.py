@@ -19,34 +19,80 @@ from pymc.logprob.transforms import Transform
 __all__ = ["PartialOrder"]
 
 
-# Find the minimum value for a given dtype
 def dtype_minval(dtype):
+    """Find the minimum value for a given dtype"""
     return np.iinfo(dtype).min if np.issubdtype(dtype, np.integer) else np.finfo(dtype).min
 
 
-# A padded version of np.where
 def padded_where(x, to_len, padval=-1):
+    """A padded version of np.where"""
     w = np.where(x)
     return np.concatenate([w[0], np.full(to_len - len(w[0]), padval)])
 
 
-# Partial order transform
 class PartialOrder(Transform):
     """Create a PartialOrder transform
 
-    This is a more flexible version of the pymc ordered transform that
+    A more flexible version of the pymc ordered transform that
     allows specifying a (strict) partial order on the elements.
 
-    It works in O(N*D) in runtime, but takes O(N^3) in initialization,
-    where N is the number of nodes in the dag and
-    D is the maximum in-degree of a node in the transitive reduction.
+    Examples
+    --------
+    .. code:: python
 
+        import numpy as np
+        import pymc as pm
+        import pymc_extras as pmx
+
+        # Define two partial orders on 4 elements
+        # am[i,j] = 1 means i < j
+        adj_mats = np.array([
+            # 0 < {1, 2} < 3
+            [[0, 1, 1, 0],
+            [0, 0, 0, 1],
+            [0, 0, 0, 1],
+            [0, 0, 0, 0]],
+
+            # 1 < 0 < 3 < 2
+            [[0, 0, 0, 1],
+            [1, 0, 0, 0],
+            [0, 0, 0, 0],
+            [0, 0, 1, 0]],
+        ])
+
+        # Create the partial order from the adjacency matrices
+        po = pmx.PartialOrder(adj_mats)
+
+        with pm.Model() as model:
+            # Generate 3 samples from both partial orders
+            pm.Normal("po_vals", shape=(3,2,4), transform=po,
+                        initval=po.initvals((3,2,4)))
+
+            idata = pm.sample()
+
+        # Verify that for first po, the zeroth element is always the smallest
+        assert (idata.posterior['po_vals'][:,:,:,0,0] <
+                idata.posterior['po_vals'][:,:,:,0,1:]).all()
+
+        # Verify that for second po, the second element is always the largest
+        assert (idata.posterior['po_vals'][:,:,:,1,2] >=
+                idata.posterior['po_vals'][:,:,:,1,:]).all()
+
+    Technical notes
+    ----------------
+    Partial order needs to be strict, i.e. without equalities.
+    A DAG defining the partial order is sufficient, as transitive closure is automatically computed.
+    Code works in O(N*D) in runtime, but takes O(N^3) in initialization,
+    where N is the number of nodes in the dag and D is the maximum
+    in-degree of a node in the transitive reduction.
     """
 
     name = "partial_order"
 
     def __init__(self, adj_mat):
         """
+        Initialize the PartialOrder transform
+
         Parameters
         ----------
         adj_mat: ndarray
@@ -99,10 +145,43 @@ class PartialOrder(Transform):
         self.dag = np.swapaxes(dag_T, -2, -1)
         self.is_start = np.all(self.dag[..., :, :] == -1, axis=-1)
 
-    def initvals(self, lower=-1, upper=1):
+    def initvals(self, shape=None, lower=-1, upper=1):
+        """
+        Create a set of appropriate initial values for the variable.
+        NB! It is important that proper initial values are used,
+        as only properly ordered values are in the range of the transform.
+
+        Parameters
+        ----------
+        shape: tuple, default None
+            shape of the initial values. If None, adj_mat[:-1] is used
+        lower: float, default -1
+            lower bound for the initial values
+        upper: float, default 1
+            upper bound for the initial values
+
+        Returns
+        -------
+        vals: ndarray
+            initial values for the transformed variable
+        """
+
+        if shape is None:
+            shape = self.dag.shape[:-1]
+
+        if shape[-len(self.dag.shape[:-1]) :] != self.dag.shape[:-1]:
+            raise ValueError("Shape must match the shape of the adjacency matrix")
+
+        # Create the initial values
         vals = np.linspace(lower, upper, self.dag.shape[-2])
         inds = np.argsort(self.ts_inds, axis=-1)
-        return vals[inds]
+        ivals = vals[inds]
+
+        # Expand the initial values to the extra dimensions
+        extra_dims = shape[: -len(self.dag.shape[:-1])]
+        ivals = np.tile(ivals, extra_dims + tuple([1] * len(self.dag.shape[:-1])))
+
+        return ivals
 
     def backward(self, value, *inputs):
         minv = dtype_minval(value.dtype)

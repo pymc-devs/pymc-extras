@@ -55,11 +55,17 @@ class TestPartialOrder:
     def test_sample_model(self):
         po = PartialOrder(self.adj_mats)
         with pm.Model() as model:
-            x = pm.Normal("x", size=(2, 4), transform=po, initval=po.initvals(-1, 1))
+            x = pm.Normal(
+                "x",
+                size=(3, 2, 4),
+                transform=po,
+                initval=po.initvals(shape=(3, 2, 4), lower=-1, upper=1),
+            )
             idata = pm.sample()
 
         # Check that the order constraints are satisfied
-        xvs = idata.posterior.x.values.transpose(2, 3, 0, 1)
+        # Move chain, draw and "3" dimensions to the back
+        xvs = idata.posterior.x.values.transpose(3, 4, 0, 1, 2)
         x0 = xvs[0]  # 0 < {1, 2} < 3
         assert (
             (x0[0] < x0[1]).all()
