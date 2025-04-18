@@ -12,10 +12,12 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import re
 import sys
 
 import numpy as np
 import pymc as pm
+import pytensor.tensor as pt
 import pytest
 
 import pymc_extras as pmx
@@ -48,6 +50,88 @@ def reference_idata():
             inference_backend="pymc",
         )
     return idata
+
+
+def unstable_lbfgs_update_mask_model() -> pm.Model:
+    # data and model from: https://github.com/pymc-devs/pymc-extras/issues/445
+    # this scenario made LBFGS struggle leading to a lot of rejected iterations, (result.nit being moderate, but only history.count <= 1).
+    # this scenario is used to test that the LBFGS history manager is rejecting iterations as expected and PF can run to completion.
+
+    # fmt: off
+    inp = np.array([0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 2, 0, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 2, 0, 1, 0, 0, 0, 0, 1, 1, 1, 2, 0, 1, 2, 1, 0, 1, 0, 1, 0, 1, 0])
+
+    res = np.array([[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,1,0,0,0],[0,0,1,0,0],[0,1,0,0,0],[0,0,0,1,0],[0,0,0,1,0],[1,0,0,0,0],[0,1,0,0,0],[0,0,1,0,0],[1,0,0,0,0],[0,0,1,0,0],[0,1,0,0,0],[0,0,0,1,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,0,1,0],[0,0,0,1,0],[0,1,0,0,0],[0,0,0,1,0],[0,0,1,0,0],[0,1,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,0,0,1,0],[0,0,1,0,0],[0,1,0,0,0],[0,0,1,0,0],[0,0,0,1,0],[0,0,1,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,0,1,0,0],[0,0,0,1,0],[0,0,0,1,0],[1,0,0,0,0],[1,0,0,0,0],[0,1,0,0,0],[1,0,0,0,0],[0,0,1,0,0],[0,0,1,0,0],[1,0,0,0,0],[0,0,0,1,0]])
+    # fmt: on
+
+    n_ordered = res.shape[1]
+    coords = {
+        "obs": np.arange(len(inp)),
+        "inp": np.arange(max(inp) + 1),
+        "outp": np.arange(res.shape[1]),
+    }
+    with pm.Model(coords=coords) as mdl:
+        mu = pm.Normal("intercept", sigma=3.5)[None]
+
+        offset = pm.Normal(
+            "offset", dims=("inp"), transform=pm.distributions.transforms.ZeroSumTransform([0])
+        )
+
+        scale = 3.5 * pm.HalfStudentT("scale", nu=5)
+        mu += (scale * offset)[inp]
+
+        phi_delta = pm.Dirichlet("phi_diffs", [1.0] * (n_ordered - 1))
+        phi = pt.concatenate([[0], pt.cumsum(phi_delta)])
+        s_mu = pm.Normal(
+            "stereotype_intercept",
+            size=n_ordered,
+            transform=pm.distributions.transforms.ZeroSumTransform([-1]),
+        )
+        fprobs = pm.math.softmax(s_mu[None, :] + phi[None, :] * mu[:, None], axis=-1)
+
+        pm.Multinomial("y_res", p=fprobs, n=np.ones(len(inp)), observed=res, dims=("obs", "outp"))
+
+    return mdl
+
+
+@pytest.mark.parametrize("jitter", [12.0, 500.0, 1000.0])
+def test_unstable_lbfgs_update_mask(capsys, jitter):
+    model = unstable_lbfgs_update_mask_model()
+
+    if jitter < 1000:
+        with model:
+            idata = pmx.fit(
+                method="pathfinder",
+                jitter=jitter,
+                random_seed=4,
+            )
+        out, err = capsys.readouterr()
+        status_pattern = [
+            r"INIT_FAILED_LOW_UPDATE_MASK\s+\d+",
+            r"LOW_UPDATE_MASK_RATIO\s+\d+",
+            r"LBFGS_FAILED\s+\d+",
+            r"SUCCESS\s+\d+",
+        ]
+        for pattern in status_pattern:
+            assert re.search(pattern, out) is not None
+
+    else:
+        with pytest.raises(ValueError, match="All paths failed"):
+            with model:
+                idata = pmx.fit(
+                    method="pathfinder",
+                    jitter=1000,
+                    random_seed=2,
+                    num_paths=4,
+                )
+            out, err = capsys.readouterr()
+
+            status_pattern = [
+                r"INIT_FAILED_LOW_UPDATE_MASK\s+2",
+                r"LOW_UPDATE_MASK_RATIO\s+2",
+                r"LBFGS_FAILED\s+4",
+            ]
+            for pattern in status_pattern:
+                assert re.search(pattern, out) is not None
 
 
 @pytest.mark.parametrize("inference_backend", ["pymc", "blackjax"])

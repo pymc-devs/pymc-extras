@@ -52,7 +52,7 @@ class LBFGSHistoryManager:
         self.count = 0
 
         value, grad = self.value_grad_fn(self.x0)
-        if np.all(np.isfinite(grad)) and np.isfinite(value):
+        if self.entry_condition_met(self.x0, value, grad):
             self.add_entry(self.x0, grad)
 
     def add_entry(self, x: NDArray[np.float64], g: NDArray[np.float64]) -> None:
@@ -75,18 +75,40 @@ class LBFGSHistoryManager:
             x=self.x_history[: self.count], g=self.g_history[: self.count], count=self.count
         )
 
+    def entry_condition_met(self, x, value, grad) -> bool:
+        """Checks if the LBFGS iteration should continue."""
+
+        if np.all(np.isfinite(grad)) and np.isfinite(value) and (self.count < self.maxiter + 1):
+            if self.count == 0:
+                return True
+            else:
+                s = x - self.x_history[self.count - 1]
+                z = grad - self.g_history[self.count - 1]
+                sz = (s * z).sum(axis=-1)
+                epsilon = 1e-8
+                update_mask = sz > epsilon * np.sqrt(np.sum(z**2, axis=-1))
+
+                if update_mask:
+                    return True
+                else:
+                    return False
+        else:
+            return False
+
     def __call__(self, x: NDArray[np.float64]) -> None:
         value, grad = self.value_grad_fn(x)
-        if np.all(np.isfinite(grad)) and np.isfinite(value) and self.count < self.maxiter + 1:
+        if self.entry_condition_met(x, value, grad):
             self.add_entry(x, grad)
 
 
 class LBFGSStatus(Enum):
     CONVERGED = auto()
     MAX_ITER_REACHED = auto()
-    DIVERGED = auto()
+    NON_FINITE = auto()
+    LOW_UPDATE_MASK_RATIO = auto()
     # Statuses that lead to Exceptions:
     INIT_FAILED = auto()
+    INIT_FAILED_LOW_UPDATE_MASK = auto()
     LBFGS_FAILED = auto()
 
 
@@ -101,8 +123,8 @@ class LBFGSException(Exception):
 class LBFGSInitFailed(LBFGSException):
     DEFAULT_MESSAGE = "LBFGS failed to initialise."
 
-    def __init__(self, message=None):
-        super().__init__(message or self.DEFAULT_MESSAGE, LBFGSStatus.INIT_FAILED)
+    def __init__(self, status: LBFGSStatus, message=None):
+        super().__init__(message or self.DEFAULT_MESSAGE, status)
 
 
 class LBFGS:
@@ -177,13 +199,24 @@ class LBFGS:
         history = history_manager.get_history()
 
         # warnings and suggestions for LBFGSStatus are displayed at the end
-        if result.status == 1:
-            lbfgs_status = LBFGSStatus.MAX_ITER_REACHED
-        elif (result.status == 2) or (history.count <= 1):
-            if result.nit <= 1:
+        # threshold determining if the number of update mask is low compared to iterations
+        low_update_threshold = 3
+
+        logging.warning(f"LBFGS status: {result} \n nit: {result.nit} \n count: {history.count}")
+
+        if history.count <= 1:  # triggers LBFGSInitFailed
+            if result.nit < low_update_threshold:
                 lbfgs_status = LBFGSStatus.INIT_FAILED
-            elif result.fun == np.inf:
-                lbfgs_status = LBFGSStatus.DIVERGED
+            else:
+                lbfgs_status = LBFGSStatus.INIT_FAILED_LOW_UPDATE_MASK
+        elif result.status == 1:
+            # (result.nit > maxiter) or (result.nit > maxls)
+            lbfgs_status = LBFGSStatus.MAX_ITER_REACHED
+        elif result.status == 2:
+            # precision loss resulting to inf or nan
+            lbfgs_status = LBFGSStatus.NON_FINITE
+        elif history.count < low_update_threshold * result.nit:
+            lbfgs_status = LBFGSStatus.LOW_UPDATE_MASK_RATIO
         else:
             lbfgs_status = LBFGSStatus.CONVERGED
 
