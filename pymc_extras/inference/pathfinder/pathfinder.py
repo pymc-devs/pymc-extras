@@ -259,8 +259,6 @@ def alpha_recover(
         position differences, shape (L, N)
     z : TensorVariable
         gradient differences, shape (L, N)
-    update_mask : TensorVariable
-        mask for filtering updates, shape (L,)
 
     Notes
     -----
@@ -281,43 +279,28 @@ def alpha_recover(
         )  # fmt:off
         return 1.0 / inv_alpha_l
 
-    def return_alpha_lm1(alpha_lm1, s_l, z_l) -> TensorVariable:
-        return alpha_lm1[-1]
-
-    def scan_body(update_mask_l, s_l, z_l, alpha_lm1) -> TensorVariable:
-        return pt.switch(
-            update_mask_l,
-            compute_alpha_l(alpha_lm1, s_l, z_l),
-            return_alpha_lm1(alpha_lm1, s_l, z_l),
-        )
-
     Lp1, N = x.shape
     s = pt.diff(x, axis=0)
     z = pt.diff(g, axis=0)
     alpha_l_init = pt.ones(N)
-    sz = (s * z).sum(axis=-1)
-    # update_mask = sz > epsilon * pt.linalg.norm(z, axis=-1)
-    # pt.linalg.norm does not work with JAX!!
-    update_mask = sz > epsilon * pt.sqrt(pt.sum(z**2, axis=-1))
 
     alpha, _ = pytensor.scan(
-        fn=scan_body,
+        fn=compute_alpha_l,
         outputs_info=alpha_l_init,
-        sequences=[update_mask, s, z],
+        sequences=[s, z],
         n_steps=Lp1 - 1,
         allow_gc=False,
     )
 
     # assert np.all(alpha.eval() > 0), "alpha cannot be negative"
     # alpha: (L, N), update_mask: (L, N)
-    return alpha, s, z, update_mask
+    return alpha, s, z
 
 
 def inverse_hessian_factors(
     alpha: TensorVariable,
     s: TensorVariable,
     z: TensorVariable,
-    update_mask: TensorVariable,
     J: TensorConstant,
 ) -> tuple[TensorVariable, TensorVariable]:
     """compute the inverse hessian factors for the BFGS approximation.
@@ -330,8 +313,6 @@ def inverse_hessian_factors(
         position differences, shape (L, N)
     z : TensorVariable
         gradient differences, shape (L, N)
-    update_mask : TensorVariable
-        mask for filtering updates, shape (L,)
     J : TensorConstant
         history size for L-BFGS
 
@@ -350,9 +331,8 @@ def inverse_hessian_factors(
     # NOTE: get_chi_matrix_1 is a modified version of get_chi_matrix_2 to closely follow Zhang et al., (2022)
     # NOTE: get_chi_matrix_2 is from blackjax which MAYBE incorrectly implemented
 
-    def get_chi_matrix_1(
-        diff: TensorVariable, update_mask: TensorVariable, J: TensorConstant
-    ) -> TensorVariable:
+    def get_chi_matrix_1(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
+        # TODO: vectorize this!
         L, N = diff.shape
         j_last = pt.as_tensor(J - 1)  # since indexing starts at 0
 
@@ -360,20 +340,11 @@ def inverse_hessian_factors(
             chi_l = pt.roll(chi_lm1, -1, axis=0)
             return pt.set_subtensor(chi_l[j_last], diff_l)
 
-        def no_op(chi_lm1, diff_l) -> TensorVariable:
-            return chi_lm1
-
-        def scan_body(update_mask_l, diff_l, chi_lm1) -> TensorVariable:
-            return pt.switch(update_mask_l, chi_update(chi_lm1, diff_l), no_op(chi_lm1, diff_l))
-
         chi_init = pt.zeros((J, N))
         chi_mat, _ = pytensor.scan(
-            fn=scan_body,
+            fn=chi_update,
             outputs_info=chi_init,
-            sequences=[
-                update_mask,
-                diff,
-            ],
+            sequences=[diff],
             allow_gc=False,
         )
 
@@ -403,8 +374,8 @@ def inverse_hessian_factors(
         return chi_mat
 
     L, N = alpha.shape
-    S = get_chi_matrix_1(s, update_mask, J)
-    Z = get_chi_matrix_1(z, update_mask, J)
+    S = get_chi_matrix_1(s, J)
+    Z = get_chi_matrix_1(z, J)
 
     # E: (L, J, J)
     Ij = pt.eye(J)[None, ...]
@@ -830,8 +801,8 @@ def make_pathfinder_body(
     epsilon = pt.constant(epsilon, "epsilon", dtype="float64")
     maxcor = pt.constant(maxcor, "maxcor", dtype="int32")
 
-    alpha, s, z, update_mask = alpha_recover(x_full, g_full, epsilon=epsilon)
-    beta, gamma = inverse_hessian_factors(alpha, s, z, update_mask, J=maxcor)
+    alpha, s, z = alpha_recover(x_full, g_full, epsilon=epsilon)
+    beta, gamma = inverse_hessian_factors(alpha, s, z, J=maxcor)
 
     # ignore initial point - x, g: (L, N)
     x = x_full[1:]

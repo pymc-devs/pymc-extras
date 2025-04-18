@@ -37,11 +37,14 @@ class LBFGSHistoryManager:
         initial position
     maxiter : int
         maximum number of iterations to store
+    epsilon : float
+        tolerance for lbfgs update
     """
 
     value_grad_fn: Callable[[NDArray[np.float64]], tuple[np.float64, NDArray[np.float64]]]
     x0: NDArray[np.float64]
     maxiter: int
+    epsilon: float
     x_history: NDArray[np.float64] = field(init=False)
     g_history: NDArray[np.float64] = field(init=False)
     count: int = field(init=False)
@@ -147,7 +150,7 @@ class LBFGS:
     """
 
     def __init__(
-        self, value_grad_fn, maxcor, maxiter=1000, ftol=1e-5, gtol=1e-8, maxls=1000
+        self, value_grad_fn, maxcor, maxiter=1000, ftol=1e-5, gtol=1e-8, maxls=1000, epsilon=1e-8
     ) -> None:
         self.value_grad_fn = value_grad_fn
         self.maxcor = maxcor
@@ -155,6 +158,7 @@ class LBFGS:
         self.ftol = ftol
         self.gtol = gtol
         self.maxls = maxls
+        self.epsilon = epsilon
 
     def minimize(self, x0) -> tuple[NDArray, NDArray, int, LBFGSStatus]:
         """minimizes objective function starting from initial position.
@@ -179,7 +183,7 @@ class LBFGS:
         x0 = np.array(x0, dtype=np.float64)
 
         history_manager = LBFGSHistoryManager(
-            value_grad_fn=self.value_grad_fn, x0=x0, maxiter=self.maxiter
+            value_grad_fn=self.value_grad_fn, x0=x0, maxiter=self.maxiter, epsilon=self.epsilon
         )
 
         result = minimize(
