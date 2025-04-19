@@ -202,8 +202,6 @@ class LBFGS:
         # threshold determining if the number of update mask is low compared to iterations
         low_update_threshold = 3
 
-        logging.warning(f"LBFGS status: {result} \n nit: {result.nit} \n count: {history.count}")
-
         if history.count <= 1:  # triggers LBFGSInitFailed
             if result.nit < low_update_threshold:
                 lbfgs_status = LBFGSStatus.INIT_FAILED
