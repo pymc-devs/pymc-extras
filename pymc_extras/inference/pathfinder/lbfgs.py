@@ -37,11 +37,14 @@ class LBFGSHistoryManager:
         initial position
     maxiter : int
         maximum number of iterations to store
+    epsilon : float
+        tolerance for lbfgs update
     """
 
     value_grad_fn: Callable[[NDArray[np.float64]], tuple[np.float64, NDArray[np.float64]]]
     x0: NDArray[np.float64]
     maxiter: int
+    epsilon: float
     x_history: NDArray[np.float64] = field(init=False)
     g_history: NDArray[np.float64] = field(init=False)
     count: int = field(init=False)
@@ -85,10 +88,9 @@ class LBFGSHistoryManager:
                 s = x - self.x_history[self.count - 1]
                 z = grad - self.g_history[self.count - 1]
                 sz = (s * z).sum(axis=-1)
-                epsilon = 1e-8
-                update_mask = sz > epsilon * np.sqrt(np.sum(z**2, axis=-1))
+                update = sz > self.epsilon * np.sqrt(np.sum(z**2, axis=-1))
 
-                if update_mask:
+                if update:
                     return True
                 else:
                     return False
@@ -105,10 +107,10 @@ class LBFGSStatus(Enum):
     CONVERGED = auto()
     MAX_ITER_REACHED = auto()
     NON_FINITE = auto()
-    LOW_UPDATE_MASK_RATIO = auto()
+    LOW_UPDATE_PCT = auto()
     # Statuses that lead to Exceptions:
     INIT_FAILED = auto()
-    INIT_FAILED_LOW_UPDATE_MASK = auto()
+    INIT_FAILED_LOW_UPDATE_PCT = auto()
     LBFGS_FAILED = auto()
 
 
@@ -144,10 +146,12 @@ class LBFGS:
         gradient tolerance for convergence, defaults to 1e-8
     maxls : int, optional
         maximum number of line search steps, defaults to 1000
+    epsilon : float, optional
+        tolerance for lbfgs update, defaults to 1e-8
     """
 
     def __init__(
-        self, value_grad_fn, maxcor, maxiter=1000, ftol=1e-5, gtol=1e-8, maxls=1000
+        self, value_grad_fn, maxcor, maxiter=1000, ftol=1e-5, gtol=1e-8, maxls=1000, epsilon=1e-8
     ) -> None:
         self.value_grad_fn = value_grad_fn
         self.maxcor = maxcor
@@ -155,6 +159,7 @@ class LBFGS:
         self.ftol = ftol
         self.gtol = gtol
         self.maxls = maxls
+        self.epsilon = epsilon
 
     def minimize(self, x0) -> tuple[NDArray, NDArray, int, LBFGSStatus]:
         """minimizes objective function starting from initial position.
@@ -179,7 +184,7 @@ class LBFGS:
         x0 = np.array(x0, dtype=np.float64)
 
         history_manager = LBFGSHistoryManager(
-            value_grad_fn=self.value_grad_fn, x0=x0, maxiter=self.maxiter
+            value_grad_fn=self.value_grad_fn, x0=x0, maxiter=self.maxiter, epsilon=self.epsilon
         )
 
         result = minimize(
@@ -199,24 +204,22 @@ class LBFGS:
         history = history_manager.get_history()
 
         # warnings and suggestions for LBFGSStatus are displayed at the end
-        # threshold determining if the number of update mask is low compared to iterations
+        # threshold determining if the number of lbfgs updates is low compared to iterations
         low_update_threshold = 3
-
-        logging.warning(f"LBFGS status: {result} \n nit: {result.nit} \n count: {history.count}")
 
         if history.count <= 1:  # triggers LBFGSInitFailed
             if result.nit < low_update_threshold:
                 lbfgs_status = LBFGSStatus.INIT_FAILED
             else:
-                lbfgs_status = LBFGSStatus.INIT_FAILED_LOW_UPDATE_MASK
+                lbfgs_status = LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT
         elif result.status == 1:
             # (result.nit > maxiter) or (result.nit > maxls)
             lbfgs_status = LBFGSStatus.MAX_ITER_REACHED
         elif result.status == 2:
             # precision loss resulting to inf or nan
             lbfgs_status = LBFGSStatus.NON_FINITE
-        elif history.count < low_update_threshold * result.nit:
-            lbfgs_status = LBFGSStatus.LOW_UPDATE_MASK_RATIO
+        elif history.count * low_update_threshold < result.nit:
+            lbfgs_status = LBFGSStatus.LOW_UPDATE_PCT
         else:
             lbfgs_status = LBFGSStatus.CONVERGED
 
