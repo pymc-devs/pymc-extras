@@ -88,10 +88,9 @@ class LBFGSHistoryManager:
                 s = x - self.x_history[self.count - 1]
                 z = grad - self.g_history[self.count - 1]
                 sz = (s * z).sum(axis=-1)
-                epsilon = 1e-8
-                update_mask = sz > epsilon * np.sqrt(np.sum(z**2, axis=-1))
+                update = sz > self.epsilon * np.sqrt(np.sum(z**2, axis=-1))
 
-                if update_mask:
+                if update:
                     return True
                 else:
                     return False
@@ -108,10 +107,10 @@ class LBFGSStatus(Enum):
     CONVERGED = auto()
     MAX_ITER_REACHED = auto()
     NON_FINITE = auto()
-    LOW_UPDATE_MASK_RATIO = auto()
+    LOW_UPDATE_PCT = auto()
     # Statuses that lead to Exceptions:
     INIT_FAILED = auto()
-    INIT_FAILED_LOW_UPDATE_MASK = auto()
+    INIT_FAILED_LOW_UPDATE_PCT = auto()
     LBFGS_FAILED = auto()
 
 
@@ -147,6 +146,8 @@ class LBFGS:
         gradient tolerance for convergence, defaults to 1e-8
     maxls : int, optional
         maximum number of line search steps, defaults to 1000
+    epsilon : float, optional
+        tolerance for lbfgs update, defaults to 1e-8
     """
 
     def __init__(
@@ -203,16 +204,14 @@ class LBFGS:
         history = history_manager.get_history()
 
         # warnings and suggestions for LBFGSStatus are displayed at the end
-        # threshold determining if the number of update mask is low compared to iterations
+        # threshold determining if the number of lbfgs updates is low compared to iterations
         low_update_threshold = 3
-
-        logging.warning(f"LBFGS status: {result} \n nit: {result.nit} \n count: {history.count}")
 
         if history.count <= 1:  # triggers LBFGSInitFailed
             if result.nit < low_update_threshold:
                 lbfgs_status = LBFGSStatus.INIT_FAILED
             else:
-                lbfgs_status = LBFGSStatus.INIT_FAILED_LOW_UPDATE_MASK
+                lbfgs_status = LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT
         elif result.status == 1:
             # (result.nit > maxiter) or (result.nit > maxls)
             lbfgs_status = LBFGSStatus.MAX_ITER_REACHED
@@ -220,7 +219,7 @@ class LBFGS:
             # precision loss resulting to inf or nan
             lbfgs_status = LBFGSStatus.NON_FINITE
         elif history.count < low_update_threshold * result.nit:
-            lbfgs_status = LBFGSStatus.LOW_UPDATE_MASK_RATIO
+            lbfgs_status = LBFGSStatus.LOW_UPDATE_PCT
         else:
             lbfgs_status = LBFGSStatus.CONVERGED
 
