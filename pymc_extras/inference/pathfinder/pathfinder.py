@@ -237,8 +237,8 @@ def convert_flat_trace_to_idata(
 
 
 def alpha_recover(
-    x: TensorVariable, g: TensorVariable, epsilon: TensorVariable
-) -> tuple[TensorVariable, TensorVariable, TensorVariable, TensorVariable]:
+    x: TensorVariable, g: TensorVariable
+) -> tuple[TensorVariable, TensorVariable, TensorVariable]:
     """compute the diagonal elements of the inverse Hessian at each iterations of L-BFGS and filter updates.
 
     Parameters
@@ -247,9 +247,6 @@ def alpha_recover(
         position array, shape (L+1, N)
     g : TensorVariable
         gradient array, shape (L+1, N)
-    epsilon : float
-        threshold for filtering updates based on inner product of position
-        and gradient differences
 
     Returns
     -------
@@ -332,11 +329,10 @@ def inverse_hessian_factors(
     # NOTE: get_chi_matrix_2 is from blackjax which MAYBE incorrectly implemented
 
     def get_chi_matrix_1(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
-        # TODO: vectorize this!
         L, N = diff.shape
         j_last = pt.as_tensor(J - 1)  # since indexing starts at 0
 
-        def chi_update(chi_lm1, diff_l) -> TensorVariable:
+        def chi_update(diff_l, chi_lm1) -> TensorVariable:
             chi_l = pt.roll(chi_lm1, -1, axis=0)
             return pt.set_subtensor(chi_l[j_last], diff_l)
 
@@ -353,19 +349,15 @@ def inverse_hessian_factors(
         # (L, N, J)
         return chi_mat
 
-    def get_chi_matrix_2(
-        diff: TensorVariable, update_mask: TensorVariable, J: TensorConstant
-    ) -> TensorVariable:
+    def get_chi_matrix_2(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
         L, N = diff.shape
-
-        diff_masked = update_mask[:, None] * diff
 
         # diff_padded: (L+J, N)
         pad_width = pt.zeros(shape=(2, 2), dtype="int32")
-        pad_width = pt.set_subtensor(pad_width[0, 0], J)
-        diff_padded = pt.pad(diff_masked, pad_width, mode="constant")
+        pad_width = pt.set_subtensor(pad_width[0, 0], J - 1)
+        diff_padded = pt.pad(diff, pad_width, mode="constant")
 
-        index = pt.arange(L)[:, None] + pt.arange(J)[None, :]
+        index = pt.arange(L)[..., None] + pt.arange(J)[None, ...]
         index = index.reshape((L, J))
 
         chi_mat = pt.matrix_transpose(diff_padded[index])
@@ -374,6 +366,8 @@ def inverse_hessian_factors(
         return chi_mat
 
     L, N = alpha.shape
+
+    # changed to get_chi_matrix_2 after removing update_mask
     S = get_chi_matrix_1(s, J)
     Z = get_chi_matrix_1(z, J)
 
@@ -756,7 +750,6 @@ def make_pathfinder_body(
     num_draws: int,
     maxcor: int,
     num_elbo_draws: int,
-    epsilon: float,
     **compile_kwargs: dict,
 ) -> Function:
     """
@@ -772,8 +765,6 @@ def make_pathfinder_body(
         The maximum number of iterations for the L-BFGS algorithm.
     num_elbo_draws : int
         The number of draws for the Evidence Lower Bound (ELBO) estimation.
-    epsilon : float
-        The value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if delta_theta[l] * delta_grad[l] > epsilon * L2_norm(delta_grad[l]) for each l in L.
     compile_kwargs : dict
         Additional keyword arguments for the PyTensor compiler.
 
@@ -798,10 +789,9 @@ def make_pathfinder_body(
 
     num_draws = pt.constant(num_draws, "num_draws", dtype="int32")
     num_elbo_draws = pt.constant(num_elbo_draws, "num_elbo_draws", dtype="int32")
-    epsilon = pt.constant(epsilon, "epsilon", dtype="float64")
     maxcor = pt.constant(maxcor, "maxcor", dtype="int32")
 
-    alpha, s, z = alpha_recover(x_full, g_full, epsilon=epsilon)
+    alpha, s, z = alpha_recover(x_full, g_full)
     beta, gamma = inverse_hessian_factors(alpha, s, z, J=maxcor)
 
     # ignore initial point - x, g: (L, N)
@@ -912,11 +902,11 @@ def make_single_pathfinder_fn(
     x_base = DictToArrayBijection.map(ip).data
 
     # lbfgs
-    lbfgs = LBFGS(neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls)
+    lbfgs = LBFGS(neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
 
     # pathfinder body
     pathfinder_body_fn = make_pathfinder_body(
-        logp_func, num_draws, maxcor, num_elbo_draws, epsilon, **compile_kwargs
+        logp_func, num_draws, maxcor, num_elbo_draws, **compile_kwargs
     )
     rngs = find_rng_nodes(pathfinder_body_fn.maker.fgraph.outputs)
 
