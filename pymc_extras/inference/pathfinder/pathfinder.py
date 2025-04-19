@@ -262,7 +262,7 @@ def alpha_recover(
     shapes: L=batch_size, N=num_params
     """
 
-    def compute_alpha_l(alpha_lm1, s_l, z_l) -> TensorVariable:
+    def compute_alpha_l(s_l, z_l, alpha_lm1) -> TensorVariable:
         # alpha_lm1: (N,)
         # s_l: (N,)
         # z_l: (N,)
@@ -290,7 +290,7 @@ def alpha_recover(
     )
 
     # assert np.all(alpha.eval() > 0), "alpha cannot be negative"
-    # alpha: (L, N), update_mask: (L, N)
+    # alpha: (L, N)
     return alpha, s, z
 
 
@@ -368,8 +368,8 @@ def inverse_hessian_factors(
     L, N = alpha.shape
 
     # changed to get_chi_matrix_2 after removing update_mask
-    S = get_chi_matrix_1(s, J)
-    Z = get_chi_matrix_1(z, J)
+    S = get_chi_matrix_2(s, J)
+    Z = get_chi_matrix_2(z, J)
 
     # E: (L, J, J)
     Ij = pt.eye(J)[None, ...]

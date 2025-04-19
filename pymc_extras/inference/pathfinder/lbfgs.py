@@ -218,7 +218,7 @@ class LBFGS:
         elif result.status == 2:
             # precision loss resulting to inf or nan
             lbfgs_status = LBFGSStatus.NON_FINITE
-        elif history.count < low_update_threshold * result.nit:
+        elif history.count * low_update_threshold < result.nit:
             lbfgs_status = LBFGSStatus.LOW_UPDATE_PCT
         else:
             lbfgs_status = LBFGSStatus.CONVERGED

@@ -106,8 +106,8 @@ def test_unstable_lbfgs_update_mask(capsys, jitter):
             )
         out, err = capsys.readouterr()
         status_pattern = [
-            r"INIT_FAILED_LOW_UPDATE_MASK\s+\d+",
-            r"LOW_UPDATE_MASK_RATIO\s+\d+",
+            r"INIT_FAILED_LOW_UPDATE_PCT\s+\d+",
+            r"LOW_UPDATE_PCT\s+\d+",
             r"LBFGS_FAILED\s+\d+",
             r"SUCCESS\s+\d+",
         ]
@@ -126,8 +126,8 @@ def test_unstable_lbfgs_update_mask(capsys, jitter):
             out, err = capsys.readouterr()
 
             status_pattern = [
-                r"INIT_FAILED_LOW_UPDATE_MASK\s+2",
-                r"LOW_UPDATE_MASK_RATIO\s+2",
+                r"INIT_FAILED_LOW_UPDATE_PCT\s+2",
+                r"LOW_UPDATE_PCT\s+2",
                 r"LBFGS_FAILED\s+4",
             ]
             for pattern in status_pattern:
@@ -232,12 +232,11 @@ def test_bfgs_sample():
     # get factors
     x_full = pt.as_tensor(x_data, dtype="float64")
     g_full = pt.as_tensor(g_data, dtype="float64")
-    epsilon = 1e-11
 
     x = x_full[1:]
     g = g_full[1:]
-    alpha, S, Z, update_mask = alpha_recover(x_full, g_full, epsilon)
-    beta, gamma = inverse_hessian_factors(alpha, S, Z, update_mask, J)
+    alpha, s, z = alpha_recover(x_full, g_full)
+    beta, gamma = inverse_hessian_factors(alpha, s, z, J)
 
     # sample
     phi, logq = bfgs_sample(
@@ -252,8 +251,8 @@ def test_bfgs_sample():
     # check shapes
     assert beta.eval().shape == (L, N, 2 * J)
     assert gamma.eval().shape == (L, 2 * J, 2 * J)
-    assert phi.eval().shape == (L, num_samples, N)
-    assert logq.eval().shape == (L, num_samples)
+    assert all(phi.shape.eval() == (L, num_samples, N))
+    assert all(logq.shape.eval() == (L, num_samples))
 
 
 @pytest.mark.parametrize("importance_sampling", ["psis", "psir", "identity", None])
