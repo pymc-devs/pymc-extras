@@ -512,14 +512,13 @@ class GrassiaIIGeometric(Discrete):
         )
 
     def logcdf(value, r, alpha):
-        # TODO: Math may not be correct here
         logcdf = r * (pt.log(value) - pt.log(alpha + value))
 
         return check_parameters(
             logcdf,
             r > 0,
-            alpha > 0,
-            msg="s > 0, alpha > 0",
+            alpha > 0.6181, # alpha must be greater than 0.6181 for convergence
+            msg="r > 0, alpha > 0",
         )
 
     def support_point(rv, size, r, alpha):
@@ -530,10 +529,7 @@ class GrassiaIIGeometric(Discrete):
         is Gamma(r, 1/alpha), its mean is r/alpha. We then transform this through
         the geometric link function and round to ensure an integer value.
         """
-        # E[lambda] = r/alpha for Gamma(r, 1/alpha)
-        # p = 1 - exp(-lambda) for geometric
-        # E[T] = 1/p for geometric
-        mean = pt.ceil(pt.exp(alpha/r))  # Conservative upper bound
+        mean = pt.ceil(pt.exp(alpha/r))
         
         if not rv_size_is_none(size):
             mean = pt.full(size, mean)

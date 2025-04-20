@@ -214,8 +214,8 @@ class TestSkellam:
 class TestGrassiaIIGeometric:
     class TestRandomVariable(BaseTestDistributionRandom):
         pymc_dist = GrassiaIIGeometric
-        pymc_dist_params = {"r": 1.0, "alpha": 2.0}
-        expected_rv_op_params = {"r": 1.0, "alpha": 2.0}
+        pymc_dist_params = {"r": .5, "alpha": 2.0}
+        expected_rv_op_params = {"r": .5, "alpha": 2.0}
         tests_to_run = [
             "check_pymc_params_match_rv_op",
             "check_rv_size",
@@ -289,11 +289,11 @@ class TestGrassiaIIGeometric:
             trace = pm.sample(chains=1, draws=1000, random_seed=42).posterior
 
         samples = trace["x"].values.flatten()
-        
+
         # Check basic properties of samples
         assert np.all(samples > 0)  # All values should be positive
         assert np.all(samples.astype(int) == samples)  # All values should be integers
-        
+
         # Check mean and variance are reasonable
         # (exact values depend on the parameterization)
         assert 0 < np.mean(samples) < np.inf
