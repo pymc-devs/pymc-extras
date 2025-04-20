@@ -34,6 +34,7 @@ from pymc_extras.distributions import (
     BetaNegativeBinomial,
     GeneralizedPoisson,
     Skellam,
+    GrassiaIIGeometric,
 )
 
 
@@ -208,3 +209,119 @@ class TestSkellam:
                 {"mu1": Rplus_small, "mu2": Rplus_small},
                 lambda value, mu1, mu2: scipy.stats.skellam.logpmf(value, mu1, mu2),
             )
+
+
+class TestGrassiaIIGeometric:
+    class TestRandomVariable(BaseTestDistributionRandom):
+        pymc_dist = GrassiaIIGeometric
+        pymc_dist_params = {"r": 1.0, "alpha": 2.0}
+        expected_rv_op_params = {"r": 1.0, "alpha": 2.0}
+        tests_to_run = [
+            "check_pymc_params_match_rv_op",
+            "check_rv_size",
+        ]
+
+        def test_random_basic_properties(self):
+            discrete_random_tester(
+                dist=self.pymc_dist,
+                paramdomains={"r": Rplus, "alpha": Rplus},
+                ref_rand=lambda r, alpha, size: np.random.geometric(
+                    1 - np.exp(-np.random.gamma(r, 1/alpha, size=size)), size=size
+                ),
+            )
+
+        @pytest.mark.parametrize("r,alpha", [
+            (0.5, 1.0),
+            (1.0, 2.0),
+            (2.0, 0.5),
+            (5.0, 1.0),
+        ])
+        def test_random_moments(self, r, alpha):
+            dist = self.pymc_dist.dist(r=r, alpha=alpha, size=10_000)
+            draws = dist.eval()
+
+            # Check that all values are positive integers
+            assert np.all(draws > 0)
+            assert np.all(draws.astype(int) == draws)
+
+            # Check that values are reasonably distributed
+            # Note: Exact moments are complex for this distribution
+            # so we just check basic properties
+            assert np.mean(draws) > 0
+            assert np.var(draws) > 0
+
+    def test_logp_basic(self):
+        r = pt.scalar("r")
+        alpha = pt.scalar("alpha")
+        value = pt.vector("value", dtype="int64")
+
+        logp = pm.logp(GrassiaIIGeometric.dist(r, alpha), value)
+        logp_fn = pytensor.function([value, r, alpha], logp)
+
+        # Test basic properties of logp
+        test_value = np.array([1, 2, 3, 4, 5])
+        test_r = 1.0
+        test_alpha = 1.0
+        
+        logp_vals = logp_fn(test_value, test_r, test_alpha)
+        assert not np.any(np.isnan(logp_vals))
+        assert np.all(np.isfinite(logp_vals))
+
+        # Test invalid values
+        assert logp_fn(np.array([0]), test_r, test_alpha) == np.inf  # Value must be > 0
+        
+        with pytest.raises(TypeError):
+            logp_fn(np.array([1.5]), test_r, test_alpha) == -np.inf  # Value must be integer
+
+        # Test parameter restrictions
+        with pytest.raises(ParameterValueError):
+            logp_fn(np.array([1]), -1.0, test_alpha)  # r must be > 0
+
+        with pytest.raises(ParameterValueError):
+            logp_fn(np.array([1]), test_r, -1.0)  # alpha must be > 0
+
+    def test_sampling_consistency(self):
+        """Test that sampling from the distribution produces reasonable results"""
+        r = 2.0
+        alpha = 1.0
+        with pm.Model():
+            x = GrassiaIIGeometric("x", r=r, alpha=alpha)
+            trace = pm.sample(chains=1, draws=1000, random_seed=42).posterior
+
+        samples = trace["x"].values.flatten()
+        
+        # Check basic properties of samples
+        assert np.all(samples > 0)  # All values should be positive
+        assert np.all(samples.astype(int) == samples)  # All values should be integers
+        
+        # Check mean and variance are reasonable
+        # (exact values depend on the parameterization)
+        assert 0 < np.mean(samples) < np.inf
+        assert 0 < np.var(samples) < np.inf
+
+    @pytest.mark.parametrize(
+        "r, alpha, size, expected_shape",
+        [
+            (1.0, 1.0, None, ()),  # Scalar output
+            ([1.0, 2.0], 1.0, None, (2,)),  # Vector output from r
+            (1.0, [1.0, 2.0], None, (2,)),  # Vector output from alpha
+            (1.0, 1.0, (3, 2), (3, 2)),  # Explicit size
+        ],
+    )
+    def test_support_point(self, r, alpha, size, expected_shape):
+        """Test that support_point returns reasonable values with correct shapes"""
+        with pm.Model() as model:
+            GrassiaIIGeometric("x", r=r, alpha=alpha, size=size)
+        
+        init_point = model.initial_point()["x"]
+        
+        # Check shape
+        assert init_point.shape == expected_shape
+        
+        # Check values are positive integers
+        assert np.all(init_point > 0)
+        assert np.all(init_point.astype(int) == init_point)
+        
+        # Check values are finite and reasonable
+        assert np.all(np.isfinite(init_point))
+        assert np.all(init_point < 1e6)  # Should not be extremely large

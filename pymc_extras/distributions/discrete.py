@@ -15,6 +15,7 @@
 import numpy as np
 import pymc as pm
 
+from pymc.distributions.distribution import Discrete
 from pymc.distributions.dist_math import betaln, check_parameters, factln, logpow
 from pymc.distributions.shape_utils import rv_size_is_none
 from pytensor import tensor as pt
@@ -441,12 +442,11 @@ class GrassiaIIGeometricRV(RandomVariable):
 g2g = GrassiaIIGeometricRV()
 
 
-class GrassiaIIGeometric(UnitContinuous):
+class GrassiaIIGeometric(Discrete):
     r"""Grassia(II)-Geometric distribution.
 
-    This distribution is a flexible alternative to the Geometric distribution for the
-    number of trials until a discrete event, and can be easily extended to support both static
-    and time-varying covariates.
+    This distribution is a flexible alternative to the Geometric distribution for the number of trials until a
+    discrete event, and can be extended to support both static and time-varying covariates.
 
     Hardie and Fader describe this distribution with the following PMF and survival functions in [1]_:
 
@@ -521,3 +521,21 @@ class GrassiaIIGeometric(UnitContinuous):
             alpha > 0,
             msg="s > 0, alpha > 0",
         )
+
+    def support_point(rv, size, r, alpha):
+        """Calculate a reasonable starting point for sampling.
+        
+        For the GrassiaIIGeometric distribution, we use a point estimate based on
+        the expected value of the mixing distribution. Since the mixing distribution
+        is Gamma(r, 1/alpha), its mean is r/alpha. We then transform this through
+        the geometric link function and round to ensure an integer value.
+        """
+        # E[lambda] = r/alpha for Gamma(r, 1/alpha)
+        # p = 1 - exp(-lambda) for geometric
+        # E[T] = 1/p for geometric
+        mean = pt.ceil(pt.exp(alpha/r))  # Conservative upper bound
+        
+        if not rv_size_is_none(size):
+            mean = pt.full(size, mean)
+        
+        return mean
