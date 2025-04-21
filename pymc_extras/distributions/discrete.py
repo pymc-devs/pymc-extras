@@ -423,7 +423,7 @@ class GrassiaIIGeometricRV(RandomVariable):
 
         output = np.zeros(shape=size + (1,))  # noqa:RUF005
 
-        lam = rng.gamma(shape=r, scale=1 / alpha, size=size)
+        lam = rng.gamma(shape=r, scale=1/alpha, size=size)
 
         def sim_data(lam):
             # TODO: To support time-varying covariates, covariate vector may need to be added
@@ -517,7 +517,7 @@ class GrassiaIIGeometric(Discrete):
         return check_parameters(
             logcdf,
             r > 0,
-            alpha > 0.6181, # alpha must be greater than 0.6181 for convergence
+            alpha > 0, # alpha must be greater than 0.6181 for convergence
             msg="r > 0, alpha > 0",
         )
 
