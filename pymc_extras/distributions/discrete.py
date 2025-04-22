@@ -402,46 +402,48 @@ class Skellam:
 
 class GrassiaIIGeometricRV(RandomVariable):
     name = "g2g"
-    signature = "(),()->()"
+    signature = "(),(),()->()"
 
     dtype = "int64"
     _print_name = ("GrassiaIIGeometric", "\\operatorname{GrassiaIIGeometric}")
 
-    def __call__(self, r, alpha, size=None, **kwargs):
-        return super().__call__(r, alpha, size=size, **kwargs)
+    def __call__(self, r, alpha, time_covar_dot=None,size=None, **kwargs):
+        return super().__call__(r, alpha, time_covar_dot=time_covar_dot, size=size, **kwargs)
 
-    # TODO: Param will need to be added for dot product of time-varying covariates
     @classmethod
-    def rng_fn(cls, rng, r, alpha, size):
+    def rng_fn(cls, rng, r, alpha, time_covar_dot,size):
+        if time_covar_dot is None:
+            time_covar_dot = np.array(0)
         if size is None:
-            size = np.broadcast_shapes(r.shape, alpha.shape)
-
-        r = np.asarray(r)
-        alpha = np.asarray(alpha)
+            size = np.broadcast_shapes(r.shape, alpha.shape, time_covar_dot.shape)
 
         r = np.broadcast_to(r, size)
         alpha = np.broadcast_to(alpha, size)
+        time_covar_dot = np.broadcast_to(time_covar_dot,size)
 
         output = np.zeros(shape=size + (1,))  # noqa:RUF005
 
         lam = rng.gamma(shape=r, scale=1/alpha, size=size)
 
-        def sim_data(lam):
-            # Handle numerical stability for very small lambda values
-            p = np.where(
-                lam < 0.001,
-                lam,  # For small lambda, p ≈ lambda
-                1 - np.exp(-lam)  # TODO: covariate param added here as 1 - np.exp(-lam * np.expcovar_dot)
-            )
+        exp_time_covar_dot = np.exp(time_covar_dot)
 
-            # Ensure p is in valid range for geometric distribution
-            p = np.clip(p, 1e-5, 1.)
+        def sim_data(lam, exp_time_covar_dot):
+            # Handle numerical stability for very small lambda values
+            # p = np.where(
+            #     lam < 0.0001,
+            #     lam,  # For small lambda, p ≈ lambda
+            #     1 - np.exp(-lam * exp_time_covar_dot)
+            # )
+
+            # Ensure lam is in valid range for geometric distribution
+            lam = np.clip(lam, np.finfo(float).tiny, 1.)
+            p = 1 - np.exp(-lam * exp_time_covar_dot)
 
             t = rng.geometric(p)
             return np.array([t])
 
         for index in np.ndindex(*size):
-            output[index] = sim_data(lam[index])
+            output[index] = sim_data(lam[index], exp_time_covar_dot[index])
 
         return output
 
