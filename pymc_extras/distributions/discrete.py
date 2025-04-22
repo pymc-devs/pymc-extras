@@ -410,6 +410,7 @@ class GrassiaIIGeometricRV(RandomVariable):
     def __call__(self, r, alpha, size=None, **kwargs):
         return super().__call__(r, alpha, size=size, **kwargs)
 
+    # TODO: Param will need to be added for dot product of time-varying covariates
     @classmethod
     def rng_fn(cls, rng, r, alpha, size):
         if size is None:
@@ -430,7 +431,7 @@ class GrassiaIIGeometricRV(RandomVariable):
             p = np.where(
                 lam < 0.001,
                 lam,  # For small lambda, p ≈ lambda
-                1 - np.exp(-lam)  # Standard formula for larger lambda
+                1 - np.exp(-lam)  # TODO: covariate param added here as 1 - np.exp(-lam * np.expcovar_dot)
             )
 
             # Ensure p is in valid range for geometric distribution
@@ -447,7 +448,7 @@ class GrassiaIIGeometricRV(RandomVariable):
 
 g2g = GrassiaIIGeometricRV()
 
-
+# TODO: Add time-varying covariates. May simply replace the t-value , but is a continuous parameter
 class GrassiaIIGeometric(Discrete):
     r"""Grassia(II)-Geometric distribution.
 
