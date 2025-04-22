@@ -426,11 +426,17 @@ class GrassiaIIGeometricRV(RandomVariable):
         lam = rng.gamma(shape=r, scale=1/alpha, size=size)
 
         def sim_data(lam):
-            # TODO: To support time-varying covariates, covariate vector may need to be added
-            p = 1 - np.exp(-lam)
-
+            # Handle numerical stability for very small lambda values
+            p = np.where(
+                lam < 0.001,
+                lam,  # For small lambda, p ≈ lambda
+                1 - np.exp(-lam)  # Standard formula for larger lambda
+            )
+            
+            # Ensure p is in valid range for geometric distribution
+            p = np.clip(p, 1e-5, 1.)
+            
             t = rng.geometric(p)
-
             return np.array([t])
 
         for index in np.ndindex(*size):

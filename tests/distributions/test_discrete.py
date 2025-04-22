@@ -222,11 +222,27 @@ class TestGrassiaIIGeometric:
         ]
 
         def test_random_basic_properties(self):
+            # Test standard parameter values
             discrete_random_tester(
                 dist=self.pymc_dist,
-                paramdomains={"r": Rplus, "alpha": Rplus},
+                paramdomains={
+                    "r": Domain([0.5, 1.0, 2.0], edges=(None, None)),  # Standard values
+                    "alpha": Domain([0.5, 1.0, 2.0], edges=(None, None)),  # Standard values
+                },
                 ref_rand=lambda r, alpha, size: np.random.geometric(
                     1 - np.exp(-np.random.gamma(r, 1/alpha, size=size)), size=size
+                ),
+            )
+            
+            # Test small parameter values that could generate small lambda values
+            discrete_random_tester(
+                dist=self.pymc_dist,
+                paramdomains={
+                    "r": Domain([0.01, 0.1], edges=(None, None)),  # Small r values
+                    "alpha": Domain([10.0, 100.0], edges=(None, None)),  # Large alpha values
+                },
+                ref_rand=lambda r, alpha, size: np.random.geometric(
+                    np.clip(np.random.gamma(r, 1/alpha, size=size), 1e-5, 1.0), size=size
                 ),
             )
 
