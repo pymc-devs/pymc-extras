@@ -15,8 +15,8 @@
 import numpy as np
 import pymc as pm
 
-from pymc.distributions.distribution import Discrete
 from pymc.distributions.dist_math import betaln, check_parameters, factln, logpow
+from pymc.distributions.distribution import Discrete
 from pymc.distributions.shape_utils import rv_size_is_none
 from pytensor import tensor as pt
 from pytensor.tensor.random.op import RandomVariable
@@ -432,10 +432,10 @@ class GrassiaIIGeometricRV(RandomVariable):
                 lam,  # For small lambda, p ≈ lambda
                 1 - np.exp(-lam)  # Standard formula for larger lambda
             )
-            
+
             # Ensure p is in valid range for geometric distribution
             p = np.clip(p, 1e-5, 1.)
-            
+
             t = rng.geometric(p)
             return np.array([t])
 
@@ -529,15 +529,15 @@ class GrassiaIIGeometric(Discrete):
 
     def support_point(rv, size, r, alpha):
         """Calculate a reasonable starting point for sampling.
-        
+
         For the GrassiaIIGeometric distribution, we use a point estimate based on
         the expected value of the mixing distribution. Since the mixing distribution
         is Gamma(r, 1/alpha), its mean is r/alpha. We then transform this through
         the geometric link function and round to ensure an integer value.
         """
         mean = pt.ceil(pt.exp(alpha/r))
-        
+
         if not rv_size_is_none(size):
             mean = pt.full(size, mean)
-        
+
         return mean

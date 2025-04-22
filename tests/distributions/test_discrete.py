@@ -33,8 +33,8 @@ from pytensor import config
 from pymc_extras.distributions import (
     BetaNegativeBinomial,
     GeneralizedPoisson,
-    Skellam,
     GrassiaIIGeometric,
+    Skellam,
 )
 
 
@@ -233,7 +233,7 @@ class TestGrassiaIIGeometric:
                     1 - np.exp(-np.random.gamma(r, 1/alpha, size=size)), size=size
                 ),
             )
-            
+
             # Test small parameter values that could generate small lambda values
             discrete_random_tester(
                 dist=self.pymc_dist,
@@ -278,14 +278,14 @@ class TestGrassiaIIGeometric:
         test_value = np.array([1, 2, 3, 4, 5])
         test_r = 1.0
         test_alpha = 1.0
-        
+
         logp_vals = logp_fn(test_value, test_r, test_alpha)
         assert not np.any(np.isnan(logp_vals))
         assert np.all(np.isfinite(logp_vals))
 
         # Test invalid values
         assert logp_fn(np.array([0]), test_r, test_alpha) == np.inf  # Value must be > 0
-        
+
         with pytest.raises(TypeError):
             logp_fn(np.array([1.5]), test_r, test_alpha) == -np.inf  # Value must be integer
 
@@ -328,16 +328,16 @@ class TestGrassiaIIGeometric:
         """Test that support_point returns reasonable values with correct shapes"""
         with pm.Model() as model:
             GrassiaIIGeometric("x", r=r, alpha=alpha, size=size)
-        
+
         init_point = model.initial_point()["x"]
-        
+
         # Check shape
         assert init_point.shape == expected_shape
-        
+
         # Check values are positive integers
         assert np.all(init_point > 0)
         assert np.all(init_point.astype(int) == init_point)
-        
+
         # Check values are finite and reasonable
         assert np.all(np.isfinite(init_point))
         assert np.all(init_point < 1e6)  # Should not be extremely large
