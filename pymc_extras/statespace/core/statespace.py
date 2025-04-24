@@ -1570,8 +1570,10 @@ class PyMCStateSpace:
                 raise ValueError(
                     "Integer start must be within the range of the data index used to fit the model."
                 )
-        if periods is None and end is None:
-            raise ValueError("Must specify one of either periods or end")
+        if periods is None and end is None and not use_scenario_index:
+            raise ValueError(
+                "Must specify one of either periods or end unless use_scenario_index=True"
+            )
         if periods is not None and end is not None:
             raise ValueError("Must specify exactly one of either periods or end")
         if scenario is None and use_scenario_index:
