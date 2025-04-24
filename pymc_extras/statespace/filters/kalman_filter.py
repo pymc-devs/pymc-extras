@@ -1,4 +1,5 @@
 from abc import ABC
+from functools import partial
 
 import numpy as np
 import pytensor
@@ -9,14 +10,13 @@ from pytensor.graph.basic import Variable
 from pytensor.raise_op import Assert
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.slinalg import solve_triangular
-from pytensor.graph.replace import vectorize_graph
 
 from pymc_extras.statespace.filters.utilities import (
     quad_form_sym,
     split_vars_into_seq_and_nonseq,
     stabilize,
 )
-from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL
+from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL, ALL_KF_OUTPUT_NAMES
 
 MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
 PARAM_NAMES = ["c", "d", "T", "Z", "R", "H", "Q"]
@@ -65,22 +65,56 @@ class BaseFilter(ABC):
         """
         return data, a0, P0, c, d, T, Z, R, H, Q
 
-    def has_batched_input(self, data, a0, P0, c, d, T, Z, R, H, Q):
-        """
-        Check if any of the inputs are batched.
-        """
-        return any(x.ndim > CORE_NDIM[i] for i, x in enumerate([data, a0, P0, c, d, T, Z, R, H, Q]))
+    def _make_gufunc_signature(self, inputs):
+        states = "s"
+        obs = "p"
+        exog = "r"
+        time = "t"
 
-    def get_dummy_core_inputs(self, data, a0, P0, c, d, T, Z, R, H, Q):
-        """
-        Get dummy inputs for the core parameters.
-        """
-        out = []
-        for x, core_ndim in zip([data, a0, P0, c, d, T, Z, R, H, Q], CORE_NDIM):
-            out.append(
-                pt.tensor(f"{x.name}_core_case", dtype=x.dtype, shape=x.type.shape[-core_ndim:])
-            )
-        return out
+        matrix_to_shape = {
+            "data": (time, obs),
+            "a0": (states,),
+            "x0": (states,),
+            "P0": (states, states),
+            "c": (states,),
+            "d": (obs,),
+            "T": (states, states),
+            "Z": (obs, states),
+            "R": (states, exog),
+            "H": (obs, obs),
+            "Q": (exog, exog),
+            "filtered_states": (time, states),
+            "filtered_covariances": (time, states, states),
+            "predicted_states": (time, states),
+            "predicted_covariances": (time, states, states),
+            "observed_states": (time, obs),
+            "observed_covariances": (time, obs, obs),
+            "smoothed_states": (time, states),
+            "smoothed_covariances": (time, states, states),
+            "loglike_obs": (time,),
+        }
+        input_shapes = []
+        output_shapes = []
+
+        for matrix in inputs:
+            name = matrix.name
+            input_shapes.append(matrix_to_shape[name])
+
+        for name in [
+            "filtered_states",
+            "predicted_states",
+            "smoothed_states",
+            "filtered_covariances",
+            "predicted_covariances",
+            "smoothed_covariances",
+            "loglike_obs",
+        ]:
+            output_shapes.append(matrix_to_shape[name])
+
+        input_signature = ",".join(["(" + ",".join(shapes) + ")" for shapes in input_shapes])
+        output_signature = ",".join(["(" + ",".join(shapes) + ")" for shapes in output_shapes])
+
+        return f"{input_signature} -> {output_signature}"
 
     @staticmethod
     def add_check_on_time_varying_shapes(
@@ -150,7 +184,7 @@ class BaseFilter(ABC):
 
         return y, a0, P0, c, d, T, Z, R, H, Q
 
-    def build_graph(
+    def _build_graph(
         self,
         data,
         a0,
@@ -206,17 +240,12 @@ class BaseFilter(ABC):
 
         self.missing_fill_value = missing_fill_value
         self.cov_jitter = cov_jitter
-        is_batched = self.has_batched_input(data, a0, P0, c, d, T, Z, R, H, Q)
 
         [R_shape] = constant_fold([R.shape], raise_not_constant=False)
         [Z_shape] = constant_fold([Z.shape], raise_not_constant=False)
 
         self.n_states, self.n_shocks = R_shape[-2:]
         self.n_endog = Z_shape[-2]
-
-        if is_batched:
-            batched_inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
-            data, a0, P0, c, d, T, Z, R, H, Q = self.get_dummy_core_inputs(*batched_inputs)
 
         data, a0, P0, *params = self.check_params(data, a0, P0, c, d, T, Z, R, H, Q)
 
@@ -241,14 +270,46 @@ class BaseFilter(ABC):
 
         filter_results = self._postprocess_scan_results(results, a0, P0, n=data.type.shape[0])
 
-        if is_batched:
-            vec_subs = dict(zip([data, a0, P0, c, d, T, Z, R, H, Q], batched_inputs))
-            filter_results = vectorize_graph(filter_results, vec_subs)
-
         if return_updates:
             return filter_results, updates
 
         return filter_results
+
+    def build_graph(
+        self,
+        data,
+        a0,
+        P0,
+        c,
+        d,
+        T,
+        Z,
+        R,
+        H,
+        Q,
+        mode=None,
+        return_updates=False,
+        missing_fill_value=None,
+        cov_jitter=None,
+    ) -> list[TensorVariable] | tuple[list[TensorVariable], dict]:
+        """
+        Build the vectorized computation graph for the Kalman filter.
+        """
+        signature = self._make_gufunc_signature(
+            [data, a0, P0, c, d, T, Z, R, H, Q],
+        )
+        fn = partial(
+            self._build_graph,
+            mode=mode,
+            return_updates=return_updates,
+            missing_fill_value=missing_fill_value,
+            cov_jitter=cov_jitter,
+        )
+        filter_outputs = pt.vectorize(fn, signature=signature)(data, a0, P0, c, d, T, Z, R, H, Q)
+        for output, name in zip(filter_outputs, ALL_KF_OUTPUT_NAMES):
+            output.name = name
+
+        return filter_outputs
 
     def _postprocess_scan_results(self, results, a0, P0, n) -> list[TensorVariable]:
         """

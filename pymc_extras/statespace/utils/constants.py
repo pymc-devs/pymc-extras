@@ -47,6 +47,16 @@ FILTER_OUTPUT_NAMES = [
 SMOOTHER_OUTPUT_NAMES = ["smoothed_state", "smoothed_covariance"]
 OBSERVED_OUTPUT_NAMES = ["predicted_observed_state", "predicted_observed_covariance"]
 
+ALL_KF_OUTPUT_NAMES = [
+    "filtered_states",
+    "predicted_states",
+    "observed_states",
+    "filtered_covariances",
+    "predicted_covariances",
+    "observed_covariances",
+    "loglike_obs",
+]
+
 MATRIX_DIMS = {
     "x0": (ALL_STATE_DIM,),
     "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),

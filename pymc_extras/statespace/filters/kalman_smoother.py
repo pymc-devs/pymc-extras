@@ -1,8 +1,8 @@
 import pytensor
 import pytensor.tensor as pt
-
+from functools import partial
+from pytensor.compile import get_mode
 from pytensor.tensor.nlinalg import matrix_dot
-from pytensor.graph.replace import vectorize_graph
 from pymc_extras.statespace.filters.utilities import (
     quad_form_sym,
     split_vars_into_seq_and_nonseq,
@@ -63,39 +63,56 @@ class KalmanSmoother:
 
         return a, P, a_smooth, P_smooth, T, R, Q
 
-    def has_batched_input(self, T, R, Q, filtered_states, filtered_covariances):
-        """
-        Check if any of the inputs are batched.
-        """
-        return any(
-            x.ndim > SMOOTHER_CORE_NDIM[i]
-            for i, x in enumerate([T, R, Q, filtered_states, filtered_covariances])
-        )
+    def _make_gufunc_signature(self, inputs):
+        states = "s"
+        obs = "p"
+        exog = "r"
+        time = "t"
 
-    def get_dummy_core_inputs(self, T, R, Q, filtered_states, filtered_covariances):
-        """
-        Get dummy inputs for the core parameters.
-        """
-        out = []
-        for x, core_ndim in zip(
-            [T, R, Q, filtered_states, filtered_covariances], SMOOTHER_CORE_NDIM
-        ):
-            out.append(
-                pt.tensor(f"{x.name}_core_case", dtype=x.dtype, shape=x.type.shape[-core_ndim:])
-            )
-        return out
+        matrix_to_shape = {
+            "data": (time, obs),
+            "a0": (states,),
+            "x0": (states,),
+            "P0": (states, states),
+            "c": (states,),
+            "d": (obs,),
+            "T": (states, states),
+            "Z": (obs, states),
+            "R": (states, exog),
+            "H": (obs, obs),
+            "Q": (exog, exog),
+            "filtered_states": (time, states),
+            "filtered_covariances": (time, states, states),
+            "predicted_states": (time, states),
+            "predicted_covariances": (time, states, states),
+            "observed_states": (time, obs),
+            "observed_covariances": (time, obs, obs),
+            "smoothed_states": (time, states),
+            "smoothed_covariances": (time, states, states),
+            "loglike_obs": (time,),
+        }
+        input_shapes = []
+        output_shapes = []
 
-    def build_graph(
-        self, T, R, Q, filtered_states, filtered_covariances, cov_jitter=JITTER_DEFAULT
+        for matrix in inputs:
+            name = matrix.name
+            input_shapes.append(matrix_to_shape[name])
+
+        for name in [
+            "smoothed_states",
+            "smoothed_covariances",
+        ]:
+            output_shapes.append(matrix_to_shape[name])
+
+        input_signature = ",".join(["(" + ",".join(shapes) + ")" for shapes in input_shapes])
+        output_signature = ",".join(["(" + ",".join(shapes) + ")" for shapes in output_shapes])
+
+        return f"{input_signature} -> {output_signature}"
+
+    def _build_graph(
+        self, T, R, Q, filtered_states, filtered_covariances, mode=None, cov_jitter=JITTER_DEFAULT
     ):
         self.cov_jitter = cov_jitter
-
-        is_batched = self.has_batched_input(T, R, Q, filtered_states, filtered_covariances)
-        if is_batched:
-            batched_inputs = [T, R, Q, filtered_states, filtered_covariances]
-            T, R, Q, filtered_states, filtered_covariances = self.get_dummy_core_inputs(
-                *batched_inputs
-            )
 
         n, k = filtered_states.type.shape
 
@@ -125,17 +142,27 @@ class KalmanSmoother:
         smoothed_covariances = pt.concatenate(
             [smoothed_covariances[::-1], pt.expand_dims(P_last, axis=(0,))], axis=0
         )
-        smoothed_states.dprint()
-        if is_batched:
-            vec_subs = dict(zip([T, R, Q, filtered_states, filtered_covariances], batched_inputs))
-            smoothed_states, smoothed_covariances = vectorize_graph(
-                [smoothed_states, smoothed_covariances], vec_subs
-            )
 
         smoothed_states.name = "smoothed_states"
         smoothed_covariances.name = "smoothed_covariances"
 
         return smoothed_states, smoothed_covariances
+
+    def build_graph(
+        self, T, R, Q, filtered_states, filtered_covariances, mode=None, cov_jitter=JITTER_DEFAULT
+    ):
+        """
+        Build the vectorized computation graph for the Kalman smoother.
+        """
+        signature = self._make_gufunc_signature(
+            [T, R, Q, filtered_states, filtered_covariances],
+        )
+        fn = partial(
+            self._build_graph,
+            mode=mode,
+            cov_jitter=cov_jitter,
+        )
+        return pt.vectorize(fn, signature=signature)(T, R, Q, filtered_states, filtered_covariances)
 
     def smoother_step(self, *args):
         a, P, a_smooth, P_smooth, T, R, Q = self.unpack_args(args)
