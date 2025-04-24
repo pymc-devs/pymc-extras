@@ -1,4 +1,5 @@
 from abc import ABC
+from functools import partial
 
 import numpy as np
 import pytensor
@@ -16,10 +17,11 @@ from pymc_extras.statespace.filters.utilities import (
     split_vars_into_seq_and_nonseq,
     stabilize,
 )
-from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL
+from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL, ALL_KF_OUTPUT_NAMES
 
 MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
 PARAM_NAMES = ["c", "d", "T", "Z", "R", "H", "Q"]
+CORE_NDIM = (2, 1, 2, 1, 1, 2, 2, 2, 2, 2)
 
 assert_time_varying_dim_correct = Assert(
     "The first dimension of a time varying matrix (the time dimension) must be "
@@ -72,6 +74,57 @@ class BaseFilter(ABC):
         Apply any checks on validity of inputs. For most filters this is just the identity function.
         """
         return data, a0, P0, c, d, T, Z, R, H, Q
+
+    def _make_gufunc_signature(self, inputs):
+        states = "s"
+        obs = "p"
+        exog = "r"
+        time = "t"
+
+        matrix_to_shape = {
+            "data": (time, obs),
+            "a0": (states,),
+            "x0": (states,),
+            "P0": (states, states),
+            "c": (states,),
+            "d": (obs,),
+            "T": (states, states),
+            "Z": (obs, states),
+            "R": (states, exog),
+            "H": (obs, obs),
+            "Q": (exog, exog),
+            "filtered_states": (time, states),
+            "filtered_covariances": (time, states, states),
+            "predicted_states": (time, states),
+            "predicted_covariances": (time, states, states),
+            "observed_states": (time, obs),
+            "observed_covariances": (time, obs, obs),
+            "smoothed_states": (time, states),
+            "smoothed_covariances": (time, states, states),
+            "loglike_obs": (time,),
+        }
+        input_shapes = []
+        output_shapes = []
+
+        for matrix in inputs:
+            name = matrix.name
+            input_shapes.append(matrix_to_shape[name])
+
+        for name in [
+            "filtered_states",
+            "predicted_states",
+            "smoothed_states",
+            "filtered_covariances",
+            "predicted_covariances",
+            "smoothed_covariances",
+            "loglike_obs",
+        ]:
+            output_shapes.append(matrix_to_shape[name])
+
+        input_signature = ",".join(["(" + ",".join(shapes) + ")" for shapes in input_shapes])
+        output_signature = ",".join(["(" + ",".join(shapes) + ")" for shapes in output_shapes])
+
+        return f"{input_signature} -> {output_signature}"
 
     @staticmethod
     def add_check_on_time_varying_shapes(
@@ -141,7 +194,7 @@ class BaseFilter(ABC):
 
         return y, a0, P0, c, d, T, Z, R, H, Q
 
-    def build_graph(
+    def _build_graph(
         self,
         data,
         a0,
@@ -235,7 +288,44 @@ class BaseFilter(ABC):
 
         if return_updates:
             return filter_results, updates
+
         return filter_results
+
+    def build_graph(
+        self,
+        data,
+        a0,
+        P0,
+        c,
+        d,
+        T,
+        Z,
+        R,
+        H,
+        Q,
+        mode=None,
+        return_updates=False,
+        missing_fill_value=None,
+        cov_jitter=None,
+    ) -> list[TensorVariable] | tuple[list[TensorVariable], dict]:
+        """
+        Build the vectorized computation graph for the Kalman filter.
+        """
+        signature = self._make_gufunc_signature(
+            [data, a0, P0, c, d, T, Z, R, H, Q],
+        )
+        fn = partial(
+            self._build_graph,
+            mode=mode,
+            return_updates=return_updates,
+            missing_fill_value=missing_fill_value,
+            cov_jitter=cov_jitter,
+        )
+        filter_outputs = pt.vectorize(fn, signature=signature)(data, a0, P0, c, d, T, Z, R, H, Q)
+        for output, name in zip(filter_outputs, ALL_KF_OUTPUT_NAMES):
+            output.name = name
+
+        return filter_outputs
 
     def _postprocess_scan_results(self, results, a0, P0, n) -> list[TensorVariable]:
         """
