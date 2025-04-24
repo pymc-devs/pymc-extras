@@ -870,3 +870,93 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
     regression_effect_expected = (betas * scenario_xr).sum(dim=["state"])
 
     assert_allclose(regression_effect, regression_effect_expected)
+
+
+@pytest.mark.filterwarnings("ignore:Provided data contains missing values.")
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+def test_foreacast_valid_index(rng):
+    # Regression test for issue reported at  https://github.com/pymc-devs/pymc-extras/issues/424
+
+    index = pd.date_range(start="2023-05-01", end="2025-01-29", freq="D")
+    T, k = len(index), 2
+    data = np.zeros((T, k))
+    idx = rng.choice(T, size=10, replace=False)
+    cols = rng.choice(k, size=10, replace=True)
+
+    data[idx, cols] = 1
+
+    df_holidays = pd.DataFrame(data, index=index, columns=["Holiday 1", "Holiday 2"])
+
+    data = rng.normal(size=(T, 1))
+    nan_locs = rng.choice(T, size=10, replace=False)
+    data[nan_locs] = np.nan
+    y = pd.DataFrame(data, index=index, columns=["sales"])
+
+    level_trend = st.LevelTrendComponent(order=1, innovations_order=[0])
+    weekly_seasonality = st.TimeSeasonality(
+        season_length=7,
+        state_names=["Sun", "Mon", "Tues", "Wed", "Thu", "Fri", "Sat"],
+        innovations=True,
+        remove_first_state=False,
+    )
+    quarterly_seasonality = st.FrequencySeasonality(season_length=365, n=2, innovations=True)
+    ar1 = st.AutoregressiveComponent(order=1)
+    me = st.MeasurementError()
+
+    exog = st.RegressionComponent(
+        name="exog",  # Name of this exogenous variable component
+        k_exog=2,  # Only one exogenous variable now
+        innovations=False,  # Typically fixed effect (no stochastic evolution)
+        state_names=df_holidays.columns.tolist(),
+    )
+
+    combined_model = level_trend + weekly_seasonality + quarterly_seasonality + me + ar1 + exog
+    ss_mod = combined_model.build()
+
+    with pm.Model(coords=ss_mod.coords) as struct_model:
+        P0_diag = pm.Gamma("P0_diag", alpha=2, beta=10, dims=["state"])
+        P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=["state", "state_aux"])
+
+        initial_trend = pm.Normal("initial_trend", mu=[0], sigma=[0.005], dims=["trend_state"])
+        #     sigma_trend = pm.Gamma("sigma_trend", alpha=2, beta=1, dims=["trend_shock"])  # Applied to the level only
+
+        Seasonal_coefs = pm.ZeroSumNormal(
+            "Seasonal[s=7]_coefs", sigma=0.5, dims=["Seasonal[s=7]_state"]
+        )  # DOW dev. from weekly mean
+        sigma_Seasonal = pm.Gamma(
+            "sigma_Seasonal[s=7]", alpha=2, beta=1
+        )  # How much this dev. can dev.
+
+        Frequency_coefs = pm.Normal(
+            "Frequency[s=365, n=2]", mu=0, sigma=0.5, dims=["Frequency[s=365, n=2]_state"]
+        )  # amplitudes in short-term (weekly noise culprit)
+        sigma_Frequency = pm.Gamma(
+            "sigma_Frequency[s=365, n=2]", alpha=2, beta=1
+        )  # smoothness & adaptability over time
+
+        ar_params = pm.Laplace("ar_params", mu=0, b=0.2, dims=["ar_lag"])
+        sigma_ar = pm.Gamma("sigma_ar", alpha=2, beta=1)
+
+        sigma_measurement_error = pm.HalfStudentT("sigma_MeasurementError", nu=3, sigma=1)
+
+        data_exog = pm.Data("data_exog", df_holidays.values, dims=["time", "exog_state"])
+        beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=["exog_state"])
+
+        ss_mod.build_statespace_graph(y, mode="JAX")
+
+        idata = pm.sample_prior_predictive()
+
+    post = ss_mod.sample_conditional_prior(idata)
+
+    # Define start date and forecast period
+    start_date, n_periods = pd.to_datetime("2024-4-15"), 8
+
+    # Extract exogenous data for the forecast period
+    scenario = {
+        "data_exog": pd.DataFrame(
+            df_holidays.loc[start_date:].iloc[:n_periods], columns=df_holidays.columns
+        )
+    }
+
+    # Generate the forecast
+    forecasts = ss_mod.forecast(idata.prior, scenario=scenario, use_scenario_index=True)
