@@ -31,20 +31,20 @@ ATOL = 1e-6 if floatX.endswith("64") else 1e-3
 RTOL = 1e-6 if floatX.endswith("64") else 1e-3
 
 standard_inout = initialize_filter(StandardFilter())
-standard_inout_batched = initialize_filter(StandardFilter(), batched=True)
+# standard_inout_batched = initialize_filter(StandardFilter(), batched=True)
 cholesky_inout = initialize_filter(SquareRootFilter())
 univariate_inout = initialize_filter(UnivariateFilter())
 
 f_standard = pytensor.function(*standard_inout, on_unused_input="ignore")
-f_standard_batched = pytensor.function(*standard_inout_batched, on_unused_input="ignore")
+# f_standard_batched = pytensor.function(*standard_inout_batched, on_unused_input="ignore")
 f_cholesky = pytensor.function(*cholesky_inout, on_unused_input="ignore")
 f_univariate = pytensor.function(*univariate_inout, on_unused_input="ignore")
 
-filter_funcs = [f_standard, f_standard_batched]  # , f_cholesky, f_univariate]
+filter_funcs = [f_standard]  # , f_cholesky, f_univariate]
 
 filter_names = [
     "StandardFilter",
-    "StandardFilterBatched",
+    # "StandardFilterBatched",
     # "CholeskyFilter",
     # "UnivariateFilter",
 ]
@@ -75,14 +75,13 @@ def test_output_shapes_one_state_one_observed(filter_func, filter_name, rng):
     batch_size = 3 if "batched" in filter_name.lower() else 0
     p, m, r, n = 1, 1, 1, 10
     inputs = make_test_inputs(p, m, r, n, rng, batch_size=batch_size)
-    assert 0
-    # outputs = filter_func(*inputs)
+    outputs = filter_func(*inputs)
 
     for output_idx, name in enumerate(output_names):
         expected_shape = get_expected_shape(name, p, m, r, n, batch_size)
-        # assert outputs[output_idx].shape == expected_shape, (
-        #     f"Shape of {name} does not match expected"
-        # )
+        assert outputs[output_idx].shape == expected_shape, (
+            f"Shape of {name} does not match expected"
+        )
 
 
 @pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)
@@ -331,3 +330,34 @@ def test_kalman_filter_jax(filter):
 
     for name, jax_res, pt_res in zip(output_names, jax_outputs, pt_outputs):
         assert_allclose(jax_res, pt_res, atol=ATOL, rtol=RTOL, err_msg=f"{name} failed!")
+
+
+def test_batched_standard_filter():
+    p, m, r, n = 1, 5, 1, 10
+    input_names = ["data", "x0", "P0", "c", "d", "T", "Z", "R", "H", "Q"]
+    inputs = [
+        pt.as_tensor(x, name=name)
+        for x, name in zip(make_test_inputs(p, m, r, n, rng, batch_size=8), input_names)
+    ]
+    kf = StandardFilter()
+    outputs = kf.build_graph(*inputs)
+    np.testing.assert_equal(outputs[0].shape.eval(), (8, n, m))
+
+
+def test_batched_kalman_smoother():
+    p, m, r, n = 1, 5, 1, 10
+    filter_input_names = ["data", "x0", "P0", "c", "d", "T", "Z", "R", "H", "Q"]
+    smoother_input_names = ["T", "R", "Q", "filtered_states", "filtered_covs"]
+
+    kf_inputs = data, x0, P0, c, d, T, Z, R, H, Q = [
+        pt.as_tensor(x, name=name)
+        for x, name in zip(make_test_inputs(p, m, r, n, rng, batch_size=8), filter_input_names)
+    ]
+    kf = StandardFilter()
+    kf_outputs = kf.build_graph(*kf_inputs)
+
+    ks = KalmanSmoother()
+    ks_inputs = T, R, Q, kf_outputs[0], kf_outputs[3]
+    ks_outputs = ks.build_graph(*ks_inputs)
+
+    np.testing.assert_equal(ks_outputs[0].shape.eval(), (8, n, m))
