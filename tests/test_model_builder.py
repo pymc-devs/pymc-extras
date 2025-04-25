@@ -305,6 +305,7 @@ def test_id():
 
     assert model_builder.id == expected_id
 
+
 @pytest.mark.parametrize("predictions", [True, False])
 def test_predict_respects_predictions_flag(fitted_model_instance, predictions):
     x_pred = np.random.uniform(0, 1, 100)
@@ -324,7 +325,7 @@ def test_predict_respects_predictions_flag(fitted_model_instance, predictions):
         combined=False,
         predictions=predictions,
     )
-    
+
     pp_after = fitted_model_instance.idata.posterior_predictive[output_var].values
 
     # Check predictions group presence
