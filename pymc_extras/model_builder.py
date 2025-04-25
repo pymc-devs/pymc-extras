@@ -628,7 +628,9 @@ class ModelBuilder:
 
         return prior_predictive_samples
 
-    def sample_posterior_predictive(self, X_pred, extend_idata, combined, predictions = True, **kwargs):
+    def sample_posterior_predictive(
+        self, X_pred, extend_idata, combined, predictions=True, **kwargs
+    ):
         """
         Sample from the model's posterior predictive distribution.
 
@@ -652,15 +654,15 @@ class ModelBuilder:
         self._data_setter(X_pred)
 
         with self.model:  # sample with new input data
-            post_pred = pm.sample_posterior_predictive(self.idata, predictions=predictions, **kwargs)
+            post_pred = pm.sample_posterior_predictive(
+                self.idata, predictions=predictions, **kwargs
+            )
             if extend_idata:
                 self.idata.extend(post_pred, join="right")
 
         group_name = "predictions" if predictions else "posterior_predictive"
 
-        posterior_predictive_samples = az.extract(
-            post_pred, group_name, combined=combined
-        )
+        posterior_predictive_samples = az.extract(post_pred, group_name, combined=combined)
 
         return posterior_predictive_samples
 
