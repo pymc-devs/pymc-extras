@@ -2069,6 +2069,14 @@ class PyMCStateSpace:
                 data_dims=["data_time", OBS_STATE_DIM],
             )
 
+            for name in self.data_names:
+                if name in scenario.keys():
+                    pm.set_data(
+                        {"data": np.zeros_like(scenario[name])},
+                        coords={"data_time": np.arange(len(forecast_index))},
+                    )
+                    break
+
             group_idx = FILTER_OUTPUT_TYPES.index(filter_output)
             mu, cov = grouped_outputs[group_idx]
 
