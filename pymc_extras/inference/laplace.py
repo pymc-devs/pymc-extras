@@ -416,7 +416,7 @@ def sample_laplace_posterior(
 
 
 def fit_laplace(
-    optimize_method: minimize_method = "BFGS",
+    optimize_method: minimize_method | Literal["basinhopping"] = "BFGS",
     *,
     model: pm.Model | None = None,
     use_grad: bool | None = None,
@@ -449,8 +449,11 @@ def fit_laplace(
     ----------
     model : pm.Model
         The PyMC model to be fit. If None, the current model context is used.
-    optimize_method : str
-        The optimization method to use. See scipy.optimize.minimize documentation for details.
+    method : str
+        The optimization method to use. Valid choices are: Nelder-Mead, Powell, CG, BFGS, L-BFGS-B, TNC, SLSQP,
+        trust-constr, dogleg, trust-ncg, trust-exact, trust-krylov, and basinhopping.
+
+        See scipy.optimize.minimize documentation for details.
     use_grad : bool | None, optional
         Whether to use gradients in the optimization. Defaults to None, which determines this automatically based on
         the ``method``.
@@ -500,10 +503,10 @@ def fit_laplace(
     diag_jitter: float | None
         A small value added to the diagonal of the inverse Hessian matrix to ensure it is positive semi-definite.
         If None, no jitter is added. Default is 1e-8.
-    optimizer_kwargs: dict, optional
-        Additional keyword arguments to pass to scipy.minimize. See the documentation for scipy.optimize.minimize for
-        details. Arguments that are typically passed via ``options`` will be automatically extracted without the need
-        to use a nested dictionary.
+    optimizer_kwargs
+        Additional keyword arguments to pass to the ``scipy.optimize`` function being used. Unless
+        ``method = "basinhopping"``, ``scipy.optimize.minimize`` will be used. For ``basinhopping``,
+        ``scipy.optimize.basinhopping`` will be used. See the documentation of these functions for details.
     compile_kwargs: dict, optional
         Additional keyword arguments to pass to pytensor.function.
 
