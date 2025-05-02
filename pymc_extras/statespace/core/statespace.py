@@ -2072,7 +2072,7 @@ class PyMCStateSpace:
             for name in self.data_names:
                 if name in scenario.keys():
                     pm.set_data(
-                        {"data": np.zeros_like(scenario[name])},
+                        {"data": np.zeros((len(forecast_index), self.k_endog))},
                         coords={"data_time": np.arange(len(forecast_index))},
                     )
                     break
