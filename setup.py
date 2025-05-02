@@ -60,7 +60,7 @@ with open(DEV_REQUIREMENTS_FILE) as f:
 
 
 extras_require = dict(
-    dask_histogram=["dask[complete]", "xhistogram"],
+    dask_histogram=["dask[complete]<2025.1.1", "xhistogram"],
     histogram=["xhistogram"],
 )
 extras_require["complete"] = sorted(set(itertools.chain.from_iterable(extras_require.values())))

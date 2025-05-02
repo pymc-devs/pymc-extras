@@ -6,7 +6,7 @@ dependencies:
 - pymc>=5.21
 - pytest-cov>=2.5
 - pytest>=3.0
-- dask
+- dask<2025.1.1
 - xhistogram
 - statsmodels
 - numba<=0.60.0
