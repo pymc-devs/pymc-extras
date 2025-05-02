@@ -15,6 +15,7 @@ from pymc.blocking import DictToArrayBijection, RaveledVars
 from pymc.initial_point import make_initial_point_fn
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.pytensorf import join_nonshared_inputs
+from pymc.sampling.jax import _replace_shared_variables
 from pymc.util import get_default_varnames
 from pytensor.compile import Function
 from pytensor.compile.mode import Mode
@@ -146,7 +147,7 @@ def _compile_grad_and_hess_to_jax(
     orig_loss_fn = f_loss.vm.jit_fn
 
     @jax.jit
-    def loss_fn_jax_grad(x, *shared):
+    def loss_fn_jax_grad(x):
         return jax.value_and_grad(lambda x: orig_loss_fn(x)[0])(x)
 
     f_loss_and_grad = loss_fn_jax_grad
@@ -300,6 +301,12 @@ def scipy_optimize_funcs_from_loss(
     [loss], flat_input = join_nonshared_inputs(
         point=initial_point_dict, outputs=[loss], inputs=inputs
     )
+
+    # If we use pytensor gradients, we will use the pytensor function wrapper that handles shared variables. When
+    # computing jax gradients, we discard the function wrapper, so we can't handle shared variables --> rewrite them
+    # away.
+    if use_jax_gradients:
+        [loss] = _replace_shared_variables([loss])
 
     compute_grad = use_grad and not use_jax_gradients
     compute_hess = use_hess and not use_jax_gradients
