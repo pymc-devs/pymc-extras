@@ -3,3 +3,5 @@ blackjax
 
 # Used as benchmark for statespace models
 statsmodels
+pydantic>=2.0.0
+preliz
