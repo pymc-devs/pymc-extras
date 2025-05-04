@@ -82,6 +82,7 @@ Create a prior with a custom transform function by registering it with
 from __future__ import annotations
 
 import copy
+
 from collections.abc import Callable
 from inspect import signature
 from typing import Any, Protocol, runtime_checkable
@@ -90,6 +91,7 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 import xarray as xr
+
 from pydantic import InstanceOf, validate_call
 from pydantic.dataclasses import dataclass
 from pymc.distributions.shape_utils import Dims
@@ -1346,3 +1348,15 @@ class Scaled:
         """
         var = self.dist.create_variable(f"{name}_unscaled")
         return pm.Deterministic(name, var * self.factor, dims=self.dims)
+
+
+def _is_prior_type(data: dict) -> bool:
+    return "dist" in data
+
+
+def _is_censored_type(data: dict) -> bool:
+    return data.keys() == {"class", "data"} and data["class"] == "Censored"
+
+
+register_deserialization(is_type=_is_prior_type, deserialize=Prior.from_dict)
+register_deserialization(is_type=_is_censored_type, deserialize=Censored.from_dict)

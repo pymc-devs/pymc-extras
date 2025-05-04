@@ -1,12 +1,11 @@
-"""Deserialize into a PyMC-Marketing object.
+"""Deserialize dictionaries into Python objects.
 
 This is a two step process:
 
 1. Determine if the data is of the correct type.
 2. Deserialize the data into a python object.
 
-This is used to deserialize JSON data into PyMC-Marketing objects
-throughout the package.
+This is used to deserialize JSON data for PyMC-Marketing.
 
 Examples
 --------
