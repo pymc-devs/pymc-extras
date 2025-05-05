@@ -57,6 +57,13 @@ docs = [
   "sphinx>=4.0",
   "pymc-sphinx-theme@git+https://github.com/pymc-devs/pymc-sphinx-theme",
 ]
+dask_histogram = [
+  "dask[complete]<2025.1.1",
+  "xhistogram",
+]
+histogram = [
+  "xhistogram",
+]
 
 [project.urls]
 Documentation = "https://pymc-extras.readthedocs.io/"
