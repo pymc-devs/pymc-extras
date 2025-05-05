@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
 
 [project]
 name = "pymc-extras"
@@ -62,15 +62,24 @@ Documentation = "https://pymc-extras.readthedocs.io/"
 Repository = "https://github.com/pymc-devs/pymc-extras.git"
 Issues = "https://github.com/pymc-devs/pymc-extras/issues"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["pymc_extras"]
-exclude = ["tests", "notebooks"]
-# Additional install requirements for running tests
-namespaces = false
+[tool.hatch.version]
+source = 'vcs'
 
-[tool.setuptools.dynamic]
-version = {file = "pymc_extras/version.txt"}
+[tool.hatch.build.hooks.vcs]
+version-file = "_version.py"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+  '/.github',
+  '/notebooks',
+  '/tests'
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["pymc_extras"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 minversion = "6.0"

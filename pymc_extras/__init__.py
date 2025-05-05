@@ -22,7 +22,6 @@ from pymc_extras.model.marginal.marginal_model import (
     recover_marginals,
 )
 from pymc_extras.model.model_api import as_model
-from pymc_extras.version import __version__
 
 _log = logging.getLogger("pmx")
 
