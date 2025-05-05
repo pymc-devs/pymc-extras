@@ -3,11 +3,11 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pymc_extras"
+name = "pymc-extras"
 authors = [
   {name = "PyMC Developers", email = "pymc.devs@gmail.com"},
 ]
-description = "A home for new additions to PyMC, which may include unusual probability distributions, advanced model fitting algorithms, or any code that may be inappropriate to include in the pymc repository, but may want to be made available to users."
+description =  "A home for new additions to PyMC, which may include unusual probability distribitions, advanced model fitting algorithms, or any code that may be inappropriate to include in the pymc repository, but may want to be made available to users."
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Programming Language :: Python",
@@ -34,15 +34,20 @@ keywords = [
 license = {file = "LICENSE"}
 dynamic = ["version"]  # specify the version in the __init__.py file
 dependencies = [
-  "pymc>=5.16.1",
+  "pymc>=5.21.1",
   "scikit-learn",
+  "better-optimize"
 ]
 
 [project.optional-dependencies]
+complete = [
+  "dask[complete]<2025.1.1",
+  "xhistogram",
+]
 dev = [
   "pytest>=6.0",
-  "dask[all]",
-  "blackjax>1.0.0",
+  "dask[all]<2025.1.1",
+  "blackjax",
   "statsmodels",
 ]
 docs = [
@@ -53,7 +58,7 @@ docs = [
 ]
 
 [project.urls]
-Documentation = "https://www.pymc.io/projects/extras/"
+Documentation = "https://pymc-extras.readthedocs.io/"
 Repository = "https://github.com/pymc-devs/pymc-extras.git"
 Issues = "https://github.com/pymc-devs/pymc-extras/issues"
 
