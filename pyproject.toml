@@ -72,7 +72,6 @@ version-file = "_version.py"
 exclude = [
   '/.github',
   '/notebooks',
-  '/tests'
 ]
 
 [tool.hatch.build.targets.wheel]
