@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pymc_experimental"
+name = "pymc_extras"
 authors = [
   {name = "PyMC Developers", email = "pymc.devs@gmail.com"},
 ]
@@ -53,19 +53,19 @@ docs = [
 ]
 
 [project.urls]
-Documentation = "https://www.pymc.io/projects/experimental/"
-Repository = "https://github.com/pymc-devs/pymc-experimental.git"
-Issues = "https://github.com/pymc-devs/pymc-experimental/issues"
+Documentation = "https://www.pymc.io/projects/extras/"
+Repository = "https://github.com/pymc-devs/pymc-extras.git"
+Issues = "https://github.com/pymc-devs/pymc-extras/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pymc_experimental"]
+include = ["pymc_extras"]
 exclude = ["tests", "notebooks"]
 # Additional install requirements for running tests
 namespaces = false
 
 [tool.setuptools.dynamic]
-version = {attr = "pymc_experimental.__version__"}
+version = {attr = "pymc_extras.__version__"}
 
 [tool.pytest.ini_options]
 minversion = "6.0"
