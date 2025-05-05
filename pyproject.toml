@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "numpy"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -70,7 +70,7 @@ exclude = ["tests", "notebooks"]
 namespaces = false
 
 [tool.setuptools.dynamic]
-version = {attr = "pymc_extras.__version__"}
+version = {file = "pymc_extras/version.txt"}
 
 [tool.pytest.ini_options]
 minversion = "6.0"
