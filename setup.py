@@ -12,23 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import os
-
-from codecs import open
-
-from setuptools import find_packages, setup
-
-
-def read_version():
-    here = os.path.abspath(os.path.dirname(__file__))
-    with open(os.path.join(here, "pymc_extras", "version.txt")) as f:
-        version = f.read().strip()
-    return version
-
+from setuptools import setup
 
 if __name__ == "__main__":
-    setup(
-        name="pymc-extras",
-        version=read_version(),
-        packages=find_packages(exclude=["tests*"]),
-    )
+    setup()
