@@ -1,4 +1,4 @@
-name: pymc-extras-test
+name: pymc-extras
 channels:
 - conda-forge
 - nodefaults
