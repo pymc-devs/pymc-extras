@@ -16,7 +16,7 @@ from pymc_extras.statespace.filters.utilities import (
     split_vars_into_seq_and_nonseq,
     stabilize,
 )
-from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL, ALL_KF_OUTPUT_NAMES
+from pymc_extras.statespace.utils.constants import ALL_KF_OUTPUT_NAMES, JITTER_DEFAULT, MISSING_FILL
 
 MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
 PARAM_NAMES = ["c", "d", "T", "Z", "R", "H", "Q"]
@@ -75,14 +75,23 @@ class BaseFilter(ABC):
             "data": (time, obs),
             "a0": (states,),
             "x0": (states,),
+            "initial_state": (states,),
             "P0": (states, states),
+            "initial_state_cov": (states, states),
             "c": (states,),
+            "state_intercept": (states,),
             "d": (obs,),
+            "obs_intercept": (obs,),
             "T": (states, states),
+            "transition": (states, states),
             "Z": (obs, states),
+            "design": (obs, states),
             "R": (states, exog),
+            "selection": (states, exog),
             "H": (obs, obs),
+            "obs_cov": (obs, obs),
             "Q": (exog, exog),
+            "state_cov": (exog, exog),
             "filtered_states": (time, states),
             "filtered_covariances": (time, states, states),
             "predicted_states": (time, states),
@@ -306,6 +315,7 @@ class BaseFilter(ABC):
             cov_jitter=cov_jitter,
         )
         filter_outputs = pt.vectorize(fn, signature=signature)(data, a0, P0, c, d, T, Z, R, H, Q)
+        # filter_outputs = fn(data, a0, P0, c, d, T, Z, R, H, Q)
         for output, name in zip(filter_outputs, ALL_KF_OUTPUT_NAMES):
             output.name = name
 

@@ -15,6 +15,8 @@ from pymc.model import modelcontext
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import RandomState
 from pytensor import Variable, graph_replace
+from pytensor.compile import get_mode
+from pytensor.graph.replace import vectorize_graph
 from rich.box import SIMPLE_HEAD
 from rich.console import Console
 from rich.table import Table
@@ -37,6 +39,7 @@ from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     FILTER_OUTPUT_TYPES,
     JITTER_DEFAULT,
+    LONG_MATRIX_NAMES,
     MATRIX_DIMS,
     MATRIX_NAMES,
     OBS_STATE_DIM,
@@ -46,7 +49,6 @@ from pymc_extras.statespace.utils.constants import (
     VECTOR_VALUED,
 )
 from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
-from pytensor.graph.replace import vectorize_graph
 
 _log = logging.getLogger("pymc.experimental.statespace")
 
@@ -61,7 +63,7 @@ FILTER_FACTORY = {
 def _validate_filter_arg(filter_arg):
     if filter_arg.lower() not in FILTER_OUTPUT_TYPES:
         raise ValueError(
-            f'filter_output should be one of {", ".join(FILTER_OUTPUT_TYPES)}, received {filter_arg}'
+            f"filter_output should be one of {', '.join(FILTER_OUTPUT_TYPES)}, received {filter_arg}"
         )
 
 
@@ -736,6 +738,8 @@ class PyMCStateSpace:
 
         replacement_dict = {var: pymc_model[name] for name, var in self._name_to_variable.items()}
         self.subbed_ssm = vectorize_graph(matrices, replace=replacement_dict)
+        for name, matrix in zip(LONG_MATRIX_NAMES, self.subbed_ssm):
+            matrix.name = name
 
     def _insert_data_variables(self):
         """

@@ -1,8 +1,11 @@
+from functools import partial
+
 import pytensor
 import pytensor.tensor as pt
-from functools import partial
+
 from pytensor.compile import get_mode
 from pytensor.tensor.nlinalg import matrix_dot
+
 from pymc_extras.statespace.filters.utilities import (
     quad_form_sym,
     split_vars_into_seq_and_nonseq,
@@ -73,14 +76,23 @@ class KalmanSmoother:
             "data": (time, obs),
             "a0": (states,),
             "x0": (states,),
+            "initial_state": (states,),
             "P0": (states, states),
+            "initial_state_cov": (states, states),
             "c": (states,),
+            "state_intercept": (states,),
             "d": (obs,),
+            "obs_intercept": (obs,),
             "T": (states, states),
+            "transition": (states, states),
             "Z": (obs, states),
+            "design": (obs, states),
             "R": (states, exog),
+            "selection": (states, exog),
             "H": (obs, obs),
+            "obs_cov": (obs, obs),
             "Q": (exog, exog),
+            "state_cov": (exog, exog),
             "filtered_states": (time, states),
             "filtered_covariances": (time, states, states),
             "predicted_states": (time, states),
@@ -163,6 +175,7 @@ class KalmanSmoother:
             cov_jitter=cov_jitter,
         )
         return pt.vectorize(fn, signature=signature)(T, R, Q, filtered_states, filtered_covariances)
+        # return fn(T, R, Q, filtered_states, filtered_covariances)
 
     def smoother_step(self, *args):
         a, P, a_smooth, P_smooth, T, R, Q = self.unpack_args(args)
