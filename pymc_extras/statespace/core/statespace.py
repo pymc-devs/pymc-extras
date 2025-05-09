@@ -46,6 +46,7 @@ from pymc_extras.statespace.utils.constants import (
     VECTOR_VALUED,
 )
 from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
+from pytensor.graph.replace import vectorize_graph
 
 _log = logging.getLogger("pymc.experimental.statespace")
 
@@ -734,7 +735,7 @@ class PyMCStateSpace:
         matrices = list(self._unpack_statespace_with_placeholders())
 
         replacement_dict = {var: pymc_model[name] for name, var in self._name_to_variable.items()}
-        self.subbed_ssm = graph_replace(matrices, replace=replacement_dict, strict=True)
+        self.subbed_ssm = vectorize_graph(matrices, replace=replacement_dict)
 
     def _insert_data_variables(self):
         """

@@ -733,8 +733,7 @@ def test_invalid_scenarios():
     # Giving a list, tuple, or Series when a matrix of data is expected should always raise
     with pytest.raises(
         ValueError,
-        match="Scenario data for variable 'a' has the wrong number of columns. "
-        "Expected 2, got 1",
+        match="Scenario data for variable 'a' has the wrong number of columns. Expected 2, got 1",
     ):
         for data_type in [list, tuple, pd.Series]:
             ss_mod._validate_scenario_data(data_type(np.zeros(10)))
@@ -743,15 +742,14 @@ def test_invalid_scenarios():
     # Providing irrevelant data raises
     with pytest.raises(
         ValueError,
-        match="Scenario data provided for variable 'jk lol', which is not an exogenous " "variable",
+        match="Scenario data provided for variable 'jk lol', which is not an exogenous variable",
     ):
         ss_mod._validate_scenario_data({"jk lol": np.zeros(10)})
 
     # Incorrect 2nd dimension of a non-dataframe
     with pytest.raises(
         ValueError,
-        match="Scenario data for variable 'a' has the wrong number of columns. Expected "
-        "2, got 1",
+        match="Scenario data for variable 'a' has the wrong number of columns. Expected 2, got 1",
     ):
         scenario = np.zeros(10).tolist()
         ss_mod._validate_scenario_data(scenario)
@@ -1017,3 +1015,13 @@ def test_foreacast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
 
     assert forecasts.forecast_latent.shape[2] == n_periods
     assert forecasts.forecast_observed.shape[2] == n_periods
+
+
+@pytest.mark.parametrize("batch_size", [(10,), (10, 3, 5)])
+def test_insert_batched_rvs(ss_mod, batch_size):
+    with pm.Model():
+        rho = pm.Normal("rho", shape=batch_size)
+        zeta = pm.Normal("zeta", shape=batch_size)
+        ss_mod._insert_random_variables()
+    matrices = ss_mod.unpack_statespace()
+    assert matrices[4].type.shape == (*batch_size, 2, 2)
