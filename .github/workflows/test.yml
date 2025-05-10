@@ -10,7 +10,6 @@ on:
       - "tests/**"
       - "setup.py"
       - "pyproject.toml"
-      - "buildosx"
       - "conda-envs/**"
       - "codecov.yml"
 
@@ -37,14 +36,15 @@ jobs:
         shell: bash -leo pipefail {0}
     steps:
       - uses: actions/checkout@v4
-      - uses: mamba-org/setup-micromamba@v1
+      - uses: conda-incubator/setup-miniconda@v3
         with:
           environment-file: conda-envs/environment-test.yml
-          create-args: >-
-            python=${{matrix.python-version}}
-          environment-name: pymc-extras-test
-          init-shell: bash
-          cache-environment: true
+          miniconda-version: "latest"
+          mamba-version: "*"
+          activate-environment: pymc-extras-test
+          channel-priority: strict
+          python-version: ${{matrix.python-version}}
+          use-mamba: true
       - name: Install pymc-extras
         run: |
           pip install -e .
@@ -80,15 +80,15 @@ jobs:
         shell: cmd /C call {0}
     steps:
       - uses: actions/checkout@v4
-      - uses: mamba-org/setup-micromamba@v1
+      - uses: conda-incubator/setup-miniconda@v3
         with:
-          environment-file: conda-envs/windows-environment-test.yml
-          micromamba-version: "1.5.10-0"  # Until https://github.com/mamba-org/mamba/issues/3467 is not fixed
-          create-args: >-
-            python=${{matrix.python-version}}
-          environment-name: pymc-extras-test
-          init-shell: cmd.exe
-          cache-environment: true
+          environment-file: conda-envs/environment-test.yml
+          miniconda-version: "latest"
+          mamba-version: "*"
+          activate-environment: pymc-extras-test
+          channel-priority: strict
+          python-version: ${{matrix.python-version}}
+          use-mamba: true
       - name: Install pymc-extras
         run: |
           pip install -e .
