@@ -9,8 +9,10 @@ dependencies:
   - dask<2025.1.1
   - xhistogram
   - statsmodels
-  - jax
-  - blackjax
   - numba
   - pytest
   - pytest-cov
+  - pip
+  - pip:
+      - jax
+      - blackjax

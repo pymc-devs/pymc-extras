@@ -43,6 +43,8 @@ jobs:
           mamba-version: "*"
           activate-environment: pymc-extras-test
           channel-priority: strict
+          channels: conda-forge, nodefaults
+          conda-remove-defaults: true
           python-version: ${{matrix.python-version}}
           use-mamba: true
       - name: Install pymc-extras
@@ -87,6 +89,8 @@ jobs:
           mamba-version: "*"
           activate-environment: pymc-extras-test
           channel-priority: strict
+          channels: conda-forge, nodefaults
+          conda-remove-defaults: true
           python-version: ${{matrix.python-version}}
           use-mamba: true
       - name: Install pymc-extras
