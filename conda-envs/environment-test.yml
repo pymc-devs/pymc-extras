@@ -12,6 +12,7 @@ dependencies:
   - numba
   - pytest
   - pytest-cov
+  - libgcc<15
   - pip
   - pip:
       - jax

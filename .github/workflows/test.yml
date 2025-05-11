@@ -43,17 +43,14 @@ jobs:
         shell: bash -leo pipefail {0}
     steps:
       - uses: actions/checkout@v4
-      - uses: conda-incubator/setup-miniconda@v3
+      - uses: mamba-org/setup-micromamba@v2
         with:
           environment-file: conda-envs/environment-test.yml
-          miniconda-version: "latest"
-          mamba-version: "*"
-          activate-environment: pymc-extras-test
-          channel-priority: strict
-          channels: conda-forge, nodefaults
-          conda-remove-defaults: true
-          python-version: ${{matrix.python-version}}
-          use-mamba: true
+          create-args: >-
+            python=${{matrix.python-version}}
+          environment-name: pymc-extras-test
+          init-shell: bash
+          cache-environment: true
       - name: Install pymc-extras
         run: |
           pip install -e .
@@ -89,17 +86,15 @@ jobs:
         shell: cmd /C call {0}
     steps:
       - uses: actions/checkout@v4
-      - uses: conda-incubator/setup-miniconda@v3
+      - uses: mamba-org/setup-micromamba@v2
         with:
           environment-file: conda-envs/environment-test.yml
-          miniconda-version: "latest"
-          mamba-version: "*"
-          activate-environment: pymc-extras-test
-          channel-priority: strict
-          channels: conda-forge, nodefaults
-          conda-remove-defaults: true
-          python-version: ${{matrix.python-version}}
-          use-mamba: true
+          micromamba-version: "latest"
+          create-args: >-
+            python=${{matrix.python-version}}
+          environment-name: pymc-extras-test
+          init-shell: cmd
+          cache-environment: true
       - name: Install pymc-extras
         run: |
           pip install -e .
