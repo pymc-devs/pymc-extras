@@ -93,7 +93,7 @@ jobs:
           create-args: >-
             python=${{matrix.python-version}}
           environment-name: pymc-extras-test
-          init-shell: cmd
+          init-shell: cmd.exe
           cache-environment: true
       - name: Install pymc-extras
         run: |
