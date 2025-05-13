@@ -1,6 +1,7 @@
 import logging
 import warnings
 
+from ast import Dict
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
@@ -232,6 +233,7 @@ class PyMCStateSpace:
         verbose: bool = True,
         measurement_error: bool = False,
         mode: str | None = None,
+        batch_coords: dict[str, Sequence[str]] | None = None,
     ):
         self._fit_coords: dict[str, Sequence[str]] | None = None
         self._fit_dims: dict[str, Sequence[str]] | None = None
@@ -248,6 +250,7 @@ class PyMCStateSpace:
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
         self.mode = mode
+        self.batch_coords = batch_coords
 
         # All models contain a state space representation and a Kalman filter
         self.ssm = PytensorRepresentation(k_endog, k_states, k_posdef)
@@ -924,6 +927,7 @@ class PyMCStateSpace:
             obs_coords=obs_coords,
             register_data=register_data,
             missing_fill_value=missing_fill_value,
+            batch_coords=self.batch_coords,
         )
 
         filter_outputs = self.kalman_filter.build_graph(
@@ -946,6 +950,8 @@ class PyMCStateSpace:
 
         obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_state"]
         obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
+        if self.batch_coords is not None:
+            obs_dims = (*self.batch_coords.keys(), *obs_dims)
 
         SequenceMvNormal(
             "obs",
