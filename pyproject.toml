@@ -53,9 +53,8 @@ dev = [
 ]
 docs = [
   "nbsphinx>=0.4.2",
-  "pydata-sphinx-theme>=0.6.3",
   "sphinx>=4.0",
-  "pymc-sphinx-theme@git+https://github.com/pymc-devs/pymc-sphinx-theme",
+  "pymc-sphinx-theme>=0.16",
 ]
 dask_histogram = [
   "dask[complete]<2025.1.1",
