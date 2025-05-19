@@ -741,7 +741,7 @@ class PyMCStateSpace:
 
         replacement_dict = {var: pymc_model[name] for name, var in self._name_to_variable.items()}
         self.subbed_ssm = vectorize_graph(matrices, replace=replacement_dict)
-        for name, matrix in zip(LONG_MATRIX_NAMES, self.subbed_ssm):
+        for name, matrix in zip(MATRIX_NAMES, self.subbed_ssm):
             matrix.name = name
 
     def _insert_data_variables(self):

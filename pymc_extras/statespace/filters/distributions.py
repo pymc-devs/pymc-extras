@@ -446,7 +446,6 @@ class SequenceMvNormal(Continuous):
 
 @_logprob.register(KalmanFilterRV)
 def sequence_mvnormal_logp(op, values, mus, covs, logp, rng, **kwargs):
-    print(values[0].type.shape, mus.type.shape, covs.type.shape)
     return check_parameters(
         logp,
         pt.eq(values[0].shape[-2], mus.shape[-2]),
