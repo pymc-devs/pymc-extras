@@ -53,7 +53,7 @@ jobs:
           cache-environment: true
       - name: Install pymc-extras
         run: |
-          pip install -e ".[test]"
+          pip install -e ".[dev]"
           python --version
       - name: Run tests
         run: |
@@ -97,7 +97,7 @@ jobs:
           cache-environment: true
       - name: Install pymc-extras
         run: |
-          pip install -e ".[test]"
+          pip install -e ".[dev]"
           python --version
       - name: Run tests
         # This job uses a cmd shell, therefore the environment variable syntax is different!
