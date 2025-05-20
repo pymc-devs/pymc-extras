@@ -3,16 +3,18 @@ channels:
 - conda-forge
 - nodefaults
 dependencies:
-- pymc>=5.21
-- pytest-cov>=2.5
-- pytest>=3.0
-- dask<2025.1.1
-- xhistogram
-- statsmodels
-- numba<=0.60.0
-- pydantic>=2.0.0
-- pip
-- pip:
-  - blackjax
+  - pymc>=5.21.1
   - scikit-learn
-  - better_optimize
+  - better-optimize
+  - dask<2025.1.1
+  - xhistogram
+  - statsmodels
+  - numba
+  - pytest
+  - pytest-cov
+  - libgcc<15
+  - pydantic>=2.0.0
+  - pip
+  - pip:
+      - jax
+      - blackjax

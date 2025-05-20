@@ -9,11 +9,22 @@ build:
 
 python:
    install:
-   - requirements: requirements-docs.txt
-   - requirements: requirements.txt
    - method: pip
      path: .
+     extra_requirements:
+     - docs
 
 sphinx:
   fail_on_warning: false
   configuration: docs/conf.py
+
+search:
+  ranking:
+    _sources/*: -10
+    _modules/*: -5
+    genindex.html: -9
+
+  ignore:
+    - 404.html
+    - search.html
+    - index.html

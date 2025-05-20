@@ -1,3 +1,92 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pymc-extras"
+authors = [
+  {name = "PyMC Developers", email = "pymc.devs@gmail.com"},
+]
+description =  "A home for new additions to PyMC, which may include unusual probability distribitions, advanced model fitting algorithms, or any code that may be inappropriate to include in the pymc repository, but may want to be made available to users."
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "License :: OSI Approved :: Apache Software License",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Mathematics",
+  "Operating System :: OS Independent",
+]
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = [
+  "probability",
+  "machine learning",
+  "statistics",
+  "mcmc",
+  "sampling",
+  "bayesian",
+]
+license = {file = "LICENSE"}
+dynamic = ["version"]  # specify the version in the __init__.py file
+dependencies = [
+  "pymc>=5.21.1",
+  "scikit-learn",
+  "better-optimize"
+]
+
+[project.optional-dependencies]
+complete = [
+  "dask[complete]<2025.1.1",
+  "xhistogram",
+]
+dev = [
+  "pytest>=6.0",
+  "dask[all]<2025.1.1",
+  "blackjax",
+  "statsmodels",
+]
+docs = [
+  "nbsphinx>=0.4.2",
+  "sphinx>=4.0",
+  "pymc-sphinx-theme>=0.16",
+]
+dask_histogram = [
+  "dask[complete]<2025.1.1",
+  "xhistogram",
+]
+histogram = [
+  "xhistogram",
+]
+
+[project.urls]
+Documentation = "https://pymc-extras.readthedocs.io/"
+Repository = "https://github.com/pymc-devs/pymc-extras.git"
+Issues = "https://github.com/pymc-devs/pymc-extras/issues"
+
+[tool.hatch.version]
+source = 'vcs'
+
+[tool.hatch.build.hooks.vcs]
+version-file = "_version.py"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+  '/.github',
+  '/notebooks',
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["pymc_extras"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 xfail_strict = true

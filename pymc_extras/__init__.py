@@ -13,6 +13,8 @@
 #   limitations under the License.
 import logging
 
+from importlib.metadata import version
+
 from pymc_extras import gp, statespace, utils
 from pymc_extras.distributions import *
 from pymc_extras.inference import find_MAP, fit, fit_laplace, fit_pathfinder
@@ -22,7 +24,6 @@ from pymc_extras.model.marginal.marginal_model import (
     recover_marginals,
 )
 from pymc_extras.model.model_api import as_model
-from pymc_extras.version import __version__
 
 _log = logging.getLogger("pmx")
 
@@ -31,3 +32,6 @@ if not logging.root.handlers:
     if len(_log.handlers) == 0:
         handler = logging.StreamHandler()
         _log.addHandler(handler)
+
+
+__version__ = version("pymc-extras")
