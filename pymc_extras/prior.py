@@ -443,6 +443,9 @@ class Prior:
         if isinstance(dims, str):
             dims = (dims,)
 
+        if isinstance(dims, list):
+            dims = tuple(dims)
+
         self._dims = dims or ()
 
         self._param_dims_work()
