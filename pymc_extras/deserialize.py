@@ -5,11 +5,9 @@ This is a two step process:
 1. Determine if the data is of the correct type.
 2. Deserialize the data into a python object.
 
-This is used to deserialize JSON data for PyMC-Marketing.
-
 Examples
 --------
-Make use of the already registered PyMC-Marketing deserializers:
+Make use of the already registered deserializers:
 
 .. code-block:: python
 
@@ -182,10 +180,6 @@ def register_deserialization(is_type: IsType, deserialize: Deserialize) -> None:
 
     Use the :func:`deserialize` function to then deserialize data using all registered
     deserialize functions.
-
-    Classes from PyMC-Marketing have their deserialization mappings registered
-    automatically. However, custom classes will need to be registered manually
-    using this function before they can be deserialized.
 
     Parameters
     ----------
