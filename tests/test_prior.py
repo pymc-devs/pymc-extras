@@ -8,6 +8,7 @@ import pytest
 import xarray as xr
 
 from graphviz.graphs import Digraph
+from preliz.distributions import distributions as preliz_distributions
 from pydantic import ValidationError
 from pymc.model_graph import fast_eval
 
@@ -30,8 +31,6 @@ from pymc_extras.prior import (
     register_tensor_transform,
     sample_prior,
 )
-
-pz = pytest.importorskip("preliz")
 
 
 @pytest.mark.parametrize(
@@ -133,7 +132,7 @@ def test_doesnt_check_validity_values() -> None:
 def test_preliz() -> None:
     var = Prior("Normal", mu=0, sigma=1)
     dist = var.preliz
-    assert isinstance(dist, pz.distributions.Distribution)
+    assert isinstance(dist, preliz_distributions.Distribution)
 
 
 @pytest.mark.parametrize(
@@ -442,7 +441,7 @@ def test_sample_prior() -> None:
     )
 
     coords = {"channel": ["A", "B", "C"]}
-    prior = var.sample_prior(coords=coords, samples=25)
+    prior = var.sample_prior(coords=coords, draws=25)
 
     assert isinstance(prior, xr.Dataset)
     assert prior.sizes == {"chain": 1, "draw": 25, "channel": 3}
@@ -614,7 +613,7 @@ def test_custom_transform() -> None:
     register_tensor_transform(new_transform_name, lambda x: x**2)
 
     dist = Prior("Normal", transform=new_transform_name)
-    prior = dist.sample_prior(samples=10)
+    prior = dist.sample_prior(draws=10)
     df_prior = prior.to_dataframe()
 
     np.testing.assert_array_equal(df_prior["var"].to_numpy(), df_prior["var_raw"].to_numpy() ** 2)
@@ -625,7 +624,7 @@ def test_custom_transform_comes_first() -> None:
     register_tensor_transform("square", lambda x: 2 * x)
 
     dist = Prior("Normal", transform="square")
-    prior = dist.sample_prior(samples=10)
+    prior = dist.sample_prior(draws=10)
     df_prior = prior.to_dataframe()
 
     np.testing.assert_array_equal(df_prior["var"].to_numpy(), 2 * df_prior["var_raw"].to_numpy())
@@ -763,7 +762,7 @@ def test_censored_sample_prior() -> None:
     censored_normal = Censored(normal, lower=0)
 
     coords = {"channel": ["A", "B", "C"]}
-    prior = censored_normal.sample_prior(coords=coords, samples=25)
+    prior = censored_normal.sample_prior(coords=coords, draws=25)
 
     assert isinstance(prior, xr.Dataset)
     assert prior.sizes == {"chain": 1, "draw": 25, "channel": 3}
@@ -1089,7 +1088,7 @@ def test_scaled_applies_factor() -> None:
     scaled = Scaled(normal, factor=factor)
 
     # Sample from prior to verify scaling
-    prior = sample_prior(scaled, samples=10, name="scaled_var")
+    prior = sample_prior(scaled, draws=10, name="scaled_var")
     df_prior = prior.to_dataframe()
 
     # Check that scaled values are original values times the factor
@@ -1105,7 +1104,7 @@ def test_scaled_with_tensor_factor() -> None:
     scaled = Scaled(normal, factor=factor)
 
     # Sample from prior to verify tensor scaling
-    prior = sample_prior(scaled, samples=10, name="scaled_var")
+    prior = sample_prior(scaled, draws=10, name="scaled_var")
     df_prior = prior.to_dataframe()
 
     # Check that scaled values are original values times the factor
