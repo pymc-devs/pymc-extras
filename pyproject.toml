@@ -39,6 +39,7 @@ dependencies = [
   "scikit-learn",
   "better-optimize",
   "pydantic>=2.0.0",
+  "preliz",
 ]
 
 [project.optional-dependencies]
