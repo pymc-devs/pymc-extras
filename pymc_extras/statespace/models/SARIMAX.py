@@ -158,7 +158,7 @@ class BayesianSARIMA(PyMCStateSpace):
             rho = pm.Beta("ar_params", alpha=5, beta=1, dims=ss_mod.param_dims["ar_params"])
             theta = pm.Normal("ma_params", mu=0.0, sigma=0.5, dims=ss_mod.param_dims["ma_params"])
 
-            ss_mod.build_statespace_graph(df, mode="JAX")
+            ss_mod.build_statespace_graph(df)
             idata = pm.sample(nuts_sampler='numpyro')
 
     References
@@ -366,7 +366,7 @@ class BayesianSARIMA(PyMCStateSpace):
 
         return coords
 
-    def _stationary_initialization(self, mode=None):
+    def _stationary_initialization(self):
         # Solve for matrix quadratic for P0
         T = self.ssm["transition"]
         R = self.ssm["selection"]
@@ -374,9 +374,7 @@ class BayesianSARIMA(PyMCStateSpace):
         c = self.ssm["state_intercept"]
 
         x0 = pt.linalg.solve(pt.identity_like(T) - T, c, assume_a="gen", check_finite=True)
-
-        method = "direct" if (self.k_states < 5) or (mode == "JAX") else "bilinear"
-        P0 = solve_discrete_lyapunov(T, pt.linalg.matrix_dot(R, Q, R.T), method=method)
+        P0 = solve_discrete_lyapunov(T, pt.linalg.matrix_dot(R, Q, R.T), method="bilinear")
 
         return x0, P0
 

@@ -5,7 +5,6 @@ import pytensor
 import pytensor.tensor as pt
 
 from pymc.pytensorf import constant_fold
-from pytensor.compile.mode import get_mode
 from pytensor.graph.basic import Variable
 from pytensor.raise_op import Assert
 from pytensor.tensor import TensorVariable
@@ -28,14 +27,9 @@ assert_time_varying_dim_correct = Assert(
 
 
 class BaseFilter(ABC):
-    def __init__(self, mode=None):
+    def __init__(self):
         """
         Kalman Filter.
-
-        Parameters
-        ----------
-        mode : str, optional
-            The mode used for Pytensor compilation. Defaults to None.
 
         Notes
         -----
@@ -44,9 +38,6 @@ class BaseFilter(ABC):
 
         Attributes
         ----------
-        mode : str or None
-            The mode used for Pytensor compilation.
-
         seq_names : list[str]
             A list of name representing time-varying statespace matrices. That is, inputs that will need to be
             provided to the `sequences` argument of `pytensor.scan`
@@ -56,7 +47,6 @@ class BaseFilter(ABC):
             to the `non_sequences` argument of `pytensor.scan`
         """
 
-        self.mode: str = mode
         self.seq_names: list[str] = []
         self.non_seq_names: list[str] = []
 
@@ -153,7 +143,6 @@ class BaseFilter(ABC):
         R,
         H,
         Q,
-        mode=None,
         return_updates=False,
         missing_fill_value=None,
         cov_jitter=None,
@@ -165,9 +154,6 @@ class BaseFilter(ABC):
         ----------
         data : TensorVariable
             Data to be filtered
-
-        mode : optional, str
-            Pytensor compile mode, passed to pytensor.scan
 
         return_updates: bool, default False
             Whether to return updates associated with the pytensor scan. Should only be requried to debug pruposes.
@@ -199,7 +185,6 @@ class BaseFilter(ABC):
         if cov_jitter is None:
             cov_jitter = JITTER_DEFAULT
 
-        self.mode = mode
         self.missing_fill_value = missing_fill_value
         self.cov_jitter = cov_jitter
 
@@ -227,7 +212,6 @@ class BaseFilter(ABC):
             outputs_info=[None, a0, None, None, P0, None, None],
             non_sequences=non_sequences,
             name="forward_kalman_pass",
-            mode=get_mode(self.mode),
             strict=False,
         )
 
@@ -800,7 +784,6 @@ class UnivariateFilter(BaseFilter):
             self._univariate_inner_filter_step,
             sequences=[y_masked, Z_masked, d, pt.diag(H_masked), nan_mask],
             outputs_info=[a, P, None, None, None],
-            mode=get_mode(self.mode),
             name="univariate_inner_scan",
         )
 
