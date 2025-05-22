@@ -128,32 +128,51 @@ def ss_mod_no_exog_dt(rng):
 
 
 @pytest.fixture(scope="session")
-def exog_ss_mod(rng):
-    ll = st.LevelTrendComponent()
-    reg = st.RegressionComponent(name="exog", state_names=["a", "b", "c"])
-    mod = (ll + reg).build(verbose=False)
+def exog_data(rng):
+    # simulate data
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range(start="2023-05-01", end="2023-05-10", freq="D"),
+            "x1": rng.choice(2, size=10, replace=True).astype(float),
+            "y": rng.normal(size=(10,)),
+        }
+    )
 
-    return mod
+    df.loc[[1, 3, 9], ["y"]] = np.nan
+    return df.set_index("date")
 
 
 @pytest.fixture(scope="session")
-def exog_pymc_mod(exog_ss_mod, rng):
-    y = rng.normal(size=(100, 1)).astype(floatX)
-    X = rng.normal(size=(100, 3)).astype(floatX)
+def exog_ss_mod(exog_data):
+    level_trend = st.LevelTrendComponent(order=1, innovations_order=[0])
+    exog = st.RegressionComponent(
+        name="exog",  # Name of this exogenous variable component
+        k_exog=1,  # Only one exogenous variable now
+        innovations=False,  # Typically fixed effect (no stochastic evolution)
+        state_names=exog_data[["x1"]].columns.tolist(),
+    )
 
-    with pm.Model(coords=exog_ss_mod.coords) as m:
-        exog_data = pm.Data("data_exog", X)
-        initial_trend = pm.Normal("initial_trend", dims=["trend_state"])
-        P0_sigma = pm.Exponential("P0_sigma", 1)
-        P0 = pm.Deterministic(
-            "P0", pt.eye(exog_ss_mod.k_states) * P0_sigma, dims=["state", "state_aux"]
+    combined_model = level_trend + exog
+    return combined_model.build()
+
+
+@pytest.fixture(scope="session")
+def exog_pymc_mod(exog_ss_mod, exog_data):
+    # define pymc model
+    with pm.Model(coords=exog_ss_mod.coords) as struct_model:
+        P0_diag = pm.Gamma("P0_diag", alpha=2, beta=4, dims=["state"])
+        P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=["state", "state_aux"])
+
+        initial_trend = pm.Normal("initial_trend", mu=[0], sigma=[0.005], dims=["trend_state"])
+
+        data_exog = pm.Data(
+            "data_exog", exog_data["x1"].values[:, None], dims=["time", "exog_state"]
         )
-        beta_exog = pm.Normal("beta_exog", dims=["exog_state"])
+        beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=["exog_state"])
 
-        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["trend_shock"])
-        exog_ss_mod.build_statespace_graph(y, save_kalman_filter_outputs_in_idata=True)
+        exog_ss_mod.build_statespace_graph(exog_data["y"])
 
-    return m
+    return struct_model
 
 
 @pytest.fixture(scope="session")
@@ -844,10 +863,14 @@ def test_forecast(filter_output, mod_name, idata_name, start, end, periods, rng,
     assert forecast_idx[0] == (t0 + delta)
 
 
+@pytest.mark.filterwarnings("ignore:Provided data contains missing values")
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
-@pytest.mark.parametrize("start", [None, -1, 10])
+@pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.parametrize("start", [None, -1, 5])
 def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
-    scenario = pd.DataFrame(np.zeros((10, 3)), columns=["a", "b", "c"])
+    scenario = pd.DataFrame(np.zeros((10, 1)), columns=["x1"])
     scenario.iloc[5, 0] = 1e9
 
     forecast_idata = exog_ss_mod.forecast(
@@ -856,17 +879,50 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
 
     components = exog_ss_mod.extract_components_from_idata(forecast_idata)
     level = components.forecast_latent.sel(state="LevelTrend[level]")
-    betas = components.forecast_latent.sel(state=["exog[a]", "exog[b]", "exog[c]"])
+    betas = components.forecast_latent.sel(state=["exog[x1]"])
 
     scenario.index.name = "time"
     scenario_xr = (
         scenario.unstack()
         .to_xarray()
         .rename({"level_0": "state"})
-        .assign_coords(state=["exog[a]", "exog[b]", "exog[c]"])
+        .assign_coords(state=["exog[x1]"])
     )
 
     regression_effect = forecast_idata.forecast_observed.isel(observed_state=0) - level
     regression_effect_expected = (betas * scenario_xr).sum(dim=["state"])
 
     assert_allclose(regression_effect, regression_effect_expected)
+
+
+@pytest.mark.filterwarnings("ignore:Provided data contains missing values")
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+@pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+def test_foreacast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
+    # Regression test for issue reported at  https://github.com/pymc-devs/pymc-extras/issues/424
+    with exog_pymc_mod:
+        idata = pm.sample_prior_predictive()
+
+    # Define start date and forecast period
+    start_date, n_periods = pd.to_datetime("2023-05-05"), 5
+
+    # Extract exogenous data for the forecast period
+    scenario = {
+        "data_exog": pd.DataFrame(
+            exog_data[["x1"]].loc[start_date:].iloc[:n_periods], columns=exog_data[["x1"]].columns
+        )
+    }
+
+    # Generate the forecast
+    forecasts = exog_ss_mod.forecast(idata.prior, scenario=scenario, use_scenario_index=True)
+    assert "forecast_latent" in forecasts
+    assert "forecast_observed" in forecasts
+
+    assert (forecasts.coords["time"].values == scenario["data_exog"].index.values).all()
+    assert not np.any(np.isnan(forecasts.forecast_latent.values))
+    assert not np.any(np.isnan(forecasts.forecast_observed.values))
+
+    assert forecasts.forecast_latent.shape[2] == n_periods
+    assert forecasts.forecast_observed.shape[2] == n_periods
