@@ -917,3 +917,12 @@ def test_foreacast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
 
     # Generate the forecast
     forecasts = exog_ss_mod.forecast(idata.prior, scenario=scenario, use_scenario_index=True)
+    assert "forecast_latent" in forecasts
+    assert "forecast_observed" in forecasts
+
+    assert (forecasts.coords["time"].values == scenario["data_exog"].index.values).all()
+    assert not np.any(np.isnan(forecasts.forecast_latent.values))
+    assert not np.any(np.isnan(forecasts.forecast_observed.values))
+
+    assert forecasts.forecast_latent.shape[2] == n_periods
+    assert forecasts.forecast_observed.shape[2] == n_periods
