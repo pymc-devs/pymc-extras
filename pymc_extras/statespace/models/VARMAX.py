@@ -135,7 +135,7 @@ class BayesianVARMAX(PyMCStateSpace):
             ar_params = pm.Normal("ar_params", mu=0, sigma=1, dims=ar_dims)
             state_cov = pm.Deterministic("state_cov", state_chol @ state_chol.T, dims=state_cov_dims)
 
-            bvar_mod.build_statespace_graph(data, mode="JAX")
+            bvar_mod.build_statespace_graph(data)
             idata = pm.sample(nuts_sampler="numpyro")
     """
 
