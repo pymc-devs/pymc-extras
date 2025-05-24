@@ -561,6 +561,8 @@ class ModelBuilder:
         >>> prediction_data = pd.DataFrame({'input':x_pred})
         >>> pred_mean = model.predict(prediction_data)
         """
+        
+        X_pred = self._validate_data(X_pred)
 
         posterior_predictive_samples = self.sample_posterior_predictive(
             X_pred, extend_idata, combined=False, predictions=predictions, **kwargs
