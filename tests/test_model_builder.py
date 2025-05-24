@@ -125,16 +125,14 @@ class test_ModelBuilder(ModelBuilder):
         return "output"
 
     def _data_setter(self, X: pd.Series | np.ndarray, y: pd.Series | np.ndarray = None):
-
         with self.model:
-            
             X = X.values if isinstance(X, pd.Series) else X.ravel()
-            
+
             pm.set_data({"x": X})
-            
+
             if y is not None:
                 y = y.values if isinstance(y, pd.Series) else y.ravel()
-                
+
                 pm.set_data({"y_data": y})
 
     @property
@@ -263,12 +261,16 @@ def test_sample_xxx_extend_idata_param(fitted_model_instance, group, extend_idat
 
     prediction_data = pd.DataFrame({"input": x_pred})
     if group == "prior_predictive":
-        pred = fitted_model_instance.sample_prior_predictive(prediction_data["input"], combined=False, extend_idata=extend_idata)
+        pred = fitted_model_instance.sample_prior_predictive(
+            prediction_data["input"], combined=False, extend_idata=extend_idata
+        )
     else:  # group == "posterior_predictive":
-        pred = fitted_model_instance.sample_posterior_predictive(prediction_data["input"], combined=False, predictions=False, extend_idata=extend_idata)
+        pred = fitted_model_instance.sample_posterior_predictive(
+            prediction_data["input"], combined=False, predictions=False, extend_idata=extend_idata
+        )
 
     pred_unstacked = pred[output_var].values
-    
+
     idata_now = fitted_model_instance.idata[group][output_var].values
 
     if extend_idata:
@@ -314,7 +316,9 @@ def test_id():
 
 @pytest.mark.parametrize("predictions", [True, False])
 @pytest.mark.parametrize("predict_method", ["predict", "predict_posterior"])
-def test_predict_method_respects_predictions_flag(fitted_model_instance, predictions, predict_method):
+def test_predict_method_respects_predictions_flag(
+    fitted_model_instance, predictions, predict_method
+):
     x_pred = np.random.uniform(0, 1, 100)
     prediction_data = pd.DataFrame({"input": x_pred})
     output_var = fitted_model_instance.output_var
@@ -332,7 +336,7 @@ def test_predict_method_respects_predictions_flag(fitted_model_instance, predict
             extend_idata=True,
             predictions=predictions,
         )
-    else:# predict_method == "predict_posterior":
+    else:  # predict_method == "predict_posterior":
         fitted_model_instance.predict_posterior(
             X_pred=prediction_data[["input"]],
             extend_idata=True,
@@ -350,4 +354,3 @@ def test_predict_method_respects_predictions_flag(fitted_model_instance, predict
         assert "predictions" not in fitted_model_instance.idata.groups()
         # Posterior predictive should be updated
         assert not np.array_equal(pp_before, pp_after)
-    
