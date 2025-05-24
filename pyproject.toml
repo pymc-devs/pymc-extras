@@ -37,7 +37,7 @@ dynamic = ["version"]  # specify the version in the __init__.py file
 dependencies = [
   "pymc>=5.21.1",
   "scikit-learn",
-  "better-optimize",
+  "better-optimize>=0.1.2",
   "pydantic>=2.0.0",
   "preliz",
 ]

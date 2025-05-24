@@ -28,9 +28,9 @@ jobs:
         python-version: ["3.10"]
         test-subset:
           - tests/model
-          - tests/statespace/test_statespace.py
-          - tests/statespace/test_kalman_filter.py
-          - tests/statespace --ignore tests/statespace/test_statespace.py --ignore tests/statespace/test_kalman_filter.py
+          - tests/statespace/core/test_statespace.py
+          - tests/statespace/filters/test_kalman_filter.py
+          - tests/statespace --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py
           - tests/distributions
           - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions
       fail-fast: false
@@ -71,9 +71,9 @@ jobs:
         python-version: ["3.12"]
         test-subset:
           - tests/model
-          - tests/statespace/test_statespace.py
-          - tests/statespace/test_kalman_filter.py
-          - tests/statespace --ignore tests/statespace/test_statespace.py --ignore tests/statespace/test_kalman_filter.py
+          - tests/statespace/core/test_statespace.py
+          - tests/statespace/filters/test_kalman_filter.py
+          - tests/statespace --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py
           - tests/distributions
           - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions
       fail-fast: false
