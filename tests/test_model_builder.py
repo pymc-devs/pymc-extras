@@ -313,7 +313,8 @@ def test_id():
 
 
 @pytest.mark.parametrize("predictions", [True, False])
-def test_predict_respects_predictions_flag(fitted_model_instance, predictions):
+@pytest.mark.parametrize("predict_method", ["predict", "predict_posterior"])
+def test_predict_method_respects_predictions_flag(fitted_model_instance, predictions, predict_method):
     x_pred = np.random.uniform(0, 1, 100)
     prediction_data = pd.DataFrame({"input": x_pred})
     output_var = fitted_model_instance.output_var
@@ -325,11 +326,18 @@ def test_predict_respects_predictions_flag(fitted_model_instance, predictions):
     assert "predictions" not in fitted_model_instance.idata.groups()
 
     # Run prediction with predictions=True or False
-    fitted_model_instance.predict(
-        X_pred=prediction_data[["input"]],
-        extend_idata=True,
-        predictions=predictions,
-    )
+    if predict_method == "predict":
+        fitted_model_instance.predict(
+            X_pred=prediction_data[["input"]],
+            extend_idata=True,
+            predictions=predictions,
+        )
+    else:# predict_method == "predict_posterior":
+        fitted_model_instance.predict_posterior(
+            X_pred=prediction_data[["input"]],
+            extend_idata=True,
+            predictions=predictions,
+        )
 
     pp_after = fitted_model_instance.idata.posterior_predictive[output_var].values
 
@@ -342,35 +350,4 @@ def test_predict_respects_predictions_flag(fitted_model_instance, predictions):
         assert "predictions" not in fitted_model_instance.idata.groups()
         # Posterior predictive should be updated
         assert not np.array_equal(pp_before, pp_after)
-        
-@pytest.mark.parametrize("predictions", [True, False])
-def test_predict_posterior_respects_predictions_flag(fitted_model_instance, predictions):
-    x_pred = np.random.uniform(0, 1, 100)
-    prediction_data = pd.DataFrame({"input": x_pred})
-    output_var = fitted_model_instance.output_var
-
-    # Snapshot the original posterior_predictive values
-    pp_before = fitted_model_instance.idata.posterior_predictive[output_var].values.copy()
-
-    # Ensure 'predictions' group is not present initially
-    assert "predictions" not in fitted_model_instance.idata.groups()
-
-    # Run prediction with predictions=True or False
-    fitted_model_instance.predict_posterior(
-        X_pred=prediction_data[["input"]],
-        extend_idata=True,
-        combined=True,
-        predictions=predictions,
-    )
-
-    pp_after = fitted_model_instance.idata.posterior_predictive[output_var].values
-
-    # Check predictions group presence
-    if predictions:
-        assert "predictions" in fitted_model_instance.idata.groups()
-        # Posterior predictive should remain unchanged
-        np.testing.assert_array_equal(pp_before, pp_after)
-    else:
-        assert "predictions" not in fitted_model_instance.idata.groups()
-        # Posterior predictive should be updated
-        assert not np.array_equal(pp_before, pp_after)
+    
