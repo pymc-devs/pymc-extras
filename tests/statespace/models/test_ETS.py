@@ -89,6 +89,12 @@ def test_order_flags(order, expected_flags):
         assert getattr(mod, key) == value
 
 
+def tests_mode_argument():
+    # Mode argument should be passed to the parent class
+    mod = BayesianETS(order=("A", "N", "N"), mode="FAST_RUN")
+    assert mod.mode == "FAST_RUN"
+
+
 @pytest.mark.parametrize("order, expected_params", zip(orders, order_params), ids=order_names)
 def test_param_info(order: tuple[str, str, str], expected_params):
     mod = BayesianETS(order=order, seasonal_periods=4)

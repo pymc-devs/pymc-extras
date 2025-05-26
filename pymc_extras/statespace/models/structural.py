@@ -12,6 +12,7 @@ import pytensor.tensor as pt
 import xarray as xr
 
 from pytensor import Variable
+from pytensor.compile.mode import Mode
 
 from pymc_extras.statespace.core import PytensorRepresentation
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
@@ -81,6 +82,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         name: str | None = None,
         verbose: bool = True,
         filter_type: str = "standard",
+        mode: str | Mode | None = None,
     ):
         # Add the initial state covariance to the parameters
         if name is None:
@@ -112,6 +114,7 @@ class StructuralTimeSeries(PyMCStateSpace):
             filter_type=filter_type,
             verbose=verbose,
             measurement_error=measurement_error,
+            mode=mode,
         )
         self.ssm = ssm.copy()
 
@@ -644,7 +647,9 @@ class Component(ABC):
 
         return new_comp
 
-    def build(self, name=None, filter_type="standard", verbose=True):
+    def build(
+        self, name=None, filter_type="standard", verbose=True, mode: str | Mode | None = None
+    ):
         """
         Build a StructuralTimeSeries statespace model from the current component(s)
 
@@ -659,6 +664,13 @@ class Component(ABC):
 
         verbose : bool, optional
             If True, displays information about the initialized model. Defaults to True.
+
+        mode: str or Mode, optional
+            Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+            ``forecast``. The mode does **not** effect calls to ``pm.sample``.
+
+            Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+            to all sampling methods.
 
         Returns
         -------
@@ -685,6 +697,7 @@ class Component(ABC):
             name_to_data=self._name_to_data,
             filter_type=filter_type,
             verbose=verbose,
+            mode=mode,
         )
 
 

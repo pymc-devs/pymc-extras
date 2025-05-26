@@ -4,6 +4,7 @@ from typing import Any
 import numpy as np
 import pytensor.tensor as pt
 
+from pytensor.compile.mode import Mode
 from pytensor.tensor.slinalg import solve_discrete_lyapunov
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
@@ -90,6 +91,13 @@ class BayesianSARIMA(PyMCStateSpace):
 
     verbose: bool, default True
         If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
+
+    mode: str or Mode, optional
+        Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+        ``forecast``. The mode does **not** effect calls to ``pm.sample``.
+
+        Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+        to all sampling methods.
 
     Notes
     -----
@@ -180,7 +188,21 @@ class BayesianSARIMA(PyMCStateSpace):
         state_structure: str = "fast",
         measurement_error: bool = False,
         verbose=True,
+        mode: str | Mode | None = None,
     ):
+        """
+
+        Parameters
+        ----------
+        order
+        seasonal_order
+        stationary_initialization
+        filter_type
+        state_structure
+        measurement_error
+        verbose
+        mode
+        """
         # Model order
         self.p, self.d, self.q = order
         if seasonal_order is None:
@@ -228,6 +250,7 @@ class BayesianSARIMA(PyMCStateSpace):
             filter_type,
             verbose=verbose,
             measurement_error=measurement_error,
+            mode=mode,
         )
 
     @property

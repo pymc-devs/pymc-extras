@@ -1,4 +1,5 @@
 import logging
+import warnings
 
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
@@ -97,6 +98,13 @@ class PyMCStateSpace:
         If true, the model contains measurement error. Needed by post-estimation sampling methods to decide how to
         compute the observation errors. If False, these errors are deterministically zero; if True, they are sampled
         from a multivariate normal.
+
+    mode: str or Mode, optional
+        Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+        ``forecast``. The mode does **not** effect calls to ``pm.sample``.
+
+        Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+        to all sampling methods.
 
     Notes
     -----
@@ -220,6 +228,7 @@ class PyMCStateSpace:
         filter_type: str = "standard",
         verbose: bool = True,
         measurement_error: bool = False,
+        mode: str | None = None,
     ):
         self._fit_coords: dict[str, Sequence[str]] | None = None
         self._fit_dims: dict[str, Sequence[str]] | None = None
@@ -235,6 +244,7 @@ class PyMCStateSpace:
         self.k_states = k_states
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
+        self.mode = mode
 
         # All models contain a state space representation and a Kalman filter
         self.ssm = PytensorRepresentation(k_endog, k_states, k_posdef)
@@ -821,6 +831,7 @@ class PyMCStateSpace:
         cov_jitter: float | None = JITTER_DEFAULT,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         save_kalman_filter_outputs_in_idata: bool = False,
+        mode: str | None = None,
     ) -> None:
         """
         Given a parameter vector `theta`, constructs the full computational graph describing the state space model and
@@ -874,7 +885,25 @@ class PyMCStateSpace:
         save_kalman_filter_outputs_in_idata: bool, optional, default=False
             If True, Kalman Filter outputs will be saved in the model as deterministics. Useful for debugging, but
             should not be necessary for the majority of users.
+
+        mode: str, optional
+            Pytensor mode to use when compiling the graph. This will be saved as a model attribute and used when
+            compiling sampling functions (e.g. ``sample_conditional_prior``).
+
+            .. deprecated:: 0.2.5
+                The `mode` argument is deprecated and will be removed in a future version. Pass ``mode`` to the
+                model constructor, or manually specify ``compile_kwargs`` in sampling functions instead.
+
         """
+        if mode is not None:
+            warnings.warn(
+                "The `mode` argument is deprecated and will be removed in a future version. "
+                "Pass `mode` to the model constructor, or manually specify `compile_kwargs` in sampling functions"
+                " instead.",
+                DeprecationWarning,
+            )
+            self.mode = mode
+
         pm_mod = modelcontext(None)
 
         self._insert_random_variables()
@@ -1107,6 +1136,12 @@ class PyMCStateSpace:
 
         return [x0, P0, c, d, T, Z, R, H, Q], grouped_outputs
 
+    def _set_default_mode(self, compile_kwargs):
+        mode = compile_kwargs.get("mode", self.mode)
+        compile_kwargs["mode"] = mode
+
+        return compile_kwargs
+
     def _sample_conditional(
         self,
         idata: InferenceData,
@@ -1157,6 +1192,9 @@ class PyMCStateSpace:
 
         _verify_group(group)
         group_idata = getattr(idata, group)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs = self._set_default_mode(compile_kwargs)
 
         with pm.Model(coords=self._fit_coords) as forward_model:
             (
@@ -1224,6 +1262,7 @@ class PyMCStateSpace:
                     for suffix in ["", "_observed"]
                 ],
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 
@@ -1289,6 +1328,10 @@ class PyMCStateSpace:
               the latent state trajectories: `y[t] = Z @ x[t] + nu[t]`, where `nu ~ N(0, H)`.
         """
         _verify_group(group)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs = self._set_default_mode(compile_kwargs)
+
         group_idata = getattr(idata, group)
         dims = None
         temp_coords = self._fit_coords.copy()
@@ -1347,6 +1390,7 @@ class PyMCStateSpace:
                 group_idata,
                 var_names=[f"{group}_latent", f"{group}_observed"],
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 
@@ -1574,7 +1618,7 @@ class PyMCStateSpace:
         )
 
     def sample_statespace_matrices(
-        self, idata, matrix_names: str | list[str] | None, group: str = "posterior"
+        self, idata, matrix_names: str | list[str] | None, group: str = "posterior", **kwargs
     ):
         """
         Draw samples of requested statespace matrices from provided idata
@@ -1591,11 +1635,17 @@ class PyMCStateSpace:
         group: str, one of "posterior" or "prior"
             Whether to sample from priors or posteriors
 
+        kwargs:
+            Additional keyword arguments are passed to ``pymc.sample_posterior_predictive``
+
         Returns
         -------
         idata_matrices: az.InterenceData
         """
         _verify_group(group)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs = self._set_default_mode(compile_kwargs)
 
         if matrix_names is None:
             matrix_names = MATRIX_NAMES
@@ -1628,6 +1678,8 @@ class PyMCStateSpace:
                 idata if group == "posterior" else idata.prior,
                 var_names=matrix_names,
                 extend_inferencedata=False,
+                compile_kwargs=compile_kwargs,
+                **kwargs,
             )
 
         return matrix_idata
@@ -2096,6 +2148,10 @@ class PyMCStateSpace:
         filter_time_dim = TIME_DIM
 
         _validate_filter_arg(filter_output)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs = self._set_default_mode(compile_kwargs)
+
         time_index = self._get_fit_time_index()
 
         if start is None and verbose:
@@ -2198,6 +2254,7 @@ class PyMCStateSpace:
                 idata,
                 var_names=["forecast_latent", "forecast_observed"],
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 
@@ -2285,6 +2342,9 @@ class PyMCStateSpace:
         n_options = sum(x is not None for x in options)
         Q = None  # No covariance matrix needed if a trajectory is provided. Will be overwritten later if needed.
 
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs = self._set_default_mode(compile_kwargs)
+
         if n_options > 1:
             raise ValueError("Specify exactly 0 or 1 of shock_size, shock_cov, or shock_trajectory")
         elif n_options == 1:
@@ -2364,6 +2424,7 @@ class PyMCStateSpace:
                 idata,
                 var_names=["irf"],
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 

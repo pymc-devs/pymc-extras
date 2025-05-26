@@ -5,6 +5,7 @@ import numpy as np
 import pytensor.tensor as pt
 
 from pytensor import graph_replace
+from pytensor.compile.mode import Mode
 from pytensor.tensor.slinalg import solve_discrete_lyapunov
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
@@ -35,6 +36,7 @@ class BayesianETS(PyMCStateSpace):
         initialization_dampening: float = 0.8,
         filter_type: str = "standard",
         verbose: bool = True,
+        mode: str | Mode | None = None,
     ):
         r"""
         Exponential Smoothing State Space Model
@@ -212,6 +214,13 @@ class BayesianETS(PyMCStateSpace):
             and "cholesky". See the docs for kalman filters for more details.
         verbose: bool, default True
             If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
+        mode: str or Mode, optional
+            Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+            ``forecast``. The mode does **not** effect calls to ``pm.sample``.
+
+            Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+            to all sampling methods.
+
 
         References
         ----------
@@ -284,6 +293,7 @@ class BayesianETS(PyMCStateSpace):
             filter_type,
             verbose=verbose,
             measurement_error=measurement_error,
+            mode=mode,
         )
 
     @property
