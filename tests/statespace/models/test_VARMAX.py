@@ -77,7 +77,7 @@ def idata(pymc_mod, rng):
     return idata
 
 
-def tests_mode_argument():
+def test_mode_argument():
     # Mode argument should be passed to the parent class
     mod = BayesianVARMAX(k_endog=2, order=(3, 0), mode="FAST_RUN", verbose=False)
     assert mod.mode == "FAST_RUN"
