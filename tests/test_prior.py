@@ -12,11 +12,6 @@ from preliz.distributions import distributions as preliz_distributions
 from pydantic import ValidationError
 from pymc.model_graph import fast_eval
 
-from pymc_extras.deserialize import (
-    DESERIALIZERS,
-    deserialize,
-    register_deserialization,
-)
 from pymc_extras.prior import (
     Censored,
     MuAlreadyExistsError,
@@ -301,57 +296,6 @@ def test_transform() -> None:
         assert fast_eval(model[var_name]).shape == dim
 
 
-def test_to_dict(large_var) -> None:
-    data = large_var.to_dict()
-
-    assert data == {
-        "dist": "Normal",
-        "kwargs": {
-            "mu": {
-                "dist": "Normal",
-                "kwargs": {
-                    "mu": {
-                        "dist": "Normal",
-                        "kwargs": {
-                            "mu": 1,
-                        },
-                    },
-                    "sigma": {
-                        "dist": "HalfNormal",
-                    },
-                },
-                "centered": False,
-                "dims": ("channel",),
-            },
-            "sigma": {
-                "dist": "HalfNormal",
-                "kwargs": {
-                    "sigma": {
-                        "dist": "HalfNormal",
-                    },
-                },
-                "dims": ("geo",),
-            },
-        },
-        "dims": ("geo", "channel"),
-    }
-
-
-def test_to_dict_numpy() -> None:
-    var = Prior("Normal", mu=np.array([0, 10, 20]), dims="channel")
-    assert var.to_dict() == {
-        "dist": "Normal",
-        "kwargs": {
-            "mu": [0, 10, 20],
-        },
-        "dims": ("channel",),
-    }
-
-
-def test_dict_round_trip(large_var) -> None:
-    assert Prior.from_dict(large_var.to_dict()) == large_var
-
-
 def test_constrain_with_transform_error() -> None:
     var = Prior("Normal", transform="sigmoid")
 
@@ -421,16 +365,6 @@ def mmm_default_model_config():
     }
 
 
-def test_backwards_compat(mmm_default_model_config) -> None:
-    result = {param: Prior.from_dict(value) for param, value in mmm_default_model_config.items()}
-    assert result == {
-        "intercept": Prior("Normal", mu=0, sigma=2),
-        "likelihood": Prior("Normal", sigma=Prior("HalfNormal", sigma=2)),
-        "gamma_control": Prior("Normal", mu=0, sigma=2, dims="control"),
-        "gamma_fourier": Prior("Laplace", mu=0, b=1, dims="fourier_mode"),
-    }
-
-
 def test_sample_prior() -> None:
     var = Prior(
         "Normal",
@@ -464,46 +398,6 @@ def test_to_graph() -> None:
 
     G = hierarchical_distribution.to_graph()
     assert isinstance(G, Digraph)
-
-
-def test_from_dict_list() -> None:
-    data = {
-        "dist": "Normal",
-        "kwargs": {
-            "mu": [0, 1, 2],
-            "sigma": 1,
-        },
-        "dims": "channel",
-    }
-
-    var = Prior.from_dict(data)
-    assert var.dims == ("channel",)
-    assert isinstance(var["mu"], np.ndarray)
-    np.testing.assert_array_equal(var["mu"], [0, 1, 2])
-
-
-def test_from_dict_list_dims() -> None:
-    data = {
-        "dist": "Normal",
-        "kwargs": {
-            "mu": 0,
-            "sigma": 1,
-        },
-        "dims": ["channel", "geo"],
-    }
-
-    var = Prior.from_dict(data)
-    assert var.dims == ("channel", "geo")
-
-
-def test_to_dict_transform() -> None:
-    dist = Prior("Normal", transform="sigmoid")
-
-    data = dist.to_dict()
-    assert data == {
-        "dist": "Normal",
-        "transform": "sigmoid",
-    }
 
 
 def test_equality_non_prior() -> None:
@@ -630,19 +524,6 @@ def test_custom_transform_comes_first() -> None:
     np.testing.assert_array_equal(df_prior["var"].to_numpy(), 2 * df_prior["var_raw"].to_numpy())
 
     clear_custom_transforms()
-
-
-def test_serialize_with_pytensor() -> None:
-    sigma = pt.arange(1, 4)
-    dist = Prior("Normal", mu=0, sigma=sigma)
-
-    assert dist.to_dict() == {
-        "dist": "Normal",
-        "kwargs": {
-            "mu": 0,
-            "sigma": [1, 2, 3],
-        },
-    }
 
 
 def test_zsn_non_centered() -> None:
@@ -820,109 +701,6 @@ def test_censored_likelihood_already_has_mu() -> None:
                 mu=mu,
                 observed=1,
             )
-
-
-def test_censored_to_dict() -> None:
-    normal = Prior("Normal", mu=0, sigma=1, dims="channel")
-    censored_normal = Censored(normal, lower=0)
-
-    data = censored_normal.to_dict()
-    assert data == {
-        "class": "Censored",
-        "data": {"dist": normal.to_dict(), "lower": 0, "upper": float("inf")},
-    }
-
-
-def test_deserialize_censored() -> None:
-    data = {
-        "class": "Censored",
-        "data": {
-            "dist": {
-                "dist": "Normal",
-            },
-            "lower": 0,
-            "upper": float("inf"),
-        },
-    }
-
-    instance = deserialize(data)
-    assert isinstance(instance, Censored)
-    assert isinstance(instance.distribution, Prior)
-    assert instance.lower == 0
-    assert instance.upper == float("inf")
-
-
-class ArbitrarySerializable(Arbitrary):
-    def to_dict(self):
-        return {"dims": self.dims}
-
-
-@pytest.fixture
-def arbitrary_serialized_data() -> dict:
-    return {"dims": ("channel",)}
-
-
-def test_create_prior_with_arbitrary_serializable(arbitrary_serialized_data) -> None:
-    dist = Prior(
-        "Normal",
-        mu=ArbitrarySerializable(dims=("channel",)),
-        sigma=1,
-        dims=("channel", "geo"),
-    )
-
-    assert dist.to_dict() == {
-        "dist": "Normal",
-        "kwargs": {
-            "mu": arbitrary_serialized_data,
-            "sigma": 1,
-        },
-        "dims": ("channel", "geo"),
-    }
-
-
-@pytest.fixture
-def register_arbitrary_deserialization():
-    register_deserialization(
-        lambda data: isinstance(data, dict) and data.keys() == {"dims"},
-        lambda data: ArbitrarySerializable(**data),
-    )
-
-    yield
-
-    DESERIALIZERS.pop()
-
-
-def test_deserialize_arbitrary_within_prior(
-    arbitrary_serialized_data,
-    register_arbitrary_deserialization,
-) -> None:
-    data = {
-        "dist": "Normal",
-        "kwargs": {
-            "mu": arbitrary_serialized_data,
-            "sigma": 1,
-        },
-        "dims": ("channel", "geo"),
-    }
-
-    dist = deserialize(data)
-    assert isinstance(dist["mu"], ArbitrarySerializable)
-    assert dist["mu"].dims == ("channel",)
-
-
-def test_censored_with_tensor_variable() -> None:
-    normal = Prior("Normal", dims="channel")
-    lower = pt.as_tensor_variable([0, 1, 2])
-    censored_normal = Censored(normal, lower=lower)
-
-    assert censored_normal.to_dict() == {
-        "class": "Censored",
-        "data": {
-            "dist": normal.to_dict(),
-            "lower": [0, 1, 2],
-            "upper": float("inf"),
-        },
-    }
 
 
 def test_censored_dims_setter() -> None:
