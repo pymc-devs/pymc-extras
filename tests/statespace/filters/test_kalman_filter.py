@@ -44,7 +44,6 @@ filter_funcs = [f_standard]  # , f_cholesky, f_univariate]
 
 filter_names = [
     "StandardFilter",
-    # "StandardFilterBatched",
     # "CholeskyFilter",
     # "UnivariateFilter",
 ]
@@ -68,17 +67,14 @@ def test_base_class_update_raises():
         filter.update(*inputs)
 
 
-@pytest.mark.parametrize(
-    "filter_func, filter_name", zip(filter_funcs, filter_names), ids=filter_names
-)
-def test_output_shapes_one_state_one_observed(filter_func, filter_name, rng):
-    batch_size = 3 if "batched" in filter_name.lower() else 0
+@pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)
+def test_output_shapes_one_state_one_observed(filter_func, rng):
     p, m, r, n = 1, 1, 1, 10
-    inputs = make_test_inputs(p, m, r, n, rng, batch_size=batch_size)
+    inputs = make_test_inputs(p, m, r, n, rng)
     outputs = filter_func(*inputs)
 
     for output_idx, name in enumerate(output_names):
-        expected_shape = get_expected_shape(name, p, m, r, n, batch_size)
+        expected_shape = get_expected_shape(name, p, m, r, n)
         assert outputs[output_idx].shape == expected_shape, (
             f"Shape of {name} does not match expected"
         )
@@ -332,7 +328,8 @@ def test_kalman_filter_jax(filter):
         assert_allclose(jax_res, pt_res, atol=ATOL, rtol=RTOL, err_msg=f"{name} failed!")
 
 
-def test_batched_standard_filter():
+@pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)
+def test_batched_standard_filter(filter_func):
     p, m, r, n = 1, 5, 1, 10
     input_names = ["data", "x0", "P0", "c", "d", "T", "Z", "R", "H", "Q"]
     inputs = [
@@ -341,6 +338,9 @@ def test_batched_standard_filter():
     ]
     kf = StandardFilter()
     outputs = kf.build_graph(*inputs)
+    fn = pytensor.function([], outputs)
+    output_vals = fn()
+
     np.testing.assert_equal(outputs[0].shape.eval(), (8, n, m))
 
 
@@ -359,5 +359,7 @@ def test_batched_kalman_smoother():
     ks = KalmanSmoother()
     ks_inputs = T, R, Q, kf_outputs[0], kf_outputs[3]
     ks_outputs = ks.build_graph(*ks_inputs)
+    fn = pytensor.function([], ks_outputs)
+    output_vals = fn()
 
     np.testing.assert_equal(ks_outputs[0].shape.eval(), (8, n, m))
