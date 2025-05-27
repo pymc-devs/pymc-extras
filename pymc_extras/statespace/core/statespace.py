@@ -1136,12 +1136,6 @@ class PyMCStateSpace:
 
         return [x0, P0, c, d, T, Z, R, H, Q], grouped_outputs
 
-    def _set_default_mode(self, compile_kwargs):
-        mode = compile_kwargs.get("mode", self.mode)
-        compile_kwargs["mode"] = mode
-
-        return compile_kwargs
-
     def _sample_conditional(
         self,
         idata: InferenceData,
@@ -1194,7 +1188,7 @@ class PyMCStateSpace:
         group_idata = getattr(idata, group)
 
         compile_kwargs = kwargs.pop("compile_kwargs", {})
-        compile_kwargs = self._set_default_mode(compile_kwargs)
+        compile_kwargs.setdefault("mode", self.mode)
 
         with pm.Model(coords=self._fit_coords) as forward_model:
             (
@@ -1330,7 +1324,7 @@ class PyMCStateSpace:
         _verify_group(group)
 
         compile_kwargs = kwargs.pop("compile_kwargs", {})
-        compile_kwargs = self._set_default_mode(compile_kwargs)
+        compile_kwargs.setdefault("mode", self.mode)
 
         group_idata = getattr(idata, group)
         dims = None
@@ -1645,7 +1639,7 @@ class PyMCStateSpace:
         _verify_group(group)
 
         compile_kwargs = kwargs.pop("compile_kwargs", {})
-        compile_kwargs = self._set_default_mode(compile_kwargs)
+        compile_kwargs.setdefault("mode", self.mode)
 
         if matrix_names is None:
             matrix_names = MATRIX_NAMES
@@ -2150,7 +2144,7 @@ class PyMCStateSpace:
         _validate_filter_arg(filter_output)
 
         compile_kwargs = kwargs.pop("compile_kwargs", {})
-        compile_kwargs = self._set_default_mode(compile_kwargs)
+        compile_kwargs.setdefault("mode", self.mode)
 
         time_index = self._get_fit_time_index()
 
@@ -2343,7 +2337,7 @@ class PyMCStateSpace:
         Q = None  # No covariance matrix needed if a trajectory is provided. Will be overwritten later if needed.
 
         compile_kwargs = kwargs.pop("compile_kwargs", {})
-        compile_kwargs = self._set_default_mode(compile_kwargs)
+        compile_kwargs.setdefault("mode", self.mode)
 
         if n_options > 1:
             raise ValueError("Specify exactly 0 or 1 of shock_size, shock_cov, or shock_trajectory")
