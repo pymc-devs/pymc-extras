@@ -1578,7 +1578,7 @@ class PyMCStateSpace:
             steps=steps,
             use_data_time_dim=use_data_time_dim,
             random_seed=random_seed,
-            method=mvn_method,
+            mvn_method=mvn_method,
             **kwargs,
         )
 
