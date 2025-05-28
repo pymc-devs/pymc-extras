@@ -822,6 +822,7 @@ class PyMCStateSpace:
         mode: str | None = None,
         missing_fill_value: float | None = None,
         cov_jitter: float | None = JITTER_DEFAULT,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         save_kalman_filter_outputs_in_idata: bool = False,
     ) -> None:
         """
@@ -864,6 +865,14 @@ class PyMCStateSpace:
                   error.
 
                 - The Univariate Filter is more robust than other filters, and can tolerate a lower jitter value
+
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
         save_kalman_filter_outputs_in_idata: bool, optional, default=False
             If True, Kalman Filter outputs will be saved in the model as deterministics. Useful for debugging, but
@@ -915,6 +924,7 @@ class PyMCStateSpace:
             logp=logp,
             observed=data,
             dims=obs_dims,
+            method=mvn_method,
         )
 
         self._fit_coords = pm_mod.coords.copy()
@@ -1131,10 +1141,13 @@ class PyMCStateSpace:
             Observed data on which to condition the model. If not provided, the function will use the data that was
             provided when the model was built.
 
-        mvn_method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
-            is "svd".
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
@@ -1260,10 +1273,13 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        mvn_method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
-            is "svd".
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
@@ -1366,10 +1382,13 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        mvn_method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
-            is "svd".
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
@@ -1406,10 +1425,13 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        mvn_method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
-            is "svd".
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
@@ -1461,10 +1483,13 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        mvn_method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
-            is "svd".
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
@@ -1527,10 +1552,13 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        mvn_method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
-            is "svd".
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
         Returns
         -------
@@ -2051,10 +2079,13 @@ class PyMCStateSpace:
         verbose: bool, default=True
             Whether to print diagnostic information about forecasting.
 
-        mvn_method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
-            is "svd".
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
@@ -2246,10 +2277,13 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        mvn_method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
-            is "svd".
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
