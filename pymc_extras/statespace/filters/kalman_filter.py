@@ -282,9 +282,10 @@ class BaseFilter(ABC):
 
         if len(sequences) > 0:
             sequences = self.add_check_on_time_varying_shapes(data, sequences)
-
+# y, a, P, c, d, T, Z, R, H, Q = self.unpack_args(args)
+        # s0 and s1 = states, o0 and 01 are observed states, r0 and r1 are random states
         results, updates = pytensor.scan(
-            self.kalman_step,
+            pt.vectorize(self.kalman_step, signature="(o0,), (s0,), (s0, s1), (s0,), (o0,), (s0, s1), (o0, s0), (s0, r0), (o0, o1), (r0, r1) -> (s0,), (s0,), (o0,), (s0, s1), (P_hat,), (obs_cov,), (ll,)",
             sequences=[data, *sequences],
             outputs_info=[None, a0, None, None, P0, None, None],
             non_sequences=non_sequences,
@@ -320,9 +321,9 @@ class BaseFilter(ABC):
         """
         Build the vectorized computation graph for the Kalman filter.
         """
-        signature = self._make_gufunc_signature(
-            [data, a0, P0, c, d, T, Z, R, H, Q],
-        )
+        # signature = self._make_gufunc_signature(
+        #     [data, a0, P0, c, d, T, Z, R, H, Q],
+        # )
         fn = partial(
             self._build_graph,
             mode=mode,
@@ -330,8 +331,7 @@ class BaseFilter(ABC):
             missing_fill_value=missing_fill_value,
             cov_jitter=cov_jitter,
         )
-        filter_outputs = pt.vectorize(fn, signature=signature)(data, a0, P0, c, d, T, Z, R, H, Q)
-        # filter_outputs = fn(data, a0, P0, c, d, T, Z, R, H, Q)
+        filter_outputs = fn(data, a0, P0, c, d, T, Z, R, H, Q)
         for output, name in zip(filter_outputs, ALL_KF_OUTPUT_NAMES):
             output.name = name
 

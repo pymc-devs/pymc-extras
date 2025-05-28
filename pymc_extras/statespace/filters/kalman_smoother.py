@@ -169,16 +169,15 @@ class KalmanSmoother:
         """
         Build the vectorized computation graph for the Kalman smoother.
         """
-        signature = self._make_gufunc_signature(
-            [T, R, Q, filtered_states, filtered_covariances],
-        )
+        # signature = self._make_gufunc_signature(
+        #     [T, R, Q, filtered_states, filtered_covariances],
+        # )
         fn = partial(
             self._build_graph,
             mode=mode,
             cov_jitter=cov_jitter,
         )
-        return pt.vectorize(fn, signature=signature)(T, R, Q, filtered_states, filtered_covariances)
-        # return fn(T, R, Q, filtered_states, filtered_covariances)
+        return fn(T, R, Q, filtered_states, filtered_covariances)
 
     def smoother_step(self, *args):
         a, P, a_smooth, P_smooth, T, R, Q = self.unpack_args(args)

@@ -336,6 +336,7 @@ def test_batched_standard_filter(filter_func):
         pt.as_tensor(x, name=name)
         for x, name in zip(make_test_inputs(p, m, r, n, rng, batch_size=8), input_names)
     ]
+    inputs[0] = pt.moveaxis(inputs[0], -2, 0)  # Move time dimension to the front of the data array
     kf = StandardFilter()
     outputs = kf.build_graph(*inputs)
     fn = pytensor.function([], outputs)
