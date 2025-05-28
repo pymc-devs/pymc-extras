@@ -1,7 +1,7 @@
 import logging
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -1109,7 +1109,7 @@ class PyMCStateSpace:
         group: str,
         random_seed: RandomState | None = None,
         data: pt.TensorLike | None = None,
-        mvn_method: str = "svd",
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ):
         """
@@ -1230,7 +1230,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
-        mvn_method: str = "svd",
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ):
         """
@@ -1349,7 +1349,7 @@ class PyMCStateSpace:
         self,
         idata: InferenceData,
         random_seed: RandomState | None = None,
-        mvn_method: str = "svd",
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -1390,7 +1390,7 @@ class PyMCStateSpace:
         self,
         idata: InferenceData,
         random_seed: RandomState | None = None,
-        mvn_method: str = "svd",
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ):
         """
@@ -1432,7 +1432,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
-        mvn_method: str = "svd",
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -1497,7 +1497,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
-        mvn_method: str = "svd",
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -1994,7 +1994,7 @@ class PyMCStateSpace:
         filter_output="smoothed",
         random_seed: RandomState | None = None,
         verbose: bool = True,
-        mvn_method: str = "svd",
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -2194,7 +2194,7 @@ class PyMCStateSpace:
         shock_trajectory: np.ndarray | None = None,
         orthogonalize_shocks: bool = False,
         random_seed: RandomState | None = None,
-        mvn_method: str = "svd",
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ):
         """
