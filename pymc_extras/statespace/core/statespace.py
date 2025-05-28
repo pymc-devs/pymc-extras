@@ -1378,7 +1378,9 @@ class PyMCStateSpace:
              "predicted_prior", and "smoothed_prior".
         """
 
-        return self._sample_conditional(idata, "prior", random_seed, method, **kwargs)
+        return self._sample_conditional(
+            idata=idata, group="prior", random_seed=random_seed, method=method, **kwargs
+        )
 
     def sample_conditional_posterior(
         self, idata: InferenceData, random_seed: RandomState | None = None, method="svd", **kwargs
@@ -1412,7 +1414,9 @@ class PyMCStateSpace:
              "predicted_posterior", and "smoothed_posterior".
         """
 
-        return self._sample_conditional(idata, "posterior", random_seed, method, **kwargs)
+        return self._sample_conditional(
+            idata=idata, group="posterior", random_seed=random_seed, method=method, **kwargs
+        )
 
     def sample_unconditional_prior(
         self,
@@ -1470,7 +1474,13 @@ class PyMCStateSpace:
         """
 
         return self._sample_unconditional(
-            idata, "prior", steps, use_data_time_dim, random_seed, method, **kwargs
+            idata=idata,
+            group="prior",
+            steps=steps,
+            use_data_time_dim=use_data_time_dim,
+            random_seed=random_seed,
+            method=method,
+            **kwargs,
         )
 
     def sample_unconditional_posterior(
@@ -1527,7 +1537,13 @@ class PyMCStateSpace:
         """
 
         return self._sample_unconditional(
-            idata, "posterior", steps, use_data_time_dim, random_seed, method, **kwargs
+            idata=idata,
+            group="posterior",
+            steps=steps,
+            use_data_time_dim=use_data_time_dim,
+            random_seed=random_seed,
+            method=method,
+            **kwargs,
         )
 
     def sample_statespace_matrices(
