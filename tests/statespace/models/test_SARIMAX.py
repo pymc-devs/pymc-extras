@@ -217,6 +217,12 @@ def pymc_mod_interp(arima_mod_interp):
     return pymc_mod
 
 
+def test_mode_argument():
+    # Mode argument should be passed to the parent class
+    mod = BayesianSARIMA(order=(0, 0, 3), mode="FAST_RUN", verbose=False)
+    assert mod.mode == "FAST_RUN"
+
+
 @pytest.mark.parametrize(
     "p,d,q,P,D,Q,S,expected_names",
     [(*order, name) for order, name in zip(test_orders, test_state_names)],

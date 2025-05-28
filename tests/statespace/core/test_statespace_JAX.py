@@ -37,9 +37,7 @@ def pymc_mod(ss_mod):
         rho = pm.Beta("rho", 1, 1)
         zeta = pm.Deterministic("zeta", 1 - rho)
 
-        ss_mod.build_statespace_graph(
-            data=nile, mode="JAX", save_kalman_filter_outputs_in_idata=True
-        )
+        ss_mod.build_statespace_graph(data=nile, save_kalman_filter_outputs_in_idata=True)
         names = ["x0", "P0", "c", "d", "T", "Z", "R", "H", "Q"]
         for name, matrix in zip(names, ss_mod.unpack_statespace()):
             pm.Deterministic(name, matrix)
@@ -62,7 +60,7 @@ def exog_pymc_mod(exog_ss_mod, rng):
         beta_exog = pm.Normal("beta_exog", dims=["exog_state"])
 
         sigma_trend = pm.Exponential("sigma_trend", 1, dims=["trend_shock"])
-        exog_ss_mod.build_statespace_graph(y, mode="JAX")
+        exog_ss_mod.build_statespace_graph(y)
 
     return m
 
@@ -121,8 +119,6 @@ def test_no_nans_in_sampling_output(ss_mod, group, matrix, idata):
 @pytest.mark.parametrize("group", ["prior", "posterior"])
 @pytest.mark.parametrize("kind", ["conditional", "unconditional"])
 def test_sampling_methods(group, kind, ss_mod, idata, rng):
-    assert ss_mod._fit_mode == "JAX"
-
     f = getattr(ss_mod, f"sample_{kind}_{group}")
     with pytest.warns(UserWarning, match="The RandomType SharedVariables"):
         test_idata = f(idata, random_seed=rng)

@@ -69,7 +69,6 @@ class _LinearGaussianStateSpace(Continuous):
         H,
         Q,
         steps=None,
-        mode=None,
         sequence_names=None,
         append_x0=True,
         method="svd",
@@ -98,7 +97,6 @@ class _LinearGaussianStateSpace(Continuous):
             H,
             Q,
             steps=steps,
-            mode=mode,
             sequence_names=sequence_names,
             append_x0=append_x0,
             method=method,
@@ -118,7 +116,6 @@ class _LinearGaussianStateSpace(Continuous):
         H,
         Q,
         steps=None,
-        mode=None,
         sequence_names=None,
         append_x0=True,
         method="svd",
@@ -135,7 +132,6 @@ class _LinearGaussianStateSpace(Continuous):
 
         return super().dist(
             [a0, P0, c, d, T, Z, R, H, Q, steps],
-            mode=mode,
             sequence_names=sequence_names,
             append_x0=append_x0,
             method=method,
@@ -156,7 +152,6 @@ class _LinearGaussianStateSpace(Continuous):
         Q,
         steps,
         size=None,
-        mode=None,
         sequence_names=None,
         append_x0=True,
         method="svd",
@@ -240,7 +235,6 @@ class _LinearGaussianStateSpace(Continuous):
             sequences=None if len(sequences) == 0 else sequences,
             non_sequences=[*non_sequences, rng],
             n_steps=steps,
-            mode=mode,
             strict=True,
         )
 
@@ -284,7 +278,6 @@ class LinearGaussianStateSpace(Continuous):
         steps,
         k_endog=None,
         sequence_names=None,
-        mode=None,
         append_x0=True,
         method="svd",
         **kwargs,
@@ -313,7 +306,6 @@ class LinearGaussianStateSpace(Continuous):
             H,
             Q,
             steps=steps,
-            mode=mode,
             sequence_names=sequence_names,
             append_x0=append_x0,
             method=method,

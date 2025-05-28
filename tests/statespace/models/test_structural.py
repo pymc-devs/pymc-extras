@@ -541,7 +541,8 @@ def test_structural_model_against_statsmodels(
 
     _assert_all_statespace_matrices_match(mod, params, sm_mod)
 
-    built_model = mod.build(verbose=False)
+    built_model = mod.build(verbose=False, mode="FAST_RUN")
+    assert built_model.mode == "FAST_RUN"
 
     _assert_coord_shapes_match_matrices(built_model, params)
     _assert_param_dims_correct(built_model.param_dims, expected_dims)
