@@ -1109,7 +1109,7 @@ class PyMCStateSpace:
         group: str,
         random_seed: RandomState | None = None,
         data: pt.TensorLike | None = None,
-        method: str = "svd",
+        mvn_method: str = "svd",
         **kwargs,
     ):
         """
@@ -1131,9 +1131,9 @@ class PyMCStateSpace:
             Observed data on which to condition the model. If not provided, the function will use the data that was
             provided when the model was built.
 
-        method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eig", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extermely robust. Default
+        mvn_method: str
+            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
+            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
             is "svd".
 
         kwargs:
@@ -1187,7 +1187,7 @@ class PyMCStateSpace:
                     covs=cov,
                     logp=dummy_ll,
                     dims=state_dims,
-                    method=method,
+                    method=mvn_method,
                 )
 
                 obs_mu = (Z @ mu[..., None]).squeeze(-1)
@@ -1199,7 +1199,7 @@ class PyMCStateSpace:
                     covs=obs_cov,
                     logp=dummy_ll,
                     dims=obs_dims,
-                    method=method,
+                    method=mvn_method,
                 )
 
         # TODO: Remove this after pm.Flat initial values are fixed
@@ -1230,7 +1230,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
-        method: str = "svd",
+        mvn_method: str = "svd",
         **kwargs,
     ):
         """
@@ -1260,9 +1260,9 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eig", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extermely robust. Default
+        mvn_method: str
+            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
+            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
             is "svd".
 
         kwargs:
@@ -1323,7 +1323,7 @@ class PyMCStateSpace:
                 steps=steps,
                 dims=dims,
                 mode=self._fit_mode,
-                method=method,
+                method=mvn_method,
                 sequence_names=self.kalman_filter.seq_names,
                 k_endog=self.k_endog,
             )
@@ -1346,7 +1346,11 @@ class PyMCStateSpace:
         return idata_unconditional.posterior_predictive
 
     def sample_conditional_prior(
-        self, idata: InferenceData, random_seed: RandomState | None = None, method="svd", **kwargs
+        self,
+        idata: InferenceData,
+        random_seed: RandomState | None = None,
+        mvn_method: str = "svd",
+        **kwargs,
     ) -> InferenceData:
         """
         Sample from the conditional prior; that is, given parameter draws from the prior distribution,
@@ -1362,9 +1366,9 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eig", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extermely robust. Default
+        mvn_method: str
+            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
+            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
             is "svd".
 
         kwargs:
@@ -1379,11 +1383,15 @@ class PyMCStateSpace:
         """
 
         return self._sample_conditional(
-            idata=idata, group="prior", random_seed=random_seed, method=method, **kwargs
+            idata=idata, group="prior", random_seed=random_seed, mvn_method=mvn_method, **kwargs
         )
 
     def sample_conditional_posterior(
-        self, idata: InferenceData, random_seed: RandomState | None = None, method="svd", **kwargs
+        self,
+        idata: InferenceData,
+        random_seed: RandomState | None = None,
+        mvn_method: str = "svd",
+        **kwargs,
     ):
         """
         Sample from the conditional posterior; that is, given parameter draws from the posterior distribution,
@@ -1398,9 +1406,9 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eig", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extermely robust. Default
+        mvn_method: str
+            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
+            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
             is "svd".
 
         kwargs:
@@ -1415,7 +1423,7 @@ class PyMCStateSpace:
         """
 
         return self._sample_conditional(
-            idata=idata, group="posterior", random_seed=random_seed, method=method, **kwargs
+            idata=idata, group="posterior", random_seed=random_seed, mvn_method=mvn_method, **kwargs
         )
 
     def sample_unconditional_prior(
@@ -1424,7 +1432,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
-        method="svd",
+        mvn_method: str = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -1453,9 +1461,9 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eig", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extermely robust. Default
+        mvn_method: str
+            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
+            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
             is "svd".
 
         kwargs:
@@ -1479,7 +1487,7 @@ class PyMCStateSpace:
             steps=steps,
             use_data_time_dim=use_data_time_dim,
             random_seed=random_seed,
-            method=method,
+            mvn_method=mvn_method,
             **kwargs,
         )
 
@@ -1489,7 +1497,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
-        method="svd",
+        mvn_method: str = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -1519,9 +1527,9 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eig", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extermely robust. Default
+        mvn_method: str
+            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
+            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
             is "svd".
 
         Returns
@@ -1542,7 +1550,7 @@ class PyMCStateSpace:
             steps=steps,
             use_data_time_dim=use_data_time_dim,
             random_seed=random_seed,
-            method=method,
+            method=mvn_method,
             **kwargs,
         )
 
@@ -1986,7 +1994,7 @@ class PyMCStateSpace:
         filter_output="smoothed",
         random_seed: RandomState | None = None,
         verbose: bool = True,
-        method: str = "svd",
+        mvn_method: str = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -2043,9 +2051,9 @@ class PyMCStateSpace:
         verbose: bool, default=True
             Whether to print diagnostic information about forecasting.
 
-        method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eig", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extermely robust. Default
+        mvn_method: str
+            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
+            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
             is "svd".
 
         kwargs:
@@ -2157,7 +2165,7 @@ class PyMCStateSpace:
                 sequence_names=self.kalman_filter.seq_names,
                 k_endog=self.k_endog,
                 append_x0=False,
-                method=method,
+                method=mvn_method,
             )
 
         forecast_model.rvs_to_initial_values = {
@@ -2186,7 +2194,7 @@ class PyMCStateSpace:
         shock_trajectory: np.ndarray | None = None,
         orthogonalize_shocks: bool = False,
         random_seed: RandomState | None = None,
-        method="svd",
+        mvn_method: str = "svd",
         **kwargs,
     ):
         """
@@ -2238,9 +2246,9 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        method: str
-            Method used to compute draws from multivariate normal. One of "cholesky", "eig", or "svd". "cholesky" is
-            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extermely robust. Default
+        mvn_method: str
+            Method used to compute draws from multivariate normal. One of "cholesky", "eigh", or "svd". "cholesky" is
+            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely robust. Default
             is "svd".
 
         kwargs:
@@ -2302,7 +2310,7 @@ class PyMCStateSpace:
                 shock_trajectory = pt.zeros((n_steps, self.k_posdef))
                 if Q is not None:
                     init_shock = pm.MvNormal(
-                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=method
+                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
                     )
                 else:
                     init_shock = pm.Deterministic(
