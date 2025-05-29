@@ -46,6 +46,21 @@ Distributions
    Skellam
    histogram_approximation
 
+Prior
+=====
+
+.. currentmodule:: pymc_extras.prior
+.. autosummary::
+   :toctree: generated/
+
+   create_dim_handler
+   handle_dims
+   Prior
+   VariableFactory
+   sample_prior
+   Censored
+   Scaled
+
 
 Transforms
 ==========
