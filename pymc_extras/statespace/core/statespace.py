@@ -1,7 +1,8 @@
 import logging
+import warnings
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -14,7 +15,6 @@ from pymc.model import modelcontext
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import RandomState
 from pytensor import Variable, graph_replace
-from pytensor.compile import get_mode
 from rich.box import SIMPLE_HEAD
 from rich.console import Console
 from rich.table import Table
@@ -98,6 +98,13 @@ class PyMCStateSpace:
         If true, the model contains measurement error. Needed by post-estimation sampling methods to decide how to
         compute the observation errors. If False, these errors are deterministically zero; if True, they are sampled
         from a multivariate normal.
+
+    mode: str or Mode, optional
+        Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+        ``forecast``. The mode does **not** effect calls to ``pm.sample``.
+
+        Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+        to all sampling methods.
 
     Notes
     -----
@@ -221,8 +228,8 @@ class PyMCStateSpace:
         filter_type: str = "standard",
         verbose: bool = True,
         measurement_error: bool = False,
+        mode: str | None = None,
     ):
-        self._fit_mode: str | None = None
         self._fit_coords: dict[str, Sequence[str]] | None = None
         self._fit_dims: dict[str, Sequence[str]] | None = None
         self._fit_data: pt.TensorVariable | None = None
@@ -237,6 +244,7 @@ class PyMCStateSpace:
         self.k_states = k_states
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
+        self.mode = mode
 
         # All models contain a state space representation and a Kalman filter
         self.ssm = PytensorRepresentation(k_endog, k_states, k_posdef)
@@ -819,10 +827,11 @@ class PyMCStateSpace:
         self,
         data: np.ndarray | pd.DataFrame | pt.TensorVariable,
         register_data: bool = True,
-        mode: str | None = None,
         missing_fill_value: float | None = None,
         cov_jitter: float | None = JITTER_DEFAULT,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         save_kalman_filter_outputs_in_idata: bool = False,
+        mode: str | None = None,
     ) -> None:
         """
         Given a parameter vector `theta`, constructs the full computational graph describing the state space model and
@@ -865,10 +874,36 @@ class PyMCStateSpace:
 
                 - The Univariate Filter is more robust than other filters, and can tolerate a lower jitter value
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         save_kalman_filter_outputs_in_idata: bool, optional, default=False
             If True, Kalman Filter outputs will be saved in the model as deterministics. Useful for debugging, but
             should not be necessary for the majority of users.
+
+        mode: str, optional
+            Pytensor mode to use when compiling the graph. This will be saved as a model attribute and used when
+            compiling sampling functions (e.g. ``sample_conditional_prior``).
+
+            .. deprecated:: 0.2.5
+                The `mode` argument is deprecated and will be removed in a future version. Pass ``mode`` to the
+                model constructor, or manually specify ``compile_kwargs`` in sampling functions instead.
+
         """
+        if mode is not None:
+            warnings.warn(
+                "The `mode` argument is deprecated and will be removed in a future version. "
+                "Pass `mode` to the model constructor, or manually specify `compile_kwargs` in sampling functions"
+                " instead.",
+                DeprecationWarning,
+            )
+            self.mode = mode
+
         pm_mod = modelcontext(None)
 
         self._insert_random_variables()
@@ -889,7 +924,6 @@ class PyMCStateSpace:
         filter_outputs = self.kalman_filter.build_graph(
             pt.as_tensor_variable(data),
             *self.unpack_statespace(),
-            mode=mode,
             missing_fill_value=missing_fill_value,
             cov_jitter=cov_jitter,
         )
@@ -900,7 +934,7 @@ class PyMCStateSpace:
         filtered_covariances, predicted_covariances, observed_covariances = covs
         if save_kalman_filter_outputs_in_idata:
             smooth_states, smooth_covariances = self._build_smoother_graph(
-                filtered_states, filtered_covariances, self.unpack_statespace(), mode=mode
+                filtered_states, filtered_covariances, self.unpack_statespace()
             )
             all_kf_outputs = [*states, smooth_states, *covs, smooth_covariances]
             self._register_kalman_filter_outputs_with_pymc_model(all_kf_outputs)
@@ -915,11 +949,11 @@ class PyMCStateSpace:
             logp=logp,
             observed=data,
             dims=obs_dims,
+            method=mvn_method,
         )
 
         self._fit_coords = pm_mod.coords.copy()
         self._fit_dims = pm_mod.named_vars_to_dims.copy()
-        self._fit_mode = mode
 
     def _build_smoother_graph(
         self,
@@ -964,7 +998,7 @@ class PyMCStateSpace:
             *_, T, Z, R, H, Q = matrices
 
             smooth_states, smooth_covariances = self.kalman_smoother.build_graph(
-                T, R, Q, filtered_states, filtered_covariances, mode=mode, cov_jitter=cov_jitter
+                T, R, Q, filtered_states, filtered_covariances, cov_jitter=cov_jitter
             )
             smooth_states.name = "smooth_states"
             smooth_covariances.name = "smooth_covariances"
@@ -1082,7 +1116,6 @@ class PyMCStateSpace:
             R,
             H,
             Q,
-            mode=self._fit_mode,
         )
 
         filter_outputs.pop(-1)
@@ -1092,7 +1125,7 @@ class PyMCStateSpace:
         filtered_covariances, predicted_covariances, _ = covariances
 
         [smoothed_states, smoothed_covariances] = self.kalman_smoother.build_graph(
-            T, R, Q, filtered_states, filtered_covariances, mode=self._fit_mode
+            T, R, Q, filtered_states, filtered_covariances
         )
 
         grouped_outputs = [
@@ -1109,6 +1142,7 @@ class PyMCStateSpace:
         group: str,
         random_seed: RandomState | None = None,
         data: pt.TensorLike | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ):
         """
@@ -1130,6 +1164,14 @@ class PyMCStateSpace:
             Observed data on which to condition the model. If not provided, the function will use the data that was
             provided when the model was built.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1144,6 +1186,9 @@ class PyMCStateSpace:
 
         _verify_group(group)
         group_idata = getattr(idata, group)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
 
         with pm.Model(coords=self._fit_coords) as forward_model:
             (
@@ -1181,6 +1226,7 @@ class PyMCStateSpace:
                     covs=cov,
                     logp=dummy_ll,
                     dims=state_dims,
+                    method=mvn_method,
                 )
 
                 obs_mu = (Z @ mu[..., None]).squeeze(-1)
@@ -1192,6 +1238,7 @@ class PyMCStateSpace:
                     covs=obs_cov,
                     logp=dummy_ll,
                     dims=obs_dims,
+                    method=mvn_method,
                 )
 
         # TODO: Remove this after pm.Flat initial values are fixed
@@ -1208,8 +1255,8 @@ class PyMCStateSpace:
                     for name in FILTER_OUTPUT_TYPES
                     for suffix in ["", "_observed"]
                 ],
-                compile_kwargs={"mode": get_mode(self._fit_mode)},
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 
@@ -1222,6 +1269,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ):
         """
@@ -1251,6 +1299,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1266,6 +1322,10 @@ class PyMCStateSpace:
               the latent state trajectories: `y[t] = Z @ x[t] + nu[t]`, where `nu ~ N(0, H)`.
         """
         _verify_group(group)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
+
         group_idata = getattr(idata, group)
         dims = None
         temp_coords = self._fit_coords.copy()
@@ -1308,7 +1368,7 @@ class PyMCStateSpace:
                 *matrices,
                 steps=steps,
                 dims=dims,
-                mode=self._fit_mode,
+                method=mvn_method,
                 sequence_names=self.kalman_filter.seq_names,
                 k_endog=self.k_endog,
             )
@@ -1323,15 +1383,19 @@ class PyMCStateSpace:
             idata_unconditional = pm.sample_posterior_predictive(
                 group_idata,
                 var_names=[f"{group}_latent", f"{group}_observed"],
-                compile_kwargs={"mode": self._fit_mode},
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 
         return idata_unconditional.posterior_predictive
 
     def sample_conditional_prior(
-        self, idata: InferenceData, random_seed: RandomState | None = None, **kwargs
+        self,
+        idata: InferenceData,
+        random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        **kwargs,
     ) -> InferenceData:
         """
         Sample from the conditional prior; that is, given parameter draws from the prior distribution,
@@ -1347,6 +1411,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1358,10 +1430,16 @@ class PyMCStateSpace:
              "predicted_prior", and "smoothed_prior".
         """
 
-        return self._sample_conditional(idata, "prior", random_seed, **kwargs)
+        return self._sample_conditional(
+            idata=idata, group="prior", random_seed=random_seed, mvn_method=mvn_method, **kwargs
+        )
 
     def sample_conditional_posterior(
-        self, idata: InferenceData, random_seed: RandomState | None = None, **kwargs
+        self,
+        idata: InferenceData,
+        random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        **kwargs,
     ):
         """
         Sample from the conditional posterior; that is, given parameter draws from the posterior distribution,
@@ -1376,6 +1454,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1387,7 +1473,9 @@ class PyMCStateSpace:
              "predicted_posterior", and "smoothed_posterior".
         """
 
-        return self._sample_conditional(idata, "posterior", random_seed, **kwargs)
+        return self._sample_conditional(
+            idata=idata, group="posterior", random_seed=random_seed, mvn_method=mvn_method, **kwargs
+        )
 
     def sample_unconditional_prior(
         self,
@@ -1395,6 +1483,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -1423,6 +1512,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1439,7 +1536,13 @@ class PyMCStateSpace:
         """
 
         return self._sample_unconditional(
-            idata, "prior", steps, use_data_time_dim, random_seed, **kwargs
+            idata=idata,
+            group="prior",
+            steps=steps,
+            use_data_time_dim=use_data_time_dim,
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            **kwargs,
         )
 
     def sample_unconditional_posterior(
@@ -1448,6 +1551,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -1477,6 +1581,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         Returns
         -------
         InferenceData
@@ -1490,11 +1602,17 @@ class PyMCStateSpace:
         """
 
         return self._sample_unconditional(
-            idata, "posterior", steps, use_data_time_dim, random_seed, **kwargs
+            idata=idata,
+            group="posterior",
+            steps=steps,
+            use_data_time_dim=use_data_time_dim,
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            **kwargs,
         )
 
     def sample_statespace_matrices(
-        self, idata, matrix_names: str | list[str] | None, group: str = "posterior"
+        self, idata, matrix_names: str | list[str] | None, group: str = "posterior", **kwargs
     ):
         """
         Draw samples of requested statespace matrices from provided idata
@@ -1511,11 +1629,17 @@ class PyMCStateSpace:
         group: str, one of "posterior" or "prior"
             Whether to sample from priors or posteriors
 
+        kwargs:
+            Additional keyword arguments are passed to ``pymc.sample_posterior_predictive``
+
         Returns
         -------
         idata_matrices: az.InterenceData
         """
         _verify_group(group)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
 
         if matrix_names is None:
             matrix_names = MATRIX_NAMES
@@ -1547,8 +1671,9 @@ class PyMCStateSpace:
             matrix_idata = pm.sample_posterior_predictive(
                 idata if group == "posterior" else idata.prior,
                 var_names=matrix_names,
-                compile_kwargs={"mode": self._fit_mode},
                 extend_inferencedata=False,
+                compile_kwargs=compile_kwargs,
+                **kwargs,
             )
 
         return matrix_idata
@@ -1933,6 +2058,7 @@ class PyMCStateSpace:
         filter_output="smoothed",
         random_seed: RandomState | None = None,
         verbose: bool = True,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -1989,6 +2115,14 @@ class PyMCStateSpace:
         verbose: bool, default=True
             Whether to print diagnostic information about forecasting.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -2008,6 +2142,10 @@ class PyMCStateSpace:
         filter_time_dim = TIME_DIM
 
         _validate_filter_arg(filter_output)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
+
         time_index = self._get_fit_time_index()
 
         if start is None and verbose:
@@ -2094,10 +2232,10 @@ class PyMCStateSpace:
                 *matrices,
                 steps=len(forecast_index),
                 dims=dims,
-                mode=self._fit_mode,
                 sequence_names=self.kalman_filter.seq_names,
                 k_endog=self.k_endog,
                 append_x0=False,
+                method=mvn_method,
             )
 
         forecast_model.rvs_to_initial_values = {
@@ -2109,8 +2247,8 @@ class PyMCStateSpace:
             idata_forecast = pm.sample_posterior_predictive(
                 idata,
                 var_names=["forecast_latent", "forecast_observed"],
-                compile_kwargs={"mode": self._fit_mode},
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 
@@ -2126,6 +2264,7 @@ class PyMCStateSpace:
         shock_trajectory: np.ndarray | None = None,
         orthogonalize_shocks: bool = False,
         random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ):
         """
@@ -2177,6 +2316,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -2188,6 +2335,9 @@ class PyMCStateSpace:
         options = [shock_size, shock_cov, shock_trajectory]
         n_options = sum(x is not None for x in options)
         Q = None  # No covariance matrix needed if a trajectory is provided. Will be overwritten later if needed.
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
 
         if n_options > 1:
             raise ValueError("Specify exactly 0 or 1 of shock_size, shock_cov, or shock_trajectory")
@@ -2236,7 +2386,7 @@ class PyMCStateSpace:
                 shock_trajectory = pt.zeros((n_steps, self.k_posdef))
                 if Q is not None:
                     init_shock = pm.MvNormal(
-                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method="svd"
+                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
                     )
                 else:
                     init_shock = pm.Deterministic(
@@ -2260,29 +2410,15 @@ class PyMCStateSpace:
                 non_sequences=[c, T, R],
                 n_steps=n_steps,
                 strict=True,
-                mode=self._fit_mode,
             )
 
             pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])
 
-            compile_kwargs = kwargs.get("compile_kwargs", {})
-            if "mode" not in compile_kwargs.keys():
-                compile_kwargs = {"mode": self._fit_mode}
-            else:
-                mode = compile_kwargs.get("mode")
-                if mode is not None and mode != self._fit_mode:
-                    raise ValueError(
-                        f"User provided compile mode ({mode}) does not match the compile mode used to "
-                        f"construct the model ({self._fit_mode})."
-                    )
-
-                compile_kwargs.update({"mode": self._fit_mode})
-
             irf_idata = pm.sample_posterior_predictive(
                 idata,
                 var_names=["irf"],
-                compile_kwargs=compile_kwargs,
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 

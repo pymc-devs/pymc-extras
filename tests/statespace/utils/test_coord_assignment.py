@@ -137,7 +137,6 @@ def make_model(index):
         with pytest.warns(UserWarning, match="No time index found on the supplied data"):
             ss_mod.build_statespace_graph(
                 a["A"],
-                mode="JAX",
             )
     return model
 
