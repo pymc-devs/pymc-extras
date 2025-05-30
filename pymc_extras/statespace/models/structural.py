@@ -25,6 +25,8 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     AR_PARAM_DIM,
     LONG_MATRIX_NAMES,
+    OBS_STATE_AUX_DIM,
+    OBS_STATE_DIM,
     POSITION_DERIVATIVE_NAMES,
     TIME_DIM,
 )
@@ -78,6 +80,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         component_info: dict[str, dict[str, Any]],
         measurement_error: bool,
         name_to_variable: dict[str, Variable],
+        endog_names: list[str] | None = None,
         name_to_data: dict[str, Variable] | None = None,
         name: str | None = None,
         verbose: bool = True,
@@ -88,6 +91,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         if name is None:
             name = "data"
         self._name = name
+        self._endog_names = endog_names if endog_names is not None else [name]
 
         k_states, k_posdef, k_endog = ssm.k_states, ssm.k_posdef, ssm.k_endog
         param_names, param_dims, param_info = self._add_inital_state_cov_to_properties(
@@ -165,7 +169,7 @@ class StructuralTimeSeries(PyMCStateSpace):
 
     @property
     def observed_states(self):
-        return [self._name]
+        return self._endog_names
 
     @property
     def shock_names(self):
@@ -351,6 +355,7 @@ class Component(ABC):
         k_endog,
         k_states,
         k_posdef,
+        endog_names=None,
         state_names=None,
         data_names=None,
         shock_names=None,
@@ -367,6 +372,7 @@ class Component(ABC):
         self.k_states = k_states
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
+        self.endog_names = [self.name] if endog_names is None else endog_names
 
         self.state_names = state_names if state_names is not None else []
         self.data_names = data_names if data_names is not None else []
@@ -597,6 +603,9 @@ class Component(ABC):
         return name
 
     def __add__(self, other):
+        if self.endog_names != other.endog_names:
+            raise ValueError("The endog names must be the same.")
+
         state_names = self._combine_property(other, "state_names")
         data_names = self._combine_property(other, "data_names")
         param_names = self._combine_property(other, "param_names")
@@ -617,7 +626,8 @@ class Component(ABC):
 
         new_comp = Component(
             name="",
-            k_endog=1,
+            endog_names=self.endog_names,
+            k_endog=k_endog,
             k_states=k_states,
             k_posdef=k_posdef,
             measurement_error=measurement_error,
@@ -682,6 +692,7 @@ class Component(ABC):
         return StructuralTimeSeries(
             self.ssm,
             name=name,
+            endog_names=self.endog_names,
             state_names=self.state_names,
             data_names=self.data_names,
             shock_names=self.shock_names,
@@ -806,9 +817,11 @@ class LevelTrendComponent(Component):
 
     def __init__(
         self,
+        endog_names,
         order: int | list[int] = 2,
         innovations_order: int | list[int] | None = None,
         name: str = "LevelTrend",
+        **kwargs,
     ):
         if innovations_order is None:
             innovations_order = order
@@ -840,13 +853,23 @@ class LevelTrendComponent(Component):
 
         super().__init__(
             name,
-            k_endog=1,
+            endog_names=endog_names,
+            k_endog=len(endog_names),
             k_states=k_states,
             k_posdef=k_posdef,
             measurement_error=False,
             combine_hidden_states=False,
             obs_state_idxs=np.array([1.0] + [0.0] * (k_states - 1)),
+            **kwargs,
         )
+
+    @property
+    def observed_states(self):
+        return self.endog_names
+
+    @property
+    def k_endog(self):
+        return len(self.endog_names)
 
     def populate_component_properties(self):
         name_slice = POSITION_DERIVATIVE_NAMES[: self.k_states]
@@ -878,7 +901,9 @@ class LevelTrendComponent(Component):
         R = R[:, self.innovations_order]
         self.ssm["selection", :, :] = R
 
-        self.ssm["design", 0, :] = np.array([1.0] + [0.0] * (self.k_states - 1))
+        self.ssm["design", :, :] = np.tile(
+            np.array([1.0] + [0.0] * (self.k_states - 1)), (self.k_endog, 1)
+        )
 
         if self.k_posdef > 0:
             sigma_trend = self.make_and_register_variable("sigma_trend", shape=(self.k_posdef,))
@@ -925,32 +950,43 @@ class MeasurementError(Component):
             idata = pm.sample(nuts_sampler='numpyro')
     """
 
-    def __init__(self, name: str = "MeasurementError"):
-        k_endog = 1
+    def __init__(self, endog_names, time_dim, name: str = "MeasurementError", **kwargs):
         k_states = 0
         k_posdef = 0
+        self._time_dim = time_dim
 
         super().__init__(
-            name, k_endog, k_states, k_posdef, measurement_error=True, combine_hidden_states=False
+            name,
+            k_states,
+            k_posdef,
+            endog_names=endog_names,
+            k_endog=len(endog_names),
+            measurement_error=True,
+            combine_hidden_states=False,
+            **kwargs,
         )
 
     def populate_component_properties(self):
-        self.param_names = [f"sigma_{self.name}"]
-        self.param_dims = {}
         self.param_info = {
-            f"sigma_{self.name}": {
-                "shape": (),
-                "constraints": "Positive",
-                "dims": None,
+            f"{self.name}_covariance": {
+                "shape": (self.k_endog, self.k_endog),
+                "constraints": "Positive semi-definite",
+                "dims": (
+                    OBS_STATE_DIM,
+                    OBS_STATE_AUX_DIM,
+                ),
             }
         }
+        self.param_names = list(self.param_info.keys())
+        self.param_dims = {name: val["dims"] for name, val in self.param_info.items()}
 
     def make_symbolic_graph(self) -> None:
-        sigma_shape = ()
-        error_sigma = self.make_and_register_variable(f"sigma_{self.name}", shape=sigma_shape)
-        diag_idx = np.diag_indices(self.k_endog)
-        idx = np.s_["obs_cov", diag_idx[0], diag_idx[1]]
-        self.ssm[idx] = error_sigma**2
+        sigma_shape = (self.k_endog, self.k_endog)
+        obs_covariance = self.make_and_register_variable(
+            f"{self.name}_covariance", shape=sigma_shape
+        )
+
+        self.ssm["obs_cov"] = obs_covariance
 
 
 class AutoregressiveComponent(Component):
@@ -1009,7 +1045,7 @@ class AutoregressiveComponent(Component):
 
     """
 
-    def __init__(self, order: int = 1, name: str = "AutoRegressive"):
+    def __init__(self, endog_names, order: int = 1, name: str = "AutoRegressive"):
         order = order_to_mask(order)
         ar_lags = np.flatnonzero(order).ravel().astype(int) + 1
         k_states = len(order)
@@ -1019,7 +1055,8 @@ class AutoregressiveComponent(Component):
 
         super().__init__(
             name=name,
-            k_endog=1,
+            endog_names=endog_names,
+            k_endog=len(endog_names),
             k_states=k_states,
             k_posdef=1,
             measurement_error=True,
@@ -1051,7 +1088,8 @@ class AutoregressiveComponent(Component):
         T = np.eye(self.k_states, k=-1)
         self.ssm["transition", :, :] = T
         self.ssm["selection", 0, 0] = 1
-        self.ssm["design", 0, 0] = 1
+        # We want all the endogenous variables to load on this
+        self.ssm["design", :, 0] = 1
 
         ar_idx = ("transition", np.zeros(k_nonzero, dtype="int"), np.nonzero(self.order)[0])
         self.ssm[ar_idx] = ar_params
@@ -1315,7 +1353,7 @@ class FrequencySeasonality(Component):
     to isolate and identify a "Monday" effect, for instance.
     """
 
-    def __init__(self, season_length, n=None, name=None, innovations=True):
+    def __init__(self, endog_names, season_length, n=None, name=None, innovations=True, **kwargs):
         if n is None:
             n = int(season_length // 2)
         if name is None:
@@ -1337,16 +1375,18 @@ class FrequencySeasonality(Component):
 
         super().__init__(
             name=name,
-            k_endog=1,
+            endog_names=endog_names,
+            k_endog=len(endog_names),
             k_states=k_states,
             k_posdef=k_states * int(self.innovations),
             measurement_error=False,
             combine_hidden_states=True,
             obs_state_idxs=obs_state_idx,
+            **kwargs,
         )
 
     def make_symbolic_graph(self) -> None:
-        self.ssm["design", 0, slice(0, self.k_states, 2)] = 1
+        self.ssm["design", :, slice(0, self.k_states, 2)] = 1
 
         init_state = self.make_and_register_variable(f"{self.name}", shape=(self.n_coefs,))
 
@@ -1677,3 +1717,46 @@ class RegressionComponent(Component):
                 "constraints": "Positive",
                 "dims": ("exog_state",),
             }
+
+
+class ObsIntercept(Component):
+    def __init__(self, endog_names, time_dim, name: str = "y"):
+        self._time_dim = time_dim
+        super().__init__(
+            name=name,
+            endog_names=endog_names,
+            k_endog=len(endog_names),
+            k_states=0,
+            k_posdef=0,
+            measurement_error=False,
+            combine_hidden_states=False,
+        )
+
+    def populate_component_properties(self):
+        self.param_info = {
+            "mu": {
+                "shape": (
+                    # TODO This should not be necessary.
+                    self._time_dim,
+                    self.k_endog,
+                ),
+                "constraints": None,
+                "dims": (
+                    TIME_DIM,
+                    OBS_STATE_DIM,
+                ),
+            },
+        }
+        self.param_dims = {name: val["dims"] for name, val in self.param_info.items()}
+        self.param_names = list(self.param_info.keys())
+
+    def make_symbolic_graph(self) -> None:
+        mu = self.make_and_register_variable(
+            "mu",
+            shape=(
+                self._time_dim,
+                self.k_endog,
+            ),
+        )
+
+        self.ssm["obs_intercept"] = mu
