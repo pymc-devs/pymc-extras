@@ -1,9 +1,9 @@
 try:
     import torch
 
-    from gpytorch.utils.permutation import apply_permutation
+    from linear_operator.utils.permutation import apply_permutation
 except ImportError as e:
-    raise ImportError("PyTorch and GPyTorch not found.") from e
+    raise ImportError("PyTorch and LinearOperator not found.") from e
 
 import numpy as np
 
