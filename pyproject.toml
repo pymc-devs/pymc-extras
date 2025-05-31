@@ -36,6 +36,7 @@ license = {file = "LICENSE"}
 dynamic = ["version"]  # specify the version in the __init__.py file
 dependencies = [
   "pymc>=5.21.1",
+  "pytensor<2.31",
   "scikit-learn",
   "better-optimize"
 ]
