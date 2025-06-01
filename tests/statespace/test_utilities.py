@@ -41,7 +41,7 @@ def load_nile_test_data():
     return nile
 
 
-def initialize_filter(kfilter, mode=None, p=None, m=None, r=None, n=None):
+def initialize_filter(kfilter, p=None, m=None, r=None, n=None):
     ksmoother = KalmanSmoother()
     data = pt.tensor(name="data", dtype=floatX, shape=(n, p))
     a0 = pt.tensor(name="x0", dtype=floatX, shape=(m,))
@@ -64,7 +64,7 @@ def initialize_filter(kfilter, mode=None, p=None, m=None, r=None, n=None):
         predicted_covs,
         observed_covs,
         ll_obs,
-    ) = kfilter.build_graph(*inputs, mode=mode)
+    ) = kfilter.build_graph(*inputs)
 
     smoothed_states, smoothed_covs = ksmoother.build_graph(T, R, Q, filtered_states, filtered_covs)
 

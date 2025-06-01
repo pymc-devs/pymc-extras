@@ -4,6 +4,7 @@ from typing import Any
 import numpy as np
 import pytensor.tensor as pt
 
+from pytensor.compile.mode import Mode
 from pytensor.tensor.slinalg import solve_discrete_lyapunov
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
@@ -91,6 +92,13 @@ class BayesianSARIMA(PyMCStateSpace):
     verbose: bool, default True
         If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
 
+    mode: str or Mode, optional
+        Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+        ``forecast``. The mode does **not** effect calls to ``pm.sample``.
+
+        Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+        to all sampling methods.
+
     Notes
     -----
         The ARIMAX model is a univariate time series model that posits the future evolution of a stationary time series will
@@ -158,7 +166,7 @@ class BayesianSARIMA(PyMCStateSpace):
             rho = pm.Beta("ar_params", alpha=5, beta=1, dims=ss_mod.param_dims["ar_params"])
             theta = pm.Normal("ma_params", mu=0.0, sigma=0.5, dims=ss_mod.param_dims["ma_params"])
 
-            ss_mod.build_statespace_graph(df, mode="JAX")
+            ss_mod.build_statespace_graph(df)
             idata = pm.sample(nuts_sampler='numpyro')
 
     References
@@ -180,7 +188,21 @@ class BayesianSARIMA(PyMCStateSpace):
         state_structure: str = "fast",
         measurement_error: bool = False,
         verbose=True,
+        mode: str | Mode | None = None,
     ):
+        """
+
+        Parameters
+        ----------
+        order
+        seasonal_order
+        stationary_initialization
+        filter_type
+        state_structure
+        measurement_error
+        verbose
+        mode
+        """
         # Model order
         self.p, self.d, self.q = order
         if seasonal_order is None:
@@ -228,6 +250,7 @@ class BayesianSARIMA(PyMCStateSpace):
             filter_type,
             verbose=verbose,
             measurement_error=measurement_error,
+            mode=mode,
         )
 
     @property
@@ -366,7 +389,7 @@ class BayesianSARIMA(PyMCStateSpace):
 
         return coords
 
-    def _stationary_initialization(self, mode=None):
+    def _stationary_initialization(self):
         # Solve for matrix quadratic for P0
         T = self.ssm["transition"]
         R = self.ssm["selection"]
@@ -374,9 +397,7 @@ class BayesianSARIMA(PyMCStateSpace):
         c = self.ssm["state_intercept"]
 
         x0 = pt.linalg.solve(pt.identity_like(T) - T, c, assume_a="gen", check_finite=True)
-
-        method = "direct" if (self.k_states < 5) or (mode == "JAX") else "bilinear"
-        P0 = solve_discrete_lyapunov(T, pt.linalg.matrix_dot(R, Q, R.T), method=method)
+        P0 = solve_discrete_lyapunov(T, pt.linalg.matrix_dot(R, Q, R.T), method="bilinear")
 
         return x0, P0
 

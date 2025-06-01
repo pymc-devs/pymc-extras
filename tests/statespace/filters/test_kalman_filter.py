@@ -313,7 +313,7 @@ def test_kalman_filter_jax(filter):
     # TODO: Add UnivariateFilter to test; need to figure out the broadcasting issue when 2nd data dim is defined
 
     p, m, r, n = 1, 5, 1, 10
-    inputs, outputs = initialize_filter(filter(), mode="JAX", p=p, m=m, r=r, n=n)
+    inputs, outputs = initialize_filter(filter(), p=p, m=m, r=r, n=n)
     inputs_np = make_test_inputs(p, m, r, n, rng)
 
     f_jax = get_jaxified_graph(inputs, outputs)
