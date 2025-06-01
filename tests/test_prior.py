@@ -350,7 +350,7 @@ def test_to_dict_numpy() -> None:
 
 def test_dict_round_trip(large_var) -> None:
     assert Prior.from_dict(large_var.to_dict()) == large_var
-    
+
 
 def test_constrain_with_transform_error() -> None:
     var = Prior("Normal", transform="sigmoid")
