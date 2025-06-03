@@ -706,7 +706,6 @@ class Prior:
             dist = Prior("Normal", mu=0, sigma=1)
 
             dist.to_dict()
-            # {"dist": "Normal", "kwargs": {"mu": 0, "sigma": 1}}
 
         Convert a hierarchical prior to the dictionary format.
 
