@@ -720,14 +720,6 @@ class Prior:
             )
 
             dist.to_dict()
-            # {
-            #     "dist": "Normal",
-            #     "kwargs": {
-            #         "mu": {"dist": "Normal"},
-            #         "sigma": {"dist": "HalfNormal"},
-            #     },
-            #     "dims": "channel",
-            # }
 
         """
         data: dict[str, Any] = {
