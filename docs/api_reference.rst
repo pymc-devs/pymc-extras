@@ -61,6 +61,17 @@ Prior
    Censored
    Scaled
 
+Deserialize
+===========
+
+.. currentmodule:: pymc_extras.deserialize
+.. autosummary::
+   :toctree: generated/
+
+   deserialize
+   register_deserialization
+   Deserializer
+
 
 Transforms
 ==========

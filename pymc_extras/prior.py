@@ -96,6 +96,8 @@ from pydantic import InstanceOf, validate_call
 from pydantic.dataclasses import dataclass
 from pymc.distributions.shape_utils import Dims
 
+from pymc_extras.deserialize import deserialize, register_deserialization
+
 
 class UnsupportedShapeError(Exception):
     """Error for when the shapes from variables are not compatible."""
@@ -685,6 +687,134 @@ class Prior:
 
         return getattr(pz, self.distribution)(**self.parameters)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert the prior to dictionary format.
+
+        Returns
+        -------
+        dict[str, Any]
+            The dictionary format of the prior.
+
+        Examples
+        --------
+        Convert a prior to the dictionary format.
+
+        .. code-block:: python
+
+            from pymc_extras.prior import Prior
+
+            dist = Prior("Normal", mu=0, sigma=1)
+
+            dist.to_dict()
+
+        Convert a hierarchical prior to the dictionary format.
+
+        .. code-block:: python
+
+            dist = Prior(
+                "Normal",
+                mu=Prior("Normal"),
+                sigma=Prior("HalfNormal"),
+                dims="channel",
+            )
+
+            dist.to_dict()
+
+        """
+        data: dict[str, Any] = {
+            "dist": self.distribution,
+        }
+        if self.parameters:
+
+            def handle_value(value):
+                if isinstance(value, Prior):
+                    return value.to_dict()
+
+                if isinstance(value, pt.TensorVariable):
+                    value = value.eval()
+
+                if isinstance(value, np.ndarray):
+                    return value.tolist()
+
+                if hasattr(value, "to_dict"):
+                    return value.to_dict()
+
+                return value
+
+            data["kwargs"] = {
+                param: handle_value(value) for param, value in self.parameters.items()
+            }
+        if not self.centered:
+            data["centered"] = False
+
+        if self.dims:
+            data["dims"] = self.dims
+
+        if self.transform:
+            data["transform"] = self.transform
+
+        return data
+
+    @classmethod
+    def from_dict(cls, data) -> Prior:
+        """Create a Prior from the dictionary format.
+
+        Parameters
+        ----------
+        data : dict[str, Any]
+            The dictionary format of the prior.
+
+        Returns
+        -------
+        Prior
+            The prior distribution.
+
+        Examples
+        --------
+        Convert prior in the dictionary format to a Prior instance.
+
+        .. code-block:: python
+
+            from pymc_extras.prior import Prior
+
+            data = {
+                "dist": "Normal",
+                "kwargs": {"mu": 0, "sigma": 1},
+            }
+
+            dist = Prior.from_dict(data)
+            dist
+            # Prior("Normal", mu=0, sigma=1)
+
+        """
+        if not isinstance(data, dict):
+            msg = (
+                "Must be a dictionary representation of a prior distribution. "
+                f"Not of type: {type(data)}"
+            )
+            raise ValueError(msg)
+
+        dist = data["dist"]
+        kwargs = data.get("kwargs", {})
+
+        def handle_value(value):
+            if isinstance(value, dict):
+                return deserialize(value)
+
+            if isinstance(value, list):
+                return np.array(value)
+
+            return value
+
+        kwargs = {param: handle_value(value) for param, value in kwargs.items()}
+        centered = data.get("centered", True)
+        dims = data.get("dims")
+        if isinstance(dims, list):
+            dims = tuple(dims)
+        transform = data.get("transform")
+
+        return cls(dist, dims=dims, centered=centered, transform=transform, **kwargs)
+
     def constrain(self, lower: float, upper: float, mass: float = 0.95, kwargs=None) -> Prior:
         """Create a new prior with a given mass constrained within the given bounds.
 
@@ -1022,6 +1152,34 @@ class Censored:
             dims=self.dims,
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert the censored distribution to a dictionary."""
+
+        def handle_value(value):
+            if isinstance(value, pt.TensorVariable):
+                return value.eval().tolist()
+
+            return value
+
+        return {
+            "class": "Censored",
+            "data": {
+                "dist": self.distribution.to_dict(),
+                "lower": handle_value(self.lower),
+                "upper": handle_value(self.upper),
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Censored:
+        """Create a censored distribution from a dictionary."""
+        data = data["data"]
+        return cls(  # type: ignore
+            distribution=Prior.from_dict(data["dist"]),
+            lower=data["lower"],
+            upper=data["upper"],
+        )
+
     def sample_prior(
         self,
         coords=None,
@@ -1184,3 +1342,15 @@ class Scaled:
         """
         var = self.dist.create_variable(f"{name}_unscaled")
         return pm.Deterministic(name, var * self.factor, dims=self.dims)
+
+
+def _is_prior_type(data: dict) -> bool:
+    return "dist" in data
+
+
+def _is_censored_type(data: dict) -> bool:
+    return data.keys() == {"class", "data"} and data["class"] == "Censored"
+
+
+register_deserialization(is_type=_is_prior_type, deserialize=Prior.from_dict)
+register_deserialization(is_type=_is_censored_type, deserialize=Censored.from_dict)
