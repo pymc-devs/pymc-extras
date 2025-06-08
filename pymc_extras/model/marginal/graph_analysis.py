@@ -5,6 +5,7 @@ from itertools import zip_longest
 
 from pymc import SymbolicRandomVariable
 from pymc.model.fgraph import ModelVar
+from pymc.variational.minibatch_rv import MinibatchRandomVariable
 from pytensor.graph import Variable, ancestors
 from pytensor.graph.basic import io_toposort
 from pytensor.tensor import TensorType, TensorVariable
@@ -138,6 +139,9 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
             continue
 
         elif isinstance(node.op, ModelVar):
+            var_dims[node.outputs[0]] = inputs_dims[0]
+
+        elif isinstance(node.op, MinibatchRandomVariable):
             var_dims[node.outputs[0]] = inputs_dims[0]
 
         elif isinstance(node.op, DimShuffle):
