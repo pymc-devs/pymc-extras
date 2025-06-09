@@ -2,6 +2,7 @@ import pytensor.tensor as pt
 import pytest
 
 from pymc.distributions import CustomDist
+from pymc.variational.minibatch_rv import create_minibatch_rv
 from pytensor.tensor.type_other import NoneTypeT
 
 from pymc_extras.model.marginal.graph_analysis import (
@@ -159,6 +160,13 @@ class TestSubgraphBatchDimConnection:
         invalid_out = pt.random.multivariate_normal(mean=inp, cov=pt.eye(3))
         with pytest.raises(ValueError, match="Use of known dimensions"):
             subgraph_batch_dim_connection(inp, [invalid_out])
+
+    def test_minibatched_random_variable(self):
+        inp = pt.tensor(shape=(4, 3, 2))
+        out1 = pt.random.normal(loc=inp)
+        out2 = create_minibatch_rv(out1, total_size=(10, 10, 10))
+        [dims1] = subgraph_batch_dim_connection(inp, [out2])
+        assert dims1 == (0, 1, 2)
 
     def test_symbolic_random_variable(self):
         inp = pt.tensor(shape=(4, 3, 2))
