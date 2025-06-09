@@ -2203,20 +2203,33 @@ class PyMCStateSpace:
 
         with pm.Model(coords=temp_coords) as forecast_model:
             (_, _, *matrices), grouped_outputs = self._kalman_filter_outputs_from_dummy_graph(
-                scenario=scenario,
                 data_dims=["data_time", OBS_STATE_DIM],
             )
 
-            for name in self.data_names:
-                if name in scenario.keys():
-                    pm.set_data(
-                        {"data": np.zeros((len(forecast_index), self.k_endog))},
-                        coords={"data_time": np.arange(len(forecast_index))},
-                    )
-                    break
-
             group_idx = FILTER_OUTPUT_TYPES.index(filter_output)
             mu, cov = grouped_outputs[group_idx]
+
+            if scenario is not None:
+                sub_dict = {
+                    forecast_model[data_name]: pt.as_tensor_variable(
+                        x=self._exog_data_info[data_name]["value"], name=data_name
+                    )
+                    for data_name in self.data_names
+                }
+
+                # Will this always be named "data"?
+                sub_dict[forecast_model["data"]] = pt.as_tensor_variable(
+                    self._fit_data, name="data"
+                )
+            else:
+                # same here will it always be named data?
+                sub_dict = {
+                    forecast_model["data"]: pt.as_tensor_variable(
+                        self._fit_data.astype(np.float64), name="data"
+                    )
+                }
+
+            mu, cov = graph_replace([mu, cov], replace=sub_dict, strict=True)
 
             x0 = pm.Deterministic(
                 "x0_slice", mu[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
@@ -2224,6 +2237,20 @@ class PyMCStateSpace:
             P0 = pm.Deterministic(
                 "P0_slice", cov[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
             )
+
+            if scenario is not None:
+                for name in self.data_names:
+                    if name in scenario.keys():
+                        pm.set_data({name: scenario[name]})
+
+                for name in self.data_names:
+                    if name in scenario.keys():
+                        # same here will it always be named data?
+                        pm.set_data(
+                            {"data": np.zeros((len(forecast_index), self.k_endog))},
+                            coords={"data_time": np.arange(len(forecast_index))},
+                        )
+                        break
 
             _ = LinearGaussianStateSpace(
                 "forecast",
