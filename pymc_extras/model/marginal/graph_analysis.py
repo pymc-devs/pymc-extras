@@ -141,9 +141,6 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
         elif isinstance(node.op, ModelVar):
             var_dims[node.outputs[0]] = inputs_dims[0]
 
-        elif isinstance(node.op, MinibatchRandomVariable):
-            var_dims[node.outputs[0]] = inputs_dims[0]
-
         elif isinstance(node.op, DimShuffle):
             [input_dims] = inputs_dims
             output_dims = tuple(None if i == "x" else input_dims[i] for i in node.op.new_order)
@@ -316,6 +313,9 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
                 output_dims = start_non_adv_dims + adv_dims + end_non_adv_dims
 
             var_dims[node.outputs[0]] = output_dims
+
+        elif isinstance(node.op, MinibatchRandomVariable):
+            var_dims[node.outputs[0]] = inputs_dims[0]
 
         else:
             raise NotImplementedError(f"Marginalization through operation {node} not supported.")
