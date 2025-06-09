@@ -2209,49 +2209,32 @@ class PyMCStateSpace:
             group_idx = FILTER_OUTPUT_TYPES.index(filter_output)
             mu, cov = grouped_outputs[group_idx]
 
-            if scenario is not None:
-                sub_dict = {
-                    forecast_model[data_name]: pt.as_tensor_variable(
-                        x=np.atleast_2d(self._exog_data_info[data_name]["value"].T).T,
-                        name=data_name,
-                    )
-                    for data_name in self.data_names
-                }
+            sub_dict = {
+                data_var: pt.as_tensor_variable(data_var.get_value(), name="data")
+                for data_var in forecast_model.data_vars
+            }
 
-                # Will this always be named "data"?
-                sub_dict[forecast_model["data"]] = pt.as_tensor_variable(
-                    np.atleast_2d(self._fit_data.T).T, name="data"
-                )
-            else:
-                # same here will it always be named data?
-                sub_dict = {
-                    forecast_model["data"]: pt.as_tensor_variable(
-                        np.atleast_2d(self._fit_data.T).T, name="data"
-                    )
-                }
+            replacements_diff = np.setdiff1d(
+                ar1=[*self.data_names, "data"], ar2=[k.name for k, _ in sub_dict.items()]
+            )
+            if replacements_diff.size > 0:
+                raise ValueError(f"{replacements_diff} data used for fitting not found!")
 
-            mu, cov = graph_replace([mu, cov], replace=sub_dict, strict=True)
+            mu_frozen, cov_frozen = graph_replace([mu, cov], replace=sub_dict, strict=True)
 
             x0 = pm.Deterministic(
-                "x0_slice", mu[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
+                "x0_slice", mu_frozen[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
             )
             P0 = pm.Deterministic(
-                "P0_slice", cov[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
+                "P0_slice", cov_frozen[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
             )
 
             if scenario is not None:
-                for name in self.data_names:
-                    if name in scenario.keys():
-                        pm.set_data({name: scenario[name]})
-
-                for name in self.data_names:
-                    if name in scenario.keys():
-                        # same here will it always be named data?
-                        pm.set_data(
-                            {"data": np.zeros((len(forecast_index), self.k_endog))},
-                            coords={"data_time": np.arange(len(forecast_index))},
-                        )
-                        break
+                dummy_obs_data = np.zeros((len(forecast_index), self.k_endog))
+                pm.set_data(
+                    scenario | {"data": dummy_obs_data},
+                    coords={"data_time": np.arange(len(forecast_index))},
+                )
 
             _ = LinearGaussianStateSpace(
                 "forecast",
