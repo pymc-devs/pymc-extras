@@ -2212,20 +2212,21 @@ class PyMCStateSpace:
             if scenario is not None:
                 sub_dict = {
                     forecast_model[data_name]: pt.as_tensor_variable(
-                        x=self._exog_data_info[data_name]["value"], name=data_name
+                        x=np.atleast_2d(self._exog_data_info[data_name]["value"].T).T,
+                        name=data_name,
                     )
                     for data_name in self.data_names
                 }
 
                 # Will this always be named "data"?
                 sub_dict[forecast_model["data"]] = pt.as_tensor_variable(
-                    self._fit_data, name="data"
+                    np.atleast_2d(self._fit_data.T).T, name="data"
                 )
             else:
                 # same here will it always be named data?
                 sub_dict = {
                     forecast_model["data"]: pt.as_tensor_variable(
-                        self._fit_data.astype(np.float64), name="data"
+                        np.atleast_2d(self._fit_data.T).T, name="data"
                     )
                 }
 
