@@ -39,6 +39,8 @@ from pymc.blocking import RaveledVars
 from pymc.model.transform.conditioning import remove_value_transforms
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import get_default_varnames
+from pytensor.tensor import TensorVariable
+from pytensor.tensor.optimize import minimize
 from scipy import stats
 
 from pymc_extras.inference.find_map import (
@@ -413,6 +415,31 @@ def sample_laplace_posterior(
     idata = add_data_to_inferencedata(idata, progressbar, model, compile_kwargs)
 
     return idata
+
+
+def find_mode(
+    inputs: list[TensorVariable],
+    x: TensorVariable | None = None,
+    model: pm.Model | None = None,
+    method: minimize_method = "BFGS",
+    optimizer_kwargs: dict | None = None,
+):  # Unsure of the return type, I'd assume it would be a list of pt tensors of some kind
+    model = pm.modelcontext(model)
+    if x is None:
+        raise NotImplementedError("Currently assumes user specifies the Gaussian latent field x")
+
+    # Minimise negative log likelihood
+    loss_x = -model.logp()
+    # TODO Need to think about how to get inputs (i.e. a collection of all the input variables) to go along with the specific
+    # variable x, i.e. f(x, *args). I assume I can't assume that the inputs arg will be ordered to have x first. May need to sort it somehow
+    loss = pytensor.function(inputs, loss_x)
+
+    grad = pytensor.gradient.grad(loss, inputs)
+    hess = pytensor.gradient.jacobian(grad, inputs)[0]
+
+    # Need to play around with scipy.optimize.minimize with pytensor a little so I can figure out if it's "x" or "inputs" that goes here
+    res = minimize(loss, x, method, grad, hess, optimizer_kwargs)
+    return res.x, res.hess
 
 
 def fit_laplace(
