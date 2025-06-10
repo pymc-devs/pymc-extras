@@ -278,7 +278,7 @@ class VariableFactory(Protocol):
 def sample_prior(
     factory: VariableFactory,
     coords=None,
-    name: str = "var",
+    name: str = "variable",
     wrap: bool = False,
     **sample_prior_predictive_kwargs,
 ) -> xr.Dataset:
@@ -292,7 +292,7 @@ def sample_prior(
         The coordinates for the variable, by default None.
         Only required if the dims are specified.
     name : str, optional
-        The name of the variable, by default "var".
+        The name of the variable, by default "variable".
     wrap : bool, optional
         Whether to wrap the variable in a `pm.Deterministic` node, by default False.
     sample_prior_predictive_kwargs : dict
@@ -900,7 +900,7 @@ class Prior:
     def sample_prior(
         self,
         coords=None,
-        name: str = "var",
+        name: str = "variable",
         **sample_prior_predictive_kwargs,
     ) -> xr.Dataset:
         """Sample the prior distribution for the variable.
@@ -911,7 +911,7 @@ class Prior:
             The coordinates for the variable, by default None.
             Only required if the dims are specified.
         name : str, optional
-            The name of the variable, by default "var".
+            The name of the variable, by default "variable".
         sample_prior_predictive_kwargs : dict
             Additional arguments to pass to `pm.sample_prior_predictive`.
 

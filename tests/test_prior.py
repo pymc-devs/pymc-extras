@@ -616,7 +616,10 @@ def test_custom_transform() -> None:
     prior = dist.sample_prior(draws=10)
     df_prior = prior.to_dataframe()
 
-    np.testing.assert_array_equal(df_prior["var"].to_numpy(), df_prior["var_raw"].to_numpy() ** 2)
+    np.testing.assert_array_equal(
+        df_prior.variable.to_numpy(),
+        df_prior.variable_raw.to_numpy() ** 2,
+    )
 
 
 def test_custom_transform_comes_first() -> None:
@@ -627,7 +630,10 @@ def test_custom_transform_comes_first() -> None:
     prior = dist.sample_prior(draws=10)
     df_prior = prior.to_dataframe()
 
-    np.testing.assert_array_equal(df_prior["var"].to_numpy(), 2 * df_prior["var_raw"].to_numpy())
+    np.testing.assert_array_equal(
+        df_prior.variable.to_numpy(),
+        2 * df_prior.variable_raw.to_numpy(),
+    )
 
     clear_custom_transforms()
 
@@ -686,7 +692,7 @@ def test_sample_prior_arbitrary_no_name() -> None:
     prior = sample_prior(var, coords={"channel": ["A", "B", "C"]}, draws=25)
 
     assert isinstance(prior, xr.Dataset)
-    assert "var" not in prior
+    assert "variable" not in prior
 
     prior_with = sample_prior(
         var,
@@ -696,7 +702,7 @@ def test_sample_prior_arbitrary_no_name() -> None:
     )
 
     assert isinstance(prior_with, xr.Dataset)
-    assert "var" in prior_with
+    assert "variable" in prior_with
 
 
 def test_create_prior_with_arbitrary() -> None:
