@@ -2080,11 +2080,11 @@ class PyMCStateSpace:
                 for data_var in forecast_model.data_vars
             }
 
-            replacements_diff = np.setdiff1d(
+            missing_data_vars = np.setdiff1d(
                 ar1=[*self.data_names, "data"], ar2=[k.name for k, _ in sub_dict.items()]
             )
-            if replacements_diff.size > 0:
-                raise ValueError(f"{replacements_diff} data used for fitting not found!")
+            if missing_data_vars.size > 0:
+                raise ValueError(f"{missing_data_vars} data used for fitting not found!")
 
             mu_frozen, cov_frozen = graph_replace([mu, cov], replace=sub_dict, strict=True)
 
@@ -2094,13 +2094,6 @@ class PyMCStateSpace:
             P0 = pm.Deterministic(
                 "P0_slice", cov_frozen[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
             )
-
-            if scenario is not None:
-                dummy_obs_data = np.zeros((len(forecast_index), self.k_endog))
-                pm.set_data(
-                    scenario | {"data": dummy_obs_data},
-                    coords={"data_time": np.arange(len(forecast_index))},
-                )
 
             _ = LinearGaussianStateSpace(
                 "forecast",
@@ -2262,6 +2255,14 @@ class PyMCStateSpace:
             filter_output=filter_output,
             mvn_method=mvn_method,
         )
+
+        with forecast_model:
+            if scenario is not None:
+                dummy_obs_data = np.zeros((len(forecast_index), self.k_endog))
+                pm.set_data(
+                    scenario | {"data": dummy_obs_data},
+                    coords={"data_time": np.arange(len(forecast_index))},
+                )
 
         forecast_model.rvs_to_initial_values = {
             k: None for k in forecast_model.rvs_to_initial_values.keys()
