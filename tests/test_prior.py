@@ -12,6 +12,8 @@ from preliz.distributions import distributions as preliz_distributions
 from pydantic import ValidationError
 from pymc.model_graph import fast_eval
 
+import pymc_extras.prior as pr
+
 from pymc_extras.deserialize import (
     DESERIALIZERS,
     deserialize,
@@ -1147,3 +1149,22 @@ def test_scaled_sample_prior() -> None:
     assert prior.sizes == {"chain": 1, "draw": 25, "channel": 3}
     assert "scaled_var" in prior
     assert "scaled_var_unscaled" in prior
+
+
+def test_getattr() -> None:
+    assert pr.Normal() == Prior("Normal")
+
+
+def test_import_directly() -> None:
+    try:
+        from pymc_extras.prior import Normal
+    except Exception as e:
+        pytest.fail(f"Unexpected exception: {e}")
+
+    assert Normal() == Prior("Normal")
+
+
+def test_import_incorrect_directly() -> None:
+    match = "PyMC doesn't have a distribution of name 'SomeIncorrectDistribution'"
+    with pytest.raises(UnsupportedDistributionError, match=match):
+        from pymc_extras.prior import SomeIncorrectDistribution  # noqa: F401
