@@ -9,6 +9,8 @@ import pytensor.tensor as pt
 import pytest
 
 from numpy.testing import assert_allclose
+from pytensor.compile import SharedVariable
+from pytensor.graph.basic import graph_inputs
 
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
@@ -170,7 +172,7 @@ def exog_pymc_mod(exog_ss_mod, exog_data):
         )
         beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=["exog_state"])
 
-        exog_ss_mod.build_statespace_graph(exog_data["y"])
+        exog_ss_mod.build_statespace_graph(exog_data["y"], save_kalman_filter_outputs_in_idata=True)
 
     return struct_model
 
@@ -900,64 +902,86 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
 @pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
-def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data):
-    # Want to make sure this remains the same even after updating data using pm.set_data()
+def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_exog):
     data_before_build_forecast_model = {d.name: d.get_value() for d in exog_pymc_mod.data_vars}
 
-    scenario1 = pd.DataFrame(
+    scenario = pd.DataFrame(
         {
             "date": pd.date_range(start="2023-05-11", end="2023-05-20", freq="D"),
             "x1": rng.choice(2, size=10, replace=True).astype(float),
         }
     )
-    scenario1.set_index("date", inplace=True)
+    scenario.set_index("date", inplace=True)
 
-    scenario2 = pd.DataFrame(
-        {
-            "date": pd.date_range(start="2023-05-11", end="2023-05-20", freq="D"),
-            "x1": np.zeros(shape=(10,)),
-        }
+    time_index = exog_ss_mod._get_fit_time_index()
+    t0, forecast_index = exog_ss_mod._build_forecast_index(
+        time_index=time_index,
+        start=exog_data.index[-1],
+        end=scenario.index[-1],
+        scenario=scenario,
     )
-    scenario2.set_index("date", inplace=True)
 
-    data_after_build_forecast_model = []
+    test_forecast_model = exog_ss_mod._build_forecast_model(
+        time_index=time_index,
+        t0=t0,
+        forecast_index=forecast_index,
+        scenario=scenario,
+        filter_output="predicted",
+        mvn_method="svd",
+    )
 
-    for scenario in [scenario1, scenario2]:
-        time_index = exog_ss_mod._get_fit_time_index()
-        t0, forecast_index = exog_ss_mod._build_forecast_index(
-            time_index=time_index,
-            start=exog_data.index[-1],
-            end=scenario.index[-1],
-            scenario=scenario,
+    frozen_shared_inputs = [
+        inpt
+        for inpt in graph_inputs([test_forecast_model.x0_slice, test_forecast_model.P0_slice])
+        if isinstance(inpt, SharedVariable)
+        and not isinstance(inpt.get_value(), np.random.Generator)
+    ]
+
+    assert (
+        len(frozen_shared_inputs) == 0
+    )  # check there are no non-random generator SharedVariables in the frozen inputs
+
+    unfrozen_shared_inputs = [
+        inpt
+        for inpt in graph_inputs([test_forecast_model.forecast_combined])
+        if isinstance(inpt, SharedVariable)
+        and not isinstance(inpt.get_value(), np.random.Generator)
+    ]
+
+    # Check that there is one (in this case) unfrozen shared input and it corresponds to the exogenous data
+    assert len(unfrozen_shared_inputs) == 1
+    assert unfrozen_shared_inputs[0].name == "data_exog"
+
+    data_after_build_forecast_model = {d.name: d.get_value() for d in test_forecast_model.data_vars}
+
+    with test_forecast_model:
+        dummy_obs_data = np.zeros((len(forecast_index), exog_ss_mod.k_endog))
+        pm.set_data(
+            {"data_exog": scenario} | {"data": dummy_obs_data},
+            coords={"data_time": np.arange(len(forecast_index))},
+        )
+        idata_forecast = pm.sample_posterior_predictive(
+            idata_exog, var_names=["x0_slice", "P0_slice"]
         )
 
-        test_forecast_model = exog_ss_mod._build_forecast_model(
-            time_index=time_index,
-            t0=t0,
-            forecast_index=forecast_index,
-            scenario=scenario,
-            filter_output="smoothed",
-            mvn_method="svd",
-        )
+    np.testing.assert_allclose(
+        unfrozen_shared_inputs[0].get_value(), scenario["x1"].values.reshape((-1, 1))
+    )  # ensure the replaced data matches the exogenous data
 
-        data_after_build_forecast_model.append(
-            {d.name: d.get_value() for d in test_forecast_model.data_vars}
-        )
-        # Change the data here
-        with test_forecast_model:
-            dummy_obs_data = np.zeros((len(forecast_index), exog_ss_mod.k_endog))
-            pm.set_data(
-                {"data_exog": scenario} | {"data": dummy_obs_data},
-                coords={"data_time": np.arange(len(forecast_index))},
-            )
-
-    # Ensure first change in data did not affect second change ( not sure this makes sense since the forecast method will rebuild forecast model every time you call it)
     for k in data_before_build_forecast_model.keys():
-        for data_before_build_forecast_scenario_specific in data_after_build_forecast_model:
-            assert (
-                data_before_build_forecast_model[k].mean()
-                == data_before_build_forecast_scenario_specific[k].mean()
-            )
+        assert (  # check that the data needed to init the forecasts doesn't change
+            data_before_build_forecast_model[k].mean() == data_after_build_forecast_model[k].mean()
+        )
+
+    # Check that the frozen states and covariances correctly match the sliced index
+    np.testing.assert_allclose(
+        idata_exog.posterior["predicted_covariance"].sel(time=t0).mean(("chain", "draw")).values,
+        idata_forecast.posterior_predictive["P0_slice"].mean(("chain", "draw")).values,
+    )
+    np.testing.assert_allclose(
+        idata_exog.posterior["predicted_state"].sel(time=t0).mean(("chain", "draw")).values,
+        idata_forecast.posterior_predictive["x0_slice"].mean(("chain", "draw")).values,
+    )
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
