@@ -901,6 +901,7 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
 @pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
 def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data):
+    # Want to make sure this remains the same even after updating data using pm.set_data()
     data_before_build_forecast_model = {d.name: d.get_value() for d in exog_pymc_mod.data_vars}
 
     scenario1 = pd.DataFrame(
@@ -918,6 +919,8 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data):
         }
     )
     scenario2.set_index("date", inplace=True)
+
+    data_after_build_forecast_model = []
 
     for scenario in [scenario1, scenario2]:
         time_index = exog_ss_mod._get_fit_time_index()
@@ -937,13 +940,23 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data):
             mvn_method="svd",
         )
 
-        data_after_build_forecast_model = {
-            d.name: d.get_value() for d in test_forecast_model.data_vars
-        }
-        for k in data_before_build_forecast_model.keys():
+        data_after_build_forecast_model.append(
+            {d.name: d.get_value() for d in test_forecast_model.data_vars}
+        )
+        # Change the data here
+        with test_forecast_model:
+            dummy_obs_data = np.zeros((len(forecast_index), exog_ss_mod.k_endog))
+            pm.set_data(
+                {"data_exog": scenario} | {"data": dummy_obs_data},
+                coords={"data_time": np.arange(len(forecast_index))},
+            )
+
+    # Ensure first change in data did not affect second change ( not sure this makes sense since the forecast method will rebuild forecast model every time you call it)
+    for k in data_before_build_forecast_model.keys():
+        for data_before_build_forecast_scenario_specific in data_after_build_forecast_model:
             assert (
                 data_before_build_forecast_model[k].mean()
-                == data_after_build_forecast_model[k].mean()
+                == data_before_build_forecast_scenario_specific[k].mean()
             )
 
 
