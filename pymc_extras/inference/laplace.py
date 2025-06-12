@@ -429,6 +429,7 @@ def find_mode(
         raise NotImplementedError("Currently assumes user specifies the Gaussian latent field x")
 
     # Minimise negative log likelihood
+    # TODO: NLL already computs jac by default. Need to check how to access
     loss_x = -model.logp()
     # TODO Need to think about how to get inputs (i.e. a collection of all the input variables) to go along with the specific
     # variable x, i.e. f(x, *args). I assume I can't assume that the inputs arg will be ordered to have x first. May need to sort it somehow
