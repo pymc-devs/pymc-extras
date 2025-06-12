@@ -9,6 +9,7 @@ import pytensor.tensor as pt
 import pytest
 
 from numpy.testing import assert_allclose
+from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.compile import SharedVariable
 from pytensor.graph.basic import graph_inputs
 
@@ -32,6 +33,7 @@ from tests.statespace.test_utilities import (
 floatX = pytensor.config.floatX
 nile = load_nile_test_data()
 ALL_SAMPLE_OUTPUTS = MATRIX_NAMES + FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES
+mock_pymc_sample = pytest.fixture(scope="session")(mock_sample_setup_and_teardown)
 
 
 def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False, data_info=None):
@@ -214,7 +216,7 @@ def pymc_mod_no_exog_dt(ss_mod_no_exog_dt, rng):
 
 
 @pytest.fixture(scope="session")
-def idata(pymc_mod, rng):
+def idata(pymc_mod, rng, mock_pymc_sample):
     with pymc_mod:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
@@ -224,7 +226,7 @@ def idata(pymc_mod, rng):
 
 
 @pytest.fixture(scope="session")
-def idata_exog(exog_pymc_mod, rng):
+def idata_exog(exog_pymc_mod, rng, mock_pymc_sample):
     with exog_pymc_mod:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
@@ -233,7 +235,7 @@ def idata_exog(exog_pymc_mod, rng):
 
 
 @pytest.fixture(scope="session")
-def idata_no_exog(pymc_mod_no_exog, rng):
+def idata_no_exog(pymc_mod_no_exog, rng, mock_pymc_sample):
     with pymc_mod_no_exog:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
@@ -242,7 +244,7 @@ def idata_no_exog(pymc_mod_no_exog, rng):
 
 
 @pytest.fixture(scope="session")
-def idata_no_exog_dt(pymc_mod_no_exog_dt, rng):
+def idata_no_exog_dt(pymc_mod_no_exog_dt, rng, mock_pymc_sample):
     with pymc_mod_no_exog_dt:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
