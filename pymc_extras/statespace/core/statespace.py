@@ -2047,6 +2047,69 @@ class PyMCStateSpace:
 
         return scenario
 
+    def _build_forecast_model(
+        self, time_index, t0, forecast_index, scenario, filter_output, mvn_method
+    ):
+        filter_time_dim = TIME_DIM
+        temp_coords = self._fit_coords.copy()
+
+        dims = None
+        if all([dim in temp_coords for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]]):
+            dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+
+        t0_idx = np.flatnonzero(time_index == t0)[0]
+
+        temp_coords["data_time"] = time_index
+        temp_coords[TIME_DIM] = forecast_index
+
+        mu_dims, cov_dims = None, None
+        if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]]):
+            mu_dims = ["data_time", ALL_STATE_DIM]
+            cov_dims = ["data_time", ALL_STATE_DIM, ALL_STATE_AUX_DIM]
+
+        with pm.Model(coords=temp_coords) as forecast_model:
+            (_, _, *matrices), grouped_outputs = self._kalman_filter_outputs_from_dummy_graph(
+                data_dims=["data_time", OBS_STATE_DIM],
+            )
+
+            group_idx = FILTER_OUTPUT_TYPES.index(filter_output)
+            mu, cov = grouped_outputs[group_idx]
+
+            sub_dict = {
+                data_var: pt.as_tensor_variable(data_var.get_value(), name="data")
+                for data_var in forecast_model.data_vars
+            }
+
+            missing_data_vars = np.setdiff1d(
+                ar1=[*self.data_names, "data"], ar2=[k.name for k, _ in sub_dict.items()]
+            )
+            if missing_data_vars.size > 0:
+                raise ValueError(f"{missing_data_vars} data used for fitting not found!")
+
+            mu_frozen, cov_frozen = graph_replace([mu, cov], replace=sub_dict, strict=True)
+
+            x0 = pm.Deterministic(
+                "x0_slice", mu_frozen[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
+            )
+            P0 = pm.Deterministic(
+                "P0_slice", cov_frozen[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
+            )
+
+            _ = LinearGaussianStateSpace(
+                "forecast",
+                x0,
+                P0,
+                *matrices,
+                steps=len(forecast_index),
+                dims=dims,
+                sequence_names=self.kalman_filter.seq_names,
+                k_endog=self.k_endog,
+                append_x0=False,
+                method=mvn_method,
+            )
+
+        return forecast_model
+
     def forecast(
         self,
         idata: InferenceData,
@@ -2139,8 +2202,6 @@ class PyMCStateSpace:
                   the latent state trajectories: `y[t] = Z @ x[t] + nu[t]`, where `nu ~ N(0, H)`.
 
         """
-        filter_time_dim = TIME_DIM
-
         _validate_filter_arg(filter_output)
 
         compile_kwargs = kwargs.pop("compile_kwargs", {})
@@ -2185,58 +2246,23 @@ class PyMCStateSpace:
             use_scenario_index=use_scenario_index,
         )
         scenario = self._finalize_scenario_initialization(scenario, forecast_index)
-        temp_coords = self._fit_coords.copy()
 
-        dims = None
-        if all([dim in temp_coords for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]]):
-            dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+        forecast_model = self._build_forecast_model(
+            time_index=time_index,
+            t0=t0,
+            forecast_index=forecast_index,
+            scenario=scenario,
+            filter_output=filter_output,
+            mvn_method=mvn_method,
+        )
 
-        t0_idx = np.flatnonzero(time_index == t0)[0]
-
-        temp_coords["data_time"] = time_index
-        temp_coords[TIME_DIM] = forecast_index
-
-        mu_dims, cov_dims = None, None
-        if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]]):
-            mu_dims = ["data_time", ALL_STATE_DIM]
-            cov_dims = ["data_time", ALL_STATE_DIM, ALL_STATE_AUX_DIM]
-
-        with pm.Model(coords=temp_coords) as forecast_model:
-            (_, _, *matrices), grouped_outputs = self._kalman_filter_outputs_from_dummy_graph(
-                scenario=scenario,
-                data_dims=["data_time", OBS_STATE_DIM],
-            )
-
-            for name in self.data_names:
-                if name in scenario.keys():
-                    pm.set_data(
-                        {"data": np.zeros((len(forecast_index), self.k_endog))},
-                        coords={"data_time": np.arange(len(forecast_index))},
-                    )
-                    break
-
-            group_idx = FILTER_OUTPUT_TYPES.index(filter_output)
-            mu, cov = grouped_outputs[group_idx]
-
-            x0 = pm.Deterministic(
-                "x0_slice", mu[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
-            )
-            P0 = pm.Deterministic(
-                "P0_slice", cov[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
-            )
-
-            _ = LinearGaussianStateSpace(
-                "forecast",
-                x0,
-                P0,
-                *matrices,
-                steps=len(forecast_index),
-                dims=dims,
-                sequence_names=self.kalman_filter.seq_names,
-                k_endog=self.k_endog,
-                append_x0=False,
-                method=mvn_method,
-            )
+        with forecast_model:
+            if scenario is not None:
+                dummy_obs_data = np.zeros((len(forecast_index), self.k_endog))
+                pm.set_data(
+                    scenario | {"data": dummy_obs_data},
+                    coords={"data_time": np.arange(len(forecast_index))},
+                )
 
         forecast_model.rvs_to_initial_values = {
             k: None for k in forecast_model.rvs_to_initial_values.keys()
