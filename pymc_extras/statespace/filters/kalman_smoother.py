@@ -105,7 +105,7 @@ class KalmanSmoother:
         a_hat, P_hat = self.predict(a, P, T, R, Q)
 
         # Use pinv, otherwise P_hat is singular when there is missing data
-        smoother_gain = matrix_dot(pt.linalg.pinv(P_hat), T, P).T
+        smoother_gain = matrix_dot(pt.linalg.pinv(P_hat, hermitian=True), T, P).T
         a_smooth_next = a + smoother_gain @ (a_smooth - a_hat)
 
         P_smooth_next = P + quad_form_sym(smoother_gain, P_smooth - P_hat)

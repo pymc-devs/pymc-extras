@@ -9,6 +9,9 @@ import pytensor.tensor as pt
 import pytest
 
 from numpy.testing import assert_allclose
+from pymc.testing import mock_sample_setup_and_teardown
+from pytensor.compile import SharedVariable
+from pytensor.graph.basic import graph_inputs
 
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
@@ -30,6 +33,7 @@ from tests.statespace.test_utilities import (
 floatX = pytensor.config.floatX
 nile = load_nile_test_data()
 ALL_SAMPLE_OUTPUTS = MATRIX_NAMES + FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES
+mock_pymc_sample = pytest.fixture(scope="session")(mock_sample_setup_and_teardown)
 
 
 def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False, data_info=None):
@@ -170,7 +174,7 @@ def exog_pymc_mod(exog_ss_mod, exog_data):
         )
         beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=["exog_state"])
 
-        exog_ss_mod.build_statespace_graph(exog_data["y"])
+        exog_ss_mod.build_statespace_graph(exog_data["y"], save_kalman_filter_outputs_in_idata=True)
 
     return struct_model
 
@@ -212,7 +216,7 @@ def pymc_mod_no_exog_dt(ss_mod_no_exog_dt, rng):
 
 
 @pytest.fixture(scope="session")
-def idata(pymc_mod, rng):
+def idata(pymc_mod, rng, mock_pymc_sample):
     with pymc_mod:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
@@ -222,7 +226,7 @@ def idata(pymc_mod, rng):
 
 
 @pytest.fixture(scope="session")
-def idata_exog(exog_pymc_mod, rng):
+def idata_exog(exog_pymc_mod, rng, mock_pymc_sample):
     with exog_pymc_mod:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
@@ -231,7 +235,7 @@ def idata_exog(exog_pymc_mod, rng):
 
 
 @pytest.fixture(scope="session")
-def idata_no_exog(pymc_mod_no_exog, rng):
+def idata_no_exog(pymc_mod_no_exog, rng, mock_pymc_sample):
     with pymc_mod_no_exog:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
@@ -240,7 +244,7 @@ def idata_no_exog(pymc_mod_no_exog, rng):
 
 
 @pytest.fixture(scope="session")
-def idata_no_exog_dt(pymc_mod_no_exog_dt, rng):
+def idata_no_exog_dt(pymc_mod_no_exog_dt, rng, mock_pymc_sample):
     with pymc_mod_no_exog_dt:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
@@ -893,6 +897,93 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
     regression_effect_expected = (betas * scenario_xr).sum(dim=["state"])
 
     assert_allclose(regression_effect, regression_effect_expected)
+
+
+@pytest.mark.filterwarnings("ignore:Provided data contains missing values")
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+@pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_exog):
+    data_before_build_forecast_model = {d.name: d.get_value() for d in exog_pymc_mod.data_vars}
+
+    scenario = pd.DataFrame(
+        {
+            "date": pd.date_range(start="2023-05-11", end="2023-05-20", freq="D"),
+            "x1": rng.choice(2, size=10, replace=True).astype(float),
+        }
+    )
+    scenario.set_index("date", inplace=True)
+
+    time_index = exog_ss_mod._get_fit_time_index()
+    t0, forecast_index = exog_ss_mod._build_forecast_index(
+        time_index=time_index,
+        start=exog_data.index[-1],
+        end=scenario.index[-1],
+        scenario=scenario,
+    )
+
+    test_forecast_model = exog_ss_mod._build_forecast_model(
+        time_index=time_index,
+        t0=t0,
+        forecast_index=forecast_index,
+        scenario=scenario,
+        filter_output="predicted",
+        mvn_method="svd",
+    )
+
+    frozen_shared_inputs = [
+        inpt
+        for inpt in graph_inputs([test_forecast_model.x0_slice, test_forecast_model.P0_slice])
+        if isinstance(inpt, SharedVariable)
+        and not isinstance(inpt.get_value(), np.random.Generator)
+    ]
+
+    assert (
+        len(frozen_shared_inputs) == 0
+    )  # check there are no non-random generator SharedVariables in the frozen inputs
+
+    unfrozen_shared_inputs = [
+        inpt
+        for inpt in graph_inputs([test_forecast_model.forecast_combined])
+        if isinstance(inpt, SharedVariable)
+        and not isinstance(inpt.get_value(), np.random.Generator)
+    ]
+
+    # Check that there is one (in this case) unfrozen shared input and it corresponds to the exogenous data
+    assert len(unfrozen_shared_inputs) == 1
+    assert unfrozen_shared_inputs[0].name == "data_exog"
+
+    data_after_build_forecast_model = {d.name: d.get_value() for d in test_forecast_model.data_vars}
+
+    with test_forecast_model:
+        dummy_obs_data = np.zeros((len(forecast_index), exog_ss_mod.k_endog))
+        pm.set_data(
+            {"data_exog": scenario} | {"data": dummy_obs_data},
+            coords={"data_time": np.arange(len(forecast_index))},
+        )
+        idata_forecast = pm.sample_posterior_predictive(
+            idata_exog, var_names=["x0_slice", "P0_slice"]
+        )
+
+    np.testing.assert_allclose(
+        unfrozen_shared_inputs[0].get_value(), scenario["x1"].values.reshape((-1, 1))
+    )  # ensure the replaced data matches the exogenous data
+
+    for k in data_before_build_forecast_model.keys():
+        assert (  # check that the data needed to init the forecasts doesn't change
+            data_before_build_forecast_model[k].mean() == data_after_build_forecast_model[k].mean()
+        )
+
+    # Check that the frozen states and covariances correctly match the sliced index
+    np.testing.assert_allclose(
+        idata_exog.posterior["predicted_covariance"].sel(time=t0).mean(("chain", "draw")).values,
+        idata_forecast.posterior_predictive["P0_slice"].mean(("chain", "draw")).values,
+    )
+    np.testing.assert_allclose(
+        idata_exog.posterior["predicted_state"].sel(time=t0).mean(("chain", "draw")).values,
+        idata_forecast.posterior_predictive["x0_slice"].mean(("chain", "draw")).values,
+    )
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")

@@ -12,6 +12,8 @@ from preliz.distributions import distributions as preliz_distributions
 from pydantic import ValidationError
 from pymc.model_graph import fast_eval
 
+import pymc_extras.prior as pr
+
 from pymc_extras.deserialize import (
     DESERIALIZERS,
     deserialize,
@@ -616,7 +618,10 @@ def test_custom_transform() -> None:
     prior = dist.sample_prior(draws=10)
     df_prior = prior.to_dataframe()
 
-    np.testing.assert_array_equal(df_prior["var"].to_numpy(), df_prior["var_raw"].to_numpy() ** 2)
+    np.testing.assert_array_equal(
+        df_prior.variable.to_numpy(),
+        df_prior.variable_raw.to_numpy() ** 2,
+    )
 
 
 def test_custom_transform_comes_first() -> None:
@@ -627,7 +632,10 @@ def test_custom_transform_comes_first() -> None:
     prior = dist.sample_prior(draws=10)
     df_prior = prior.to_dataframe()
 
-    np.testing.assert_array_equal(df_prior["var"].to_numpy(), 2 * df_prior["var_raw"].to_numpy())
+    np.testing.assert_array_equal(
+        df_prior.variable.to_numpy(),
+        2 * df_prior.variable_raw.to_numpy(),
+    )
 
     clear_custom_transforms()
 
@@ -686,7 +694,7 @@ def test_sample_prior_arbitrary_no_name() -> None:
     prior = sample_prior(var, coords={"channel": ["A", "B", "C"]}, draws=25)
 
     assert isinstance(prior, xr.Dataset)
-    assert "var" not in prior
+    assert "variable" not in prior
 
     prior_with = sample_prior(
         var,
@@ -696,7 +704,7 @@ def test_sample_prior_arbitrary_no_name() -> None:
     )
 
     assert isinstance(prior_with, xr.Dataset)
-    assert "var" in prior_with
+    assert "variable" in prior_with
 
 
 def test_create_prior_with_arbitrary() -> None:
@@ -1141,3 +1149,22 @@ def test_scaled_sample_prior() -> None:
     assert prior.sizes == {"chain": 1, "draw": 25, "channel": 3}
     assert "scaled_var" in prior
     assert "scaled_var_unscaled" in prior
+
+
+def test_getattr() -> None:
+    assert pr.Normal() == Prior("Normal")
+
+
+def test_import_directly() -> None:
+    try:
+        from pymc_extras.prior import Normal
+    except Exception as e:
+        pytest.fail(f"Unexpected exception: {e}")
+
+    assert Normal() == Prior("Normal")
+
+
+def test_import_incorrect_directly() -> None:
+    match = "PyMC doesn't have a distribution of name 'SomeIncorrectDistribution'"
+    with pytest.raises(UnsupportedDistributionError, match=match):
+        from pymc_extras.prior import SomeIncorrectDistribution  # noqa: F401

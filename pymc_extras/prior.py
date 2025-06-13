@@ -84,6 +84,7 @@ from __future__ import annotations
 import copy
 
 from collections.abc import Callable
+from functools import partial
 from inspect import signature
 from typing import Any, Protocol, runtime_checkable
 
@@ -278,7 +279,7 @@ class VariableFactory(Protocol):
 def sample_prior(
     factory: VariableFactory,
     coords=None,
-    name: str = "var",
+    name: str = "variable",
     wrap: bool = False,
     **sample_prior_predictive_kwargs,
 ) -> xr.Dataset:
@@ -292,7 +293,7 @@ def sample_prior(
         The coordinates for the variable, by default None.
         Only required if the dims are specified.
     name : str, optional
-        The name of the variable, by default "var".
+        The name of the variable, by default "variable".
     wrap : bool, optional
         Whether to wrap the variable in a `pm.Deterministic` node, by default False.
     sample_prior_predictive_kwargs : dict
@@ -900,7 +901,7 @@ class Prior:
     def sample_prior(
         self,
         coords=None,
-        name: str = "var",
+        name: str = "variable",
         **sample_prior_predictive_kwargs,
     ) -> xr.Dataset:
         """Sample the prior distribution for the variable.
@@ -911,7 +912,7 @@ class Prior:
             The coordinates for the variable, by default None.
             Only required if the dims are specified.
         name : str, optional
-            The name of the variable, by default "var".
+            The name of the variable, by default "variable".
         sample_prior_predictive_kwargs : dict
             Additional arguments to pass to `pm.sample_prior_predictive`.
 
@@ -1354,3 +1355,34 @@ def _is_censored_type(data: dict) -> bool:
 
 register_deserialization(is_type=_is_prior_type, deserialize=Prior.from_dict)
 register_deserialization(is_type=_is_censored_type, deserialize=Censored.from_dict)
+
+
+def __getattr__(name: str):
+    """Get Prior class through the module.
+
+    Examples
+    --------
+    Create a normal distribution.
+
+    .. code-block:: python
+
+        from pymc_extras.prior import Normal
+
+        dist = Normal(mu=1, sigma=2)
+
+    Create a hierarchical normal distribution.
+
+    .. code-block:: python
+
+        import pymc_extras.prior as pr
+
+        dist = pr.Normal(mu=pr.Normal(), sigma=pr.HalfNormal(), dims="channel")
+        samples = dist.sample_prior(coords={"channel": ["C1", "C2", "C3"]})
+
+    """
+    # Protect against doctest
+    if name == "__wrapped__":
+        return
+
+    _get_pymc_distribution(name)
+    return partial(Prior, distribution=name)
