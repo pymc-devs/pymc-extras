@@ -39,6 +39,8 @@ from pymc.blocking import RaveledVars
 from pymc.model.transform.conditioning import remove_value_transforms
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import get_default_varnames
+from pytensor.tensor import TensorVariable
+from pytensor.tensor.optimize import minimize
 from scipy import stats
 
 from pymc_extras.inference.find_map import (
@@ -413,6 +415,46 @@ def sample_laplace_posterior(
     idata = add_data_to_inferencedata(idata, progressbar, model, compile_kwargs)
 
     return idata
+
+
+def find_mode(
+    inputs: list[TensorVariable],
+    params: dict,  # TODO Would be nice to automatically map this to inputs somehow: {k.name: ... for k in inputs}
+    x0: TensorVariable
+    | None = None,  # TODO This isn't a TensorVariable, not sure what the general datatype for numeric arraylikes is
+    x: TensorVariable | None = None,
+    model: pm.Model | None = None,
+    method: minimize_method = "BFGS",
+    jac: bool = True,
+    hess: bool = False,
+    optimizer_kwargs: dict | None = None,
+):  # TODO Output type is list of same type as x0
+    model = pm.modelcontext(model)
+    if x is None:
+        raise UserWarning(
+            "Latent Gaussian field x unspecified. Assuming it is the first entry in inputs. Specify which input to obtain the mode over using the input x."
+        )
+        x = inputs[0]
+
+    if x0 is None:
+        # Should return a random numpy array of the same shape as x0 - not sure how to get the shape of x0
+        raise NotImplementedError
+
+    # Minimise negative log likelihood
+    nll = -model.logp()
+    soln, _ = minimize(
+        objective=nll, x=x, method=method, jac=jac, hess=hess, optimizer_kwargs=optimizer_kwargs
+    )
+
+    get_mode = pytensor.function(inputs, soln)
+    mode = get_mode(x0, **params)
+
+    # Calculate the value of the Hessian at the mode
+    # TODO check if we can't pull this out of the soln graph when jac or hess=True
+    hess_x = pytensor.gradient.hessian(nll, x)
+    hess = pytensor.function(inputs, hess_x)
+
+    return mode, hess(mode, **params)
 
 
 def fit_laplace(
