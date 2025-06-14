@@ -298,7 +298,7 @@ class PytensorRepresentation:
                     )
 
                 # Time varying vector case, check only the static shapes
-                if X.ndim == 2 and X.shape[1:] != expected_shape:
+                if X.ndim == 2 and shape[1:] != expected_shape:
                     raise ValueError(
                         f"Last dimension of array provided for {name} has shape {X.shape[1]}, "
                         f"expected {expected_shape}"
@@ -334,7 +334,7 @@ class PytensorRepresentation:
                 X = pt.expand_dims(X, (0,))
                 X = pt.specify_shape(X, self.shapes[name])
 
-            elif X.ndim == 2:
+            elif X.ndim == 2 and name not in VECTOR_VALUED:
                 X = pt.expand_dims(X, (0,))
                 X = pt.specify_shape(X, self.shapes[name])
 
