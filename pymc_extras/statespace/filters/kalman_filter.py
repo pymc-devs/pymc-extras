@@ -296,7 +296,6 @@ class BaseFilter(ABC):
         R,
         H,
         Q,
-        mode=None,
         return_updates=False,
         missing_fill_value=None,
         cov_jitter=None,
@@ -309,7 +308,6 @@ class BaseFilter(ABC):
         )
         fn = partial(
             self._build_graph,
-            mode=mode,
             return_updates=return_updates,
             missing_fill_value=missing_fill_value,
             cov_jitter=cov_jitter,
