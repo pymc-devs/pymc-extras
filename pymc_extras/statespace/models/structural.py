@@ -83,6 +83,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         verbose: bool = True,
         filter_type: str = "standard",
         mode: str | Mode | None = None,
+        batch_coords: dict[str, Sequence] | None = None,
     ):
         # Add the initial state covariance to the parameters
         if name is None:
@@ -115,6 +116,7 @@ class StructuralTimeSeries(PyMCStateSpace):
             verbose=verbose,
             measurement_error=measurement_error,
             mode=mode,
+            batch_coords=batch_coords,
         )
         self.ssm = ssm.copy()
 
@@ -301,7 +303,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         dropped_vars = set(var_names) - set(latent_names)
         if len(dropped_vars) > 0:
             _log.warning(
-                f'Variables {", ".join(dropped_vars)} do not contain all hidden states (their last dimension '
+                f"Variables {', '.join(dropped_vars)} do not contain all hidden states (their last dimension "
                 f"is not {self.k_states}). They will not be present in the modified idata."
             )
         if len(dropped_vars) == len(var_names):
@@ -593,7 +595,7 @@ class Component(ABC):
 
     def _make_combined_name(self):
         components = self._component_info.keys()
-        name = f'StateSpace[{", ".join(components)}]'
+        name = f"StateSpace[{', '.join(components)}]"
         return name
 
     def __add__(self, other):
@@ -648,7 +650,12 @@ class Component(ABC):
         return new_comp
 
     def build(
-        self, name=None, filter_type="standard", verbose=True, mode: str | Mode | None = None
+        self,
+        name=None,
+        filter_type="standard",
+        verbose=True,
+        mode: str | Mode | None = None,
+        batch_coords=None,
     ):
         """
         Build a StructuralTimeSeries statespace model from the current component(s)
@@ -698,6 +705,7 @@ class Component(ABC):
             filter_type=filter_type,
             verbose=verbose,
             mode=mode,
+            batch_coords=batch_coords,
         )
 
 

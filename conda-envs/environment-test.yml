@@ -1,7 +1,6 @@
 name: pymc-extras-test
 channels:
 - conda-forge
-- nodefaults
 dependencies:
   - pymc>=5.21.1
   - scikit-learn
@@ -18,3 +17,4 @@ dependencies:
   - pip:
       - jax
       - blackjax
+      - -e .
