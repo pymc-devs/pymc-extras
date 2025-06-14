@@ -419,28 +419,42 @@ def sample_laplace_posterior(
 
 def find_mode(
     inputs: list[TensorVariable],
+    params: dict,  # TODO Would be nice to automatically map this to inputs somehow: {k.name: ... for k in inputs}
+    x0: TensorVariable
+    | None = None,  # TODO This isn't a TensorVariable, not sure what the general datatype for numeric arraylikes is
     x: TensorVariable | None = None,
     model: pm.Model | None = None,
     method: minimize_method = "BFGS",
+    jac: bool = True,
+    hess: bool = False,
     optimizer_kwargs: dict | None = None,
-):  # Unsure of the return type, I'd assume it would be a list of pt tensors of some kind
+):  # TODO Output type is list of same type as x0
     model = pm.modelcontext(model)
     if x is None:
-        raise NotImplementedError("Currently assumes user specifies the Gaussian latent field x")
+        raise UserWarning(
+            "Latent Gaussian field x unspecified. Assuming it is the first entry in inputs. Specify which input to obtain the mode over using the input x."
+        )
+        x = inputs[0]
+
+    if x0 is None:
+        # Should return a random numpy array of the same shape as x0 - not sure how to get the shape of x0
+        raise NotImplementedError
 
     # Minimise negative log likelihood
-    # TODO: NLL already computs jac by default. Need to check how to access
-    loss_x = -model.logp()
-    # TODO Need to think about how to get inputs (i.e. a collection of all the input variables) to go along with the specific
-    # variable x, i.e. f(x, *args). I assume I can't assume that the inputs arg will be ordered to have x first. May need to sort it somehow
-    loss = pytensor.function(inputs, loss_x)
+    nll = -model.logp()
+    soln, _ = minimize(
+        objective=nll, x=x, method=method, jac=jac, hess=hess, optimizer_kwargs=optimizer_kwargs
+    )
 
-    grad = pytensor.gradient.grad(loss, inputs)
-    hess = pytensor.gradient.jacobian(grad, inputs)[0]
+    get_mode = pytensor.function(inputs, soln)
+    mode = get_mode(x0, **params)
 
-    # Need to play around with scipy.optimize.minimize with pytensor a little so I can figure out if it's "x" or "inputs" that goes here
-    res = minimize(loss, x, method, grad, hess, optimizer_kwargs)
-    return res.x, res.hess
+    # Calculate the value of the Hessian at the mode
+    # TODO check if we can't pull this out of the soln graph when jac or hess=True
+    hess_x = pytensor.gradient.hessian(nll, x)
+    hess = pytensor.function(inputs, hess_x)
+
+    return mode, hess(mode, **params)
 
 
 def fit_laplace(
