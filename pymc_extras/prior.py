@@ -363,7 +363,7 @@ class Prior:
 
     - `preliz` attribute to get the equivalent distribution in `preliz`
     - `sample_prior` method to sample from the prior
-    - `graph` get a dummy model graph with the distribution
+    - `to_graph` get a dummy model graph with the distribution
     - `constrain` to shift the distribution to a different range
 
     Parameters
