@@ -38,7 +38,6 @@ dependencies = [
   "scikit-learn",
   "better-optimize>=0.1.2",
   "pydantic>=2.0.0",
-  "preliz",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +51,7 @@ dev = [
   "dask[all]<2025.1.1",
   "blackjax",
   "statsmodels",
+  "preliz",
 ]
 docs = [
   "nbsphinx>=0.4.2",
