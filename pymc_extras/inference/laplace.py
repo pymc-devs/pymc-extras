@@ -418,43 +418,76 @@ def sample_laplace_posterior(
 
 
 def find_mode(
-    inputs: list[TensorVariable],
-    params: dict,  # TODO Would be nice to automatically map this to inputs somehow: {k.name: ... for k in inputs}
+    x: TensorVariable,
+    args: dict,
+    inputs: list[TensorVariable] | None = None,
     x0: TensorVariable
     | None = None,  # TODO This isn't a TensorVariable, not sure what the general datatype for numeric arraylikes is
-    x: TensorVariable | None = None,
     model: pm.Model | None = None,
     method: minimize_method = "BFGS",
-    jac: bool = True,
-    hess: bool = False,
+    use_jac: bool = True,
+    use_hess: bool = False,
     optimizer_kwargs: dict | None = None,
 ):  # TODO Output type is list of same type as x0
     model = pm.modelcontext(model)
-    if x is None:
-        raise UserWarning(
-            "Latent Gaussian field x unspecified. Assuming it is the first entry in inputs. Specify which input to obtain the mode over using the input x."
-        )
-        x = inputs[0]
 
-    if x0 is None:
-        # Should return a random numpy array of the same shape as x0 - not sure how to get the shape of x0
-        raise NotImplementedError
+    # if x0 is None:
+    # #TODO Issue with X not being an RV
+    # print(model.initial_point())
+
+    # from pymc.initial_point import make_initial_point_fn
+    # frozen_model = freeze_dims_and_data(model)
+    # ipfn = make_initial_point_fn(
+    #     model=model,
+    #     jitter_rvs=set(),#(jitter_rvs),
+    #     return_transformed=True,
+    #     overrides=args,
+    # )
+
+    # random_seed = None
+    # start_dict = ipfn(random_seed)
+    # vars_dict = {var.name: var for var in frozen_model.continuous_value_vars}
+    # initial_params = DictToArrayBijection.map(
+    #     {var_name: value for var_name, value in start_dict.items() if var_name in vars_dict}
+    # )
+    # print(initial_params)
 
     # Minimise negative log likelihood
     nll = -model.logp()
     soln, _ = minimize(
-        objective=nll, x=x, method=method, jac=jac, hess=hess, optimizer_kwargs=optimizer_kwargs
+        objective=nll,
+        x=x,
+        method=method,
+        jac=use_jac,
+        hess=use_hess,
+        optimizer_kwargs=optimizer_kwargs,
     )
 
-    get_mode = pytensor.function(inputs, soln)
-    mode = get_mode(x0, **params)
+    # Get input variables
+    # TODO issue when this is nll
+    if inputs is None:
+        inputs = [
+            pytensor.graph.basic.get_var_by_name(model.basic_RVs[1], target_var_id=var)[0]
+            for var in args
+        ]
+        for i, var in enumerate(inputs):
+            try:
+                inputs[i] = model.rvs_to_values[var]
+            except KeyError:
+                pass
+        inputs.insert(0, x)
 
-    # Calculate the value of the Hessian at the mode
-    # TODO check if we can't pull this out of the soln graph when jac or hess=True
-    hess_x = pytensor.gradient.hessian(nll, x)
-    hess = pytensor.function(inputs, hess_x)
+    # Obtain the Hessian (re-use graph if already computed in minimize)
+    if use_hess:
+        hess = soln.owner.op.inner_outputs[-1]
+        hess = pytensor.graph.replace.graph_replace(
+            hess, {x: soln}
+        )  # TODO: x here is 'beta', soln is a MinimizeOp. There's no instance of MinimizeOp in the hessian graph
+    else:
+        hess = pytensor.gradient.hessian(nll, x)
 
-    return mode, hess(mode, **params)
+    get_mode_and_hessian = pytensor.function(inputs, [soln, hess])
+    return get_mode_and_hessian(x0, **args)
 
 
 def fit_laplace(
