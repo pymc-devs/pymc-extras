@@ -52,7 +52,7 @@ dev = [
   "dask[all]<2025.1.1",
   "blackjax",
   "statsmodels",
-  "preliz",
+  "preliz>=0.5.0",
 ]
 docs = [
   "nbsphinx>=0.4.2",
