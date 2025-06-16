@@ -22,6 +22,7 @@ import pymc_extras as pmx
 
 from pymc_extras.inference.find_map import GradientBackend, find_MAP
 from pymc_extras.inference.laplace import (
+    find_mode,
     fit_laplace,
     fit_mvn_at_MAP,
     sample_laplace_posterior,
@@ -431,7 +432,7 @@ def test_find_mode():
         x0 = np.zeros(k)
         args = {"y": ynum, "X": Xval}
 
-        beta_mode, beta_hess = pmx.inference.laplace.find_mode(
+        beta_mode, beta_hess = find_mode(
             x=beta_val, x0=x0, args=args, method="BFGS", optimizer_kwargs={"tol": 1e-8}
         )
 
