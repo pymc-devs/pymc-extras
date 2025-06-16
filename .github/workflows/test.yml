@@ -55,6 +55,7 @@ jobs:
         run: |
           pip install -e ".[dev]"
           python --version
+          pip check
       - name: Run tests
         run: |
           python -m pytest --color=yes -vv --cov=pymc_extras --cov-append --cov-report=xml --cov-report term --durations=50 $TEST_SUBSET
