@@ -289,7 +289,7 @@ def test_find_mode():
     y = pt.vector("y", dtype="int64")
     X = pt.matrix("X", shape=(N, k))
 
-    # Pre-commit did this. Quite ugly. Should compute hess in code rather than storing a hardcoded array.
+    # TODO Pre-commit formatted it like this. Quite ugly. Should compute hess in code rather than storing a hardcoded array.
     true_hess = np.array(
         [
             [

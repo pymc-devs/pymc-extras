@@ -39,7 +39,7 @@ from pymc.blocking import RaveledVars
 from pymc.model.transform.conditioning import remove_value_transforms
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import get_default_varnames
-from pytensor.tensor import TensorVariable
+from pytensor.tensor import TensorLike, TensorVariable
 from pytensor.tensor.optimize import minimize
 from scipy import stats
 
@@ -420,28 +420,60 @@ def sample_laplace_posterior(
 def find_mode(
     x: TensorVariable,
     args: dict,
-    inputs: list[TensorVariable] | None = None,
-    x0: TensorVariable
-    | None = None,  # TODO This isn't a TensorVariable, not sure what the general datatype for numeric arraylikes is
+    x0: TensorLike | None = None,
     model: pm.Model | None = None,
     method: minimize_method = "BFGS",
     use_jac: bool = True,
-    use_hess: bool = False,
+    use_hess: bool = False,  # TODO Tbh we can probably just remove this arg and pass True to the minimizer all the time, but if this is the case, it will throw a warning when the hessian doesn't need to be computed for a particular optimisation routine.
     optimizer_kwargs: dict | None = None,
-):  # TODO Output type is list of same type as x0
+) -> list[TensorLike]:
+    """
+    Estimates the mode and hessian of a model by minimizing negative log likelihood. Wrapper for (pytensor-native) scipy.optimize.minimize.
+
+    Parameters
+    ----------
+    x: TensorVariable
+        The parameter with which to minimize wrt (that is, find the mode in x).
+    args: dict
+        A dictionary of the form {tensorvariable_name: TensorLike}, where tensorvariable_name is the (exact) name of TensorVariable which is to be provided some numerical value. Same usage as args in scipy.optimize.minimize.
+    x0: TensorLike
+        Initial guess for the mode (in x). Initialised over a uniform distribution if unspecified.
+    model: Model
+        PyMC model to use.
+    method: minimize_method
+        Which minimization algorithm to use.
+    use_jac: bool
+        If true, the minimizer will compute and store the Jacobian.
+    use_hess: bool
+        If true, the minimizer will compute and store the Hessian (note that the Hessian will be computed explicitely even if this is False).
+    optimizer_kwargs: dict
+        Kwargs to pass to scipy.optimize.minimize.
+
+    Returns
+    -------
+    mu: TensorLike
+        The mode of the model.
+    hess:
+        Hessian evalulated at mu.
+    """
     model = pm.modelcontext(model)
 
-    # if x0 is None:
-    # #TODO Issue with X not being an RV
-    # print(model.initial_point())
+    # # TODO I would like to generate a random initialisation for x0 if set to None. Ideally this would be done using something like np.random.rand(x.shape), however I don't believe x.shape is
+    # # immediately accessible in pytensor. model.initial_point() throws the following error:
 
+    # # MissingInputError: Input 0 (X) of the graph (indices start from 0), used to compute Transpose{axes=[1, 0]}(X), was not provided and not given a value. Use the PyTensor flag exception_verbosity='high', for more information on this error.
+
+    # # Instead I've tried to follow what find_MAP does (below), but this doesn't really get me anywhere unfortunately.
+    # # if x0 is None:
+    # # Yes ik this is here, just for debugging purposes
     # from pymc.initial_point import make_initial_point_fn
+
     # frozen_model = freeze_dims_and_data(model)
     # ipfn = make_initial_point_fn(
-    #     model=model,
-    #     jitter_rvs=set(),#(jitter_rvs),
+    #     model=frozen_model,
+    #     jitter_rvs=set(),  # (jitter_rvs),
     #     return_transformed=True,
-    #     overrides=args,
+    #     overrides={x.name: x0}, # x0 is here for debugging purposes
     # )
 
     # random_seed = None
@@ -450,6 +482,7 @@ def find_mode(
     # initial_params = DictToArrayBijection.map(
     #     {var_name: value for var_name, value in start_dict.items() if var_name in vars_dict}
     # )
+    # # Printing this should return {'name of x TensorVariable': initialised values for x}
     # print(initial_params)
 
     # Minimise negative log likelihood
@@ -463,30 +496,46 @@ def find_mode(
         optimizer_kwargs=optimizer_kwargs,
     )
 
-    # Get input variables
-    # TODO issue when this is nll
-    if inputs is None:
-        inputs = [
-            pytensor.graph.basic.get_var_by_name(model.basic_RVs[1], target_var_id=var)[0]
-            for var in args
-        ]
-        for i, var in enumerate(inputs):
-            try:
-                inputs[i] = model.rvs_to_values[var]
-            except KeyError:
-                pass
-        inputs.insert(0, x)
+    # TODO To prevent needing to user to pass in the TensorVariables alongside their names (e.g. args = {'X': [X, [0,0]], 'beta': [beta_val, [1]], ...}) the codeblock below digs up the
+    # TensorVariables associated with the names listed in args from the graph. The sensible graph to use here would be nll, because that is what is going into the minimize function, however doing
+    # so results in the following error:
+    #
+    # TypeError: TensorType does not support iteration.
+    # Did you pass a PyTensor variable to a function that expects a list?
+    # Maybe you are using builtins.sum instead of pytensor.tensor.sum?
+    #
+    # Using model.basic_RVs[1] instead works, but note that this is a hardcoded fix because the model I'm testing on happens to have all of the relevant TensorVariables in the graph of model.basic_RVs[1],
+    # but this isn't true in general.
+
+    # Get arg TensorVariables
+    arg_tensorvars = [
+        pytensor.graph.basic.get_var_by_name(model.basic_RVs[1], target_var_id=var)[0]
+        # pytensor.graph.basic.get_var_by_name(nll, target_var_id=var)[0]
+        for var in args
+    ]
+    for i, var in enumerate(arg_tensorvars):
+        try:
+            arg_tensorvars[i] = model.rvs_to_values[var]
+        except KeyError:
+            pass
+    arg_tensorvars.insert(0, x)
+
+    # TODO: Jesse suggested I use this graph_replace function, but it seems that "mode" here is a different type to soln:
+    #
+    # TypeError: Cannot convert Type Vector(float64, shape=(10,)) (of Variable MinimizeOp(method=BFGS, jac=True, hess=True, hessp=False).0) into Type Scalar(float64, shape=()). You can try to manually convert MinimizeOp(method=BFGS, jac=True, hess=True, hessp=False).0 into a Scalar(float64, shape=()).
+    #
+    # My understanding here is that for some function which evaluates the hessian at x, we're replacing "x" in the hess graph with the subgraph that computes "x" (i.e. soln)?
 
     # Obtain the Hessian (re-use graph if already computed in minimize)
     if use_hess:
-        hess = soln.owner.op.inner_outputs[-1]
-        hess = pytensor.graph.replace.graph_replace(
-            hess, {x: soln}
-        )  # TODO: x here is 'beta', soln is a MinimizeOp. There's no instance of MinimizeOp in the hessian graph
+        mode, _, hess = (
+            soln.owner.op.inner_outputs
+        )  # Note that this mode, _, hess will need to be slightly more elaborate for when use_jac is False (2 items to unpack instead of 3). Just a few if-blocks, but not implemented for now while we're debugging
+        hess = pytensor.graph.replace.graph_replace(hess, {mode: soln})
     else:
         hess = pytensor.gradient.hessian(nll, x)
 
-    get_mode_and_hessian = pytensor.function(inputs, [soln, hess])
+    get_mode_and_hessian = pytensor.function(arg_tensorvars, [soln, hess])
     return get_mode_and_hessian(x0, **args)
 
 
