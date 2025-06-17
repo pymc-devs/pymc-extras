@@ -13,7 +13,7 @@ dependencies:
   - pytest
   - pytest-cov
   - pydantic>=2.0.0
-  - preliz
+  - preliz>=0.5.0
   - pip
   - pip:
       - jax
