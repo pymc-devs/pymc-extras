@@ -1068,7 +1068,11 @@ class TimeSeasonality(Component):
     ----------
     season_length: int
         The number of periods in a single seasonal cycle, e.g. 12 for monthly data with annual seasonal pattern, 7 for
-        daily data with weekly seasonal pattern, etc.
+        daily data with weekly seasonal pattern, etc. It must be greater than one.
+
+    num_steps_per_season: int, default 1
+        Number of time steps between successive applications of the same seasonal position (state).
+        This determines how long each seasonal effect is held constant before moving to the next.
 
     innovations: bool, default True
         Whether to include stochastic innovations in the strength of the seasonal effect
@@ -1094,14 +1098,24 @@ class TimeSeasonality(Component):
     -----
     A seasonal effect is any pattern that repeats every fixed interval. Although there are many possible ways to
     model seasonal effects, the implementation used here is the one described by [1] as the "canonical" time domain
-    representation. The seasonal component can be expressed:
+    representation. Indexing the seasonal component as
+
+    .. math::
+        \underbrace{\gamma_0, \gamma_0, \ldots, \gamma_0}_{r\ \text{times}},
+        \underbrace{\gamma_1, \gamma_1, \ldots, \gamma_1}_{r\ \text{times}},
+        \ldots,
+        \underbrace{\gamma_{s-1}, \gamma_{s-1}, \ldots, \gamma_{s-1}}_{r\ \text{times}},
+        \ldots,
+
+    where :math:`s` is the ``seasonal_length`` parameter and :math:`r` is the ``num_steps_per_season`` parameter,
+    the seasonal component can be then expressed:
 
     .. math::
         \gamma_t = -\sum_{i=1}^{s-1} \gamma_{t-i} + \omega_t, \quad \omega_t \sim N(0, \sigma_\gamma)
 
-    Where :math:`s` is the ``seasonal_length`` parameter and :math:`\omega_t` is the (optional) stochastic innovation.
+    where :math:`\omega_t` is the (optional) stochastic innovation.
     To give interpretation to the :math:`\gamma` terms, it is helpful to work  through the algebra for a simple
-    example. Let :math:`s=4`, and omit the shock term. Define initial conditions :math:`\gamma_0, \gamma_{-1},
+    example. Let :math:`s=4`, :math:`r=1`, and omit the shock term. Define initial conditions :math:`\gamma_0, \gamma_{-1},
     \gamma_{-2}`. The value of the seasonal component for the first 5 timesteps will be:
 
     .. math::
