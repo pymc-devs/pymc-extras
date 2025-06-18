@@ -1678,6 +1678,91 @@ class PyMCStateSpace:
 
         return matrix_idata
 
+    def sample_filter_outputs(
+        self, idata, filter_output_names: str | list[str] | None, group: str = "posterior", **kwargs
+    ):
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
+
+        with pm.Model(coords=self.coords) as m:
+            pm_mod = modelcontext(None)
+            self._build_dummy_graph()
+            self._insert_random_variables()
+
+            if self.data_names:
+                for name in self.data_names:
+                    pm.Data(**self._exog_data_info[name])
+
+            self._insert_data_variables()
+
+            x0, P0, c, d, T, Z, R, H, Q = self.unpack_statespace()
+            data = self._fit_data
+
+            obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
+
+            data, nan_mask = register_data_with_pymc(
+                data,
+                n_obs=self.ssm.k_endog,
+                obs_coords=obs_coords,
+                register_data=True,
+            )
+
+            filter_outputs = self.kalman_filter.build_graph(
+                data,
+                x0,
+                P0,
+                c,
+                d,
+                T,
+                Z,
+                R,
+                H,
+                Q,
+            )
+
+            smoother_outputs = self.kalman_smoother.build_graph(
+                T, R, Q, filter_outputs[0], filter_outputs[3]
+            )
+
+            all_filter_outputs = filter_outputs[:-1] + list(smoother_outputs)
+
+            if filter_output_names is None:
+                filter_output_names = all_filter_outputs
+            else:
+                unknown_filter_output_names = np.setdiff1d(
+                    filter_output_names, [x.name for x in all_filter_outputs]
+                )
+                if unknown_filter_output_names.size > 0:
+                    raise ValueError(
+                        f"{unknown_filter_output_names} not a valid filter output name!"
+                    )
+                filter_output_names = [
+                    x for x in all_filter_outputs if x.name in filter_output_names
+                ]
+
+            for output in filter_output_names:
+                match output.name:
+                    case "filtered_states" | "predicted_states" | "smoothed_states":
+                        dims = [TIME_DIM, "state"]
+                    case "filtered_covariances" | "predicted_covariances" | "smoothed_covariances":
+                        dims = [TIME_DIM, "state", "state_aux"]
+                    case "observed_states":
+                        dims = [TIME_DIM, "observed_state"]
+                    case "observed_covariances":
+                        dims = [TIME_DIM, "observed_state", "observed_state_aux"]
+
+                pm.Deterministic(output.name, output, dims=dims)
+
+        frozen_model = freeze_dims_and_data(m)
+        with frozen_model:
+            idata_filter = pm.sample_posterior_predictive(
+                idata if group == "posterior" else idata.prior,
+                var_names=[x.name for x in frozen_model.deterministics],
+                compile_kwargs=compile_kwargs,
+                **kwargs,
+            )
+        return idata_filter
+
     @staticmethod
     def _validate_forecast_args(
         time_index: pd.RangeIndex | pd.DatetimeIndex,
