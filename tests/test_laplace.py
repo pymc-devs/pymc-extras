@@ -15,14 +15,13 @@
 
 import numpy as np
 import pymc as pm
-import pytensor as pt
 import pytest
 
 import pymc_extras as pmx
 
 from pymc_extras.inference.find_map import GradientBackend, find_MAP
 from pymc_extras.inference.laplace import (
-    find_mode,
+    find_mode_and_hess,
     fit_laplace,
     fit_mvn_at_MAP,
     sample_laplace_posterior,
@@ -283,158 +282,33 @@ def test_laplace_scalar():
     np.testing.assert_allclose(idata_laplace.fit.mean_vector.values.item(), data.mean(), atol=0.1)
 
 
-def test_find_mode():
-    k = 10
-    N = 10000
-    y = pt.vector("y", dtype="int64")
-    X = pt.matrix("X", shape=(N, k))
+def test_find_mode_and_hess():
+    rng = np.random.default_rng(42)
+    n = 100
+    sigma_obs = rng.random()
+    sigma_mu = rng.random()
 
-    # TODO Pre-commit formatted it like this. Quite ugly. Should compute hess in code rather than storing a hardcoded array.
-    true_hess = np.array(
-        [
-            [
-                2.50100000e03,
-                -1.78838742e00,
-                1.59484217e01,
-                -9.78343803e00,
-                2.86125467e01,
-                -7.38071788e00,
-                -4.97729126e01,
-                3.53243810e01,
-                1.69071769e01,
-                -1.30755942e01,
-            ],
-            [
-                -1.78838742e00,
-                2.54687995e03,
-                8.99456512e-02,
-                -1.33603390e01,
-                -2.37641179e01,
-                4.57780742e01,
-                -1.22640681e01,
-                2.70879664e01,
-                4.04435512e01,
-                2.08826556e00,
-            ],
-            [
-                1.59484217e01,
-                8.99456512e-02,
-                2.46908384e03,
-                -1.80358232e01,
-                1.14131535e01,
-                2.21632317e01,
-                1.25443469e00,
-                1.50344618e01,
-                -3.59940488e01,
-                -1.05191328e01,
-            ],
-            [
-                -9.78343803e00,
-                -1.33603390e01,
-                -1.80358232e01,
-                2.50546496e03,
-                3.27545028e01,
-                -3.33517501e01,
-                -2.68735672e01,
-                -2.69114305e01,
-                -1.20464337e01,
-                9.02338622e00,
-            ],
-            [
-                2.86125467e01,
-                -2.37641179e01,
-                1.14131535e01,
-                3.27545028e01,
-                2.49959736e03,
-                -3.98220135e00,
-                -4.09495199e00,
-                -1.51115257e01,
-                -5.77436126e01,
-                -2.98600447e00,
-            ],
-            [
-                -7.38071788e00,
-                4.57780742e01,
-                2.21632317e01,
-                -3.33517501e01,
-                -3.98220135e00,
-                2.48169432e03,
-                -1.26885014e01,
-                -3.53524089e01,
-                5.89656794e00,
-                1.67164400e01,
-            ],
-            [
-                -4.97729126e01,
-                -1.22640681e01,
-                1.25443469e00,
-                -2.68735672e01,
-                -4.09495199e00,
-                -1.26885014e01,
-                2.47216241e03,
-                8.16935659e00,
-                -4.89399152e01,
-                -1.11646138e01,
-            ],
-            [
-                3.53243810e01,
-                2.70879664e01,
-                1.50344618e01,
-                -2.69114305e01,
-                -1.51115257e01,
-                -3.53524089e01,
-                8.16935659e00,
-                2.52940405e03,
-                3.07751540e00,
-                -8.60023392e00,
-            ],
-            [
-                1.69071769e01,
-                4.04435512e01,
-                -3.59940488e01,
-                -1.20464337e01,
-                -5.77436126e01,
-                5.89656794e00,
-                -4.89399152e01,
-                3.07751540e00,
-                2.49452594e03,
-                6.06984410e01,
-            ],
-            [
-                -1.30755942e01,
-                2.08826556e00,
-                -1.05191328e01,
-                9.02338622e00,
-                -2.98600447e00,
-                1.67164400e01,
-                -1.11646138e01,
-                -8.60023392e00,
-                6.06984410e01,
-                2.49290175e03,
-            ],
-        ]
-    )
+    coords = {"city": ["A", "B", "C"], "obs_idx": np.arange(n)}
+    with pm.Model(coords=coords) as model:
+        obs_val = rng.normal(loc=3, scale=1.5, size=(n, 3))
 
-    with pm.Model() as model:
-        beta = pm.MvNormal("beta", mu=np.zeros(k), cov=np.identity(k), shape=(k,))
-        p = pm.math.invlogit(beta @ X.T)
-        y = pm.Bernoulli("y", p)
-
-        rng = np.random.default_rng(123)
-        Xval = rng.normal(size=(10000, 9))
-        Xval = np.c_[np.ones(10000), Xval]
-
-        true_beta = rng.normal(scale=0.1, size=(10,))
-        true_p = pm.math.invlogit(Xval @ true_beta).eval()
-        ynum = rng.binomial(1, true_p)
-
-        beta_val = model.rvs_to_values[beta]
-        x0 = np.zeros(k)
-        args = {"y": ynum, "X": Xval}
-
-        beta_mode, beta_hess = find_mode(
-            x=beta_val, x0=x0, args=args, method="BFGS", optimizer_kwargs={"tol": 1e-8}
+        mu = pm.Normal("mu", mu=1, sigma=sigma_mu, dims=["city"])
+        obs = pm.Normal(
+            "obs",
+            mu=mu,
+            sigma=sigma_obs,
+            observed=obs_val,
+            dims=["obs_idx", "city"],
         )
 
-    np.testing.assert_allclose(beta_mode, true_beta, atol=0.1, rtol=0.1)
-    np.testing.assert_allclose(beta_hess, true_hess, atol=0.1, rtol=0.1)
+        get_mode_and_hessian = find_mode_and_hess(
+            use_hess=False, x=model.rvs_to_values[mu], method="BFGS", optimizer_kwargs={"tol": 1e-8}
+        )
+
+    mode, hess = get_mode_and_hessian(**{"mu": [1, 1, 1]})
+
+    true_mode = obs_val.mean(axis=0)
+    true_hess = np.diag((1 / sigma_mu**2 + n / sigma_obs**2) * np.ones(3))
+
+    np.testing.assert_allclose(mode, true_mode, atol=0.1, rtol=0.1)
+    np.testing.assert_allclose(hess, true_hess, atol=0.1, rtol=0.1)
