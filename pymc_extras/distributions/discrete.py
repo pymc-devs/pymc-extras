@@ -423,10 +423,10 @@ class GrassiaIIGeometricRV(RandomVariable):
 
         # Calculate exp(time_covariates_sum) for all samples
         exp_time_covar_sum = np.exp(time_covariates_sum)
-        
+
         # Initialize output array
         output = np.zeros(size, dtype=np.int64)
-        
+
         # For each sample, generate a value from the distribution
         for idx in np.ndindex(*size):
             # Calculate survival probabilities for each possible value
@@ -434,29 +434,29 @@ class GrassiaIIGeometricRV(RandomVariable):
             while True:
                 C_t = t + exp_time_covar_sum[idx]
                 C_tm1 = (t - 1) + exp_time_covar_sum[idx]
-                
+
                 # Calculate PMF for current t
                 pmf = (
-                    (alpha[idx] / (alpha[idx] + C_tm1)) ** r[idx] - 
+                    (alpha[idx] / (alpha[idx] + C_tm1)) ** r[idx] -
                     (alpha[idx] / (alpha[idx] + C_t)) ** r[idx]
                 )
-                
+
                 # If PMF is negative or NaN, we've gone too far
                 if pmf <= 0 or np.isnan(pmf):
                     break
-                    
+
                 # Accept this value with probability proportional to PMF
                 if rng.random() < pmf:
                     output[idx] = t
                     break
-                    
+
                 t += 1
-                
+
                 # Safety check to prevent infinite loops
                 if t > 1000:  # Arbitrary large number
                     output[idx] = t
                     break
-        
+
         return output
 
 
@@ -507,7 +507,7 @@ g2g = GrassiaIIGeometricRV()
         Scale parameter (alpha > 0).
     time_covariates_sum : tensor_like of float, optional
         Optional dot product of time-varying covariates and their coefficients, summed over time.
-        
+
     References
     ----------
     .. [1] Fader, Peter & G. S. Hardie, Bruce (2020).
@@ -529,25 +529,25 @@ g2g = GrassiaIIGeometricRV()
     def logp(value, r, alpha, time_covariates_sum=None):
         """
         Log probability function for GrassiaIIGeometric distribution.
-        
+
         The PMF is:
         P(T=t|r,α,β;Z(t)) = (α/(α+C(t-1)))^r - (α/(α+C(t)))^r
-        
+
         where C(t) = t + exp(time_covariates_sum)
         """
         if time_covariates_sum is None:
             time_covariates_sum = pt.constant(0.0)
-            
+
         # Calculate C(t) and C(t-1)
         C_t = value + pt.exp(time_covariates_sum)
         C_tm1 = (value - 1) + pt.exp(time_covariates_sum)
-        
+
         # Calculate the PMF on log scale
         logp = pt.log(
-            pt.pow(alpha / (alpha + C_tm1), r) - 
+            pt.pow(alpha / (alpha + C_tm1), r) -
             pt.pow(alpha / (alpha + C_t), r)
         )
-        
+
         # Handle invalid values
         logp = pt.switch(
             pt.or_(
@@ -557,7 +557,7 @@ g2g = GrassiaIIGeometricRV()
             -np.inf,
             logp
         )
-        
+
         return check_parameters(
             logp,
             r > 0,

@@ -214,8 +214,8 @@ class TestSkellam:
 class TestGrassiaIIGeometric:
     class TestRandomVariable(BaseTestDistributionRandom):
         pymc_dist = GrassiaIIGeometric
-        pymc_dist_params = {"r": .5, "alpha": 2.0, "time_covariates_sum": 1.0}
-        expected_rv_op_params = {"r": .5, "alpha": 2.0, "time_covariates_sum": 1.0}
+        pymc_dist_params = {"r": 0.5, "alpha": 2.0, "time_covariates_sum": 1.0}
+        expected_rv_op_params = {"r": 0.5, "alpha": 2.0, "time_covariates_sum": 1.0}
         tests_to_run = [
             "check_pymc_params_match_rv_op",
             "check_rv_size",
@@ -228,10 +228,16 @@ class TestGrassiaIIGeometric:
                 paramdomains={
                     "r": Domain([0.5, 1.0, 2.0], edges=(None, None)),  # Standard values
                     "alpha": Domain([0.5, 1.0, 2.0], edges=(None, None)),  # Standard values
-                    "time_covariates_sum": Domain([-1.0, 1.0, 2.0], edges=(None, None)),  # Time covariates
+                    "time_covariates_sum": Domain(
+                        [-1.0, 1.0, 2.0], edges=(None, None)
+                    ),  # Time covariates
                 },
                 ref_rand=lambda r, alpha, time_covariates_sum, size: np.random.geometric(
-                    1 - np.exp(-np.random.gamma(r, 1/alpha, size=size) * np.exp(time_covariates_sum)), size=size
+                    1
+                    - np.exp(
+                        -np.random.gamma(r, 1 / alpha, size=size) * np.exp(time_covariates_sum)
+                    ),
+                    size=size,
                 ),
             )
 
@@ -241,21 +247,33 @@ class TestGrassiaIIGeometric:
                 paramdomains={
                     "r": Domain([0.01, 0.1], edges=(None, None)),  # Small r values
                     "alpha": Domain([10.0, 100.0], edges=(None, None)),  # Large alpha values
-                    "time_covariates_sum": Domain([0.0, 1.0], edges=(None, None)),  # Time covariates
+                    "time_covariates_sum": Domain(
+                        [0.0, 1.0], edges=(None, None)
+                    ),  # Time covariates
                 },
                 ref_rand=lambda r, alpha, time_covariates_sum, size: np.random.geometric(
-                    np.clip(np.random.gamma(r, 1/alpha, size=size) * np.exp(time_covariates_sum), 1e-5, 1.0), size=size
+                    np.clip(
+                        np.random.gamma(r, 1 / alpha, size=size) * np.exp(time_covariates_sum),
+                        1e-5,
+                        1.0,
+                    ),
+                    size=size,
                 ),
             )
 
-        @pytest.mark.parametrize("r,alpha,time_covariates_sum", [
-            (0.5, 1.0, 0.0),
-            (1.0, 2.0, 1.0),
-            (2.0, 0.5, -1.0),
-            (5.0, 1.0, None),
-        ])
+        @pytest.mark.parametrize(
+            "r,alpha,time_covariates_sum",
+            [
+                (0.5, 1.0, 0.0),
+                (1.0, 2.0, 1.0),
+                (2.0, 0.5, -1.0),
+                (5.0, 1.0, None),
+            ],
+        )
         def test_random_moments(self, r, alpha, time_covariates_sum):
-            dist = self.pymc_dist.dist(r=r, alpha=alpha, time_covariates_sum=time_covariates_sum, size=10_000)
+            dist = self.pymc_dist.dist(
+                r=r, alpha=alpha, time_covariates_sum=time_covariates_sum, size=10_000
+            )
             draws = dist.eval()
 
             # Check that all values are positive integers
@@ -288,10 +306,14 @@ class TestGrassiaIIGeometric:
         assert np.all(np.isfinite(logp_vals))
 
         # Test invalid values
-        assert logp_fn(np.array([0]), test_r, test_alpha, test_time_covariates_sum) == np.inf  # Value must be > 0
+        assert (
+            logp_fn(np.array([0]), test_r, test_alpha, test_time_covariates_sum) == np.inf
+        )  # Value must be > 0
 
         with pytest.raises(TypeError):
-            logp_fn(np.array([1.5]), test_r, test_alpha, test_time_covariates_sum)  # Value must be integer
+            logp_fn(
+                np.array([1.5]), test_r, test_alpha, test_time_covariates_sum
+            )  # Value must be integer
 
         # Test parameter restrictions
         with pytest.raises(ParameterValueError):
@@ -305,23 +327,25 @@ class TestGrassiaIIGeometric:
         r = 2.0
         alpha = 1.0
         time_covariates_sum = None
-        
+
         # First test direct sampling from the distribution
         dist = GrassiaIIGeometric.dist(r=r, alpha=alpha, time_covariates_sum=time_covariates_sum)
         direct_samples = dist.eval()
-        
+
         # Convert to numpy array if it's not already
         if not isinstance(direct_samples, np.ndarray):
             direct_samples = np.array([direct_samples])
-        
+
         # Ensure we have a 1D array
         if direct_samples.ndim == 0:
             direct_samples = direct_samples.reshape(1)
-            
+
         assert direct_samples.size > 0, "Direct sampling produced no samples"
         assert np.all(direct_samples > 0), "Direct sampling produced non-positive values"
-        assert np.all(direct_samples.astype(int) == direct_samples), "Direct sampling produced non-integer values"
-        
+        assert np.all(
+            direct_samples.astype(int) == direct_samples
+        ), "Direct sampling produced non-integer values"
+
         # Then test MCMC sampling
         with pm.Model():
             x = GrassiaIIGeometric("x", r=r, alpha=alpha, time_covariates_sum=time_covariates_sum)
@@ -331,7 +355,7 @@ class TestGrassiaIIGeometric:
         samples = trace["x"].values
         assert samples is not None, "No samples were returned from MCMC"
         assert samples.size > 0, "MCMC sampling produced empty array"
-        
+
         if samples.ndim > 1:
             samples = samples.reshape(-1)  # Flatten if needed
 
@@ -366,7 +390,9 @@ class TestGrassiaIIGeometric:
     def test_support_point(self, r, alpha, time_covariates_sum, size, expected_shape):
         """Test that support_point returns reasonable values with correct shapes"""
         with pm.Model() as model:
-            GrassiaIIGeometric("x", r=r, alpha=alpha, time_covariates_sum=time_covariates_sum, size=size)
+            GrassiaIIGeometric(
+                "x", r=r, alpha=alpha, time_covariates_sum=time_covariates_sum, size=size
+            )
 
         init_point = model.initial_point()["x"]
 
