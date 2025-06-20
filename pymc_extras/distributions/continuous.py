@@ -81,7 +81,7 @@ class GenExtreme(Continuous):
 
         \left\{x: 1 + \xi\left(\frac{x-\mu}{\sigma}\right) > 0 \right\}.
 
-    Note that this parametrization is per Coles (2001), and differs from that of
+    Note that this parametrization is per Coles (2001) [1]_, and differs from that of
     Scipy in the sign of the shape parameter, :math:`\xi`.
 
     .. plot::
@@ -132,7 +132,7 @@ class GenExtreme(Continuous):
 
     References
     ----------
-    .. [Coles2001] Coles, S.G. (2001).
+    .. [1] Coles, S.G. (2001).
         An Introduction to the Statistical Modeling of Extreme Values
         Springer-Verlag, London
 
@@ -260,6 +260,7 @@ class Chi:
     Examples
     --------
     .. code-block:: python
+
         import pymc as pm
         from pymc_extras.distributions import Chi
 

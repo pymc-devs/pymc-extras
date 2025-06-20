@@ -1,5 +1,6 @@
 import numpy as np
 import pymc as pm
+import pytensor
 import pytensor.tensor as pt
 import pytest
 
@@ -97,6 +98,60 @@ def test_JAX_map(method, use_grad, use_hess, use_hessp, gradient_backend: Gradie
             gradient_backend=gradient_backend,
             compile_kwargs={"mode": "JAX"},
         )
+    mu_hat, log_sigma_hat = optimized_point["mu"], optimized_point["sigma_log__"]
+
+    assert np.isclose(mu_hat, 3, atol=0.5)
+    assert np.isclose(np.exp(log_sigma_hat), 1.5, atol=0.5)
+
+
+def test_JAX_map_shared_variables():
+    with pm.Model() as m:
+        data = pytensor.shared(np.random.normal(loc=3, scale=1.5, size=100), name="shared_data")
+        mu = pm.Normal("mu")
+        sigma = pm.Exponential("sigma", 1)
+        y_hat = pm.Normal("y_hat", mu=mu, sigma=sigma, observed=data)
+
+        optimized_point = find_MAP(
+            method="L-BFGS-B",
+            use_grad=True,
+            use_hess=False,
+            use_hessp=False,
+            progressbar=False,
+            gradient_backend="jax",
+            compile_kwargs={"mode": "JAX"},
+        )
+    mu_hat, log_sigma_hat = optimized_point["mu"], optimized_point["sigma_log__"]
+
+    assert np.isclose(mu_hat, 3, atol=0.5)
+    assert np.isclose(np.exp(log_sigma_hat), 1.5, atol=0.5)
+
+
+@pytest.mark.parametrize(
+    "method, use_grad, use_hess, use_hessp",
+    [
+        ("nelder-mead", False, False, False),
+        ("L-BFGS-B", True, False, False),
+        ("trust-exact", True, True, False),
+        ("trust-ncg", True, False, True),
+    ],
+)
+def test_find_MAP_basinhopping(method, use_grad, use_hess, use_hessp, rng):
+    with pm.Model() as m:
+        mu = pm.Normal("mu")
+        sigma = pm.Exponential("sigma", 1)
+        pm.Normal("y_hat", mu=mu, sigma=sigma, observed=rng.normal(loc=3, scale=1.5, size=100))
+
+        optimized_point = find_MAP(
+            method="basinhopping",
+            use_grad=use_grad,
+            use_hess=use_hess,
+            use_hessp=use_hessp,
+            progressbar=False,
+            gradient_backend="pytensor",
+            compile_kwargs={"mode": "JAX"},
+            minimizer_kwargs=dict(method=method),
+        )
+
     mu_hat, log_sigma_hat = optimized_point["mu"], optimized_point["sigma_log__"]
 
     assert np.isclose(mu_hat, 3, atol=0.5)
