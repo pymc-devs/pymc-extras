@@ -27,6 +27,7 @@ from pymc_extras.distributions.discrete import (
 from pymc_extras.distributions.histogram_utils import histogram_approximation
 from pymc_extras.distributions.multivariate import R2D2M2CP
 from pymc_extras.distributions.timeseries import DiscreteMarkovChain
+from pymc_extras.distributions.transforms import PartialOrder
 
 __all__ = [
     "Chi",
@@ -39,4 +40,5 @@ __all__ = [
     "Skellam",
     "histogram_approximation",
     "GrassiaIIGeometric",
+    "PartialOrder",
 ]
