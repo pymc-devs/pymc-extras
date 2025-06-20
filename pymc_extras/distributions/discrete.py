@@ -399,7 +399,7 @@ class Skellam:
             **kwargs,
         )
 
-
+# TODO: C expressions are not correct. Both value and covariate broadcasting must be handled.
 class GrassiaIIGeometricRV(RandomVariable):
     name = "g2g"
     signature = "(),(),()->()"
@@ -407,51 +407,62 @@ class GrassiaIIGeometricRV(RandomVariable):
     dtype = "int64"
     _print_name = ("GrassiaIIGeometric", "\\operatorname{GrassiaIIGeometric}")
 
-    def __call__(self, r, alpha, time_covar_dot=None,size=None, **kwargs):
-        return super().__call__(r, alpha, time_covar_dot=time_covar_dot, size=size, **kwargs)
+    def __call__(self, r, alpha, time_covariates_sum=None, size=None, **kwargs):
+        return super().__call__(r, alpha, time_covariates_sum, size=size, **kwargs)
 
     @classmethod
-    def rng_fn(cls, rng, r, alpha, time_covar_dot,size):
-        if time_covar_dot is None:
-            time_covar_dot = np.array(0)
+    def rng_fn(cls, rng, r, alpha, time_covariates_sum, size):
+        if time_covariates_sum is None:
+            time_covariates_sum = np.array(0)
         if size is None:
-            size = np.broadcast_shapes(r.shape, alpha.shape, time_covar_dot.shape)
+            size = np.broadcast_shapes(r.shape, alpha.shape, time_covariates_sum.shape)
 
         r = np.broadcast_to(r, size)
         alpha = np.broadcast_to(alpha, size)
-        time_covar_dot = np.broadcast_to(time_covar_dot,size)
+        time_covariates_sum = np.broadcast_to(time_covariates_sum, size)
 
-        output = np.zeros(shape=size + (1,))  # noqa:RUF005
-
-        lam = rng.gamma(shape=r, scale=1/alpha, size=size)
-
-        exp_time_covar_dot = np.exp(time_covar_dot)
-
-        def sim_data(lam, exp_time_covar_dot):
-            # Handle numerical stability for very small lambda values
-            # p = np.where(
-            #     lam < 0.0001,
-            #     lam,  # For small lambda, p ≈ lambda
-            #     1 - np.exp(-lam * exp_time_covar_dot)
-            # )
-
-            # Ensure lam is in valid range for geometric distribution
-            lam = np.clip(lam, np.finfo(float).tiny, 1.)
-            p = 1 - np.exp(-lam * exp_time_covar_dot)
-
-            t = rng.geometric(p)
-            return np.array([t])
-
-        for index in np.ndindex(*size):
-            output[index] = sim_data(lam[index], exp_time_covar_dot[index])
-
+        # Calculate exp(time_covariates_sum) for all samples
+        exp_time_covar_sum = np.exp(time_covariates_sum)
+        
+        # Initialize output array
+        output = np.zeros(size, dtype=np.int64)
+        
+        # For each sample, generate a value from the distribution
+        for idx in np.ndindex(*size):
+            # Calculate survival probabilities for each possible value
+            t = 1
+            while True:
+                C_t = t + exp_time_covar_sum[idx]
+                C_tm1 = (t - 1) + exp_time_covar_sum[idx]
+                
+                # Calculate PMF for current t
+                pmf = (
+                    (alpha[idx] / (alpha[idx] + C_tm1)) ** r[idx] - 
+                    (alpha[idx] / (alpha[idx] + C_t)) ** r[idx]
+                )
+                
+                # If PMF is negative or NaN, we've gone too far
+                if pmf <= 0 or np.isnan(pmf):
+                    break
+                    
+                # Accept this value with probability proportional to PMF
+                if rng.random() < pmf:
+                    output[idx] = t
+                    break
+                    
+                t += 1
+                
+                # Safety check to prevent infinite loops
+                if t > 1000:  # Arbitrary large number
+                    output[idx] = t
+                    break
+        
         return output
 
 
 g2g = GrassiaIIGeometricRV()
 
-# TODO: Add time-varying covariates. May simply replace the t-value , but is a continuous parameter
-class GrassiaIIGeometric(Discrete):
+# TODO: C expressions are not correct. Both value and covariate broadcasting must be handled.
     r"""Grassia(II)-Geometric distribution.
 
     This distribution is a flexible alternative to the Geometric distribution for the number of trials until a
@@ -494,7 +505,9 @@ class GrassiaIIGeometric(Discrete):
         Shape parameter (r > 0).
     alpha : tensor_like of float
         Scale parameter (alpha > 0).
-
+    time_covariates_sum : tensor_like of float, optional
+        Optional dot product of time-varying covariates and their coefficients, summed over time.
+        
     References
     ----------
     .. [1] Fader, Peter & G. S. Hardie, Bruce (2020).
@@ -505,22 +518,56 @@ class GrassiaIIGeometric(Discrete):
     rv_op = g2g
 
     @classmethod
-    def dist(cls, r, alpha, *args, **kwargs):
+    def dist(cls, r, alpha, time_covariates_sum=None, *args, **kwargs):
         r = pt.as_tensor_variable(r)
         alpha = pt.as_tensor_variable(alpha)
-        return super().dist([r, alpha], *args, **kwargs)
+        if time_covariates_sum is None:
+            time_covariates_sum = pt.constant(0.0)
+        time_covariates_sum = pt.as_tensor_variable(time_covariates_sum)
+        return super().dist([r, alpha, time_covariates_sum], *args, **kwargs)
 
-    def logp(value, r, alpha):
-        logp = -r * (pt.log(alpha + value - 1) + pt.log(alpha + value))
-
+    def logp(value, r, alpha, time_covariates_sum=None):
+        """
+        Log probability function for GrassiaIIGeometric distribution.
+        
+        The PMF is:
+        P(T=t|r,α,β;Z(t)) = (α/(α+C(t-1)))^r - (α/(α+C(t)))^r
+        
+        where C(t) = t + exp(time_covariates_sum)
+        """
+        if time_covariates_sum is None:
+            time_covariates_sum = pt.constant(0.0)
+            
+        # Calculate C(t) and C(t-1)
+        C_t = value + pt.exp(time_covariates_sum)
+        C_tm1 = (value - 1) + pt.exp(time_covariates_sum)
+        
+        # Calculate the PMF on log scale
+        logp = pt.log(
+            pt.pow(alpha / (alpha + C_tm1), r) - 
+            pt.pow(alpha / (alpha + C_t), r)
+        )
+        
+        # Handle invalid values
+        logp = pt.switch(
+            pt.or_(
+                value < 1,  # Value must be >= 1
+                pt.isnan(logp),  # Handle NaN cases
+            ),
+            -np.inf,
+            logp
+        )
+        
         return check_parameters(
             logp,
             r > 0,
             alpha > 0,
-            msg="s > 0, alpha > 0",
+            msg="r > 0, alpha > 0",
         )
 
-    def logcdf(value, r, alpha):
+    def logcdf(value, r, alpha, time_covariates_sum=None):
+        if time_covariates_sum is not None:
+            value = time_covariates_sum
         logcdf = r * (pt.log(value) - pt.log(alpha + value))
 
         return check_parameters(
@@ -530,15 +577,27 @@ class GrassiaIIGeometric(Discrete):
             msg="r > 0, alpha > 0",
         )
 
-    def support_point(rv, size, r, alpha):
+    def support_point(rv, size, r, alpha, time_covariates_sum=None):
         """Calculate a reasonable starting point for sampling.
 
         For the GrassiaIIGeometric distribution, we use a point estimate based on
         the expected value of the mixing distribution. Since the mixing distribution
         is Gamma(r, 1/alpha), its mean is r/alpha. We then transform this through
         the geometric link function and round to ensure an integer value.
+
+        When time_covariates_sum is provided, it affects the expected value through
+        the exponential link function: exp(time_covariates_sum).
         """
-        mean = pt.ceil(pt.exp(alpha/r))
+        # Base mean without covariates
+        mean = pt.exp(alpha/r)
+
+        # Apply time-varying covariates if provided
+        if time_covariates_sum is None:
+            time_covariates_sum = pt.constant(0.0)
+        mean = mean * pt.exp(time_covariates_sum)
+
+        # Round up to nearest integer
+        mean = pt.ceil(mean)
 
         if not rv_size_is_none(size):
             mean = pt.full(size, mean)

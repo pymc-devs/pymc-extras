@@ -214,23 +214,24 @@ class TestSkellam:
 class TestGrassiaIIGeometric:
     class TestRandomVariable(BaseTestDistributionRandom):
         pymc_dist = GrassiaIIGeometric
-        pymc_dist_params = {"r": .5, "alpha": 2.0}
-        expected_rv_op_params = {"r": .5, "alpha": 2.0}
+        pymc_dist_params = {"r": .5, "alpha": 2.0, "time_covariates_sum": 1.0}
+        expected_rv_op_params = {"r": .5, "alpha": 2.0, "time_covariates_sum": 1.0}
         tests_to_run = [
             "check_pymc_params_match_rv_op",
             "check_rv_size",
         ]
 
         def test_random_basic_properties(self):
-            # Test standard parameter values
+            # Test standard parameter values with time covariates
             discrete_random_tester(
                 dist=self.pymc_dist,
                 paramdomains={
                     "r": Domain([0.5, 1.0, 2.0], edges=(None, None)),  # Standard values
                     "alpha": Domain([0.5, 1.0, 2.0], edges=(None, None)),  # Standard values
+                    "time_covariates_sum": Domain([-1.0, 1.0, 2.0], edges=(None, None)),  # Time covariates
                 },
-                ref_rand=lambda r, alpha, size: np.random.geometric(
-                    1 - np.exp(-np.random.gamma(r, 1/alpha, size=size)), size=size
+                ref_rand=lambda r, alpha, time_covariates_sum, size: np.random.geometric(
+                    1 - np.exp(-np.random.gamma(r, 1/alpha, size=size) * np.exp(time_covariates_sum)), size=size
                 ),
             )
 
@@ -240,20 +241,21 @@ class TestGrassiaIIGeometric:
                 paramdomains={
                     "r": Domain([0.01, 0.1], edges=(None, None)),  # Small r values
                     "alpha": Domain([10.0, 100.0], edges=(None, None)),  # Large alpha values
+                    "time_covariates_sum": Domain([0.0, 1.0], edges=(None, None)),  # Time covariates
                 },
-                ref_rand=lambda r, alpha, size: np.random.geometric(
-                    np.clip(np.random.gamma(r, 1/alpha, size=size), 1e-5, 1.0), size=size
+                ref_rand=lambda r, alpha, time_covariates_sum, size: np.random.geometric(
+                    np.clip(np.random.gamma(r, 1/alpha, size=size) * np.exp(time_covariates_sum), 1e-5, 1.0), size=size
                 ),
             )
 
-        @pytest.mark.parametrize("r,alpha", [
-            (0.5, 1.0),
-            (1.0, 2.0),
-            (2.0, 0.5),
-            (5.0, 1.0),
+        @pytest.mark.parametrize("r,alpha,time_covariates_sum", [
+            (0.5, 1.0, 0.0),
+            (1.0, 2.0, 1.0),
+            (2.0, 0.5, -1.0),
+            (5.0, 1.0, None),
         ])
-        def test_random_moments(self, r, alpha):
-            dist = self.pymc_dist.dist(r=r, alpha=alpha, size=10_000)
+        def test_random_moments(self, r, alpha, time_covariates_sum):
+            dist = self.pymc_dist.dist(r=r, alpha=alpha, time_covariates_sum=time_covariates_sum, size=10_000)
             draws = dist.eval()
 
             # Check that all values are positive integers
@@ -269,65 +271,102 @@ class TestGrassiaIIGeometric:
     def test_logp_basic(self):
         r = pt.scalar("r")
         alpha = pt.scalar("alpha")
+        time_covariates_sum = pt.scalar("time_covariates_sum")
         value = pt.vector("value", dtype="int64")
 
-        logp = pm.logp(GrassiaIIGeometric.dist(r, alpha), value)
-        logp_fn = pytensor.function([value, r, alpha], logp)
+        logp = pm.logp(GrassiaIIGeometric.dist(r, alpha, time_covariates_sum), value)
+        logp_fn = pytensor.function([value, r, alpha, time_covariates_sum], logp)
 
         # Test basic properties of logp
         test_value = np.array([1, 2, 3, 4, 5])
         test_r = 1.0
         test_alpha = 1.0
+        test_time_covariates_sum = 1.0
 
-        logp_vals = logp_fn(test_value, test_r, test_alpha)
+        logp_vals = logp_fn(test_value, test_r, test_alpha, test_time_covariates_sum)
         assert not np.any(np.isnan(logp_vals))
         assert np.all(np.isfinite(logp_vals))
 
         # Test invalid values
-        assert logp_fn(np.array([0]), test_r, test_alpha) == np.inf  # Value must be > 0
+        assert logp_fn(np.array([0]), test_r, test_alpha, test_time_covariates_sum) == np.inf  # Value must be > 0
 
         with pytest.raises(TypeError):
-            logp_fn(np.array([1.5]), test_r, test_alpha) == -np.inf  # Value must be integer
+            logp_fn(np.array([1.5]), test_r, test_alpha, test_time_covariates_sum)  # Value must be integer
 
         # Test parameter restrictions
         with pytest.raises(ParameterValueError):
-            logp_fn(np.array([1]), -1.0, test_alpha)  # r must be > 0
+            logp_fn(np.array([1]), -1.0, test_alpha, test_time_covariates_sum)  # r must be > 0
 
         with pytest.raises(ParameterValueError):
-            logp_fn(np.array([1]), test_r, -1.0)  # alpha must be > 0
+            logp_fn(np.array([1]), test_r, -1.0, test_time_covariates_sum)  # alpha must be > 0
 
     def test_sampling_consistency(self):
         """Test that sampling from the distribution produces reasonable results"""
         r = 2.0
         alpha = 1.0
+        time_covariates_sum = None
+        
+        # First test direct sampling from the distribution
+        dist = GrassiaIIGeometric.dist(r=r, alpha=alpha, time_covariates_sum=time_covariates_sum)
+        direct_samples = dist.eval()
+        
+        # Convert to numpy array if it's not already
+        if not isinstance(direct_samples, np.ndarray):
+            direct_samples = np.array([direct_samples])
+        
+        # Ensure we have a 1D array
+        if direct_samples.ndim == 0:
+            direct_samples = direct_samples.reshape(1)
+            
+        assert direct_samples.size > 0, "Direct sampling produced no samples"
+        assert np.all(direct_samples > 0), "Direct sampling produced non-positive values"
+        assert np.all(direct_samples.astype(int) == direct_samples), "Direct sampling produced non-integer values"
+        
+        # Then test MCMC sampling
         with pm.Model():
-            x = GrassiaIIGeometric("x", r=r, alpha=alpha)
+            x = GrassiaIIGeometric("x", r=r, alpha=alpha, time_covariates_sum=time_covariates_sum)
             trace = pm.sample(chains=1, draws=1000, random_seed=42).posterior
 
-        samples = trace["x"].values.flatten()
+        # Extract samples and ensure they're in the correct shape
+        samples = trace["x"].values
+        assert samples is not None, "No samples were returned from MCMC"
+        assert samples.size > 0, "MCMC sampling produced empty array"
+        
+        if samples.ndim > 1:
+            samples = samples.reshape(-1)  # Flatten if needed
 
         # Check basic properties of samples
-        assert np.all(samples > 0)  # All values should be positive
-        assert np.all(samples.astype(int) == samples)  # All values should be integers
+        assert samples.size > 0, "No samples after reshaping"
+        assert np.all(samples > 0), "Found non-positive values in samples"
+        assert np.all(samples.astype(int) == samples), "Found non-integer values in samples"
 
         # Check mean and variance are reasonable
-        # (exact values depend on the parameterization)
-        assert 0 < np.mean(samples) < np.inf
-        assert 0 < np.var(samples) < np.inf
+        mean = np.mean(samples)
+        var = np.var(samples)
+        assert 0 < mean < np.inf, f"Mean {mean} is not in valid range"
+        assert 0 < var < np.inf, f"Variance {var} is not in valid range"
+
+        # Additional checks for distribution properties
+        # The mean should be greater than 1 for these parameters
+        assert mean > 1, f"Mean {mean} is not greater than 1"
+        # The variance should be positive and finite
+        assert var > 0, f"Variance {var} is not positive"
 
     @pytest.mark.parametrize(
-        "r, alpha, size, expected_shape",
+        "r, alpha, time_covariates_sum, size, expected_shape",
         [
-            (1.0, 1.0, None, ()),  # Scalar output
-            ([1.0, 2.0], 1.0, None, (2,)),  # Vector output from r
-            (1.0, [1.0, 2.0], None, (2,)),  # Vector output from alpha
-            (1.0, 1.0, (3, 2), (3, 2)),  # Explicit size
+            (1.0, 1.0, 1.0, None, ()),  # Scalar output with covariates
+            ([1.0, 2.0], 1.0, 1.0, None, (2,)),  # Vector output from r
+            (1.0, [1.0, 2.0], 1.0, None, (2,)),  # Vector output from alpha
+            (1.0, 1.0, None, None, ()),  # No time covariates
+            (1.0, 1.0, [1.0, 2.0], None, (2,)),  # Vector output from time covariates
+            (1.0, 1.0, 1.0, (3, 2), (3, 2)),  # Explicit size
         ],
     )
-    def test_support_point(self, r, alpha, size, expected_shape):
+    def test_support_point(self, r, alpha, time_covariates_sum, size, expected_shape):
         """Test that support_point returns reasonable values with correct shapes"""
         with pm.Model() as model:
-            GrassiaIIGeometric("x", r=r, alpha=alpha, size=size)
+            GrassiaIIGeometric("x", r=r, alpha=alpha, time_covariates_sum=time_covariates_sum, size=size)
 
         init_point = model.initial_point()["x"]
 
