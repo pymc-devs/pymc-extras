@@ -1168,3 +1168,38 @@ def test_import_incorrect_directly() -> None:
     match = "PyMC doesn't have a distribution of name 'SomeIncorrectDistribution'"
     with pytest.raises(UnsupportedDistributionError, match=match):
         from pymc_extras.prior import SomeIncorrectDistribution  # noqa: F401
+
+
+@pytest.fixture
+def alternative_prior_deserialize():
+    def is_type(data):
+        return isinstance(data, dict) and "distribution" in data
+
+    def deserialize(data):
+        return Prior(**data)
+
+    register_deserialization(is_type=is_type, deserialize=deserialize)
+
+    yield
+
+    DESERIALIZERS.pop()
+
+
+def test_censored_with_alternative(alternative_prior_deserialize) -> None:
+    data = {
+        "class": "Censored",
+        "data": {
+            "dist": {
+                "distribution": "Normal",
+            },
+            "lower": 0,
+            "upper": 10,
+        },
+    }
+
+    instance = deserialize(data)
+
+    assert isinstance(instance, Censored)
+    assert instance.lower == 0
+    assert instance.upper == 10
+    assert instance.distribution == Prior("Normal")
