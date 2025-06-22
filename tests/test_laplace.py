@@ -21,7 +21,7 @@ import pymc_extras as pmx
 
 from pymc_extras.inference.find_map import GradientBackend, find_MAP
 from pymc_extras.inference.laplace import (
-    find_mode_and_hess,
+    find_mode_jac_hess,
     fit_laplace,
     fit_mvn_at_MAP,
     sample_laplace_posterior,
@@ -282,17 +282,19 @@ def test_laplace_scalar():
     np.testing.assert_allclose(idata_laplace.fit.mean_vector.values.item(), data.mean(), atol=0.1)
 
 
-def test_find_mode_and_hess():
+def test_find_mode_jac_hess():
     rng = np.random.default_rng(42)
     n = 100
     sigma_obs = rng.random()
     sigma_mu = rng.random()
+    true_mu = rng.random()
+    mu_val = rng.random()
 
     coords = {"city": ["A", "B", "C"], "obs_idx": np.arange(n)}
     with pm.Model(coords=coords) as model:
-        obs_val = rng.normal(loc=3, scale=1.5, size=(n, 3))
+        obs_val = rng.normal(loc=true_mu, scale=1.5, size=(n, 3))
 
-        mu = pm.Normal("mu", mu=1, sigma=sigma_mu, dims=["city"])
+        mu = pm.Normal("mu", mu=mu_val, sigma=sigma_mu, dims=["city"])
         obs = pm.Normal(
             "obs",
             mu=mu,
@@ -301,14 +303,14 @@ def test_find_mode_and_hess():
             dims=["obs_idx", "city"],
         )
 
-        get_mode_and_hessian = find_mode_and_hess(
+        get_mode_and_hessian = find_mode_jac_hess(
             use_hess=False, x=model.rvs_to_values[mu], method="BFGS", optimizer_kwargs={"tol": 1e-8}
         )
 
-    mode, hess = get_mode_and_hessian(**{"mu": [1, 1, 1]})
+    mode, jac, hess = get_mode_and_hessian(mu=[1, 1, 1])
 
     true_mode = obs_val.mean(axis=0)
-    true_hess = np.diag((1 / sigma_mu**2 + n / sigma_obs**2) * np.ones(3))
+    true_hess = -np.diag((1 / sigma_mu**2 + n / sigma_obs**2) * np.ones(3))
 
     np.testing.assert_allclose(mode, true_mode, atol=0.1, rtol=0.1)
     np.testing.assert_allclose(hess, true_hess, atol=0.1, rtol=0.1)

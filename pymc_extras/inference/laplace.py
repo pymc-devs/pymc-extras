@@ -29,7 +29,7 @@ import pytensor.tensor as pt
 import xarray as xr
 
 from arviz import dict_to_dataset
-from better_optimize.constants import minimize_method
+from better_optimize.constants import minimize_method, root_method
 from pymc import DictToArrayBijection
 from pymc.backends.arviz import (
     coords_and_dims_for_inferencedata,
@@ -41,7 +41,7 @@ from pymc.model.transform.conditioning import remove_value_transforms
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import get_default_varnames
 from pytensor.tensor import TensorVariable
-from pytensor.tensor.optimize import minimize
+from pytensor.tensor.optimize import root
 from scipy import stats
 
 from pymc_extras.inference.find_map import (
@@ -53,6 +53,128 @@ from pymc_extras.inference.find_map import (
 )
 
 _log = logging.getLogger(__name__)
+
+
+def find_mode_jac_hess(
+    x: TensorVariable,  # Should be vector specifically
+    Q: TensorVariable,  # Matrix # TODO tensorinv doesn't have grad implemented yet
+    mu: TensorVariable,  # Vector
+    model: pm.Model | None = None,
+    method: root_method = "hybr",
+    use_jac: bool = True,
+    # use_hess: bool = False,
+    optimizer_kwargs: dict | None = None,
+) -> Callable:
+    """
+    Returns a function to estimate the mode and both the first and second derivatives of a model at that point by minimizing negative log likelihood. Wrapper for (pytensor-native) scipy.optimize.minimize.
+
+    Parameters
+    ----------
+    x: TensorVariable
+        The parameter with which to minimize wrt (that is, find the mode in x).
+    model: Model
+        PyMC model to use.
+    method: minimize_method
+        Which minimization algorithm to use.
+    use_jac: bool
+        If true, the minimizer will compute and store the Jacobian.
+    use_hess: bool
+        If true, the minimizer will compute and store the Hessian (note that the Hessian will be computed explicitely even if this is False).
+    optimizer_kwargs: dict
+        Kwargs to pass to scipy.optimize.minimize.
+
+    Returns
+    -------
+    f: Callable
+        A function which accepts the values of the model RVs as args and returns [mu, jac(mu) hess(mu)], where mu is the mode. The TensorVariable x is specified as an initial guess for mu in args.
+    """
+    model = pm.modelcontext(model)
+
+    # f = log(p(y | x, params))
+    f = model.logp()
+    jac = pytensor.gradient.grad(f, x)
+    hess = pytensor.gradient.jacobian(jac.flatten(), x)
+
+    # Component of log(p(x | y, params)) which depends on x (for rootfinding)
+    conditional_gaussian_approx = -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x)
+
+    x0, _ = root(
+        equations=pt.stack([conditional_gaussian_approx]),
+        variables=x,
+        method=method,
+        jac=use_jac,
+        optimizer_kwargs=optimizer_kwargs,
+    )
+
+    # require f'(x0) and f''(x0) for Laplace approx
+    jac = pytensor.graph.replace.graph_replace(jac, {x: x0})
+    hess = pytensor.graph.replace.graph_replace(
+        hess, {x: x0}
+    )  # Possibly unecessary because jac already does this replace
+
+    # Full log(p(x | y, params))
+    _, logdetQ = pt.nlinalg.slogdet(Q)
+    conditional_gaussian_approx = (
+        -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x0) + 0.5 * logdetQ
+    )  # TODO does doing this change the graph in root before if changed before it's compiled?
+
+    args = model.continuous_value_vars + model.discrete_value_vars
+    return pytensor.function(
+        args, [x0, conditional_gaussian_approx]
+    )  # Currently x being passed in as an initial guess for x0 AND then also going to the true value of x
+
+    # Minimise negative log likelihood
+    # nll = -model.logp()
+    # soln, _ = minimize(
+    #     objective=nll,
+    #     x=x,
+    #     method=method,
+    #     jac=use_jac,
+    #     hess=use_hess,
+    #     optimizer_kwargs=optimizer_kwargs,
+    # )
+
+    # TODO: Jesse suggested I use this graph_replace function, but it seems that "mode" here is a different type to soln:
+    #
+    # TypeError: Cannot convert Type Vector(float64, shape=(10,)) (of Variable MinimizeOp(method=BFGS, jac=True, hess=True, hessp=False).0) into Type Scalar(float64, shape=()). You can try to manually convert MinimizeOp(method=BFGS, jac=True, hess=True, hessp=False).0 into a Scalar(float64, shape=()).
+    #
+    # My understanding here is that for some function which evaluates the hessian at x, we're replacing "x" in the hess graph with the subgraph that computes "x" (i.e. soln)?
+
+    # Obtain the Hessian (re-use graph if already computed in minimize)
+    # if use_hess:
+    #     mode, _, hess = (
+    #         soln.owner.op.inner_outputs
+    #     )  # Note that this mode, _, hess will need to be slightly more elaborate for when use_jac is False (2 items to unpack instead of 3). Just a few if-blocks, but not implemented for now while we're debugging
+    #     hess = pytensor.graph.replace.graph_replace(hess, {mode: soln})
+    # else:
+    #     hess = pytensor.gradient.hessian(nll, x)
+
+    # Obtain the gradient and Hessian (re-use graphs if already computed in minimize)
+    # res = soln.owner.op.inner_outputs
+    # mode = res[0]
+
+    # print(res)
+
+    # if use_jac:
+    #     # jac = pytensor.gradient.grad(nll, x)
+    #     jac = res.pop(1)
+    # else:
+    #     jac = pytensor.gradient.grad(nll, x)
+    #     jac = pytensor.graph.replace.graph_replace(jac, {x: soln})
+
+    # print(x)
+    # # jac = pytensor.graph.replace.graph_replace(jac, {x: soln})
+
+    # jac = -jac # We subsequently want the gradients wrt log(p(y | x)) rather than the negative of this (nll)
+
+    # if use_hess:
+    #     hess = res.pop(1)
+    # else:
+    #     hess = pytensor.gradient.jacobian(jac.flatten(), soln)
+    #     # hess = pytensor.graph.replace.graph_replace(hess, {x: soln})
+
+    # args = model.continuous_value_vars + model.discrete_value_vars
+    # return pytensor.function(args, [soln, jac, hess])
 
 
 def laplace_draws_to_inferencedata(
@@ -416,69 +538,6 @@ def sample_laplace_posterior(
     idata = add_data_to_inferencedata(idata, progressbar, model, compile_kwargs)
 
     return idata
-
-
-def find_mode_and_hess(
-    x: TensorVariable,
-    model: pm.Model | None = None,
-    method: minimize_method = "BFGS",
-    use_jac: bool = True,
-    use_hess: bool = False,  # TODO Tbh we can probably just remove this arg and pass True to the minimizer all the time, but if this is the case, it will throw a warning when the hessian doesn't need to be computed for a particular optimisation routine.
-    optimizer_kwargs: dict | None = None,
-) -> Callable:
-    """
-    Returns a function to estimate the mode and hessian of a model by minimizing negative log likelihood. Wrapper for (pytensor-native) scipy.optimize.minimize.
-
-    Parameters
-    ----------
-    x: TensorVariable
-        The parameter with which to minimize wrt (that is, find the mode in x).
-    model: Model
-        PyMC model to use.
-    method: minimize_method
-        Which minimization algorithm to use.
-    use_jac: bool
-        If true, the minimizer will compute and store the Jacobian.
-    use_hess: bool
-        If true, the minimizer will compute and store the Hessian (note that the Hessian will be computed explicitely even if this is False).
-    optimizer_kwargs: dict
-        Kwargs to pass to scipy.optimize.minimize.
-
-    Returns
-    -------
-    f: Callable
-        A function which accepts the values of the model RVs as args and returns [mu, hess(mu)], where mu is the mode. The TensorVariable x is specified as an initial guess for mu in args.
-    """
-    model = pm.modelcontext(model)
-
-    # Minimise negative log likelihood
-    nll = -model.logp()
-    soln, _ = minimize(
-        objective=nll,
-        x=x,
-        method=method,
-        jac=use_jac,
-        hess=use_hess,
-        optimizer_kwargs=optimizer_kwargs,
-    )
-
-    # TODO: Jesse suggested I use this graph_replace function, but it seems that "mode" here is a different type to soln:
-    #
-    # TypeError: Cannot convert Type Vector(float64, shape=(10,)) (of Variable MinimizeOp(method=BFGS, jac=True, hess=True, hessp=False).0) into Type Scalar(float64, shape=()). You can try to manually convert MinimizeOp(method=BFGS, jac=True, hess=True, hessp=False).0 into a Scalar(float64, shape=()).
-    #
-    # My understanding here is that for some function which evaluates the hessian at x, we're replacing "x" in the hess graph with the subgraph that computes "x" (i.e. soln)?
-
-    # Obtain the Hessian (re-use graph if already computed in minimize)
-    if use_hess:
-        mode, _, hess = (
-            soln.owner.op.inner_outputs
-        )  # Note that this mode, _, hess will need to be slightly more elaborate for when use_jac is False (2 items to unpack instead of 3). Just a few if-blocks, but not implemented for now while we're debugging
-        hess = pytensor.graph.replace.graph_replace(hess, {mode: soln})
-    else:
-        hess = pytensor.gradient.hessian(nll, x)
-
-    args = model.continuous_value_vars + model.discrete_value_vars
-    return pytensor.function(args, [soln, hess])
 
 
 def fit_laplace(
