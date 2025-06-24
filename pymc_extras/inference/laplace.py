@@ -29,7 +29,7 @@ import pytensor.tensor as pt
 import xarray as xr
 
 from arviz import dict_to_dataset
-from better_optimize.constants import minimize_method, root_method
+from better_optimize.constants import minimize_method
 from pymc import DictToArrayBijection
 from pymc.backends.arviz import (
     coords_and_dims_for_inferencedata,
@@ -41,7 +41,7 @@ from pymc.model.transform.conditioning import remove_value_transforms
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import get_default_varnames
 from pytensor.tensor import TensorVariable
-from pytensor.tensor.optimize import root
+from pytensor.tensor.optimize import minimize
 from scipy import stats
 
 from pymc_extras.inference.find_map import (
@@ -55,14 +55,15 @@ from pymc_extras.inference.find_map import (
 _log = logging.getLogger(__name__)
 
 
-def find_mode_jac_hess(
+def get_conditional_gaussian_approximation(
     x: TensorVariable,  # Should be vector specifically
     Q: TensorVariable,  # Matrix # TODO tensorinv doesn't have grad implemented yet
     mu: TensorVariable,  # Vector
+    args: list[TensorVariable] | None = None,
     model: pm.Model | None = None,
-    method: root_method = "hybr",
+    method: minimize_method = "BFGS",
     use_jac: bool = True,
-    # use_hess: bool = False,
+    use_hess: bool = False,
     optimizer_kwargs: dict | None = None,
 ) -> Callable:
     """
@@ -98,11 +99,12 @@ def find_mode_jac_hess(
     # Component of log(p(x | y, params)) which depends on x (for rootfinding)
     conditional_gaussian_approx = -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x)
 
-    x0, _ = root(
-        equations=pt.stack([conditional_gaussian_approx]),
-        variables=x,
+    x0, _ = minimize(
+        objective=-conditional_gaussian_approx,
+        x=x,
         method=method,
         jac=use_jac,
+        hess=use_hess,
         optimizer_kwargs=optimizer_kwargs,
     )
 
@@ -118,21 +120,12 @@ def find_mode_jac_hess(
         -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x0) + 0.5 * logdetQ
     )  # TODO does doing this change the graph in root before if changed before it's compiled?
 
-    args = model.continuous_value_vars + model.discrete_value_vars
+    if args is None:
+        args = model.continuous_value_vars + model.discrete_value_vars
+
     return pytensor.function(
         args, [x0, conditional_gaussian_approx]
     )  # Currently x being passed in as an initial guess for x0 AND then also going to the true value of x
-
-    # Minimise negative log likelihood
-    # nll = -model.logp()
-    # soln, _ = minimize(
-    #     objective=nll,
-    #     x=x,
-    #     method=method,
-    #     jac=use_jac,
-    #     hess=use_hess,
-    #     optimizer_kwargs=optimizer_kwargs,
-    # )
 
     # TODO: Jesse suggested I use this graph_replace function, but it seems that "mode" here is a different type to soln:
     #

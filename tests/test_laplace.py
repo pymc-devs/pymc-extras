@@ -282,6 +282,50 @@ def test_laplace_scalar():
     np.testing.assert_allclose(idata_laplace.fit.mean_vector.values.item(), data.mean(), atol=0.1)
 
 
+# rng = np.random.default_rng(42)
+# n = 100
+# d = 3
+# k = 10
+# mu_true = 3*np.ones(d) #rng.random(d)
+# cov_true = np.diag(np.ones(d))#rng.random(d)
+# Q_val = np.diag(np.ones(d))#np.diag(rng.random(d))
+
+# with pm.Model() as model:
+#     y_obs = rng.multivariate_normal(mean=mu_true, cov=cov_true, size=n)
+
+#     mu_param = pm.MvNormal("mu_param", mu=3*np.ones(d), cov=np.diag(np.ones(d)))
+#     cov_param = pm.MvNormal("cov_param", mu=np.zeros(d**2), cov=np.diag(np.ones(d**2)))
+#     Q = pm.MvNormal("Q", mu=np.zeros(d**2), cov=np.diag(np.ones(d**2)))
+
+#     x = pm.MvNormal("x", mu=mu_param, cov=np.linalg.inv(Q_val))
+
+#     y = pm.MvNormal(
+#         "y",
+#         mu=x,
+#         cov=cov_param.reshape((d,d)),
+#         observed=y_obs,
+#     )
+
+#     # logp(x | y, params)
+#     cga = get_conditional_gaussian_approximation(
+#         x=model.rvs_to_values[x],
+#         Q=Q.reshape((d,d)),
+#         mu=mu_param,
+#         # args=[model.rvs_to_values[x], Q, model.rvs_to_values[mu_param], model.rvs_to_values[cov_param]],
+#         optimizer_kwargs={"tol": 1e-9}
+#     )
+
+#     x = 4*np.array([1,1,1])
+#     sigma_inv = np.linalg.inv(np.diag(np.ones(d)))
+#     x0 = np.linalg.inv(n*sigma_inv - Q_val) @ (sigma_inv@y_obs.sum(axis=0) - Q_val@x)
+#     print(x0)
+
+# x = 4*np.array([1,1,1])
+
+# res = cga(x=x, mu_param=x, cov_param=np.diag(np.ones(d)).flatten(), Q=Q_val.flatten())
+# print(res)
+
+
 def test_find_mode_jac_hess():
     rng = np.random.default_rng(42)
     n = 100
