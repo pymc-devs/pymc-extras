@@ -286,20 +286,28 @@ def test_get_conditional_gaussian_approximation():
     rng = np.random.default_rng(42)
     n = 100
     d = 3
+
     mu_true = rng.random(d)
     cov_true = np.diag(rng.random(d))
     Q_val = np.diag(rng.random(d))
+    cov_param_val = rng.random(d**2).reshape((d, d))
 
-    sigma_params = rng.random(d**2).reshape((d, d))
     x_val = rng.random(d)
     mu_val = rng.random(d)
+
+    mu_mu = rng.random(d)
+    mu_cov = np.diag(rng.random(d))
+    cov_mu = rng.random(d**2)
+    cov_cov = np.diag(rng.random(d**2))
+    Q_mu = rng.random(d**2)
+    Q_cov = np.diag(rng.random(d**2))
 
     with pm.Model() as model:
         y_obs = rng.multivariate_normal(mean=mu_true, cov=cov_true, size=n)
 
-        mu_param = pm.MvNormal("mu_param", mu=np.zeros(d), cov=np.diag(np.ones(d)))
-        cov_param = pm.MvNormal("cov_param", mu=np.zeros(d**2), cov=np.diag(np.ones(d**2)))
-        Q = pm.MvNormal("Q", mu=np.zeros(d**2), cov=np.diag(np.ones(d**2)))
+        mu_param = pm.MvNormal("mu_param", mu=mu_mu, cov=mu_cov)
+        cov_param = pm.MvNormal("cov_param", mu=cov_mu, cov=cov_cov)
+        Q = pm.MvNormal("Q", mu=Q_mu, cov=Q_cov)
 
         x = pm.MvNormal("x", mu=mu_param, cov=np.linalg.inv(Q_val))
 
@@ -319,29 +327,33 @@ def test_get_conditional_gaussian_approximation():
         )
 
     x0, log_x_posterior = cga(
-        x=x_val, mu_param=mu_val, cov_param=sigma_params.flatten(), Q=Q_val.flatten()
+        x=x_val, mu_param=mu_val, cov_param=cov_param_val.flatten(), Q=Q_val.flatten()
     )
 
-    sigma_inv = np.linalg.inv(sigma_params)
+    cov_param_inv = np.linalg.inv(cov_param_val)
 
-    x0_true = np.linalg.inv(n * sigma_inv - 2 * Q_val) @ (
-        sigma_inv @ y_obs.sum(axis=0) - 2 * Q_val @ mu_val
+    x0_true = np.linalg.inv(n * cov_param_inv - 2 * Q_val) @ (
+        cov_param_inv @ y_obs.sum(axis=0) - 2 * Q_val @ mu_val
     )
 
     log_x_posterior_true = (
-        -0.5 * x_val.T @ (-n * sigma_inv + Q_val) @ x_val
+        -0.5 * x_val.T @ (-n * cov_param_inv + Q_val) @ x_val
         + x_val.T
-        @ (Q_val @ mu_val - sigma_inv @ (y_obs - x0_true).sum(axis=0) - n * sigma_inv @ x0_true)
+        @ (
+            Q_val @ mu_val
+            - cov_param_inv @ (y_obs - x0_true).sum(axis=0)
+            - n * cov_param_inv @ x0_true
+        )
         + 0.5 * np.log(np.linalg.det(Q_val))
-        + -0.5 * sigma_params.flatten().T @ np.diag(np.ones(d**2)) @ sigma_params.flatten()
+        + -0.5 * cov_param_val.flatten().T @ np.linalg.inv(cov_cov) @ cov_param_val.flatten()
         - ((d**2) / 2) * np.log(2 * np.pi)
-        - 0.5 * np.log(np.linalg.det(np.diag(np.ones(d**2))))
-        + -0.5 * mu_val.T @ np.diag(np.ones(d)) @ mu_val
+        - 0.5 * np.log(np.linalg.det(cov_cov))
+        + -0.5 * mu_val.T @ np.linalg.inv(mu_cov) @ mu_val
         - (d / 2) * np.log(2 * np.pi)
-        - 0.5 * np.log(np.linalg.det(np.diag(np.ones(d))))
-        + -0.5 * (x_val - mu_val).T @ Q_val @ (x_val - mu_val)
+        - 0.5 * np.log(np.linalg.det(mu_cov))
+        + -0.5 * (x_val - mu_val).T @ np.linalg.inv(Q_val) @ (x_val - mu_val)
         - (d / 2) * np.log(2 * np.pi)
-        - 0.5 * np.log(np.linalg.det(np.diag(np.ones(d))))
+        - 0.5 * np.log(np.linalg.det(Q_val))
     )
     np.testing.assert_allclose(x0, x0_true, atol=0.1, rtol=0.1)
     np.testing.assert_allclose(log_x_posterior, log_x_posterior_true, atol=0.1, rtol=0.1)
