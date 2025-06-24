@@ -21,9 +21,9 @@ import pymc_extras as pmx
 
 from pymc_extras.inference.find_map import GradientBackend, find_MAP
 from pymc_extras.inference.laplace import (
-    find_mode_jac_hess,
     fit_laplace,
     fit_mvn_at_MAP,
+    get_conditional_gaussian_approximation,
     sample_laplace_posterior,
 )
 
@@ -282,79 +282,66 @@ def test_laplace_scalar():
     np.testing.assert_allclose(idata_laplace.fit.mean_vector.values.item(), data.mean(), atol=0.1)
 
 
-# rng = np.random.default_rng(42)
-# n = 100
-# d = 3
-# k = 10
-# mu_true = 3*np.ones(d) #rng.random(d)
-# cov_true = np.diag(np.ones(d))#rng.random(d)
-# Q_val = np.diag(np.ones(d))#np.diag(rng.random(d))
-
-# with pm.Model() as model:
-#     y_obs = rng.multivariate_normal(mean=mu_true, cov=cov_true, size=n)
-
-#     mu_param = pm.MvNormal("mu_param", mu=3*np.ones(d), cov=np.diag(np.ones(d)))
-#     cov_param = pm.MvNormal("cov_param", mu=np.zeros(d**2), cov=np.diag(np.ones(d**2)))
-#     Q = pm.MvNormal("Q", mu=np.zeros(d**2), cov=np.diag(np.ones(d**2)))
-
-#     x = pm.MvNormal("x", mu=mu_param, cov=np.linalg.inv(Q_val))
-
-#     y = pm.MvNormal(
-#         "y",
-#         mu=x,
-#         cov=cov_param.reshape((d,d)),
-#         observed=y_obs,
-#     )
-
-#     # logp(x | y, params)
-#     cga = get_conditional_gaussian_approximation(
-#         x=model.rvs_to_values[x],
-#         Q=Q.reshape((d,d)),
-#         mu=mu_param,
-#         # args=[model.rvs_to_values[x], Q, model.rvs_to_values[mu_param], model.rvs_to_values[cov_param]],
-#         optimizer_kwargs={"tol": 1e-9}
-#     )
-
-#     x = 4*np.array([1,1,1])
-#     sigma_inv = np.linalg.inv(np.diag(np.ones(d)))
-#     x0 = np.linalg.inv(n*sigma_inv - Q_val) @ (sigma_inv@y_obs.sum(axis=0) - Q_val@x)
-#     print(x0)
-
-# x = 4*np.array([1,1,1])
-
-# res = cga(x=x, mu_param=x, cov_param=np.diag(np.ones(d)).flatten(), Q=Q_val.flatten())
-# print(res)
-
-
-def test_find_mode_jac_hess():
+def test_get_conditional_gaussian_approximation():
     rng = np.random.default_rng(42)
     n = 100
-    sigma_obs = rng.random()
-    sigma_mu = rng.random()
-    true_mu = rng.random()
-    mu_val = rng.random()
+    d = 3
+    mu_true = rng.random(d)
+    cov_true = np.diag(rng.random(d))
+    Q_val = np.diag(rng.random(d))
 
-    coords = {"city": ["A", "B", "C"], "obs_idx": np.arange(n)}
-    with pm.Model(coords=coords) as model:
-        obs_val = rng.normal(loc=true_mu, scale=1.5, size=(n, 3))
+    sigma_params = rng.random(d**2).reshape((d, d))
+    x_val = rng.random(d)
+    mu_val = rng.random(d)
 
-        mu = pm.Normal("mu", mu=mu_val, sigma=sigma_mu, dims=["city"])
-        obs = pm.Normal(
-            "obs",
-            mu=mu,
-            sigma=sigma_obs,
-            observed=obs_val,
-            dims=["obs_idx", "city"],
+    with pm.Model() as model:
+        y_obs = rng.multivariate_normal(mean=mu_true, cov=cov_true, size=n)
+
+        mu_param = pm.MvNormal("mu_param", mu=np.zeros(d), cov=np.diag(np.ones(d)))
+        cov_param = pm.MvNormal("cov_param", mu=np.zeros(d**2), cov=np.diag(np.ones(d**2)))
+        Q = pm.MvNormal("Q", mu=np.zeros(d**2), cov=np.diag(np.ones(d**2)))
+
+        x = pm.MvNormal("x", mu=mu_param, cov=np.linalg.inv(Q_val))
+
+        y = pm.MvNormal(
+            "y",
+            mu=x,
+            cov=cov_param.reshape((d, d)),
+            observed=y_obs,
         )
 
-        get_mode_and_hessian = find_mode_jac_hess(
-            use_hess=False, x=model.rvs_to_values[mu], method="BFGS", optimizer_kwargs={"tol": 1e-8}
+        # logp(x | y, params)
+        cga = get_conditional_gaussian_approximation(
+            x=model.rvs_to_values[x],
+            Q=Q.reshape((d, d)),
+            mu=mu_param,
+            optimizer_kwargs={"tol": 1e-25},
         )
 
-    mode, jac, hess = get_mode_and_hessian(mu=[1, 1, 1])
+    x0, log_x_posterior = cga(
+        x=x_val, mu_param=mu_val, cov_param=sigma_params.flatten(), Q=Q_val.flatten()
+    )
 
-    true_mode = obs_val.mean(axis=0)
-    true_hess = -np.diag((1 / sigma_mu**2 + n / sigma_obs**2) * np.ones(3))
+    sigma_inv = np.linalg.inv(sigma_params)
 
-    np.testing.assert_allclose(mode, true_mode, atol=0.1, rtol=0.1)
-    np.testing.assert_allclose(hess, true_hess, atol=0.1, rtol=0.1)
+    x0_true = np.linalg.inv(n * sigma_inv - 2 * Q_val) @ (
+        sigma_inv @ y_obs.sum(axis=0) - 2 * Q_val @ mu_val
+    )
+
+    log_x_posterior_true = (
+        -0.5 * x_val.T @ (-n * sigma_inv + Q_val) @ x_val
+        + x_val.T
+        @ (Q_val @ mu_val - sigma_inv @ (y_obs - x0_true).sum(axis=0) - n * sigma_inv @ x0_true)
+        + 0.5 * np.log(np.linalg.det(Q_val))
+        + -0.5 * sigma_params.flatten().T @ np.diag(np.ones(d**2)) @ sigma_params.flatten()
+        - ((d**2) / 2) * np.log(2 * np.pi)
+        - 0.5 * np.log(np.linalg.det(np.diag(np.ones(d**2))))
+        + -0.5 * mu_val.T @ np.diag(np.ones(d)) @ mu_val
+        - (d / 2) * np.log(2 * np.pi)
+        - 0.5 * np.log(np.linalg.det(np.diag(np.ones(d))))
+        + -0.5 * (x_val - mu_val).T @ Q_val @ (x_val - mu_val)
+        - (d / 2) * np.log(2 * np.pi)
+        - 0.5 * np.log(np.linalg.det(np.diag(np.ones(d))))
+    )
+    np.testing.assert_allclose(x0, x0_true, atol=0.1, rtol=0.1)
+    np.testing.assert_allclose(log_x_posterior, log_x_posterior_true, atol=0.1, rtol=0.1)

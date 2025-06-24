@@ -127,48 +127,6 @@ def get_conditional_gaussian_approximation(
         args, [x0, conditional_gaussian_approx]
     )  # Currently x being passed in as an initial guess for x0 AND then also going to the true value of x
 
-    # TODO: Jesse suggested I use this graph_replace function, but it seems that "mode" here is a different type to soln:
-    #
-    # TypeError: Cannot convert Type Vector(float64, shape=(10,)) (of Variable MinimizeOp(method=BFGS, jac=True, hess=True, hessp=False).0) into Type Scalar(float64, shape=()). You can try to manually convert MinimizeOp(method=BFGS, jac=True, hess=True, hessp=False).0 into a Scalar(float64, shape=()).
-    #
-    # My understanding here is that for some function which evaluates the hessian at x, we're replacing "x" in the hess graph with the subgraph that computes "x" (i.e. soln)?
-
-    # Obtain the Hessian (re-use graph if already computed in minimize)
-    # if use_hess:
-    #     mode, _, hess = (
-    #         soln.owner.op.inner_outputs
-    #     )  # Note that this mode, _, hess will need to be slightly more elaborate for when use_jac is False (2 items to unpack instead of 3). Just a few if-blocks, but not implemented for now while we're debugging
-    #     hess = pytensor.graph.replace.graph_replace(hess, {mode: soln})
-    # else:
-    #     hess = pytensor.gradient.hessian(nll, x)
-
-    # Obtain the gradient and Hessian (re-use graphs if already computed in minimize)
-    # res = soln.owner.op.inner_outputs
-    # mode = res[0]
-
-    # print(res)
-
-    # if use_jac:
-    #     # jac = pytensor.gradient.grad(nll, x)
-    #     jac = res.pop(1)
-    # else:
-    #     jac = pytensor.gradient.grad(nll, x)
-    #     jac = pytensor.graph.replace.graph_replace(jac, {x: soln})
-
-    # print(x)
-    # # jac = pytensor.graph.replace.graph_replace(jac, {x: soln})
-
-    # jac = -jac # We subsequently want the gradients wrt log(p(y | x)) rather than the negative of this (nll)
-
-    # if use_hess:
-    #     hess = res.pop(1)
-    # else:
-    #     hess = pytensor.gradient.jacobian(jac.flatten(), soln)
-    #     # hess = pytensor.graph.replace.graph_replace(hess, {x: soln})
-
-    # args = model.continuous_value_vars + model.discrete_value_vars
-    # return pytensor.function(args, [soln, jac, hess])
-
 
 def laplace_draws_to_inferencedata(
     posterior_draws: list[np.ndarray[float | int]], model: pm.Model | None = None
