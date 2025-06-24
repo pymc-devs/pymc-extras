@@ -13,7 +13,9 @@ from pytensor import tensor as pt
 
 from pymc_extras.statespace.core import PyMCStateSpace, PytensorRepresentation
 from pymc_extras.statespace.models.utilities import (
+    add_tensors_by_dim_labels,
     conform_time_varying_and_time_invariant_matrices,
+    join_tensors_by_dim_labels,
     make_default_coords,
 )
 from pymc_extras.statespace.utils.constants import (
@@ -481,11 +483,13 @@ class Component:
     def _get_combined_shapes(self, other):
         k_states = self.k_states + other.k_states
         k_posdef = self.k_posdef + other.k_posdef
-        if self.k_endog != other.k_endog:
-            raise NotImplementedError(
-                "Merging elements with different numbers of observed states is not supported."
+        if self.k_endog == other.k_endog:
+            k_endog = self.k_endog
+        else:
+            combined_states = self._combine_property(
+                other, "observed_state_names", allow_duplicates=False
             )
-        k_endog = self.k_endog
+            k_endog = len(combined_states)
 
         return k_states, k_posdef, k_endog
 
@@ -498,6 +502,9 @@ class Component:
 
         self_matrices = [self.ssm[name] for name in LONG_MATRIX_NAMES]
         other_matrices = [other.ssm[name] for name in LONG_MATRIX_NAMES]
+
+        self_observed_states = self.observed_state_names
+        other_observed_states = other.observed_state_names
 
         x0, P0, c, d, T, Z, R, H, Q = (
             self.ssm[make_slice(name, x, o_x)]
@@ -517,19 +524,33 @@ class Component:
         state_intercept = pt.concatenate(conform_time_varying_and_time_invariant_matrices(c, o_c))
         state_intercept.name = c.name
 
-        obs_intercept = d + o_d
+        obs_intercept = add_tensors_by_dim_labels(
+            d, o_d, labels=self_observed_states, other_labels=other_observed_states, labeled_axis=-1
+        )
         obs_intercept.name = d.name
 
         transition = pt.linalg.block_diag(T, o_T)
         transition.name = T.name
 
-        design = pt.concatenate(conform_time_varying_and_time_invariant_matrices(Z, o_Z), axis=-1)
+        design = join_tensors_by_dim_labels(
+            *conform_time_varying_and_time_invariant_matrices(Z, o_Z),
+            labels=self_observed_states,
+            other_labels=other_observed_states,
+            labeled_axis=-2,
+            join_axis=-1,
+        )
         design.name = Z.name
 
         selection = pt.linalg.block_diag(R, o_R)
         selection.name = R.name
 
-        obs_cov = H + o_H
+        obs_cov = add_tensors_by_dim_labels(
+            H,
+            o_H,
+            labels=self_observed_states,
+            other_labels=other_observed_states,
+            labeled_axis=(-1, -2),
+        )
         obs_cov.name = H.name
 
         state_cov = pt.linalg.block_diag(Q, o_Q)

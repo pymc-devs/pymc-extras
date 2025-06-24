@@ -272,7 +272,7 @@ def simulate_from_numpy_model(mod, rng, param_dict, data_dict=None, steps=100):
         else:
             y[t] = (d + Z[t] @ x[t] + error).squeeze()
 
-    return x, y
+    return x, y.squeeze()
 
 
 def assert_pattern_repeats(y, T, atol, rtol):
