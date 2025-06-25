@@ -64,6 +64,16 @@ def test_add_components():
         assert_allclose(all_mat, np.concatenate([ll_mat, se_mat], axis=axis), atol=ATOL, rtol=RTOL)
 
 
+def test_add_components_multiple_observed():
+    ll = st.LevelTrendComponent(order=2, observed_state_names=["data_1", "data_2"])
+    me = st.MeasurementError(name="obs", observed_state_names=["data_1", "data_2"])
+
+    mod = (ll + me).build()
+
+    for property in ["param_names", "shock_names", "param_info", "coords", "param_dims"]:
+        assert [x in getattr(mod, property) for x in getattr(ll, property)]
+
+
 @pytest.mark.skipif(floatX.endswith("32"), reason="Prior covariance not PSD at half-precision")
 def test_extract_components_from_idata(rng):
     time_idx = pd.date_range(start="2000-01-01", freq="D", periods=100)

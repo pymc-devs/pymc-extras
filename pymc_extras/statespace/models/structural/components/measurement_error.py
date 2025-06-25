@@ -64,16 +64,22 @@ class MeasurementError(Component):
     def populate_component_properties(self):
         self.param_names = [f"sigma_{self.name}"]
         self.param_dims = {}
+        self.coords = {}
+
+        if self.k_endog > 1:
+            self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
+            self.coords[f"endog_{self.name}"] = self.observed_state_names
+
         self.param_info = {
             f"sigma_{self.name}": {
-                "shape": (),
+                "shape": (self.k_endog,) if self.k_endog > 1 else (),
                 "constraints": "Positive",
-                "dims": None,
+                "dims": (f"endog_{self.name}",) if self.k_endog > 1 else None,
             }
         }
 
     def make_symbolic_graph(self) -> None:
-        sigma_shape = ()
+        sigma_shape = () if self.k_endog == 1 else (self.k_endog,)
         error_sigma = self.make_and_register_variable(f"sigma_{self.name}", shape=sigma_shape)
         diag_idx = np.diag_indices(self.k_endog)
         idx = np.s_["obs_cov", diag_idx[0], diag_idx[1]]
