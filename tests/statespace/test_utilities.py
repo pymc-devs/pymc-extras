@@ -242,11 +242,12 @@ def simulate_from_numpy_model(mod, rng, param_dict, data_dict=None, steps=100):
     Helper function to visualize the components outside of a PyMC model context
     """
     x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(mod, param_dict, data_dict)
+    k_endog = mod.k_endog
     k_states = mod.k_states
     k_posdef = mod.k_posdef
 
     x = np.zeros((steps, k_states))
-    y = np.zeros(steps)
+    y = np.zeros((steps, k_endog))
 
     x[0] = x0
     y[0] = (Z @ x0).squeeze() if Z.ndim == 2 else (Z[0] @ x0).squeeze()

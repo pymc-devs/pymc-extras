@@ -1,5 +1,7 @@
 import numpy as np
 
+from scipy import linalg
+
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import order_to_mask
 from pymc_extras.statespace.utils.constants import POSITION_DERIVATIVE_NAMES
@@ -120,6 +122,7 @@ class LevelTrendComponent(Component):
 
         if observed_state_names is None:
             observed_state_names = ["data"]
+        k_endog = len(observed_state_names)
 
         self._order_mask = order_to_mask(order)
         max_state = np.flatnonzero(self._order_mask)[-1].item() + 1
@@ -148,49 +151,83 @@ class LevelTrendComponent(Component):
 
         super().__init__(
             name,
-            k_endog=len(observed_state_names),
-            k_states=k_states,
-            k_posdef=k_posdef,
+            k_endog=k_endog,
+            k_states=k_states * k_endog,
+            k_posdef=k_posdef * k_endog,
             observed_state_names=observed_state_names,
             measurement_error=False,
             combine_hidden_states=False,
-            obs_state_idxs=np.array([1.0] + [0.0] * (k_states - 1)),
+            obs_state_idxs=np.tile(np.array([1.0] + [0.0] * (k_states - 1)), k_endog),
         )
 
     def populate_component_properties(self):
-        name_slice = POSITION_DERIVATIVE_NAMES[: self.k_states]
+        k_endog = self.k_endog
+        k_states = self.k_states // k_endog
+        k_posdef = self.k_posdef // k_endog
+
+        name_slice = POSITION_DERIVATIVE_NAMES[:k_states]
         self.param_names = ["initial_trend"]
         self.state_names = [name for name, mask in zip(name_slice, self._order_mask) if mask]
         self.param_dims = {"initial_trend": ("trend_state",)}
         self.coords = {"trend_state": self.state_names}
-        self.param_info = {"initial_trend": {"shape": (self.k_states,), "constraints": None}}
+
+        if k_endog > 1:
+            self.param_dims["trend_state"] = (
+                "trend_endog",
+                "trend_state",
+            )
+            self.coords["trend_endog"] = self.observed_state_names
+
+        shape = (k_endog, k_states) if k_endog > 1 else (k_states,)
+        self.param_info = {"initial_trend": {"shape": shape, "constraints": None}}
 
         if self.k_posdef > 0:
             self.param_names += ["sigma_trend"]
             self.shock_names = [
                 name for name, mask in zip(name_slice, self.innovations_order) if mask
             ]
-            self.param_dims["sigma_trend"] = ("trend_shock",)
+            self.param_dims["sigma_trend"] = (
+                ("trend_shock",) if k_endog == 1 else ("trend_endog", "trend_shock")
+            )
             self.coords["trend_shock"] = self.shock_names
-            self.param_info["sigma_trend"] = {"shape": (self.k_posdef,), "constraints": "Positive"}
+            self.param_info["sigma_trend"] = {
+                "shape": (k_posdef,) if k_endog == 1 else (k_endog, k_posdef),
+                "constraints": "Positive",
+            }
 
         for name in self.param_names:
             self.param_info[name]["dims"] = self.param_dims[name]
 
     def make_symbolic_graph(self) -> None:
-        initial_trend = self.make_and_register_variable("initial_trend", shape=(self.k_states,))
-        self.ssm["initial_state", :] = initial_trend
-        triu_idx = np.triu_indices(self.k_states)
-        self.ssm[np.s_["transition", triu_idx[0], triu_idx[1]]] = 1
+        k_endog = self.k_endog
+        k_states = self.k_states // k_endog
+        k_posdef = self.k_posdef // k_endog
 
-        R = np.eye(self.k_states)
+        initial_trend = self.make_and_register_variable(
+            "initial_trend",
+            shape=(k_states,) if k_endog == 1 else (k_endog, k_states),
+        )
+        self.ssm["initial_state", :] = initial_trend.ravel()
+
+        triu_idx = np.triu_indices(k_states)
+        T = np.zeros((k_states, k_states))
+        T[triu_idx[0], triu_idx[1]] = 1
+
+        self.ssm["transition"] = linalg.block_diag(*[T for _ in range(k_endog)])
+
+        R = np.eye(k_states)
         R = R[:, self.innovations_order]
-        self.ssm["selection", :, :] = R
 
-        self.ssm["design", 0, :] = np.array([1.0] + [0.0] * (self.k_states - 1))
+        self.ssm["selection", :, :] = linalg.block_diag(*[R for _ in range(k_endog)])
 
-        if self.k_posdef > 0:
-            sigma_trend = self.make_and_register_variable("sigma_trend", shape=(self.k_posdef,))
-            diag_idx = np.diag_indices(self.k_posdef)
+        Z = np.array([1.0] + [0.0] * (k_states - 1)).reshape((1, -1))
+        self.ssm["design"] = linalg.block_diag(*[Z for _ in range(k_endog)])
+
+        if k_posdef > 0:
+            sigma_trend = self.make_and_register_variable(
+                "sigma_trend",
+                shape=(k_posdef,) if k_endog == 1 else (k_endog, k_posdef),
+            )
+            diag_idx = np.diag_indices(k_posdef * k_endog)
             idx = np.s_["state_cov", diag_idx[0], diag_idx[1]]
-            self.ssm[idx] = sigma_trend**2
+            self.ssm[idx] = (sigma_trend**2).ravel()
