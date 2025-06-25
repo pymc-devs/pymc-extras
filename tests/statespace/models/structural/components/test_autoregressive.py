@@ -26,3 +26,22 @@ def test_autoregressive_model(order, rng):
     if isinstance(order, list):
         lags = lags[np.flatnonzero(order)]
     assert_allclose(ar.coords["ar_lag"], lags)
+
+
+def test_autoregressive_multiple_observed(rng):
+    ar = st.AutoregressiveComponent(order=3, observed_state_names=["data_1", "data_2"])
+    mod = ar.build(verbose=False)
+
+    params = {
+        "ar_params": np.full(
+            (
+                2,
+                sum(ar.order),
+            ),
+            0.5,
+            dtype=config.floatX,
+        ),
+        "sigma_ar": np.ones((2,)) * 1e-3,
+    }
+
+    x, y = simulate_from_numpy_model(ar, rng, params, steps=100)

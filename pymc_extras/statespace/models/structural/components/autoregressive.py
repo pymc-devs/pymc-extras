@@ -1,4 +1,5 @@
 import numpy as np
+import pytensor.tensor as pt
 
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import order_to_mask
@@ -70,10 +71,11 @@ class AutoregressiveComponent(Component):
         if observed_state_names is None:
             observed_state_names = ["data"]
 
+        k_posdef = k_endog = len(observed_state_names)
+
         order = order_to_mask(order)
         ar_lags = np.flatnonzero(order).ravel().astype(int) + 1
         k_states = len(order)
-        k_posdef = k_endog = len(observed_state_names)
 
         self.order = order
         self.ar_lags = ar_lags
@@ -81,42 +83,97 @@ class AutoregressiveComponent(Component):
         super().__init__(
             name=name,
             k_endog=k_endog,
-            k_states=k_states,
+            k_states=k_states * k_endog,
             k_posdef=k_posdef,
             measurement_error=True,
             combine_hidden_states=True,
             observed_state_names=observed_state_names,
-            obs_state_idxs=np.r_[[1.0], np.zeros(k_states - 1)],
+            obs_state_idxs=np.tile(np.r_[[1.0], np.zeros(k_states - 1)], k_endog),
         )
 
     def populate_component_properties(self):
-        self.state_names = [f"L{i + 1}.data" for i in range(self.k_states)]
-        self.shock_names = [f"{self.name}_innovation"]
+        self.state_names = [
+            f"L{i + 1}.{state_name}"
+            for i in range(self.k_states)
+            for state_name in self.observed_state_names
+        ]
+        self.shock_names = [f"{name}_{self.name}_innovation" for name in self.observed_state_names]
         self.param_names = ["ar_params", "sigma_ar"]
         self.param_dims = {"ar_params": (AR_PARAM_DIM,)}
         self.coords = {AR_PARAM_DIM: self.ar_lags.tolist()}
 
+        if self.k_endog > 1:
+            self.param_dims["ar_params"] = (
+                f"{self.name}_endog",
+                AR_PARAM_DIM,
+            )
+            self.param_dims["sigma_ar"] = (f"{self.name}_endog",)
+
+            self.coords[f"{self.name}_endog"] = self.observed_state_names
+
         self.param_info = {
             "ar_params": {
-                "shape": (self.k_states,),
+                "shape": (self.k_states,) if self.k_endog == 1 else (self.k_endog, self.k_states),
                 "constraints": None,
-                "dims": (AR_PARAM_DIM,),
+                "dims": (AR_PARAM_DIM,)
+                if self.k_endog == 1
+                else (
+                    f"{self.name}_endog",
+                    AR_PARAM_DIM,
+                ),
             },
-            "sigma_ar": {"shape": (), "constraints": "Positive", "dims": None},
+            "sigma_ar": {
+                "shape": () if self.k_endog == 1 else (self.k_endog,),
+                "constraints": "Positive",
+                "dims": None if self.k_endog == 1 else (f"{self.name}_endog",),
+            },
         }
 
     def make_symbolic_graph(self) -> None:
+        k_endog = self.k_endog
+        k_states = self.k_states // k_endog
+        k_posdef = self.k_posdef
+
         k_nonzero = int(sum(self.order))
-        ar_params = self.make_and_register_variable("ar_params", shape=(k_nonzero,))
-        sigma_ar = self.make_and_register_variable("sigma_ar", shape=())
+        ar_params = self.make_and_register_variable(
+            "ar_params", shape=(k_nonzero,) if k_endog == 1 else (k_endog, k_nonzero)
+        )
+        sigma_ar = self.make_and_register_variable(
+            "sigma_ar", shape=() if k_endog == 1 else (k_endog,)
+        )
 
-        T = np.eye(self.k_states, k=-1)
+        if k_endog == 1:
+            T = pt.eye(k_states, k=-1)
+            ar_idx = (np.zeros(k_nonzero, dtype="int"), np.nonzero(self.order)[0])
+            T = T[ar_idx].set(ar_params)
+
+        else:
+            transition_matrices = []
+
+            for i in range(k_endog):
+                T = pt.eye(k_states, k=-1)
+                ar_idx = (np.zeros(k_nonzero, dtype="int"), np.nonzero(self.order)[0])
+                T = T[ar_idx].set(ar_params[i])
+                transition_matrices.append(T)
+            T = pt.specify_shape(
+                pt.linalg.block_diag(*transition_matrices), (self.k_states, self.k_states)
+            )
+
         self.ssm["transition", :, :] = T
-        self.ssm["selection", 0, 0] = 1
-        self.ssm["design", 0, 0] = 1
 
-        ar_idx = ("transition", np.zeros(k_nonzero, dtype="int"), np.nonzero(self.order)[0])
-        self.ssm[ar_idx] = ar_params
+        R = np.eye(k_states)
+        R_mask = np.full((k_states), False)
+        R_mask[0] = True
+        R = R[:, R_mask]
 
-        cov_idx = ("state_cov", *np.diag_indices(1))
+        self.ssm["selection", :, :] = pt.specify_shape(
+            pt.linalg.block_diag(*[R for _ in range(k_endog)]), (self.k_states, self.k_posdef)
+        )
+
+        Z = pt.zeros((1, k_states))[0, 0].set(1.0)
+        self.ssm["design", :, :] = pt.specify_shape(
+            pt.linalg.block_diag(*[Z for _ in range(k_endog)]), (self.k_endog, self.k_states)
+        )
+
+        cov_idx = ("state_cov", *np.diag_indices(k_posdef))
         self.ssm[cov_idx] = sigma_ar**2
