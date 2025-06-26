@@ -30,6 +30,7 @@ import xarray as xr
 
 from arviz import dict_to_dataset
 from better_optimize.constants import minimize_method
+from numpy.typing import ArrayLike
 from pymc import DictToArrayBijection
 from pymc.backends.arviz import (
     coords_and_dims_for_inferencedata,
@@ -56,9 +57,9 @@ _log = logging.getLogger(__name__)
 
 
 def get_conditional_gaussian_approximation(
-    x: TensorVariable,  # Should be vector specifically
-    Q: TensorVariable,  # Matrix # TODO tensorinv doesn't have grad implemented yet
-    mu: TensorVariable,  # Vector
+    x: TensorVariable,
+    Q: TensorVariable | ArrayLike,
+    mu: TensorVariable | ArrayLike,
     args: list[TensorVariable] | None = None,
     model: pm.Model | None = None,
     method: minimize_method = "BFGS",
@@ -67,27 +68,33 @@ def get_conditional_gaussian_approximation(
     optimizer_kwargs: dict | None = None,
 ) -> Callable:
     """
-    Returns a function to estimate the mode and both the first and second derivatives of a model at that point by minimizing negative log likelihood. Wrapper for (pytensor-native) scipy.optimize.minimize.
+    Returns a function to estimate log(p(x | y, params)) and its mode x0 using the Laplace approximation.
 
     Parameters
     ----------
     x: TensorVariable
-        The parameter with which to minimize wrt (that is, find the mode in x).
+        The parameter with which to maximize wrt (that is, find the mode in x). In INLA, this is the latent field x~N(mu,Q^-1).
+    Q: TensorVariable | ArrayLike
+        The precision matrix of the latent field x.
+    mu: TensorVariable | ArrayLike
+        The mean of the latent field x.
+    args: list[TensorVariable]
+        Args to supply to the compiled function. That is, (x0, logp) = f(x, *args). If set to None, assumes the model RVs are args.
     model: Model
         PyMC model to use.
     method: minimize_method
         Which minimization algorithm to use.
     use_jac: bool
-        If true, the minimizer will compute and store the Jacobian.
+        If true, the minimizer will compute the gradient of log(p(x | y, params)).
     use_hess: bool
-        If true, the minimizer will compute and store the Hessian (note that the Hessian will be computed explicitely even if this is False).
+        If true, the minimizer will compute the Hessian log(p(x | y, params)).
     optimizer_kwargs: dict
         Kwargs to pass to scipy.optimize.minimize.
 
     Returns
     -------
     f: Callable
-        A function which accepts the values of the model RVs as args and returns [mu, jac(mu) hess(mu)], where mu is the mode. The TensorVariable x is specified as an initial guess for mu in args.
+        A function which accepts a value of x and args and returns [x0, log(p(x | y, params))], where x0 is the mode. x is currently both the point at which to evaluate logp and the initial guess for the minimizer.
     """
     model = pm.modelcontext(model)
 
@@ -99,6 +106,7 @@ def get_conditional_gaussian_approximation(
     # Component of log(p(x | y, params)) which depends on x (for rootfinding)
     conditional_gaussian_approx = -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x)
 
+    # Maximize log(p(x | y, params)) wrt x
     x0, _ = minimize(
         objective=-conditional_gaussian_approx,
         x=x,
@@ -110,22 +118,19 @@ def get_conditional_gaussian_approximation(
 
     # require f'(x0) and f''(x0) for Laplace approx
     jac = pytensor.graph.replace.graph_replace(jac, {x: x0})
-    hess = pytensor.graph.replace.graph_replace(
-        hess, {x: x0}
-    )  # Possibly unecessary because jac already does this replace
+    hess = pytensor.graph.replace.graph_replace(hess, {x: x0})
 
     # Full log(p(x | y, params))
     _, logdetQ = pt.nlinalg.slogdet(Q)
     conditional_gaussian_approx = (
         -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x0) + 0.5 * logdetQ
-    )  # TODO does doing this change the graph in root before if changed before it's compiled?
+    )
 
     if args is None:
         args = model.continuous_value_vars + model.discrete_value_vars
 
-    return pytensor.function(
-        args, [x0, conditional_gaussian_approx]
-    )  # Currently x being passed in as an initial guess for x0 AND then also going to the true value of x
+    # TODO Currently x being passed in as an initial guess for x0 AND then also going to the true value of x
+    return pytensor.function(args, [x0, conditional_gaussian_approx])
 
 
 def laplace_draws_to_inferencedata(
