@@ -389,6 +389,8 @@ def fit_mvn_at_MAP(
     )
 
     H = -f_hess(mu.data)
+    if H.ndim == 1:
+        H = np.expand_dims(H, axis=1)
     H_inv = np.linalg.pinv(np.where(np.abs(H) < zero_tol, 0, -H))
 
     def stabilize(x, jitter):
