@@ -15,6 +15,7 @@
 
 import logging
 
+from collections.abc import Callable
 from functools import reduce
 from importlib.util import find_spec
 from itertools import product
@@ -29,6 +30,7 @@ import xarray as xr
 
 from arviz import dict_to_dataset
 from better_optimize.constants import minimize_method
+from numpy.typing import ArrayLike
 from pymc import DictToArrayBijection
 from pymc.backends.arviz import (
     coords_and_dims_for_inferencedata,
@@ -39,6 +41,8 @@ from pymc.blocking import RaveledVars
 from pymc.model.transform.conditioning import remove_value_transforms
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import get_default_varnames
+from pytensor.tensor import TensorVariable
+from pytensor.tensor.optimize import minimize
 from scipy import stats
 
 from pymc_extras.inference.find_map import (
@@ -50,6 +54,102 @@ from pymc_extras.inference.find_map import (
 )
 
 _log = logging.getLogger(__name__)
+
+
+def get_conditional_gaussian_approximation(
+    x: TensorVariable,
+    Q: TensorVariable | ArrayLike,
+    mu: TensorVariable | ArrayLike,
+    args: list[TensorVariable] | None = None,
+    model: pm.Model | None = None,
+    method: minimize_method = "BFGS",
+    use_jac: bool = True,
+    use_hess: bool = False,
+    optimizer_kwargs: dict | None = None,
+) -> Callable:
+    """
+    Returns a function to estimate the a posteriori log probability of a latent Gaussian field x and its mode x0 using the Laplace approximation.
+
+    That is:
+    y | x, sigma ~ N(Ax, sigma^2 W)
+    x | params ~ N(mu, Q(params)^-1)
+
+    We seek to estimate log(p(x | y, params)):
+
+    log(p(x | y, params)) = log(p(y | x, params)) + log(p(x | params)) + const
+
+    Let f(x) = log(p(y | x, params)). From the definition of our model above, we have log(p(x | params)) = -0.5*(x - mu).T Q (x - mu) + 0.5*logdet(Q).
+
+    This gives log(p(x | y, params)) = f(x) - 0.5*(x - mu).T Q (x - mu) + 0.5*logdet(Q). We will estimate this using the Laplace approximation by Taylor expanding f(x) about the mode.
+
+    Thus:
+
+    1. Maximize log(p(x | y, params)) = f(x) - 0.5*(x - mu).T Q (x - mu) wrt x (note that logdet(Q) does not depend on x) to find the mode x0.
+
+    2. Substitute x0 into the Laplace approximation expanded about the mode: log(p(x | y, params)) ~= -0.5*x.T (-f''(x0) + Q) x + x.T (Q.mu + f'(x0) - f''(x0).x0) + 0.5*logdet(Q).
+
+    Parameters
+    ----------
+    x: TensorVariable
+        The parameter with which to maximize wrt (that is, find the mode in x). In INLA, this is the latent field x~N(mu,Q^-1).
+    Q: TensorVariable | ArrayLike
+        The precision matrix of the latent field x.
+    mu: TensorVariable | ArrayLike
+        The mean of the latent field x.
+    args: list[TensorVariable]
+        Args to supply to the compiled function. That is, (x0, logp) = f(x, *args). If set to None, assumes the model RVs are args.
+    model: Model
+        PyMC model to use.
+    method: minimize_method
+        Which minimization algorithm to use.
+    use_jac: bool
+        If true, the minimizer will compute the gradient of log(p(x | y, params)).
+    use_hess: bool
+        If true, the minimizer will compute the Hessian log(p(x | y, params)).
+    optimizer_kwargs: dict
+        Kwargs to pass to scipy.optimize.minimize.
+
+    Returns
+    -------
+    f: Callable
+        A function which accepts a value of x and args and returns [x0, log(p(x | y, params))], where x0 is the mode. x is currently both the point at which to evaluate logp and the initial guess for the minimizer.
+    """
+    model = pm.modelcontext(model)
+
+    if args is None:
+        args = model.continuous_value_vars + model.discrete_value_vars
+
+    # f = log(p(y | x, params))
+    f_x = model.logp()
+    jac = pytensor.gradient.grad(f_x, x)
+    hess = pytensor.gradient.jacobian(jac.flatten(), x)
+
+    # log(p(x | y, params)) only including terms that depend on x for the minimization step (logdet(Q) ignored as it is a constant wrt x)
+    log_x_posterior = f_x - 0.5 * (x - mu).T @ Q @ (x - mu)
+
+    # Maximize log(p(x | y, params)) wrt x to find mode x0
+    x0, _ = minimize(
+        objective=-log_x_posterior,
+        x=x,
+        method=method,
+        jac=use_jac,
+        hess=use_hess,
+        optimizer_kwargs=optimizer_kwargs,
+    )
+
+    # require f'(x0) and f''(x0) for Laplace approx
+    jac = pytensor.graph.replace.graph_replace(jac, {x: x0})
+    hess = pytensor.graph.replace.graph_replace(hess, {x: x0})
+
+    # Full log(p(x | y, params)) using the Laplace approximation (up to a constant)
+    _, logdetQ = pt.nlinalg.slogdet(Q)
+    conditional_gaussian_approx = (
+        -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x0) + 0.5 * logdetQ
+    )
+
+    # Currently x is passed both as the query point for f(x, args) = logp(x | y, params) AND as an initial guess for x0. This may cause issues if the query point is
+    # far from the mode x0 or in a neighbourhood which results in poor convergence.
+    return pytensor.function(args, [x0, conditional_gaussian_approx])
 
 
 def laplace_draws_to_inferencedata(
@@ -308,6 +408,8 @@ def fit_mvn_at_MAP(
     )
 
     H = -f_hess(mu.data)
+    if H.ndim == 1:
+        H = np.expand_dims(H, axis=1)
     H_inv = np.linalg.pinv(np.where(np.abs(H) < zero_tol, 0, -H))
 
     def stabilize(x, jitter):
