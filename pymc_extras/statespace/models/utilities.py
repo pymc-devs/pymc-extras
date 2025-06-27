@@ -1,5 +1,9 @@
+from typing import cast as type_cast
+
 import numpy as np
 import pytensor.tensor as pt
+
+from pytensor.tensor import TensorVariable
 
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
@@ -372,6 +376,258 @@ def conform_time_varying_and_time_invariant_matrices(A, B):
         return A, B_out
 
     return A, B
+
+
+def normalize_axis(x, axis):
+    """
+    Convert negative axis values to positive axis values
+    """
+    if isinstance(axis, tuple):
+        return tuple([normalize_axis(x, i) for i in axis])
+    if axis < 0:
+        axis = x.ndim + axis
+    return axis
+
+
+def reorder_from_labels(
+    x: TensorVariable,
+    labels: list[str],
+    ordered_labels: list[str],
+    labeled_axis: int | tuple[int, int],
+) -> TensorVariable:
+    """
+    Reorder an input tensor along request axis/axes based on lists of string labels
+
+    Parameters
+    ----------
+    x: TensorVariable
+        Input tensor
+    labels: list of str
+        Labels associated with values of the input tensor ``x``, along the ``labeled_axis``. At runtime, should have
+        ``x.shape[labeled_axis] == len(labels)``
+    ordered_labels: list of str
+        Target ordering according to which ``x`` will be reordered.
+    labeled_axis: int or tuple of int
+        Axis along which ``x`` will be labeled. If a tuple, each axis will be assumed to have identical labels, and
+        and reorganization will be done on all requested axes together (NOT fancy indexing!)
+
+    Returns
+    -------
+    x_sorted: TensorVariable
+        Output tensor sorted along ``labeled_axis`` according to ``ordered_labels``
+    """
+    n_out = len(ordered_labels)
+    label_to_index = {label: index for index, label in enumerate(ordered_labels)}
+
+    missing_labels = [label for label in ordered_labels if label not in labels]
+    indices = np.argsort([label_to_index[label] for label in [*labels, *missing_labels]])
+
+    if isinstance(labeled_axis, int):
+        labeled_axis = (labeled_axis,)
+
+    if indices.tolist() != list(range(n_out)):
+        for axis in labeled_axis:
+            idx = np.s_[tuple([slice(None, None) if i != axis else indices for i in range(x.ndim)])]
+            x = x[idx]
+
+    return x
+
+
+def pad_and_reorder(
+    x: TensorVariable, labels: list[str], ordered_labels: list[str], labeled_axis: int
+) -> TensorVariable:
+    """
+    Pad input tensor ``x`` along the `labeled_axis` to match the length of ``ordered_labels``, then reorder the
+    padded dimension to match the ordering in ``ordered_labels``.
+
+    Parameters
+    ----------
+    x: TensorVariable
+        Input tensor
+    labels: list of str
+        String labels associated with the `x` tensor at the ``labeled_axis`` dimension. At runtime, should have
+        ``x.shape[labeled_axis] == len(labels)``. ``labels`` should be a subset of ``ordered_labels``.
+    ordered_labels: list of str
+        Target ordering according to which ``x`` will be reordered.
+    labeled_axis: int
+        Axis along which ``x`` will be labeled.
+
+    Returns
+    -------
+    x_padded: TensorVariable
+        Output tensor padded along ``labeled_axis`` according to ``ordered_labels``, then reordered.
+
+    """
+    n_out = len(ordered_labels)
+    n_missing = n_out - len(labels)
+
+    if n_missing > 0:
+        zeros = pt.zeros(
+            tuple([x.shape[i] if i != labeled_axis else n_missing for i in range(x.ndim)])
+        )
+        x_padded = pt.concatenate([x, zeros], axis=labeled_axis)
+    else:
+        x_padded = x
+
+    return reorder_from_labels(x_padded, labels, ordered_labels, labeled_axis)
+
+
+def ndim_pad_and_reorder(
+    x: TensorVariable,
+    labels: list[str],
+    ordered_labels: list[str],
+    labeled_axis: int | tuple[int, int],
+) -> TensorVariable:
+    """
+    Pad input tensor ``x`` along the `labeled_axis` to match the length of ``ordered_labels``, then reorder the
+    padded dimension to match the ordering in ``ordered_labels``.
+
+    Unlike ``pad_and_reorder``, this function allows padding and reordering to be done simultaneously on multiple
+    axes. In this case, reordering is done jointly on all axes -- it does *not* use fancy indexing.
+
+    Parameters
+    ----------
+    x: TensorVariable
+        Input tensor
+    labels: list of str
+        Labels associated with values of the input tensor ``x``, along the ``labeled_axis``. At runtime, should have
+        ``x.shape[labeled_axis] == len(labels)``. If ``labeled_axis`` is a tuple, all axes are assumed to have the
+        same labels.
+    ordered_labels: list of str
+        Target ordering according to which ``x`` will be reordered. ``labels`` should be a subset of ``ordered_labels``.
+    labeled_axis: int or tuple of int
+        Axis along which ``x`` will be labeled. If a tuple, each axis will be assumed to have identical labels, and
+        and reorganization will be done on all requested axes together (NOT fancy indexing!)
+
+    Returns
+    -------
+    x_sorted: TensorVariable
+        Output tensor. Each ``labeled_axis`` is padded to the length of ``ordered_labels``, then reordered.
+    """
+    n_missing = len(ordered_labels) - len(labels)
+
+    if isinstance(labeled_axis, int):
+        labeled_axis = (labeled_axis,)
+
+    if n_missing > 0:
+        pad_size = [(0, 0) if i not in labeled_axis else (0, n_missing) for i in range(x.ndim)]
+        x = pt.pad(x, pad_size, mode="constant", constant_values=0)
+
+    return reorder_from_labels(x, labels, ordered_labels, labeled_axis)
+
+
+def add_tensors_by_dim_labels(
+    tensor: TensorVariable,
+    other_tensor: TensorVariable,
+    labels: list[str],
+    other_labels: list[str],
+    labeled_axis: int | tuple[int, int] = -1,
+) -> TensorVariable:
+    """
+    Add two tensors based on labels associated with one dimension.
+
+    When combining statespace matrices associated with structural components with potentially different states, it is
+    important to make sure that duplicated states are handled correctly. For bias vectors and covariance matrices,
+    duplicated states should be summed.
+
+    When a state appears in one component but not another, that state should be treated as an implicit zero in the
+    components where the state does not appear. This amounts to padding the relevant matrices with zeros before
+    performing the addition.
+
+    When labeled_axis is a tuple, each provided label is assumed to be identically labeled in each input tensor. This
+    is the case, for example, when working with a covariance matrix. In this case, padding and alignment will be
+    done on each indicated index.
+
+    Parameters
+    ----------
+    tensor: TensorVariable
+        A statespace matrix to be summed with ``other_matrix``.
+    other_tensor: TensorVariable
+        A statespace matrix to be summed with ``matrix``.
+    labels: list of str
+        Dimension labels associated with ``matrix``, on the ``labeled_axis`` dimension.
+    other_labels: list of str
+        Dimension labels associated with ``other_matrix``, on the ``labeled_axis`` dimension.
+    labeled_axis: int or tuple of int
+        Dimension that is labeled by ``labels`` and ``other_labels``. ``matrix.shape[labeled_axis]`` must have the
+        shape of ``len(labels)`` at runtime.
+
+    Returns
+    -------
+    result: TensorVariable
+        Result of addition of ``matrix`` and ``other_matrix``, along the ``labeled_axis`` dimension.  The ordering of
+        the output will be ``labels + [label for label in other_labels if label not in labels]``. That is, ``labels``
+        come first, followed by any new labels introduced by ``other_labels``.
+
+    """
+    labeled_axis = normalize_axis(tensor, labeled_axis)
+    new_labels = [label for label in other_labels if label not in labels]
+    combined_labels = type_cast(list[str], [*labels, *new_labels])
+
+    # If there is no overlap at all, directly concatenate the two matrices -- there's no need to worry about the order
+    # of things, or padding. This is equivalent to padding both out with zeros then adding them.
+    if combined_labels == [*labels, *other_labels]:
+        if isinstance(labeled_axis, int):
+            return pt.concatenate([tensor, other_tensor], axis=labeled_axis)
+        else:
+            # In the case where we want to align multiple dimensions, use block_diag to accomplish padding on the last
+            # two dimensions
+            dims = [*[i for i in range(tensor.ndim) if i not in labeled_axis], *labeled_axis]
+            return pt.linalg.block_diag(
+                type_cast(TensorVariable, tensor.transpose(*dims)),
+                type_cast(TensorVariable, other_tensor.transpose(*dims)),
+            )
+    # Otherwise, there are two possibilities. If all labels are the same, we might need to re-order one or both to get
+    # them to agree. If *some* labels are the same, we will need to pad first, then potentially re-order. In any case,
+    # the final step is just to add the padded and re-ordered tensors.
+    fn = pad_and_reorder if isinstance(labeled_axis, int) else ndim_pad_and_reorder
+
+    padded_tensor = fn(
+        tensor,
+        labels=type_cast(list[str], labels),
+        ordered_labels=combined_labels,
+        labeled_axis=labeled_axis,
+    )
+    padded_tensor.name = tensor.name
+
+    padded_other_tensor = fn(
+        other_tensor,
+        labels=type_cast(list[str], other_labels),
+        ordered_labels=combined_labels,
+        labeled_axis=labeled_axis,
+    )
+
+    padded_other_tensor.name = other_tensor.name
+
+    return padded_tensor + padded_other_tensor
+
+
+def join_tensors_by_dim_labels(
+    tensor: TensorVariable,
+    other_tensor: TensorVariable,
+    labels: list[str],
+    other_labels: list[str],
+    labeled_axis: int = -1,
+    join_axis: int = -1,
+    block_diag_join: bool = False,
+) -> TensorVariable:
+    labeled_axis = normalize_axis(tensor, labeled_axis)
+    new_labels = [label for label in other_labels if label not in labels]
+    combined_labels = [*labels, *new_labels]
+
+    # Check for no overlap first. In this case, do a block_diagonal join, which implicitly results in padding zeros
+    # everywhere they are needed -- no other sorting or padding necessary
+    if combined_labels == [*labels, *other_labels]:
+        return pt.linalg.block_diag(tensor, other_tensor)
+
+    # Otherwise there is either total overlap or partial overlap. Let the padding and reordering function figure it out.
+    tensor = ndim_pad_and_reorder(tensor, labels, combined_labels, labeled_axis)
+    other_tensor = ndim_pad_and_reorder(other_tensor, other_labels, combined_labels, labeled_axis)
+
+    if block_diag_join:
+        return pt.linalg.block_diag(tensor, other_tensor)
+    else:
+        return pt.concatenate([tensor, other_tensor], axis=join_axis)
 
 
 def get_exog_dims_from_idata(exog_name, idata):
