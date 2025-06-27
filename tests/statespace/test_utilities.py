@@ -41,18 +41,18 @@ def load_nile_test_data():
     return nile
 
 
-def initialize_filter(kfilter, p=None, m=None, r=None, n=None):
+def initialize_filter(kfilter, p=None, m=None, r=None, n=None, batched=False):
     ksmoother = KalmanSmoother()
-    data = pt.tensor(name="data", dtype=floatX, shape=(n, p))
-    a0 = pt.tensor(name="x0", dtype=floatX, shape=(m,))
-    P0 = pt.tensor(name="P0", dtype=floatX, shape=(m, m))
-    c = pt.tensor(name="c", dtype=floatX, shape=(m,))
-    d = pt.tensor(name="d", dtype=floatX, shape=(p,))
-    Q = pt.tensor(name="Q", dtype=floatX, shape=(r, r))
-    H = pt.tensor(name="H", dtype=floatX, shape=(p, p))
-    T = pt.tensor(name="T", dtype=floatX, shape=(m, m))
-    R = pt.tensor(name="R", dtype=floatX, shape=(m, r))
-    Z = pt.tensor(name="Z", dtype=floatX, shape=(p, m))
+    data = pt.tensor(name="data", dtype=floatX, shape=(None, n, p) if batched else (n, p))
+    a0 = pt.tensor(name="x0", dtype=floatX, shape=(None, m) if batched else (m,))
+    P0 = pt.tensor(name="P0", dtype=floatX, shape=(None, m, m) if batched else (m, m))
+    c = pt.tensor(name="c", dtype=floatX, shape=(None, m) if batched else (m,))
+    d = pt.tensor(name="d", dtype=floatX, shape=(None, p) if batched else (p,))
+    Q = pt.tensor(name="Q", dtype=floatX, shape=(None, r, r) if batched else (r, r))
+    H = pt.tensor(name="H", dtype=floatX, shape=(None, p, p) if batched else (p, p))
+    T = pt.tensor(name="T", dtype=floatX, shape=(None, m, m) if batched else (m, m))
+    R = pt.tensor(name="R", dtype=floatX, shape=(None, m, r) if batched else (m, r))
+    Z = pt.tensor(name="Z", dtype=floatX, shape=(None, p, m) if batched else (p, m))
 
     inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
 
@@ -75,7 +75,7 @@ def initialize_filter(kfilter, p=None, m=None, r=None, n=None):
         filtered_covs,
         predicted_covs,
         smoothed_covs,
-        ll_obs.sum(),
+        ll_obs.sum(axis=-1),
         ll_obs,
     ]
 
@@ -90,7 +90,7 @@ def add_missing_data(data, n_missing, rng):
     return data
 
 
-def make_test_inputs(p, m, r, n, rng, missing_data=None, H_is_zero=False):
+def make_1d_test_inputs(p, m, r, n, rng, missing_data=None, H_is_zero=False):
     data = np.arange(n * p, dtype=floatX).reshape(-1, p)
     if missing_data is not None:
         data = add_missing_data(data, missing_data, rng)
@@ -113,16 +113,34 @@ def make_test_inputs(p, m, r, n, rng, missing_data=None, H_is_zero=False):
     return data, a0, P0, c, d, T, Z, R, H, Q
 
 
-def get_expected_shape(name, p, m, r, n):
+def make_test_inputs(p, m, r, n, rng, missing_data=None, H_is_zero=False, batch_size=0):
+    if batch_size == 0:
+        return make_1d_test_inputs(p, m, r, n, rng, missing_data, H_is_zero)
+
+    # Create individual inputs for each batch
+    np_batch_inputs = []
+    for i in range(batch_size):
+        inputs = make_1d_test_inputs(p, m, r, n, rng, missing_data, H_is_zero)
+        np_batch_inputs.append(inputs)
+
+    return [np.stack(x, axis=0) for x in zip(*np_batch_inputs)]
+
+
+def get_expected_shape(name, p, m, r, n, batch_size=0):
     if name == "log_likelihood":
-        return ()
+        shape = ()
     elif name == "ll_obs":
-        return (n,)
+        shape = (n,)
     filter_type, variable = name.split("_")
     if variable == "states":
-        return n, m
+        shape = n, m
     if variable == "covs":
-        return n, m, m
+        shape = n, m, m
+
+    if batch_size != 0:
+        shape = (batch_size, *shape)
+
+    return shape
 
 
 def get_sm_state_from_output_name(res, name):

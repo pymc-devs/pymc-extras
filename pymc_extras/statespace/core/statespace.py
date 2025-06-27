@@ -1,6 +1,7 @@
 import logging
 import warnings
 
+from ast import Dict
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
@@ -15,6 +16,8 @@ from pymc.model import modelcontext
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import RandomState
 from pytensor import Variable, graph_replace
+from pytensor.compile import get_mode
+from pytensor.graph.replace import vectorize_graph
 from rich.box import SIMPLE_HEAD
 from rich.console import Console
 from rich.table import Table
@@ -37,6 +40,7 @@ from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     FILTER_OUTPUT_TYPES,
     JITTER_DEFAULT,
+    LONG_MATRIX_NAMES,
     MATRIX_DIMS,
     MATRIX_NAMES,
     OBS_STATE_DIM,
@@ -60,7 +64,7 @@ FILTER_FACTORY = {
 def _validate_filter_arg(filter_arg):
     if filter_arg.lower() not in FILTER_OUTPUT_TYPES:
         raise ValueError(
-            f'filter_output should be one of {", ".join(FILTER_OUTPUT_TYPES)}, received {filter_arg}'
+            f"filter_output should be one of {', '.join(FILTER_OUTPUT_TYPES)}, received {filter_arg}"
         )
 
 
@@ -229,6 +233,7 @@ class PyMCStateSpace:
         verbose: bool = True,
         measurement_error: bool = False,
         mode: str | None = None,
+        batch_coords: dict[str, Sequence[str]] | None = None,
     ):
         self._fit_coords: dict[str, Sequence[str]] | None = None
         self._fit_dims: dict[str, Sequence[str]] | None = None
@@ -245,6 +250,7 @@ class PyMCStateSpace:
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
         self.mode = mode
+        self.batch_coords = batch_coords
 
         # All models contain a state space representation and a Kalman filter
         self.ssm = PytensorRepresentation(k_endog, k_states, k_posdef)
@@ -734,7 +740,9 @@ class PyMCStateSpace:
         matrices = list(self._unpack_statespace_with_placeholders())
 
         replacement_dict = {var: pymc_model[name] for name, var in self._name_to_variable.items()}
-        self.subbed_ssm = graph_replace(matrices, replace=replacement_dict, strict=True)
+        self.subbed_ssm = vectorize_graph(matrices, replace=replacement_dict)
+        for name, matrix in zip(MATRIX_NAMES, self.subbed_ssm):
+            matrix.name = name
 
     def _insert_data_variables(self):
         """
@@ -919,6 +927,7 @@ class PyMCStateSpace:
             obs_coords=obs_coords,
             register_data=register_data,
             missing_fill_value=missing_fill_value,
+            batch_coords=self.batch_coords,
         )
 
         filter_outputs = self.kalman_filter.build_graph(
@@ -941,6 +950,8 @@ class PyMCStateSpace:
 
         obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_state"]
         obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
+        if self.batch_coords is not None:
+            obs_dims = (*self.batch_coords.keys(), *obs_dims)
 
         SequenceMvNormal(
             "obs",
