@@ -98,17 +98,20 @@ def get_conditional_gaussian_approximation(
     """
     model = pm.modelcontext(model)
 
+    if args is None:
+        args = model.continuous_value_vars + model.discrete_value_vars
+
     # f = log(p(y | x, params))
-    f = model.logp()
-    jac = pytensor.gradient.grad(f, x)
+    f_x = model.logp()
+    jac = pytensor.gradient.grad(f_x, x)
     hess = pytensor.gradient.jacobian(jac.flatten(), x)
 
-    # Component of log(p(x | y, params)) which depends on x (for rootfinding)
-    conditional_gaussian_approx = -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x)
+    # Component of log(p(x | y, params)) which depends on x
+    log_x_posterior = f_x - 0.5 * (x - mu).T @ Q @ (x - mu)
 
     # Maximize log(p(x | y, params)) wrt x
     x0, _ = minimize(
-        objective=-conditional_gaussian_approx,
+        objective=-log_x_posterior,
         x=x,
         method=method,
         jac=use_jac,
@@ -120,14 +123,11 @@ def get_conditional_gaussian_approximation(
     jac = pytensor.graph.replace.graph_replace(jac, {x: x0})
     hess = pytensor.graph.replace.graph_replace(hess, {x: x0})
 
-    # Full log(p(x | y, params))
+    # Full log(p(x | y, params)) using Laplace approximation (up to a constant)
     _, logdetQ = pt.nlinalg.slogdet(Q)
     conditional_gaussian_approx = (
         -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x0) + 0.5 * logdetQ
     )
-
-    if args is None:
-        args = model.continuous_value_vars + model.discrete_value_vars
 
     # TODO Currently x being passed in as an initial guess for x0 AND then also going to the true value of x
     return pytensor.function(args, [x0, conditional_gaussian_approx])

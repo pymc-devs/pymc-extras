@@ -283,24 +283,37 @@ def test_laplace_scalar():
 
 
 def test_get_conditional_gaussian_approximation():
-    rng = np.random.default_rng(42)
-    n = 100
-    d = 3
+    """
+    Consider the trivial case of:
 
+    y | x ~ N(x, cov_param)
+    x | param ~ N(mu_param, Q^-1)
+
+    cov_param ~ N(cov_mu, cov_cov)
+    mu_param ~ N(mu_mu, mu_cov)
+    Q ~ N(Q_mu, Q_cov)
+
+    This has an analytic solution at the mode which we can compare against.
+    """
+    rng = np.random.default_rng(12345)
+    n = 10000
+    d = 10
+
+    # Initialise arrays
     mu_true = rng.random(d)
     cov_true = np.diag(rng.random(d))
     Q_val = np.diag(rng.random(d))
-    cov_param_val = rng.random(d**2).reshape((d, d))
+    cov_param_val = np.diag(rng.random(d))
 
     x_val = rng.random(d)
     mu_val = rng.random(d)
 
     mu_mu = rng.random(d)
-    mu_cov = np.diag(rng.random(d))
+    mu_cov = np.diag(np.ones(d))
     cov_mu = rng.random(d**2)
-    cov_cov = np.diag(rng.random(d**2))
+    cov_cov = np.diag(np.ones(d**2))
     Q_mu = rng.random(d**2)
-    Q_cov = np.diag(rng.random(d**2))
+    Q_cov = np.diag(np.ones(d**2))
 
     with pm.Model() as model:
         y_obs = rng.multivariate_normal(mean=mu_true, cov=cov_true, size=n)
@@ -309,6 +322,7 @@ def test_get_conditional_gaussian_approximation():
         cov_param = pm.MvNormal("cov_param", mu=cov_mu, cov=cov_cov)
         Q = pm.MvNormal("Q", mu=Q_mu, cov=Q_cov)
 
+        # Pytensor currently doesn't support autograd for pt inverses, so we use a numeric Q instead
         x = pm.MvNormal("x", mu=mu_param, cov=np.linalg.inv(Q_val))
 
         y = pm.MvNormal(
@@ -330,30 +344,21 @@ def test_get_conditional_gaussian_approximation():
         x=x_val, mu_param=mu_val, cov_param=cov_param_val.flatten(), Q=Q_val.flatten()
     )
 
+    # Get analytic values of the mode and Laplace-approximated log posterior
     cov_param_inv = np.linalg.inv(cov_param_val)
 
-    x0_true = np.linalg.inv(n * cov_param_inv - 2 * Q_val) @ (
-        cov_param_inv @ y_obs.sum(axis=0) - 2 * Q_val @ mu_val
+    x0_true = np.linalg.inv(n * cov_param_inv + 2 * Q_val) @ (
+        cov_param_inv @ y_obs.sum(axis=0) + 2 * Q_val @ mu_val
     )
 
-    log_x_posterior_true = (
-        -0.5 * x_val.T @ (-n * cov_param_inv + Q_val) @ x_val
-        + x_val.T
-        @ (
-            Q_val @ mu_val
-            - cov_param_inv @ (y_obs - x0_true).sum(axis=0)
-            - n * cov_param_inv @ x0_true
-        )
+    jac_true = cov_param_inv @ (y_obs - x0_true).sum(axis=0) - Q_val @ (x0_true - mu_val)
+    hess_true = -n * cov_param_inv - Q_val
+
+    log_x_posterior_laplace_true = (
+        -0.5 * x_val.T @ (-hess_true + Q_val) @ x_val
+        + x_val.T @ (Q_val @ mu_val + jac_true - hess_true @ x0_true)
         + 0.5 * np.log(np.linalg.det(Q_val))
-        + -0.5 * cov_param_val.flatten().T @ np.linalg.inv(cov_cov) @ cov_param_val.flatten()
-        - ((d**2) / 2) * np.log(2 * np.pi)
-        - 0.5 * np.log(np.linalg.det(cov_cov))
-        + -0.5 * mu_val.T @ np.linalg.inv(mu_cov) @ mu_val
-        - (d / 2) * np.log(2 * np.pi)
-        - 0.5 * np.log(np.linalg.det(mu_cov))
-        + -0.5 * (x_val - mu_val).T @ np.linalg.inv(Q_val) @ (x_val - mu_val)
-        - (d / 2) * np.log(2 * np.pi)
-        - 0.5 * np.log(np.linalg.det(Q_val))
     )
+
     np.testing.assert_allclose(x0, x0_true, atol=0.1, rtol=0.1)
-    np.testing.assert_allclose(log_x_posterior, log_x_posterior_true, atol=0.1, rtol=0.1)
+    np.testing.assert_allclose(log_x_posterior, log_x_posterior_laplace_true, atol=0.1, rtol=0.1)
