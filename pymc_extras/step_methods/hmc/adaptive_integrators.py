@@ -21,7 +21,7 @@ import sys
 
 import numpy as np
 
-from pymc.step_methods.hmc.walnuts_constants import __logZero
+from pymc_extras.step_methods.hmc.walnuts_constants import __logZero
 
 
 class integratorReturn:

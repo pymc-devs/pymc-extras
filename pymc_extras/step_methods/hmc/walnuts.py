@@ -29,12 +29,13 @@ import numpy as np
 
 from pymc.stats.convergence import SamplerWarning
 from pymc.step_methods.compound import Competence
-from pymc.step_methods.hmc.adaptive_integrators import fixedLeapFrog, integratorAuxPar
 from pymc.step_methods.hmc.base_hmc import BaseHMC, DivergenceInfo, HMCStepData
-from pymc.step_methods.hmc.p2_quantile import P2quantile
-from pymc.step_methods.hmc.walnuts_constants import __logZero as _logZero
-from pymc.step_methods.hmc.walnuts_constants import __wtSumThresh as _wtSumThresh
 from pymc.vartypes import continuous_types
+
+from pymc_extras.step_methods.hmc.adaptive_integrators import fixedLeapFrog, integratorAuxPar
+from pymc_extras.step_methods.hmc.p2_quantile import P2quantile
+from pymc_extras.step_methods.hmc.walnuts_constants import __logZero as _logZero
+from pymc_extras.step_methods.hmc.walnuts_constants import __wtSumThresh as _wtSumThresh
 
 __all__ = ["WALNUTS"]
 
