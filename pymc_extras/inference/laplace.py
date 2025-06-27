@@ -68,7 +68,25 @@ def get_conditional_gaussian_approximation(
     optimizer_kwargs: dict | None = None,
 ) -> Callable:
     """
-    Returns a function to estimate log(p(x | y, params)) and its mode x0 using the Laplace approximation.
+    Returns a function to estimate the a posteriori log probability of a latent Gaussian field x and its mode x0 using the Laplace approximation.
+
+    That is:
+    y | x, sigma ~ N(Ax, sigma^2 W)
+    x | params ~ N(mu, Q(params)^-1)
+
+    We seek to estimate log(p(x | y, params)):
+
+    log(p(x | y, params)) = log(p(y | x, params)) + log(p(x | params)) + const
+
+    Let f(x) = log(p(y | x, params)). From the definition of our model above, we have log(p(x | params)) = -0.5*(x - mu).T Q (x - mu) + 0.5*logdet(Q).
+
+    This gives log(p(x | y, params)) = f(x) - 0.5*(x - mu).T Q (x - mu) + 0.5*logdet(Q). We will estimate this using the Laplace approximation by Taylor expanding f(x) about the mode.
+
+    Thus:
+
+    1. Maximize log(p(x | y, params)) = f(x) - 0.5*(x - mu).T Q (x - mu) wrt x (note that logdet(Q) does not depend on x) to find the mode x0.
+
+    2. Substitute x0 into the Laplace approximation expanded about the mode: log(p(x | y, params)) ~= -0.5*x.T (-f''(x0) + Q) x + x.T (Q.mu + f'(x0) - f''(x0).x0) + 0.5*logdet(Q).
 
     Parameters
     ----------
@@ -109,7 +127,7 @@ def get_conditional_gaussian_approximation(
     # log(p(x | y, params)) only including terms that depend on x for the minimization step (logdet(Q) ignored as it is a constant wrt x)
     log_x_posterior = f_x - 0.5 * (x - mu).T @ Q @ (x - mu)
 
-    # Maximize log(p(x | y, params)) wrt x
+    # Maximize log(p(x | y, params)) wrt x to find mode x0
     x0, _ = minimize(
         objective=-log_x_posterior,
         x=x,
@@ -123,7 +141,7 @@ def get_conditional_gaussian_approximation(
     jac = pytensor.graph.replace.graph_replace(jac, {x: x0})
     hess = pytensor.graph.replace.graph_replace(hess, {x: x0})
 
-    # Full log(p(x | y, params)) using Laplace approximation (up to a constant)
+    # Full log(p(x | y, params)) using the Laplace approximation (up to a constant)
     _, logdetQ = pt.nlinalg.slogdet(Q)
     conditional_gaussian_approx = (
         -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x0) + 0.5 * logdetQ
