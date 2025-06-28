@@ -19,8 +19,8 @@ import pytest
 
 import pymc_extras as pmx
 
-from pymc_extras.inference.find_map import GradientBackend, find_MAP
-from pymc_extras.inference.laplace import (
+from pymc_extras.inference.laplace_approx.find_map import GradientBackend, find_MAP
+from pymc_extras.inference.laplace_approx.laplace import (
     fit_laplace,
     fit_mvn_at_MAP,
     get_conditional_gaussian_approximation,

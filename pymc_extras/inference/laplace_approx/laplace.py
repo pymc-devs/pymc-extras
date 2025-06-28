@@ -16,9 +16,7 @@
 import logging
 
 from collections.abc import Callable
-from functools import reduce
 from importlib.util import find_spec
-from itertools import product
 from typing import Literal
 
 import arviz as az
@@ -26,31 +24,28 @@ import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
-import xarray as xr
 
-from arviz import dict_to_dataset
 from better_optimize.constants import minimize_method
 from numpy.typing import ArrayLike
 from pymc import DictToArrayBijection
-from pymc.backends.arviz import (
-    coords_and_dims_for_inferencedata,
-    find_constants,
-    find_observations,
-)
 from pymc.blocking import RaveledVars
 from pymc.model.transform.conditioning import remove_value_transforms
 from pymc.model.transform.optimization import freeze_dims_and_data
-from pymc.util import get_default_varnames
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.optimize import minimize
 from scipy import stats
 
-from pymc_extras.inference.find_map import (
+from pymc_extras.inference.laplace_approx.find_map import (
     GradientBackend,
     _unconstrained_vector_to_constrained_rvs,
     find_MAP,
     get_nearest_psd,
     scipy_optimize_funcs_from_loss,
+)
+from pymc_extras.inference.laplace_approx.idata import (
+    add_data_to_inferencedata,
+    add_fit_to_inferencedata,
+    laplace_draws_to_inferencedata,
 )
 
 _log = logging.getLogger(__name__)
@@ -152,186 +147,6 @@ def get_conditional_gaussian_approximation(
     return pytensor.function(args, [x0, conditional_gaussian_approx])
 
 
-def laplace_draws_to_inferencedata(
-    posterior_draws: list[np.ndarray[float | int]], model: pm.Model | None = None
-) -> az.InferenceData:
-    """
-    Convert draws from a posterior estimated with the Laplace approximation to an InferenceData object.
-
-
-    Parameters
-    ----------
-    posterior_draws: list of np.ndarray
-        A list of arrays containing the posterior draws. Each array should have shape (chains, draws, *shape), where
-        shape is the shape of the variable in the posterior.
-    model: Model, optional
-        A PyMC model. If None, the model is taken from the current model context.
-
-    Returns
-    -------
-    idata: az.InferenceData
-        An InferenceData object containing the approximated posterior samples
-    """
-    model = pm.modelcontext(model)
-    chains, draws, *_ = posterior_draws[0].shape
-
-    def make_rv_coords(name):
-        coords = {"chain": range(chains), "draw": range(draws)}
-        extra_dims = model.named_vars_to_dims.get(name)
-        if extra_dims is None:
-            return coords
-        return coords | {dim: list(model.coords[dim]) for dim in extra_dims}
-
-    def make_rv_dims(name):
-        dims = ["chain", "draw"]
-        extra_dims = model.named_vars_to_dims.get(name)
-        if extra_dims is None:
-            return dims
-        return dims + list(extra_dims)
-
-    names = [
-        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=False)
-    ]
-    idata = {
-        name: xr.DataArray(
-            data=draws,
-            coords=make_rv_coords(name),
-            dims=make_rv_dims(name),
-            name=name,
-        )
-        for name, draws in zip(names, posterior_draws)
-    }
-
-    coords, dims = coords_and_dims_for_inferencedata(model)
-    idata = az.convert_to_inference_data(idata, coords=coords, dims=dims)
-
-    return idata
-
-
-def add_fit_to_inferencedata(
-    idata: az.InferenceData, mu: RaveledVars, H_inv: np.ndarray, model: pm.Model | None = None
-) -> az.InferenceData:
-    """
-    Add the mean vector and covariance matrix of the Laplace approximation to an InferenceData object.
-
-
-    Parameters
-    ----------
-    idata: az.InfereceData
-        An InferenceData object containing the approximated posterior samples.
-    mu: RaveledVars
-        The MAP estimate of the model parameters.
-    H_inv: np.ndarray
-        The inverse Hessian matrix of the log-posterior evaluated at the MAP estimate.
-    model: Model, optional
-        A PyMC model. If None, the model is taken from the current model context.
-
-    Returns
-    -------
-    idata: az.InferenceData
-        The provided InferenceData, with the mean vector and covariance matrix added to the "fit" group.
-    """
-    model = pm.modelcontext(model)
-    coords = model.coords
-
-    variable_names, *_ = zip(*mu.point_map_info)
-
-    def make_unpacked_variable_names(name):
-        value_to_dim = {
-            x.name: model.named_vars_to_dims.get(model.values_to_rvs[x].name, None)
-            for x in model.value_vars
-        }
-        value_to_dim = {k: v for k, v in value_to_dim.items() if v is not None}
-
-        rv_to_dim = model.named_vars_to_dims
-        dims_dict = rv_to_dim | value_to_dim
-
-        dims = dims_dict.get(name)
-        if dims is None:
-            return [name]
-        labels = product(*(coords[dim] for dim in dims))
-        return [f"{name}[{','.join(map(str, label))}]" for label in labels]
-
-    unpacked_variable_names = reduce(
-        lambda lst, name: lst + make_unpacked_variable_names(name), variable_names, []
-    )
-
-    mean_dataarray = xr.DataArray(mu.data, dims=["rows"], coords={"rows": unpacked_variable_names})
-    cov_dataarray = xr.DataArray(
-        H_inv,
-        dims=["rows", "columns"],
-        coords={"rows": unpacked_variable_names, "columns": unpacked_variable_names},
-    )
-
-    dataset = xr.Dataset({"mean_vector": mean_dataarray, "covariance_matrix": cov_dataarray})
-    idata.add_groups(fit=dataset)
-
-    return idata
-
-
-def add_data_to_inferencedata(
-    idata: az.InferenceData,
-    progressbar: bool = True,
-    model: pm.Model | None = None,
-    compile_kwargs: dict | None = None,
-) -> az.InferenceData:
-    """
-    Add observed and constant data to an InferenceData object.
-
-    Parameters
-    ----------
-    idata: az.InferenceData
-        An InferenceData object containing the approximated posterior samples.
-    progressbar: bool
-        Whether to display a progress bar during computations. Default is True.
-    model: Model, optional
-        A PyMC model. If None, the model is taken from the current model context.
-    compile_kwargs: dict, optional
-        Additional keyword arguments to pass to pytensor.function.
-
-    Returns
-    -------
-    idata: az.InferenceData
-        The provided InferenceData, with observed and constant data added.
-    """
-    model = pm.modelcontext(model)
-
-    if model.deterministics:
-        idata.posterior = pm.compute_deterministics(
-            idata.posterior,
-            model=model,
-            merge_dataset=True,
-            progressbar=progressbar,
-            compile_kwargs=compile_kwargs,
-        )
-
-    coords, dims = coords_and_dims_for_inferencedata(model)
-
-    observed_data = dict_to_dataset(
-        find_observations(model),
-        library=pm,
-        coords=coords,
-        dims=dims,
-        default_dims=[],
-    )
-
-    constant_data = dict_to_dataset(
-        find_constants(model),
-        library=pm,
-        coords=coords,
-        dims=dims,
-        default_dims=[],
-    )
-
-    idata.add_groups(
-        {"observed_data": observed_data, "constant_data": constant_data},
-        coords=coords,
-        dims=dims,
-    )
-
-    return idata
-
-
 def fit_mvn_at_MAP(
     optimized_point: dict[str, np.ndarray],
     model: pm.Model | None = None,
@@ -348,8 +163,8 @@ def fit_mvn_at_MAP(
 
     Parameters
     ----------
-    optimized_point : dict[str, np.ndarray]
-        Local maximum a posteriori (MAP) point returned from pymc.find_MAP or jax_tools.fit_map
+    optimized_point : idata
+        Local maximum a posteriori (MAP) point returned from pymc_extras.inference.find_MAP
     model : Model, optional
         A PyMC model. If None, the model is taken from the current model context.
     on_bad_cov : str, one of 'ignore', 'warn', or 'error', default: 'ignore'
@@ -396,7 +211,7 @@ def fit_mvn_at_MAP(
     optimized_free_params = {k: v for k, v in optimized_point.items() if k in variable_names}
     mu = DictToArrayBijection.map(optimized_free_params)
 
-    _, f_hess, _ = scipy_optimize_funcs_from_loss(
+    f_fused, _ = scipy_optimize_funcs_from_loss(
         loss=-logp,
         inputs=variables,
         initial_point_dict=optimized_free_params,
@@ -407,7 +222,7 @@ def fit_mvn_at_MAP(
         compile_kwargs=compile_kwargs,
     )
 
-    H = -f_hess(mu.data)
+    H = -f_fused(mu.data)[-1]
     if H.ndim == 1:
         H = np.expand_dims(H, axis=1)
     H_inv = np.linalg.pinv(np.where(np.abs(H) < zero_tol, 0, -H))
@@ -619,7 +434,7 @@ def fit_laplace(
 
     Examples
     --------
-    >>> from pymc_extras.inference.laplace import fit_laplace
+    >>> from pymc_extras.inference import fit_laplace
     >>> import numpy as np
     >>> import pymc as pm
     >>> import arviz as az

@@ -114,14 +114,14 @@ def _create_transformed_draws(H_inv, slices, out_shapes, posterior_draws, model,
 
 
 def _compile_grad_and_hess_to_jax(
-    f_loss: Function, use_hess: bool, use_hessp: bool
+    f_fused: Function, use_hess: bool, use_hessp: bool
 ) -> tuple[Callable | None, Callable | None]:
     """
     Compile loss function gradients using JAX.
 
     Parameters
     ----------
-    f_loss: Function
+    f_fused: Function
         The loss function to compile gradients for. Expected to be a pytensor function that returns a scalar loss,
         compiled with mode="JAX".
     use_hess: bool
@@ -131,43 +131,40 @@ def _compile_grad_and_hess_to_jax(
 
     Returns
     -------
-    f_loss_and_grad: Callable
-        The compiled loss function and gradient function.
-    f_hess: Callable | None
-        The compiled hessian function, or None if use_hess is False.
+    f_fused: Callable
+        The compiled loss function and gradient function, which may also compute the hessian if requested.
     f_hessp: Callable | None
         The compiled hessian-vector product function, or None if use_hessp is False.
     """
     import jax
 
-    f_hess = None
     f_hessp = None
 
-    orig_loss_fn = f_loss.vm.jit_fn
+    orig_loss_fn = f_fused.vm.jit_fn
 
-    @jax.jit
-    def loss_fn_jax_grad(x):
-        return jax.value_and_grad(lambda x: orig_loss_fn(x)[0])(x)
+    if use_hess:
 
-    f_loss_and_grad = loss_fn_jax_grad
+        @jax.jit
+        def loss_fn_fused(x):
+            loss_and_grad = jax.value_and_grad(lambda x: orig_loss_fn(x)[0])(x)
+            hess = jax.hessian(lambda x: orig_loss_fn(x)[0])(x)
+            return *loss_and_grad, hess
+
+    else:
+
+        @jax.jit
+        def loss_fn_fused(x):
+            return jax.value_and_grad(lambda x: orig_loss_fn(x)[0])(x)
 
     if use_hessp:
 
         def f_hessp_jax(x, p):
-            y, u = jax.jvp(lambda x: f_loss_and_grad(x)[1], (x,), (p,))
+            y, u = jax.jvp(lambda x: loss_fn_fused(x)[1], (x,), (p,))
             return jax.numpy.stack(u)
 
         f_hessp = jax.jit(f_hessp_jax)
 
-    if use_hess:
-        _f_hess_jax = jax.jacfwd(lambda x: f_loss_and_grad(x)[1])
-
-        def f_hess_jax(x):
-            return jax.numpy.stack(_f_hess_jax(x))
-
-        f_hess = jax.jit(f_hess_jax)
-
-    return f_loss_and_grad, f_hess, f_hessp
+    return loss_fn_fused, f_hessp
 
 
 def _compile_functions_for_scipy_optimize(
@@ -199,33 +196,47 @@ def _compile_functions_for_scipy_optimize(
 
     Returns
     -------
-    f_loss: Function
-
-    f_hess: Function | None
+    f_fused: Function
+        The compiled loss function, which may also include gradients and hessian if requested.
     f_hessp: Function | None
+        The compiled hessian-vector product function, or None if compute_hessp is False.
     """
+    compile_kwargs = {} if compile_kwargs is None else compile_kwargs
+
     loss = pm.pytensorf.rewrite_pregrad(loss)
-    f_hess = None
     f_hessp = None
 
-    if compute_grad:
-        grads = pytensor.gradient.grad(loss, inputs)
-        grad = pt.concatenate([grad.ravel() for grad in grads])
-        f_loss_and_grad = pm.compile(inputs, [loss, grad], **compile_kwargs)
-    else:
+    # In the simplest case, we only compile the loss function. Return it as a list to keep the return type consistent
+    # with the case where we also compute gradients, hessians, or hessian-vector products.
+    if not (compute_grad or compute_hess or compute_hessp):
         f_loss = pm.compile(inputs, loss, **compile_kwargs)
         return [f_loss]
 
-    if compute_hess:
-        hess = pytensor.gradient.jacobian(grad, inputs)[0]
-        f_hess = pm.compile(inputs, hess, **compile_kwargs)
+    # Otherwise there are three cases. If the user only wants the loss function and gradients, we compile a single
+    # fused function and retun it. If the user also wants the hession, the fused function will return the loss,
+    # gradients and hessian. If the user wants gradients and hess_p, we return a fused function that returns the loss
+    # and gradients, and a separate function for the hessian-vector product.
 
     if compute_hessp:
+        # Handle this first, since it can be compiled alone.
         p = pt.tensor("p", shape=inputs[0].type.shape)
         hessp = pytensor.gradient.hessian_vector_product(loss, inputs, p)
         f_hessp = pm.compile([*inputs, p], hessp[0], **compile_kwargs)
 
-    return [f_loss_and_grad, f_hess, f_hessp]
+    outputs = [loss]
+
+    if compute_grad:
+        grads = pytensor.gradient.grad(loss, inputs)
+        grad = pt.concatenate([grad.ravel() for grad in grads])
+        outputs.append(grad)
+
+    if compute_hess:
+        hess = pytensor.gradient.jacobian(grad, inputs)[0]
+        outputs.append(hess)
+
+    f_fused = pm.compile(inputs, outputs, **compile_kwargs)
+
+    return [f_fused, f_hessp]
 
 
 def scipy_optimize_funcs_from_loss(
@@ -262,10 +273,8 @@ def scipy_optimize_funcs_from_loss(
 
     Returns
     -------
-    f_loss: Callable
-        The compiled loss function.
-    f_hess: Callable | None
-        The compiled hessian function, or None if use_hess is False.
+    f_fused: Callable
+        The compiled loss function, which may also include gradients and hessian if requested.
     f_hessp: Callable | None
         The compiled hessian-vector product function, or None if use_hessp is False.
     """
@@ -322,16 +331,15 @@ def scipy_optimize_funcs_from_loss(
         compile_kwargs=compile_kwargs,
     )
 
-    # f_loss here is f_loss_and_grad if compute_grad = True. The name is unchanged to simplify the return values
-    f_loss = funcs.pop(0)
-    f_hess = funcs.pop(0) if compute_grad else None
-    f_hessp = funcs.pop(0) if compute_grad else None
+    # Depending on the requested functions, f_fused will either be the loss function, the loss function with gradients,
+    # or the loss function with gradients and hessian.
+    f_fused = funcs.pop(0)
+    f_hessp = funcs.pop(0) if compute_hessp else None
 
     if use_jax_gradients:
-        # f_loss here is f_loss_and_grad; the name is unchanged to simplify the return values
-        f_loss, f_hess, f_hessp = _compile_grad_and_hess_to_jax(f_loss, use_hess, use_hessp)
+        f_fused, f_hessp = _compile_grad_and_hess_to_jax(f_fused, use_hess, use_hessp)
 
-    return f_loss, f_hess, f_hessp
+    return f_fused, f_hessp
 
 
 def find_MAP(
@@ -434,7 +442,7 @@ def find_MAP(
         method, use_grad, use_hess, use_hessp
     )
 
-    f_logp, f_hess, f_hessp = scipy_optimize_funcs_from_loss(
+    f_fused, f_hessp = scipy_optimize_funcs_from_loss(
         loss=-frozen_model.logp(jacobian=False),
         inputs=frozen_model.continuous_value_vars + frozen_model.discrete_value_vars,
         initial_point_dict=start_dict,
@@ -445,7 +453,7 @@ def find_MAP(
         compile_kwargs=compile_kwargs,
     )
 
-    args = optimizer_kwargs.pop("args", None)
+    args = optimizer_kwargs.pop("args", ())
 
     # better_optimize.minimize will check if f_logp is a fused loss+grad Op, and automatically assign the jac argument
     # if so. That is why the jac argument is not passed here in either branch.
@@ -453,15 +461,13 @@ def find_MAP(
     if do_basinhopping:
         if "args" not in minimizer_kwargs:
             minimizer_kwargs["args"] = args
-        if "hess" not in minimizer_kwargs:
-            minimizer_kwargs["hess"] = f_hess
         if "hessp" not in minimizer_kwargs:
             minimizer_kwargs["hessp"] = f_hessp
         if "method" not in minimizer_kwargs:
             minimizer_kwargs["method"] = method
 
         optimizer_result = basinhopping(
-            func=f_logp,
+            func=f_fused,
             x0=cast(np.ndarray[float], initial_params.data),
             progressbar=progressbar,
             minimizer_kwargs=minimizer_kwargs,
@@ -470,10 +476,9 @@ def find_MAP(
 
     else:
         optimizer_result = minimize(
-            f=f_logp,
+            f=f_fused,
             x0=cast(np.ndarray[float], initial_params.data),
             args=args,
-            hess=f_hess,
             hessp=f_hessp,
             progressbar=progressbar,
             method=method,
@@ -485,6 +490,33 @@ def find_MAP(
     unobserved_vars_values = model.compile_fn(unobserved_vars, mode="FAST_COMPILE")(
         DictToArrayBijection.rmap(raveled_optimized)
     )
+
+    # Downstream computation will probably want the covaraince matrix at the optimized point, so we compute it here,
+    # while we still have access to the compiled function.
+    x_star = optimizer_result.x
+    n_vars = len(x_star)
+
+    if method == "BFGS":
+        # If we used BFGS, the optimizer result will contain the inverse Hessian -- we can just use that rather than
+        # re-computing something
+        getattr(optimizer_result, "hess_inv", None)
+    elif method == "L-BFGS-B":
+        # Here we will have a LinearOperator representing the inverse Hessian-Vector product.
+        f_hessp_inv = optimizer_result.hess_inv
+        basis = np.eye(n_vars)
+        np.stack([f_hessp_inv(basis[:, i]) for i in range(n_vars)], axis=-1)
+
+    elif f_hessp is not None:
+        # In the case that hessp was used, the results object will not save the inverse Hessian, so we can compute it from
+        # the hessp function, using euclidian basis vector.
+        basis = np.eye(n_vars)
+        H = np.stack([f_hessp(optimizer_result.x, basis[:, i]) for i in range(n_vars)], axis=-1)
+        np.linalg.inv(get_nearest_psd(H))
+
+    elif use_hess:
+        # If we compiled a hessian function, just use it
+        _, _, H = f_fused(x_star)
+        np.linalg.inv(get_nearest_psd(H))
 
     optimized_point = {
         var.name: value for var, value in zip(unobserved_vars, unobserved_vars_values)

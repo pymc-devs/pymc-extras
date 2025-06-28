@@ -4,7 +4,7 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 
-from pymc_extras.inference.find_map import (
+from pymc_extras.inference.laplace_approx.find_map import (
     GradientBackend,
     find_MAP,
     scipy_optimize_funcs_from_loss,
@@ -29,7 +29,7 @@ def test_jax_functions_from_graph(gradient_backend: GradientBackend):
         return z1, z2
 
     z = pt.stack(compute_z(x))
-    f_loss, f_hess, f_hessp = scipy_optimize_funcs_from_loss(
+    f_fused, f_hessp = scipy_optimize_funcs_from_loss(
         loss=z.sum(),
         inputs=[x],
         initial_point_dict={"x": np.array([1.0, 2.0])},
@@ -43,11 +43,11 @@ def test_jax_functions_from_graph(gradient_backend: GradientBackend):
     x_val = np.array([1.0, 2.0])
     expected_z = sum(compute_z(x_val))
 
-    z_jax, grad_val = f_loss(x_val)
+    z_jax, grad_val, hess_val = f_fused(x_val)
     np.testing.assert_allclose(z_jax, expected_z)
     np.testing.assert_allclose(grad_val.squeeze(), np.array([2 * x_val[0] + x_val[1], x_val[0]]))
 
-    hess_val = np.array(f_hess(x_val))
+    hess_val = np.array(hess_val)
     np.testing.assert_allclose(hess_val.squeeze(), np.array([[2, 1], [1, 0]]))
 
     hessp_val = np.array(f_hessp(x_val, np.array([1.0, 0.0])))
@@ -75,8 +75,15 @@ def test_jax_functions_from_graph(gradient_backend: GradientBackend):
         ("trust-constr", True, True, False),
     ],
 )
-@pytest.mark.parametrize("gradient_backend", ["jax", "pytensor"], ids=str)
-def test_JAX_map(method, use_grad, use_hess, use_hessp, gradient_backend: GradientBackend, rng):
+@pytest.mark.parametrize(
+    "backend, gradient_backend",
+    # JAX backend is faster, so only test it
+    [("jax", "jax"), ("jax", "pytensor")],
+    ids=str,
+)
+def test_find_MAP(
+    method, use_grad, use_hess, use_hessp, backend, gradient_backend: GradientBackend, rng
+):
     extra_kwargs = {}
     if method == "dogleg":
         # HACK -- dogleg requires that the hessian of the objective function is PSD, so we have to pick a point
@@ -96,7 +103,7 @@ def test_JAX_map(method, use_grad, use_hess, use_hessp, gradient_backend: Gradie
             use_hessp=use_hessp,
             progressbar=False,
             gradient_backend=gradient_backend,
-            compile_kwargs={"mode": "JAX"},
+            compile_kwargs={"mode": backend.upper()},
         )
     mu_hat, log_sigma_hat = optimized_point["mu"], optimized_point["sigma_log__"]
 
@@ -104,7 +111,13 @@ def test_JAX_map(method, use_grad, use_hess, use_hessp, gradient_backend: Gradie
     assert np.isclose(np.exp(log_sigma_hat), 1.5, atol=0.5)
 
 
-def test_JAX_map_shared_variables():
+@pytest.mark.parametrize(
+    "backend, gradient_backend",
+    # JAX backend is faster, so only test it
+    [("jax", "jax")],
+    ids=str,
+)
+def test_map_shared_variables(backend, gradient_backend: GradientBackend):
     with pm.Model() as m:
         data = pytensor.shared(np.random.normal(loc=3, scale=1.5, size=100), name="shared_data")
         mu = pm.Normal("mu")
@@ -117,8 +130,8 @@ def test_JAX_map_shared_variables():
             use_hess=False,
             use_hessp=False,
             progressbar=False,
-            gradient_backend="jax",
-            compile_kwargs={"mode": "JAX"},
+            gradient_backend=gradient_backend,
+            compile_kwargs={"mode": backend.upper()},
         )
     mu_hat, log_sigma_hat = optimized_point["mu"], optimized_point["sigma_log__"]
 
@@ -135,7 +148,15 @@ def test_JAX_map_shared_variables():
         ("trust-ncg", True, False, True),
     ],
 )
-def test_find_MAP_basinhopping(method, use_grad, use_hess, use_hessp, rng):
+@pytest.mark.parametrize(
+    "backend, gradient_backend",
+    # JAX backend is faster, so only test it)
+    [("jax", "pytensor")],
+    ids=str,
+)
+def test_find_MAP_basinhopping(
+    method, use_grad, use_hess, use_hessp, backend, gradient_backend, rng
+):
     with pm.Model() as m:
         mu = pm.Normal("mu")
         sigma = pm.Exponential("sigma", 1)
@@ -147,8 +168,8 @@ def test_find_MAP_basinhopping(method, use_grad, use_hess, use_hessp, rng):
             use_hess=use_hess,
             use_hessp=use_hessp,
             progressbar=False,
-            gradient_backend="pytensor",
-            compile_kwargs={"mode": "JAX"},
+            gradient_backend=gradient_backend,
+            compile_kwargs={"mode": backend.upper()},
             minimizer_kwargs=dict(method=method),
         )
 

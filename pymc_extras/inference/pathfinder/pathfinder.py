@@ -63,7 +63,7 @@ from rich.text import Text
 # TODO: change to typing.Self after Python versions greater than 3.10
 from typing_extensions import Self
 
-from pymc_extras.inference.laplace import add_data_to_inferencedata
+from pymc_extras.inference.laplace_approx.idata import add_data_to_inferencedata
 from pymc_extras.inference.pathfinder.importance_sampling import (
     importance_sampling as _importance_sampling,
 )
