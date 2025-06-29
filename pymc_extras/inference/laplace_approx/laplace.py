@@ -282,16 +282,6 @@ def fit_laplace(
         compatible with the ArviZ library.
     draws: int, default: 500
         The number of samples to draw from the approximated posterior. Totals samples will be chains * draws.
-    on_bad_cov : str, one of 'ignore', 'warn', or 'error', default: 'ignore'
-        What to do when ``H_inv`` (inverse Hessian) is not positive semi-definite.
-        If 'ignore' or 'warn', the closest positive-semi-definite matrix to ``H_inv`` (in L1 norm) will be returned.
-        If 'error', an error will be raised.
-    zero_tol: float
-        Value below which an element of the Hessian matrix is counted as 0.
-        This is used to stabilize the computation of the inverse Hessian matrix. Default is 1e-8.
-    diag_jitter: float | None
-        A small value added to the diagonal of the inverse Hessian matrix to ensure it is positive semi-definite.
-        If None, no jitter is added. Default is 1e-8.
     optimizer_kwargs
         Additional keyword arguments to pass to the ``scipy.optimize`` function being used. Unless
         ``method = "basinhopping"``, ``scipy.optimize.minimize`` will be used. For ``basinhopping``,
