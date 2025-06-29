@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import arviz as az
 import numpy as np
 import pymc as pm
@@ -14,6 +16,11 @@ from pymc_extras.inference.laplace_approx.idata import (
     laplace_draws_to_inferencedata,
     optimizer_result_to_dataset,
 )
+
+
+@contextmanager
+def no_op():
+    yield
 
 
 @pytest.fixture
@@ -62,14 +69,18 @@ def hierarchical_model(rng):
     return model, mu_val, H_inv, test_point
 
 
-def test_laplace_draws_to_inferencedata(simple_model, rng):
-    # Simulate posterior draws: 2 variables, each (chains, draws)
+@pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
+def test_laplace_draws_to_inferencedata(use_context, simple_model, rng):
     chains, draws = 2, 5
     mu_draws = rng.normal(size=(chains, draws))
     sigma_draws = np.abs(rng.normal(size=(chains, draws)))
     model, *_ = simple_model
 
-    idata = laplace_draws_to_inferencedata([mu_draws, sigma_draws], model=model)
+    context = model if use_context else no_op()
+    model_arg = model if not use_context else None
+
+    with context:
+        idata = laplace_draws_to_inferencedata([mu_draws, sigma_draws], model=model_arg)
 
     assert isinstance(idata, az.InferenceData)
     assert "mu" in idata.posterior
@@ -93,14 +104,21 @@ class TestFittoInferenceData:
         assert fit.coords["rows"].values.tolist() == var_names
         assert fit.coords["columns"].values.tolist() == var_names
 
-    def test_add_fit_to_inferencedata(self, simple_model, rng):
+    @pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
+    def test_add_fit_to_inferencedata(self, use_context, simple_model, rng):
         model, mu_val, H_inv, test_point = simple_model
         idata = az.from_dict(posterior={"mu": rng.normal(size=()), "sigma": rng.normal(size=())})
-        idata2 = add_fit_to_inference_data(idata, test_point, H_inv, model=model)
+
+        context = model if use_context else no_op()
+        model_arg = model if not use_context else None
+
+        with context:
+            idata2 = add_fit_to_inference_data(idata, test_point, H_inv, model=model_arg)
 
         self.check_idata(idata2, ["mu", "sigma"], 2)
 
-    def test_add_fit_with_coords_to_inferencedata(self, hierarchical_model, rng):
+    @pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
+    def test_add_fit_with_coords_to_inferencedata(self, use_context, hierarchical_model, rng):
         model, mu_val, H_inv, test_point = hierarchical_model
         idata = az.from_dict(
             posterior={
@@ -111,26 +129,38 @@ class TestFittoInferenceData:
             }
         )
 
-        idata2 = add_fit_to_inference_data(idata, test_point, H_inv, model=model)
+        context = model if use_context else no_op()
+        model_arg = model if not use_context else None
+
+        with context:
+            idata2 = add_fit_to_inference_data(idata, test_point, H_inv, model=model_arg)
 
         self.check_idata(
             idata2, ["mu_loc", "mu_scale", "mu[1]", "mu[2]", "mu[3]", "mu[4]", "mu[5]", "sigma"], 8
         )
 
 
-def test_add_data_to_inferencedata(simple_model, rng):
+@pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
+def test_add_data_to_inferencedata(use_context, simple_model, rng):
     model, *_ = simple_model
 
     idata = az.from_dict(
         posterior={"mu": rng.standard_normal((1, 1)), "sigma": rng.standard_normal((1, 1))}
     )
-    idata2 = add_data_to_inference_data(idata, model=model)
+
+    context = model if use_context else no_op()
+    model_arg = model if not use_context else None
+
+    with context:
+        idata2 = add_data_to_inference_data(idata, model=model_arg)
+
     assert "observed_data" in idata2.groups()
     assert "constant_data" in idata2.groups()
     assert "obs" in idata2.observed_data
 
 
-def test_optimizer_result_to_dataset_basic(simple_model, rng):
+@pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
+def test_optimizer_result_to_dataset_basic(use_context, simple_model, rng):
     model, mu_val, H_inv, test_point = simple_model
     result = OptimizeResult(
         x=np.array([1.0, 2.0]),
@@ -144,7 +174,11 @@ def test_optimizer_result_to_dataset_basic(simple_model, rng):
         status=0,
     )
 
-    ds = optimizer_result_to_dataset(result, method="BFGS", model=model, mu=test_point)
+    context = model if use_context else no_op()
+    model_arg = model if not use_context else None
+    with context:
+        ds = optimizer_result_to_dataset(result, method="BFGS", model=model_arg, mu=test_point)
+
     assert isinstance(ds, xr.Dataset)
     assert all(
         key in ds
@@ -169,48 +203,68 @@ def test_optimizer_result_to_dataset_basic(simple_model, rng):
     assert ds["jac"].coords["variables"].values.tolist() == ["mu", "sigma"]
 
 
-def test_optimizer_result_to_dataset_hess_inv_matrix(hierarchical_model, rng):
-    model, mu_val, H_inv, test_point = hierarchical_model
-    result = OptimizeResult(
-        x=np.zeros((8,)),
-        hess_inv=np.eye(8),
+@pytest.mark.parametrize(
+    "optimizer_method, use_context, model_name",
+    [("BFGS", True, "hierarchical_model"), ("L-BFGS-B", False, "simple_model")],
+)
+def test_optimizer_result_to_dataset_hess_inv_types(
+    optimizer_method, use_context, model_name, rng, request
+):
+    def get_hess_inv_and_expected_names(method):
+        model, mu_val, H_inv, test_point = request.getfixturevalue(model_name)
+        n = mu_val.shape[0]
+
+        if method == "BFGS":
+            hess_inv = np.eye(n)
+            expected_names = [
+                "mu_loc",
+                "mu_scale",
+                "mu[1]",
+                "mu[2]",
+                "mu[3]",
+                "mu[4]",
+                "mu[5]",
+                "sigma",
+            ]
+            result = OptimizeResult(
+                x=np.zeros((n,)),
+                hess_inv=hess_inv,
+            )
+        elif method == "L-BFGS-B":
+
+            def linop_func(x):
+                return np.array([2 * xi for xi in x])
+
+            linop = LinearOperator((n, n), matvec=linop_func)
+            hess_inv = 2 * np.eye(n)
+            expected_names = ["mu", "sigma"]
+            result = OptimizeResult(
+                x=np.ones(n),
+                hess_inv=linop,
+            )
+        else:
+            raise ValueError("Unknown optimizer_method")
+
+        return model, test_point, hess_inv, expected_names, result
+
+    model, test_point, hess_inv, expected_names, result = get_hess_inv_and_expected_names(
+        optimizer_method
     )
-    ds = optimizer_result_to_dataset(result, method="BFGS", model=model, mu=test_point)
+
+    context = model if use_context else no_op()
+    model_arg = model if not use_context else None
+
+    with context:
+        ds = optimizer_result_to_dataset(
+            result, method=optimizer_method, mu=test_point, model=model_arg
+        )
 
     assert "hess_inv" in ds
-    assert ds["hess_inv"].shape == (8, 8)
+    assert ds["hess_inv"].shape == (len(expected_names), len(expected_names))
     assert list(ds["hess_inv"].coords.keys()) == ["variables", "variables_aux"]
-
-    expected_names = ["mu_loc", "mu_scale", "mu[1]", "mu[2]", "mu[3]", "mu[4]", "mu[5]", "sigma"]
     assert ds["hess_inv"].coords["variables"].values.tolist() == expected_names
     assert ds["hess_inv"].coords["variables_aux"].values.tolist() == expected_names
-
-
-def test_optimizer_result_to_dataset_hess_inv_linear_operator(simple_model, rng):
-    model, mu_val, H_inv, test_point = simple_model
-    n = mu_val.shape[0]
-
-    def matvec(x):
-        return np.array([2 * xi for xi in x])
-
-    linop = LinearOperator((n, n), matvec=matvec)
-    result = OptimizeResult(
-        x=np.ones(n),
-        hess_inv=linop,
-    )
-
-    with model:
-        ds = optimizer_result_to_dataset(result, method="BFGS", mu=test_point)
-
-    assert "hess_inv" in ds
-    assert ds["hess_inv"].shape == (n, n)
-    assert list(ds["hess_inv"].coords.keys()) == ["variables", "variables_aux"]
-
-    expected_names = ["mu", "sigma"]
-    assert ds["hess_inv"].coords["variables"].values.tolist() == expected_names
-    assert ds["hess_inv"].coords["variables_aux"].values.tolist() == expected_names
-
-    np.testing.assert_allclose(ds["hess_inv"].values, 2 * np.eye(n))
+    np.testing.assert_allclose(ds["hess_inv"].values, hess_inv)
 
 
 def test_optimizer_result_to_dataset_extra_fields(simple_model, rng):
@@ -228,3 +282,25 @@ def test_optimizer_result_to_dataset_extra_fields(simple_model, rng):
     assert ds["custom_stat"].shape == (2,)
     assert list(ds["custom_stat"].coords.keys()) == ["custom_stat_dim_0"]
     assert ds["custom_stat"].coords["custom_stat_dim_0"].values.tolist() == [0, 1]
+
+
+def test_optimizer_result_to_dataset_hess_inv_basinhopping(simple_model, rng):
+    model, mu_val, H_inv, test_point = simple_model
+    n = mu_val.shape[0]
+    hess_inv_inner = np.eye(n) * 3.0
+
+    # Basinhopping returns an OptimizeResult with a nested OptimizeResult
+    result = OptimizeResult(
+        x=np.ones(n),
+        lowest_optimization_result=OptimizeResult(x=np.ones(n), hess_inv=hess_inv_inner),
+    )
+
+    with model:
+        ds = optimizer_result_to_dataset(result, method="basinhopping", mu=test_point)
+
+    assert "hess_inv" in ds
+    assert ds["hess_inv"].shape == (n, n)
+    np.testing.assert_allclose(ds["hess_inv"].values, hess_inv_inner)
+    expected_names = ["mu", "sigma"]
+    assert ds["hess_inv"].coords["variables"].values.tolist() == expected_names
+    assert ds["hess_inv"].coords["variables_aux"].values.tolist() == expected_names

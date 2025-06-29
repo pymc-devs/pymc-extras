@@ -157,7 +157,10 @@ def test_fit_laplace_ragged_coords(rng):
     assert (idata["posterior"].beta.sel(feature=1).to_numpy() > 0).all()
 
 
-def test_laplace_scalar():
+# Test these three optimizers because they are either special cases for H_inv (BFGS, L-BFGS-B) or are
+# gradient free and require re-compilation of hessp (powell).
+@pytest.mark.parametrize("optimizer_method", ["BFGS", "L-BFGS-B", "powell"])
+def test_laplace_scalar_basinhopping(optimizer_method):
     # Example model from Statistical Rethinking
     data = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1])
 
@@ -165,7 +168,11 @@ def test_laplace_scalar():
         p = pm.Uniform("p", 0, 1)
         w = pm.Binomial("w", n=len(data), p=p, observed=data.sum())
 
-        idata_laplace = pmx.fit_laplace(optimize_method="powell", progressbar=False)
+        idata_laplace = pmx.fit_laplace(
+            optimize_method="basinhopping",
+            optimizer_kwargs={"minimizer_kwargs": {"method": optimizer_method}, "niter": 1},
+            progressbar=False,
+        )
 
     assert idata_laplace.fit.mean_vector.shape == (1,)
     assert idata_laplace.fit.covariance_matrix.shape == (1, 1)
