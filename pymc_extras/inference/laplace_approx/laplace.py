@@ -34,7 +34,7 @@ from pytensor.tensor.optimize import minimize
 
 from pymc_extras.inference.laplace_approx.find_map import (
     _compute_inverse_hessian,
-    _make_inital_point,
+    _make_initial_point,
     find_MAP,
 )
 from pymc_extras.inference.laplace_approx.scipy_interface import scipy_optimize_funcs_from_loss
@@ -228,7 +228,6 @@ def fit_laplace(
     use_hess: bool | None = None,
     initvals: dict | None = None,
     random_seed: int | np.random.Generator | None = None,
-    return_raw: bool = False,
     jitter_rvs: list[pt.TensorVariable] | None = None,
     progressbar: bool = True,
     include_transformed: bool = True,
@@ -268,23 +267,13 @@ def fit_laplace(
          If None, the model's default initial values are used.
     random_seed : None | int | np.random.Generator, optional
         Seed for the random number generator or a numpy Generator for reproducibility
-    return_raw: bool | False, optinal
-        Whether to also return the full output of `scipy.optimize.minimize`
     jitter_rvs : list of TensorVariables, optional
         Variables whose initial values should be jittered. If None, all variables are jittered.
     progressbar : bool, optional
         Whether to display a progress bar during optimization. Defaults to True.
-    fit_in_unconstrained_space: bool, default False
-        Whether to fit the Laplace approximation in the unconstrained parameter space. If True, samples will be drawn
-        from a mean and covariance matrix computed at a point in the **unconstrained** parameter space. Samples will
-        then be transformed back to the original parameter space. This will guarantee that the samples will respect
-        the domain of prior distributions (for exmaple, samples from a Beta distribution will be strictly between 0
-        and 1).
-
-        .. warning::
-            This argument should be considered highly experimental. It has not been verified if this method produces
-            valid draws from the posterior. **Use at your own risk**.
-
+    include_transformed: bool, default True
+        Whether to include transformed variables in the output. If True, transformed variables will be included in the
+        output InferenceData object. If False, only the original variables will be included.
     gradient_backend: str, default "pytensor"
         The backend to use for gradient computations. Must be one of "pytensor" or "jax".
     chains: int, default: 2
@@ -365,7 +354,7 @@ def fit_laplace(
         # The user didn't use `use_hess` or `use_hessp` (or an optimization method that returns an inverse Hessian), so
         # we have to go back and compute the Hessian at the MAP point now.
         frozen_model = freeze_dims_and_data(model)
-        initial_params = _make_inital_point(frozen_model, initvals, random_seed, jitter_rvs)
+        initial_params = _make_initial_point(frozen_model, initvals, random_seed, jitter_rvs)
 
         _, f_hessp = scipy_optimize_funcs_from_loss(
             loss=-frozen_model.logp(jacobian=False),
@@ -405,9 +394,9 @@ def fit_laplace(
             .rename({"temp_chain": "chain", "temp_draw": "draw"})
         )
 
-        new_posterior.update(unstack_laplace_draws(new_posterior, model)).drop_vars(
-            "laplace_approximation"
-        )
+        new_posterior.update(unstack_laplace_draws(new_posterior, model))
+        new_posterior = new_posterior.drop_vars("laplace_approximation")
+
         idata.posterior.update(new_posterior)
 
     return idata

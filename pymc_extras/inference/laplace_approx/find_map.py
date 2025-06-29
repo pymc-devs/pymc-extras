@@ -28,7 +28,7 @@ from pymc_extras.inference.laplace_approx.utilities import (
 )
 
 
-def _make_inital_point(model, initvals=None, random_seed=None, jitter_rvs=None):
+def _make_initial_point(model, initvals=None, random_seed=None, jitter_rvs=None):
     jitter_rvs = [] if jitter_rvs is None else jitter_rvs
 
     ipfn = make_initial_point_fn(
@@ -201,7 +201,7 @@ def find_MAP(
     frozen_model = freeze_dims_and_data(model)
     compile_kwargs = {} if compile_kwargs is None else compile_kwargs
 
-    initial_params = _make_inital_point(frozen_model, initvals, random_seed, jitter_rvs)
+    initial_params = _make_initial_point(frozen_model, initvals, random_seed, jitter_rvs)
 
     do_basinhopping = method == "basinhopping"
     minimizer_kwargs = optimizer_kwargs.pop("minimizer_kwargs", {})

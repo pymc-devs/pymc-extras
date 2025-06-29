@@ -35,7 +35,7 @@ def make_unpacked_variable_names(name, model: pm.Model) -> list[str]:
     return [f"{name}[{','.join(map(str, label))}]" for label in labels]
 
 
-def map_results_to_inferece_data(results: dict[str, Any], model: pm.Model | None = None):
+def map_results_to_inference_data(results: dict[str, Any], model: pm.Model | None = None):
     """
     Convert a dictionary of results to an InferenceData object.
 
@@ -51,7 +51,7 @@ def map_results_to_inferece_data(results: dict[str, Any], model: pm.Model | None
     idata: az.InferenceData
         An InferenceData object containing the results.
     """
-    model = pm.modelcontext(model)
+    model = pm.modelcontext(model) if model is None else model
     coords, dims = coords_and_dims_for_inferencedata(model)
 
     idata = az.convert_to_inference_data(results, coords=coords, dims=dims)
@@ -78,7 +78,7 @@ def laplace_draws_to_inferencedata(
     idata: az.InferenceData
         An InferenceData object containing the approximated posterior samples
     """
-    model = pm.modelcontext(model)
+    model = pm.modelcontext(model) if model is None else model
     chains, draws, *_ = posterior_draws[0].shape
 
     def make_rv_coords(name):
@@ -191,7 +191,7 @@ def add_fit_to_inference_data(
     idata: az.InferenceData
         The provided InferenceData, with the mean vector and covariance matrix added to the "fit" group.
     """
-    model = pm.modelcontext(model)
+    model = pm.modelcontext(model) if model is None else model
 
     variable_names, *_ = zip(*mu.point_map_info)
 
@@ -242,7 +242,7 @@ def add_data_to_inference_data(
     idata: az.InferenceData
         The provided InferenceData, with observed and constant data added.
     """
-    model = pm.modelcontext(model)
+    model = pm.modelcontext(model) if model is None else model
 
     if model.deterministics:
         expand_dims = {}
@@ -309,6 +309,7 @@ def optimizer_result_to_dataset(
     """
     if not isinstance(result, OptimizeResult):
         raise TypeError("result must be an instance of OptimizeResult")
+
     model = pm.modelcontext(model) if model is None else model
     variable_names, *_ = zip(*mu.point_map_info)
     unpacked_variable_names = reduce(
