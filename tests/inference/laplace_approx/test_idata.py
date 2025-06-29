@@ -9,8 +9,8 @@ from scipy.optimize import OptimizeResult
 from scipy.sparse.linalg import LinearOperator
 
 from pymc_extras.inference.laplace_approx.idata import (
-    add_data_to_inferencedata,
-    add_fit_to_inferencedata,
+    add_data_to_inference_data,
+    add_fit_to_inference_data,
     laplace_draws_to_inferencedata,
     optimizer_result_to_dataset,
 )
@@ -96,7 +96,7 @@ class TestFittoInferenceData:
     def test_add_fit_to_inferencedata(self, simple_model, rng):
         model, mu_val, H_inv, test_point = simple_model
         idata = az.from_dict(posterior={"mu": rng.normal(size=()), "sigma": rng.normal(size=())})
-        idata2 = add_fit_to_inferencedata(idata, test_point, H_inv, model=model)
+        idata2 = add_fit_to_inference_data(idata, test_point, H_inv, model=model)
 
         self.check_idata(idata2, ["mu", "sigma"], 2)
 
@@ -111,7 +111,7 @@ class TestFittoInferenceData:
             }
         )
 
-        idata2 = add_fit_to_inferencedata(idata, test_point, H_inv, model=model)
+        idata2 = add_fit_to_inference_data(idata, test_point, H_inv, model=model)
 
         self.check_idata(
             idata2, ["mu_loc", "mu_scale", "mu[1]", "mu[2]", "mu[3]", "mu[4]", "mu[5]", "sigma"], 8
@@ -124,7 +124,7 @@ def test_add_data_to_inferencedata(simple_model, rng):
     idata = az.from_dict(
         posterior={"mu": rng.standard_normal((1, 1)), "sigma": rng.standard_normal((1, 1))}
     )
-    idata2 = add_data_to_inferencedata(idata, model=model)
+    idata2 = add_data_to_inference_data(idata, model=model)
     assert "observed_data" in idata2.groups()
     assert "constant_data" in idata2.groups()
     assert "obs" in idata2.observed_data

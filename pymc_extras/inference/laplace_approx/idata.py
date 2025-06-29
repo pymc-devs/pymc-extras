@@ -1,6 +1,6 @@
 from functools import reduce
 from itertools import product
-from typing import Literal
+from typing import Any, Literal
 
 import arviz as az
 import numpy as np
@@ -33,6 +33,29 @@ def make_unpacked_variable_names(name, model: pm.Model) -> list[str]:
         return [name]
     labels = product(*(coords[dim] for dim in dims))
     return [f"{name}[{','.join(map(str, label))}]" for label in labels]
+
+
+def map_results_to_inferece_data(results: dict[str, Any], model: pm.Model | None = None):
+    """
+    Convert a dictionary of results to an InferenceData object.
+
+    Parameters
+    ----------
+    results: dict
+        A dictionary containing the results to convert.
+    model: Model, optional
+        A PyMC model. If None, the model is taken from the current model context.
+
+    Returns
+    -------
+    idata: az.InferenceData
+        An InferenceData object containing the results.
+    """
+    model = pm.modelcontext(model)
+    coords, dims = coords_and_dims_for_inferencedata(model)
+
+    idata = az.convert_to_inference_data(results, coords=coords, dims=dims)
+    return idata
 
 
 def laplace_draws_to_inferencedata(
@@ -91,12 +114,66 @@ def laplace_draws_to_inferencedata(
     return idata
 
 
-def add_fit_to_inferencedata(
+def add_map_posterior_to_inference_data(
+    idata: az.InferenceData,
+    map_point: dict[str, float | int | np.ndarray],
+    model: pm.Model | None = None,
+):
+    """
+    Add the MAP point to an InferenceData object in the posterior group.
+
+    Unlike a typical posterior, the MAP point is a single point estimate rather than a distribution. As a result, it
+    does not have a chain or draw dimension, and is stored as a single point in the posterior group.
+
+    Parameters
+    ----------
+    idata: az.InferenceData
+        An InferenceData object to which the MAP point will be added.
+    map_point: dict
+        A dictionary containing the MAP point estimates for each variable. The keys should be the variable names, and
+        the values should be the corresponding MAP estimates.
+    model: Model, optional
+        A PyMC model. If None, the model is taken from the current model context.
+
+    Returns
+    -------
+    idata: az.InferenceData
+        The provided InferenceData, with the MAP point added to the posterior group.
+    """
+
+    model = pm.modelcontext(model) if model is None else model
+    coords, dims = coords_and_dims_for_inferencedata(model)
+
+    # The MAP point will have both the transformed and untransformed variables, so we need to ensure that
+    # we have the correct dimensions for each variable.
+    var_name_to_value_name = {rv.name: value.name for rv, value in model.rvs_to_values.items()}
+    dims.update(
+        {
+            value_name: dims[var_name]
+            for var_name, value_name in var_name_to_value_name.items()
+            if var_name in dims
+        }
+    )
+
+    posterior_data = {
+        name: xr.DataArray(
+            data=np.asarray(value),
+            coords={dim: coords[dim] for dim in dims.get(name, [])},
+            dims=dims.get(name),
+            name=name,
+        )
+        for name, value in map_point.items()
+    }
+    idata.add_groups(posterior=xr.Dataset(posterior_data))
+
+    return idata
+
+
+def add_fit_to_inference_data(
     idata: az.InferenceData, mu: RaveledVars, H_inv: np.ndarray, model: pm.Model | None = None
 ) -> az.InferenceData:
     """
     Add the mean vector and covariance matrix of the Laplace approximation to an InferenceData object.
-
 
     Parameters
     ----------
@@ -123,19 +200,24 @@ def add_fit_to_inferencedata(
     )
 
     mean_dataarray = xr.DataArray(mu.data, dims=["rows"], coords={"rows": unpacked_variable_names})
-    cov_dataarray = xr.DataArray(
-        H_inv,
-        dims=["rows", "columns"],
-        coords={"rows": unpacked_variable_names, "columns": unpacked_variable_names},
-    )
 
-    dataset = xr.Dataset({"mean_vector": mean_dataarray, "covariance_matrix": cov_dataarray})
+    data = {"mean_vector": mean_dataarray}
+
+    if H_inv is not None:
+        cov_dataarray = xr.DataArray(
+            H_inv,
+            dims=["rows", "columns"],
+            coords={"rows": unpacked_variable_names, "columns": unpacked_variable_names},
+        )
+        data["covariance_matrix"] = cov_dataarray
+
+    dataset = xr.Dataset(data)
     idata.add_groups(fit=dataset)
 
     return idata
 
 
-def add_data_to_inferencedata(
+def add_data_to_inference_data(
     idata: az.InferenceData,
     progressbar: bool = True,
     model: pm.Model | None = None,
@@ -163,8 +245,14 @@ def add_data_to_inferencedata(
     model = pm.modelcontext(model)
 
     if model.deterministics:
+        expand_dims = {}
+        if "chain" not in idata.posterior.coords:
+            expand_dims["chain"] = [0]
+        if "draw" not in idata.posterior.coords:
+            expand_dims["draw"] = [0]
+
         idata.posterior = pm.compute_deterministics(
-            idata.posterior,
+            idata.posterior.expand_dims(expand_dims),
             model=model,
             merge_dataset=True,
             progressbar=progressbar,
@@ -228,6 +316,13 @@ def optimizer_result_to_dataset(
     )
 
     data_vars = {}
+
+    if hasattr(result, "lowest_optimization_result"):
+        # If we did basinhopping, there's a results inside the results. We want to pop this out and collapse them,
+        # overwriting outer keys with the inner keys
+        inner_res = result.pop("lowest_optimization_result")
+        for key in inner_res.keys():
+            result[key] = inner_res[key]
 
     if hasattr(result, "x"):
         data_vars["x"] = xr.DataArray(
@@ -299,3 +394,37 @@ def optimizer_result_to_dataset(
     data_vars["method"] = xr.DataArray(np.array(method), dims=[])
 
     return xr.Dataset(data_vars)
+
+
+def add_optimizer_result_to_inference_data(
+    idata: az.InferenceData,
+    result: OptimizeResult,
+    method: minimize_method | Literal["basinhopping"],
+    mu: RaveledVars | None = None,
+    model: pm.Model | None = None,
+) -> az.InferenceData:
+    """
+    Add the optimization result to an InferenceData object.
+
+    Parameters
+    ----------
+    idata: az.InferenceData
+        An InferenceData object containing the approximated posterior samples.
+    result: OptimizeResult
+        The result of the optimization process.
+    method: minimize_method or "basinhopping"
+        The optimization method used.
+    mu: RaveledVars, optional
+        The MAP estimate of the model parameters.
+    model: Model, optional
+        A PyMC model. If None, the model is taken from the current model context.
+
+    Returns
+    -------
+    idata: az.InferenceData
+        The provided InferenceData, with the optimization results added to the "optimizer" group.
+    """
+    dataset = optimizer_result_to_dataset(result, method=method, mu=mu, model=model)
+    idata.add_groups({"optimizer_result": dataset})
+
+    return idata
