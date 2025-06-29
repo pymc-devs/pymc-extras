@@ -63,7 +63,7 @@ from rich.text import Text
 # TODO: change to typing.Self after Python versions greater than 3.10
 from typing_extensions import Self
 
-from pymc_extras.inference.laplace import add_data_to_inferencedata
+from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 from pymc_extras.inference.pathfinder.importance_sampling import (
     importance_sampling as _importance_sampling,
 )
@@ -1759,6 +1759,6 @@ def fit_pathfinder(
         importance_sampling=importance_sampling,
     )
 
-    idata = add_data_to_inferencedata(idata, progressbar, model, compile_kwargs)
+    idata = add_data_to_inference_data(idata, progressbar, model, compile_kwargs)
 
     return idata
