@@ -16,7 +16,6 @@
 import logging
 
 from collections.abc import Callable
-from importlib.util import find_spec
 from typing import Literal
 
 import arviz as az
@@ -24,29 +23,22 @@ import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
+import xarray as xr
 
 from better_optimize.constants import minimize_method
 from numpy.typing import ArrayLike
 from pymc import DictToArrayBijection
-from pymc.blocking import RaveledVars
-from pymc.model.transform.conditioning import remove_value_transforms
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.optimize import minimize
-from scipy import stats
 
 from pymc_extras.inference.laplace_approx.find_map import (
-    GradientBackend,
-    _unconstrained_vector_to_constrained_rvs,
+    _compute_inverse_hessian,
+    _make_inital_point,
     find_MAP,
-    get_nearest_psd,
-    scipy_optimize_funcs_from_loss,
 )
-from pymc_extras.inference.laplace_approx.idata import (
-    add_data_to_inferencedata,
-    add_fit_to_inferencedata,
-    laplace_draws_to_inferencedata,
-)
+from pymc_extras.inference.laplace_approx.scipy_interface import scipy_optimize_funcs_from_loss
+from pymc_extras.inference.laplace_approx.utilities import GradientBackend
 
 _log = logging.getLogger(__name__)
 
@@ -147,189 +139,84 @@ def get_conditional_gaussian_approximation(
     return pytensor.function(args, [x0, conditional_gaussian_approx])
 
 
-def fit_mvn_at_MAP(
-    optimized_point: dict[str, np.ndarray],
-    model: pm.Model | None = None,
-    on_bad_cov: Literal["warn", "error", "ignore"] = "ignore",
-    transform_samples: bool = False,
-    gradient_backend: GradientBackend = "pytensor",
-    zero_tol: float = 1e-8,
-    diag_jitter: float | None = 1e-8,
-    compile_kwargs: dict | None = None,
-) -> tuple[RaveledVars, np.ndarray]:
-    """
-    Create a multivariate normal distribution using the inverse of the negative Hessian matrix of the log-posterior
-    evaluated at the MAP estimate. This is the basis of the Laplace approximation.
+def model_to_laplace_approx(
+    model: pm.Model, unpacked_variable_names: list[str], chains: int = 1, draws: int = 500
+):
+    # temp_chain and temp_draw are a hack to allow sampling from the Laplace approximation. We only have one mu and cov,
+    # so we add batch dims (which correspond to chains and draws). But the names "chain" and "draw" are reserved.
+    coords = model.coords | {
+        "temp_chain": np.arange(chains),
+        "temp_draw": np.arange(draws),
+        "unpacked_variable_names": unpacked_variable_names,
+    }
+    free_rvs = model.free_RVs
 
-    Parameters
-    ----------
-    optimized_point : idata
-        Local maximum a posteriori (MAP) point returned from pymc_extras.inference.find_MAP
-    model : Model, optional
-        A PyMC model. If None, the model is taken from the current model context.
-    on_bad_cov : str, one of 'ignore', 'warn', or 'error', default: 'ignore'
-        What to do when ``H_inv`` (inverse Hessian) is not positive semi-definite.
-        If 'ignore' or 'warn', the closest positive-semi-definite matrix to ``H_inv`` (in L1 norm) will be returned.
-        If 'error', an error will be raised.
-    transform_samples : bool
-        Whether to transform the samples back to the original parameter space. Default is True.
-    gradient_backend: str, default "pytensor"
-        The backend to use for gradient computations. Must be one of "pytensor" or "jax".
-    zero_tol: float
-        Value below which an element of the Hessian matrix is counted as 0.
-        This is used to stabilize the computation of the inverse Hessian matrix. Default is 1e-8.
-    diag_jitter: float | None
-        A small value added to the diagonal of the inverse Hessian matrix to ensure it is positive semi-definite.
-        If None, no jitter is added. Default is 1e-8.
-    compile_kwargs: dict, optional
-        Additional keyword arguments to pass to pytensor.function when compiling loss functions
+    initial_point = model.initial_point()
+    raveled_vars = DictToArrayBijection.map(initial_point)
+    raveled_shape = raveled_vars.data.shape[0]
 
-    Returns
-    -------
-    map_estimate: RaveledVars
-        The MAP estimate of the model parameters, raveled into a 1D array.
-
-    inverse_hessian: np.ndarray
-        The inverse Hessian matrix of the log-posterior evaluated at the MAP estimate.
-    """
-    if gradient_backend == "jax" and not find_spec("jax"):
-        raise ImportError("JAX must be installed to use JAX gradients")
-
-    model = pm.modelcontext(model)
-    compile_kwargs = {} if compile_kwargs is None else compile_kwargs
-    frozen_model = freeze_dims_and_data(model)
-
-    if not transform_samples:
-        untransformed_model = remove_value_transforms(frozen_model)
-        logp = untransformed_model.logp(jacobian=False)
-        variables = untransformed_model.continuous_value_vars
-    else:
-        logp = frozen_model.logp(jacobian=True)
-        variables = frozen_model.continuous_value_vars
-
-    variable_names = {var.name for var in variables}
-    optimized_free_params = {k: v for k, v in optimized_point.items() if k in variable_names}
-    mu = DictToArrayBijection.map(optimized_free_params)
-
-    f_fused, _ = scipy_optimize_funcs_from_loss(
-        loss=-logp,
-        inputs=variables,
-        initial_point_dict=optimized_free_params,
-        use_grad=True,
-        use_hess=True,
-        use_hessp=False,
-        gradient_backend=gradient_backend,
-        compile_kwargs=compile_kwargs,
-    )
-
-    H = -f_fused(mu.data)[-1]
-    if H.ndim == 1:
-        H = np.expand_dims(H, axis=1)
-    H_inv = np.linalg.pinv(np.where(np.abs(H) < zero_tol, 0, -H))
-
-    def stabilize(x, jitter):
-        return x + np.eye(x.shape[0]) * jitter
-
-    H_inv = H_inv if diag_jitter is None else stabilize(H_inv, diag_jitter)
-
-    try:
-        np.linalg.cholesky(H_inv)
-    except np.linalg.LinAlgError:
-        if on_bad_cov == "error":
-            raise np.linalg.LinAlgError(
-                "Inverse Hessian not positive-semi definite at the provided point"
-            )
-        H_inv = get_nearest_psd(H_inv)
-        if on_bad_cov == "warn":
-            _log.warning(
-                "Inverse Hessian is not positive semi-definite at the provided point, using the closest PSD "
-                "matrix in L1-norm instead"
-            )
-
-    return mu, H_inv
-
-
-def sample_laplace_posterior(
-    mu: RaveledVars,
-    H_inv: np.ndarray,
-    model: pm.Model | None = None,
-    chains: int = 2,
-    draws: int = 500,
-    transform_samples: bool = False,
-    progressbar: bool = True,
-    random_seed: int | np.random.Generator | None = None,
-    compile_kwargs: dict | None = None,
-) -> az.InferenceData:
-    """
-    Generate samples from a multivariate normal distribution with mean `mu` and inverse covariance matrix `H_inv`.
-
-    Parameters
-    ----------
-    mu: RaveledVars
-        The MAP estimate of the model parameters.
-    H_inv: np.ndarray
-        The inverse Hessian matrix of the log-posterior evaluated at the MAP estimate.
-    model : Model
-        A PyMC model
-    chains : int
-        The number of sampling chains running in parallel. Default is 2.
-    draws : int
-        The number of samples to draw from the approximated posterior. Default is 500.
-    transform_samples : bool
-        Whether to transform the samples back to the original parameter space. Default is True.
-    progressbar : bool
-        Whether to display a progress bar during computations. Default is True.
-    random_seed: int | np.random.Generator | None
-        Seed for the random number generator or a numpy Generator for reproducibility
-
-    Returns
-    -------
-    idata: az.InferenceData
-        An InferenceData object containing the approximated posterior samples.
-    """
-    model = pm.modelcontext(model)
-    compile_kwargs = {} if compile_kwargs is None else compile_kwargs
-    rng = np.random.default_rng(random_seed)
-
-    posterior_dist = stats.multivariate_normal(
-        mean=mu.data, cov=H_inv, allow_singular=True, seed=rng
-    )
-
-    posterior_draws = posterior_dist.rvs(size=(chains, draws))
-    if mu.data.shape == (1,):
-        posterior_draws = np.expand_dims(posterior_draws, -1)
-
-    if transform_samples:
-        constrained_rvs, unconstrained_vector = _unconstrained_vector_to_constrained_rvs(model)
-        batched_values = pt.tensor(
-            "batched_values",
-            shape=(chains, draws, *unconstrained_vector.type.shape),
-            dtype=unconstrained_vector.type.dtype,
-        )
-        batched_rvs = pytensor.graph.vectorize_graph(
-            constrained_rvs, replace={unconstrained_vector: batched_values}
+    with pm.Model(coords=coords, model=None) as laplace_model:
+        mu = pm.Flat("mean_vector", shape=(raveled_shape,))
+        cov = pm.Flat("covariance_matrix", shape=(raveled_shape, raveled_shape))
+        laplace_approximation = pm.MvNormal(
+            "laplace_approximation",
+            mu=mu,
+            cov=cov,
+            dims=["temp_chain", "temp_draw", "unpacked_variable_names"],
         )
 
-        f_constrain = pm.compile(inputs=[batched_values], outputs=batched_rvs, **compile_kwargs)
-        posterior_draws = f_constrain(posterior_draws)
+        cursor = 0
+        for rv, info in zip(free_rvs, raveled_vars.point_map_info):
+            transform = model.rvs_to_transforms[rv]
+            name, shape, size, dtype = info
+            unconstrained_value = (
+                laplace_approximation[..., cursor : cursor + size]
+                .reshape((chains, draws, *shape))
+                .astype(dtype)
+            )
+            dims = ("temp_chain", "temp_draw", *model.named_vars_to_dims.get(rv.name, ()))
 
-    else:
-        info = mu.point_map_info
-        flat_shapes = [size for _, _, size, _ in info]
-        slices = [
-            slice(sum(flat_shapes[:i]), sum(flat_shapes[: i + 1])) for i in range(len(flat_shapes))
-        ]
+            pm.Deterministic(
+                rv.name,
+                (
+                    transform.backward(unconstrained_value, *rv.owner.inputs)
+                    if transform is not None
+                    else unconstrained_value
+                ),
+                dims=dims,
+            )
 
-        posterior_draws = [
-            posterior_draws[..., idx].reshape((chains, draws, *shape)).astype(dtype)
-            for idx, (name, shape, _, dtype) in zip(slices, info)
-        ]
+            cursor += size
 
-    idata = laplace_draws_to_inferencedata(posterior_draws, model)
-    idata = add_fit_to_inferencedata(idata, mu, H_inv)
-    idata = add_data_to_inferencedata(idata, progressbar, model, compile_kwargs)
+    return laplace_model
 
-    return idata
+
+def unstack_laplace_draws(idata, model):
+    initial_point = DictToArrayBijection.map(model.initial_point())
+
+    cursor = 0
+    chains = idata.coords["chain"].size
+    draws = idata.coords["draw"].size
+
+    unstacked_laplace_draws = {}
+    laplace_data = idata.laplace_approximation.values
+
+    coords = model.coords | {"chain": range(chains), "draw": range(draws)}
+    for rv, (name, shape, size, dtype) in zip(model.free_RVs, initial_point.point_map_info):
+        dims = ("chain", "draw", *model.named_vars_to_dims.get(rv.name, ()))
+
+        values = (
+            laplace_data[..., cursor : cursor + size].reshape((chains, draws, *shape)).astype(dtype)
+        )
+        unstacked_laplace_draws[name] = xr.DataArray(
+            values, dims=dims, coords={dim: list(coords[dim]) for dim in dims}
+        )
+
+        cursor += size
+
+    unstacked_laplace_draws = xr.Dataset(unstacked_laplace_draws)
+
+    return unstacked_laplace_draws
 
 
 def fit_laplace(
@@ -348,10 +235,6 @@ def fit_laplace(
     gradient_backend: GradientBackend = "pytensor",
     chains: int = 2,
     draws: int = 500,
-    on_bad_cov: Literal["warn", "error", "ignore"] = "ignore",
-    fit_in_unconstrained_space: bool = False,
-    zero_tol: float = 1e-8,
-    diag_jitter: float | None = 1e-8,
     optimizer_kwargs: dict | None = None,
     compile_kwargs: dict | None = None,
 ) -> az.InferenceData:
@@ -458,8 +341,9 @@ def fit_laplace(
     """
     compile_kwargs = {} if compile_kwargs is None else compile_kwargs
     optimizer_kwargs = {} if optimizer_kwargs is None else optimizer_kwargs
+    model = pm.modelcontext(model) if model is None else model
 
-    optimized_point = find_MAP(
+    idata = find_MAP(
         method=optimize_method,
         model=model,
         use_grad=use_grad,
@@ -467,7 +351,6 @@ def fit_laplace(
         use_hess=use_hess,
         initvals=initvals,
         random_seed=random_seed,
-        return_raw=return_raw,
         jitter_rvs=jitter_rvs,
         progressbar=progressbar,
         include_transformed=include_transformed,
@@ -476,25 +359,55 @@ def fit_laplace(
         **optimizer_kwargs,
     )
 
-    mu, H_inv = fit_mvn_at_MAP(
-        optimized_point=optimized_point,
-        model=model,
-        on_bad_cov=on_bad_cov,
-        transform_samples=fit_in_unconstrained_space,
-        gradient_backend=gradient_backend,
-        zero_tol=zero_tol,
-        diag_jitter=diag_jitter,
-        compile_kwargs=compile_kwargs,
-    )
+    unpacked_variable_names = idata.fit["mean_vector"].coords["rows"].values.tolist()
 
-    return sample_laplace_posterior(
-        mu=mu,
-        H_inv=H_inv,
-        model=model,
-        chains=chains,
-        draws=draws,
-        transform_samples=fit_in_unconstrained_space,
-        progressbar=progressbar,
-        random_seed=random_seed,
-        compile_kwargs=compile_kwargs,
-    )
+    if "covariance_matrix" not in idata.fit:
+        # The user didn't use `use_hess` or `use_hessp` (or an optimization method that returns an inverse Hessian), so
+        # we have to go back and compute the Hessian at the MAP point now.
+        frozen_model = freeze_dims_and_data(model)
+        initial_params = _make_inital_point(frozen_model, initvals, random_seed, jitter_rvs)
+
+        _, f_hessp = scipy_optimize_funcs_from_loss(
+            loss=-frozen_model.logp(jacobian=False),
+            inputs=frozen_model.continuous_value_vars + frozen_model.discrete_value_vars,
+            initial_point_dict=DictToArrayBijection.rmap(initial_params),
+            use_grad=False,
+            use_hess=False,
+            use_hessp=True,
+            gradient_backend=gradient_backend,
+            compile_kwargs=compile_kwargs,
+        )
+        H_inv = _compute_inverse_hessian(
+            optimizer_result=None,
+            optimal_point=idata.fit.mean_vector.values,
+            f_fused=None,
+            f_hessp=f_hessp,
+            use_hess=False,
+            method=optimize_method,
+        )
+
+        idata.fit["covariance_matrix"] = xr.DataArray(
+            H_inv,
+            dims=("rows", "columns"),
+            coords={"rows": unpacked_variable_names, "columns": unpacked_variable_names},
+        )
+
+    with model_to_laplace_approx(model, unpacked_variable_names, chains, draws) as laplace_model:
+        laplace_idata = pm.sample_posterior_predictive(
+            idata.fit.expand_dims(chain=[0], draw=[0]),
+            extend_inferencedata=False,
+            random_seed=random_seed,
+            var_names=["laplace_approximation", *[x.name for x in laplace_model.deterministics]],
+        )
+        new_posterior = (
+            laplace_idata.posterior_predictive.squeeze(["chain", "draw"])
+            .drop_vars(["chain", "draw"])
+            .rename({"temp_chain": "chain", "temp_draw": "draw"})
+        )
+
+        new_posterior.update(unstack_laplace_draws(new_posterior, model)).drop_vars(
+            "laplace_approximation"
+        )
+        idata.posterior.update(new_posterior)
+
+    return idata
