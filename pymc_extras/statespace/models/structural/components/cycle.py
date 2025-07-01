@@ -1,6 +1,7 @@
 import numpy as np
 
 from pytensor import tensor as pt
+from scipy import linalg
 
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
@@ -9,6 +10,10 @@ from pymc_extras.statespace.models.structural.utils import _frequency_transition
 class CycleComponent(Component):
     r"""
     A component for modeling longer-term cyclical effects
+
+    Supports both univariate and multivariate time series. For multivariate time series,
+    each endogenous variable gets its own independent cycle component with separate
+    cosine/sine states and optional variable-specific innovation variances.
 
     Parameters
     ----------
@@ -32,6 +37,11 @@ class CycleComponent(Component):
     innovations: bool, default True
         Whether to include stochastic innovations in the strength of the seasonal effect. If True, an additional
         parameter, ``sigma_{name}`` will be added to the model.
+        For multivariate time series, this is a vector (variable-specific innovation variances).
+
+    observed_state_names: list[str], optional
+        Names of the observed state variables. For univariate time series, defaults to ``["data"]``.
+        For multivariate time series, specify a list of names for each endogenous variable.
 
     Notes
     -----
@@ -51,8 +61,16 @@ class CycleComponent(Component):
 
     Unlike a FrequencySeasonality component, the length of a CycleComponent can be estimated.
 
+    **Multivariate Support:**
+    For multivariate time series with k endogenous variables, the component creates:
+    - 2k states (cosine and sine components for each variable)
+    - Block diagonal transition and selection matrices
+    - Variable-specific innovation variances (optional)
+    - Proper parameter shapes: (k, 2) for initial states, (k,) for innovation variances
+
     Examples
     --------
+    **Univariate Example:**
     Estimate a business cycle with length between 6 and 12 years:
 
     .. code:: python
@@ -83,6 +101,35 @@ class CycleComponent(Component):
             ss_mod.build_statespace_graph(data)
 
             idata = pm.sample(nuts_sampler='numpyro')
+
+    **Multivariate Example:**
+    Model cycles for multiple economic indicators with variable-specific innovation variances:
+
+    .. code:: python
+
+        # Multivariate cycle component
+        cycle = st.CycleComponent(
+            name='business_cycle',
+            cycle_length=12,
+            estimate_cycle_length=False,
+            innovations=True,
+            dampen=True,
+            observed_state_names=['gdp', 'unemployment', 'inflation']
+        )
+
+        # Build the model
+        ss_mod = cycle.build()
+
+        # In PyMC model:
+        with pm.Model(coords=ss_mod.coords) as model:
+            # Initial states: shape (3, 2) for 3 variables, 2 states each
+            cycle_init = pm.Normal('business_cycle', dims=('business_cycle_endog', 'business_cycle_state'))
+
+            # Dampening factor: scalar (shared across variables)
+            dampening = pm.Uniform('business_cycle_dampening_factor', lower=0.8, upper=1.0)
+
+            # Innovation variances: shape (3,) for variable-specific variances
+            sigma_cycle = pm.HalfNormal('sigma_business_cycle', dims=('business_cycle_endog',))
 
     References
     ----------
@@ -137,14 +184,23 @@ class CycleComponent(Component):
         )
 
     def make_symbolic_graph(self) -> None:
-        self.ssm["design", 0, slice(0, self.k_states, 2)] = 1
-        self.ssm["selection", :, :] = np.eye(self.k_states)
-        self.param_dims = {self.name: (f"{self.name}_state",)}
-        self.coords = {f"{self.name}_state": self.state_names}
+        if self.k_endog == 1:
+            self.ssm["design", 0, slice(0, self.k_states, 2)] = 1
+            self.ssm["selection", :, :] = np.eye(self.k_states)
+            init_state = self.make_and_register_variable(f"{self.name}", shape=(self.k_states,))
 
-        init_state = self.make_and_register_variable(f"{self.name}", shape=(self.k_states,))
+        else:
+            Z = np.array([1.0, 0.0]).reshape((1, -1))
+            design_matrix = linalg.block_diag(*[Z for _ in range(self.k_endog)])
+            self.ssm["design", :, :] = pt.as_tensor_variable(design_matrix)
 
-        self.ssm["initial_state", :] = init_state
+            R = np.eye(2)  # 2x2 identity for each cycle component
+            selection_matrix = linalg.block_diag(*[R for _ in range(self.k_endog)])
+            self.ssm["selection", :, :] = pt.as_tensor_variable(selection_matrix)
+
+            init_state = self.make_and_register_variable(f"{self.name}", shape=(self.k_endog, 2))
+
+        self.ssm["initial_state", :] = init_state.ravel()
 
         if self.estimate_cycle_length:
             lamb = self.make_and_register_variable(f"{self.name}_length", shape=())
@@ -157,23 +213,59 @@ class CycleComponent(Component):
             rho = 1
 
         T = rho * _frequency_transition_block(lamb, j=1)
-        self.ssm["transition", :, :] = T
+        if self.k_endog == 1:
+            self.ssm["transition", :, :] = T
+        else:
+            # can't make the linalg.block_diag logic work here
+            # doing it manually for now
+            for i in range(self.k_endog):
+                start_idx = i * 2
+                end_idx = (i + 1) * 2
+                self.ssm["transition", start_idx:end_idx, start_idx:end_idx] = T
 
         if self.innovations:
-            sigma_cycle = self.make_and_register_variable(f"sigma_{self.name}", shape=())
-            self.ssm["state_cov", :, :] = pt.eye(self.k_posdef) * sigma_cycle**2
+            if self.k_endog == 1:
+                sigma_cycle = self.make_and_register_variable(f"sigma_{self.name}", shape=())
+                self.ssm["state_cov", :, :] = pt.eye(self.k_posdef) * sigma_cycle**2
+            else:
+                sigma_cycle = self.make_and_register_variable(
+                    f"sigma_{self.name}", shape=(self.k_endog,)
+                )
+                # can't make the linalg.block_diag logic work here
+                # doing it manually for now
+                for i in range(self.k_endog):
+                    start_idx = i * 2
+                    end_idx = (i + 1) * 2
+                    Q_block = pt.eye(2) * sigma_cycle[i] ** 2
+                    self.ssm["state_cov", start_idx:end_idx, start_idx:end_idx] = Q_block
 
     def populate_component_properties(self):
         self.state_names = [f"{self.name}_{f}" for f in ["Cos", "Sin"]]
         self.param_names = [f"{self.name}"]
 
-        self.param_info = {
-            f"{self.name}": {
-                "shape": (2,),
-                "constraints": None,
-                "dims": (f"{self.name}_state",),
+        if self.k_endog == 1:
+            self.param_dims = {self.name: (f"{self.name}_state",)}
+            self.coords = {f"{self.name}_state": self.state_names}
+            self.param_info = {
+                f"{self.name}": {
+                    "shape": (2,),
+                    "constraints": None,
+                    "dims": (f"{self.name}_state",),
+                }
             }
-        }
+        else:
+            self.param_dims = {self.name: (f"{self.name}_endog", f"{self.name}_state")}
+            self.coords = {
+                f"{self.name}_state": self.state_names,
+                f"{self.name}_endog": self.observed_state_names,
+            }
+            self.param_info = {
+                f"{self.name}": {
+                    "shape": (self.k_endog, 2),
+                    "constraints": None,
+                    "dims": (f"{self.name}_endog", f"{self.name}_state"),
+                }
+            }
 
         if self.estimate_cycle_length:
             self.param_names += [f"{self.name}_length"]
@@ -193,9 +285,17 @@ class CycleComponent(Component):
 
         if self.innovations:
             self.param_names += [f"sigma_{self.name}"]
-            self.param_info[f"sigma_{self.name}"] = {
-                "shape": (),
-                "constraints": "Positive",
-                "dims": None,
-            }
+            if self.k_endog == 1:
+                self.param_info[f"sigma_{self.name}"] = {
+                    "shape": (),
+                    "constraints": "Positive",
+                    "dims": None,
+                }
+            else:
+                self.param_dims[f"sigma_{self.name}"] = (f"{self.name}_endog",)
+                self.param_info[f"sigma_{self.name}"] = {
+                    "shape": (self.k_endog,),
+                    "constraints": "Positive",
+                    "dims": (f"{self.name}_endog",),
+                }
             self.shock_names = self.state_names.copy()
