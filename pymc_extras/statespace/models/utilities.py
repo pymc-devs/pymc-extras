@@ -541,21 +541,21 @@ def add_tensors_by_dim_labels(
     Parameters
     ----------
     tensor: TensorVariable
-        A statespace matrix to be summed with ``other_matrix``.
+        A statespace matrix to be summed with ``other_tensor``.
     other_tensor: TensorVariable
-        A statespace matrix to be summed with ``matrix``.
+        A statespace matrix to be summed with ``tensor``.
     labels: list of str
-        Dimension labels associated with ``matrix``, on the ``labeled_axis`` dimension.
+        Dimension labels associated with ``tensor``, on the ``labeled_axis`` dimension.
     other_labels: list of str
-        Dimension labels associated with ``other_matrix``, on the ``labeled_axis`` dimension.
+        Dimension labels associated with ``other_tensor``, on the ``labeled_axis`` dimension.
     labeled_axis: int or tuple of int
-        Dimension that is labeled by ``labels`` and ``other_labels``. ``matrix.shape[labeled_axis]`` must have the
+        Dimension that is labeled by ``labels`` and ``other_labels``. ``tensor.shape[labeled_axis]`` must have the
         shape of ``len(labels)`` at runtime.
 
     Returns
     -------
     result: TensorVariable
-        Result of addition of ``matrix`` and ``other_matrix``, along the ``labeled_axis`` dimension.  The ordering of
+        Result of addition of ``tensor`` and ``other_tensor``, along the ``labeled_axis`` dimension.  The ordering of
         the output will be ``labels + [label for label in other_labels if label not in labels]``. That is, ``labels``
         come first, followed by any new labels introduced by ``other_labels``.
 
