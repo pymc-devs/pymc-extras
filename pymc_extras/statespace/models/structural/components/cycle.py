@@ -94,13 +94,13 @@ class CycleComponent(Component):
             intitial_trend = pm.Normal('initial_trend', dims=ss_mod.param_dims['initial_trend'])
             sigma_trend = pm.HalfNormal('sigma_trend', dims=ss_mod.param_dims['sigma_trend'])
 
-            cycle_strength = pm.Normal('business_cycle')
+            cycle_strength = pm.Normal("business_cycle", dims=ss_mod.param_dims["business_cycle"])
             cycle_length = pm.Uniform('business_cycle_length', lower=6, upper=12)
 
             sigma_cycle = pm.HalfNormal('sigma_business_cycle', sigma=1)
-            ss_mod.build_statespace_graph(data)
 
-            idata = pm.sample(nuts_sampler='numpyro')
+            ss_mod.build_statespace_graph(data)
+            idata = pm.sample()
 
     **Multivariate Example:**
     Model cycles for multiple economic indicators with variable-specific innovation variances:
@@ -122,6 +122,7 @@ class CycleComponent(Component):
 
         # In PyMC model:
         with pm.Model(coords=ss_mod.coords) as model:
+            P0 = pm.Deterministic("P0", pt.eye(ss_mod.k_states), dims=ss_mod.param_dims["P0"])
             # Initial states: shape (3, 2) for 3 variables, 2 states each
             cycle_init = pm.Normal('business_cycle', dims=('business_cycle_endog', 'business_cycle_state'))
 
@@ -130,6 +131,9 @@ class CycleComponent(Component):
 
             # Innovation variances: shape (3,) for variable-specific variances
             sigma_cycle = pm.HalfNormal('sigma_business_cycle', dims=('business_cycle_endog',))
+
+            ss_mod.build_statespace_graph(data)
+            idata = pm.sample()
 
     References
     ----------
