@@ -143,13 +143,16 @@ def get_conditional_gaussian_approximation(
 
     # Full log(p(x | y, params)) using the Laplace approximation (up to a constant)
     _, logdetQ = pt.nlinalg.slogdet(Q)
-    conditional_gaussian_approx = (
-        -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x0) + 0.5 * logdetQ
-    )
+    # conditional_gaussian_approx = (
+    #     -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x0) + 0.5 * logdetQ
+    # )
+
+    # In the future, this could be made more efficient with only adding the diagonal of -hess
+    tau = Q - hess
 
     # Currently x is passed both as the query point for f(x, args) = logp(x | y, params) AND as an initial guess for x0. This may cause issues if the query point is
     # far from the mode x0 or in a neighbourhood which results in poor convergence.
-    return pytensor.function(args, pm.MvNormal(mu=x0, tau=Q-hess))
+    return pytensor.function(args, [x0, pm.MvNormal(mu=x0, tau=tau)])
 
 
 def laplace_draws_to_inferencedata(
