@@ -1,6 +1,7 @@
 import numpy as np
 
 from pytensor import tensor as pt
+from pytensor.tensor.slinalg import block_diag
 from scipy import linalg
 
 from pymc_extras.statespace.models.structural.core import Component
@@ -96,7 +97,6 @@ class CycleComponent(Component):
 
             cycle_strength = pm.Normal("business_cycle", dims=ss_mod.param_dims["business_cycle"])
             cycle_length = pm.Uniform('business_cycle_length', lower=6, upper=12)
-
             sigma_cycle = pm.HalfNormal('sigma_business_cycle', sigma=1)
 
             ss_mod.build_statespace_graph(data)
@@ -124,13 +124,15 @@ class CycleComponent(Component):
         with pm.Model(coords=ss_mod.coords) as model:
             P0 = pm.Deterministic("P0", pt.eye(ss_mod.k_states), dims=ss_mod.param_dims["P0"])
             # Initial states: shape (3, 2) for 3 variables, 2 states each
-            cycle_init = pm.Normal('business_cycle', dims=('business_cycle_endog', 'business_cycle_state'))
+            cycle_init = pm.Normal('business_cycle', dims=ss_mod.param_dims["business_cycle"])
 
             # Dampening factor: scalar (shared across variables)
-            dampening = pm.Uniform('business_cycle_dampening_factor', lower=0.8, upper=1.0)
+            dampening = pm.Beta("business_cycle_dampening_factor", 2, 2)
 
             # Innovation variances: shape (3,) for variable-specific variances
-            sigma_cycle = pm.HalfNormal('sigma_business_cycle', dims=('business_cycle_endog',))
+            sigma_cycle = pm.HalfNormal(
+                "sigma_business_cycle", dims=ss_mod.param_dims["sigma_business_cycle"]
+            )
 
             ss_mod.build_statespace_graph(data)
             idata = pm.sample()
@@ -220,12 +222,8 @@ class CycleComponent(Component):
         if self.k_endog == 1:
             self.ssm["transition", :, :] = T
         else:
-            # can't make the linalg.block_diag logic work here
-            # doing it manually for now
-            for i in range(self.k_endog):
-                start_idx = i * 2
-                end_idx = (i + 1) * 2
-                self.ssm["transition", start_idx:end_idx, start_idx:end_idx] = T
+            transition = block_diag(*[T for _ in range(self.k_endog)])
+            self.ssm["transition"] = pt.specify_shape(transition, (self.k_states, self.k_states))
 
         if self.innovations:
             if self.k_endog == 1:
@@ -235,16 +233,20 @@ class CycleComponent(Component):
                 sigma_cycle = self.make_and_register_variable(
                     f"sigma_{self.name}", shape=(self.k_endog,)
                 )
-                # can't make the linalg.block_diag logic work here
-                # doing it manually for now
-                for i in range(self.k_endog):
-                    start_idx = i * 2
-                    end_idx = (i + 1) * 2
-                    Q_block = pt.eye(2) * sigma_cycle[i] ** 2
-                    self.ssm["state_cov", start_idx:end_idx, start_idx:end_idx] = Q_block
+                state_cov = block_diag(
+                    *[pt.eye(2) * sigma_cycle[i] ** 2 for i in range(self.k_endog)]
+                )
+                self.ssm["state_cov"] = pt.specify_shape(state_cov, (self.k_states, self.k_states))
 
     def populate_component_properties(self):
-        self.state_names = [f"{self.name}_{f}" for f in ["Cos", "Sin"]]
+        if self.k_endog == 1:
+            self.state_names = [f"{self.name}_{f}" for f in ["Cos", "Sin"]]
+        else:
+            # For multivariate cycles, create state names for each observed state
+            self.state_names = []
+            for var_name in self.observed_state_names:
+                self.state_names.extend([f"{self.name}_{var_name}_{f}" for f in ["Cos", "Sin"]])
+
         self.param_names = [f"{self.name}"]
 
         if self.k_endog == 1:
@@ -260,7 +262,7 @@ class CycleComponent(Component):
         else:
             self.param_dims = {self.name: (f"{self.name}_endog", f"{self.name}_state")}
             self.coords = {
-                f"{self.name}_state": self.state_names,
+                f"{self.name}_state": [f"{self.name}_Cos", f"{self.name}_Sin"],
                 f"{self.name}_endog": self.observed_state_names,
             }
             self.param_info = {
