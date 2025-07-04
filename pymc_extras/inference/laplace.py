@@ -121,11 +121,13 @@ def get_conditional_gaussian_approximation(
 
     # f = log(p(y | x, params))
     f_x = model.logp()
-    jac = pytensor.gradient.grad(f_x, x)
-    hess = pytensor.gradient.jacobian(jac.flatten(), x)
+    # jac = pytensor.gradient.grad(f_x, x)
+    # hess = pytensor.gradient.jacobian(jac.flatten(), x)
 
     # log(p(x | y, params)) only including terms that depend on x for the minimization step (logdet(Q) ignored as it is a constant wrt x)
-    log_x_posterior = f_x - 0.5 * (x - mu).T @ Q @ (x - mu)
+    log_x_posterior = f_x - 0.5 * (x - mu).T @ Q @ (
+        x - mu
+    )  # TODO could be f + x.logp - IS X.LOGP DUPLICATED IN F?
 
     # Maximize log(p(x | y, params)) wrt x to find mode x0
     x0, _ = minimize(
@@ -138,11 +140,13 @@ def get_conditional_gaussian_approximation(
     )
 
     # require f'(x0) and f''(x0) for Laplace approx
-    jac = pytensor.graph.replace.graph_replace(jac, {x: x0})
+    # jac = pytensor.graph.replace.graph_replace(jac, {x: x0})
+    jac = pytensor.gradient.grad(f_x, x)
+    hess = pytensor.gradient.jacobian(jac.flatten(), x)
     hess = pytensor.graph.replace.graph_replace(hess, {x: x0})
 
     # Full log(p(x | y, params)) using the Laplace approximation (up to a constant)
-    _, logdetQ = pt.nlinalg.slogdet(Q)
+    # _, logdetQ = pt.nlinalg.slogdet(Q)
     # conditional_gaussian_approx = (
     #     -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x0) + 0.5 * logdetQ
     # )
@@ -152,7 +156,11 @@ def get_conditional_gaussian_approximation(
 
     # Currently x is passed both as the query point for f(x, args) = logp(x | y, params) AND as an initial guess for x0. This may cause issues if the query point is
     # far from the mode x0 or in a neighbourhood which results in poor convergence.
-    return pytensor.function(args, [x0, pm.MvNormal(mu=x0, tau=tau)])
+    return (
+        x0,
+        pm.MvNormal(f"{x.name}_laplace_approx", mu=x0, tau=tau),
+        tau,
+    )  # pytensor.function(args, [x0, pm.MvNormal(mu=x0, tau=tau)])
 
 
 def laplace_draws_to_inferencedata(

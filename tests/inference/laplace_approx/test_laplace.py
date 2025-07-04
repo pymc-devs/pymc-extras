@@ -363,7 +363,7 @@ def test_get_conditional_gaussian_approximation():
         Q = pm.MvNormal("Q", mu=Q_mu, cov=Q_cov)
 
         # Pytensor currently doesn't support autograd for pt inverses, so we use a numeric Q instead
-        x = pm.MvNormal("x", mu=mu_param, cov=np.linalg.inv(Q_val))
+        x = pm.MvNormal("x", mu=mu_param, tau=Q)  # cov=np.linalg.inv(Q_val))
 
         y = pm.MvNormal(
             "y",
