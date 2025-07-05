@@ -1,7 +1,6 @@
 import numpy as np
 
 from pytensor import tensor as pt
-from scipy import linalg
 
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.utils.constants import TIME_DIM
@@ -69,7 +68,7 @@ class RegressionComponent(Component):
 
         self.ssm["initial_state", :] = betas.reshape((1, -1)).squeeze()
         T = np.eye(k_states)
-        self.ssm["transition", :, :] = linalg.block_diag(*[T for _ in range(k_endog)])
+        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
         self.ssm["selection", :, :] = np.eye(self.k_states)
         Z = pt.linalg.block_diag(*[pt.expand_dims(regression_data, 1) for _ in range(k_endog)])
         self.ssm["design"] = pt.specify_shape(
