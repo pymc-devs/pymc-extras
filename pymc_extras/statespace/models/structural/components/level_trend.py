@@ -167,15 +167,19 @@ class LevelTrendComponent(Component):
 
         name_slice = POSITION_DERIVATIVE_NAMES[:k_states]
         self.param_names = ["initial_trend"]
-        self.state_names = [name for name, mask in zip(name_slice, self._order_mask) if mask]
+        base_names = [name for name, mask in zip(name_slice, self._order_mask) if mask]
+        self.state_names = [
+            f"{name}[{obs_name}]" for obs_name in self.observed_state_names for name in base_names
+        ]
         self.param_dims = {"initial_trend": ("trend_state",)}
-        self.coords = {"trend_state": self.state_names}
+        self.coords = {"trend_state": base_names}
 
         if k_endog > 1:
             self.param_dims["trend_state"] = (
                 "trend_endog",
                 "trend_state",
             )
+            self.param_dims = {"initial_trend": ("trend_endog", "trend_state")}
             self.coords["trend_endog"] = self.observed_state_names
 
         shape = (k_endog, k_states) if k_endog > 1 else (k_states,)
