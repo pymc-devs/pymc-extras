@@ -1,30 +1,33 @@
 import logging
 
 from collections.abc import Callable
-from importlib.util import find_spec
-from typing import Literal, cast, get_args
+from typing import Literal, cast
 
+import arviz as az
 import numpy as np
 import pymc as pm
-import pytensor
-import pytensor.tensor as pt
 
 from better_optimize import basinhopping, minimize
 from better_optimize.constants import MINIMIZE_MODE_KWARGS, minimize_method
 from pymc.blocking import DictToArrayBijection, RaveledVars
 from pymc.initial_point import make_initial_point_fn
 from pymc.model.transform.optimization import freeze_dims_and_data
-from pymc.pytensorf import join_nonshared_inputs
 from pymc.util import get_default_varnames
-from pytensor.compile import Function
-from pytensor.compile.mode import Mode
 from pytensor.tensor import TensorVariable
 from scipy.optimize import OptimizeResult
 
-_log = logging.getLogger(__name__)
+from pymc_extras.inference.laplace_approx.idata import (
+    add_data_to_inference_data,
+    add_fit_to_inference_data,
+    add_map_posterior_to_inference_data,
+    add_optimizer_result_to_inference_data,
+)
+from pymc_extras.inference.laplace_approx.scipy_interface import (
+    GradientBackend,
+    scipy_optimize_funcs_from_loss,
+)
 
-GradientBackend = Literal["pytensor", "jax"]
-VALID_BACKENDS = get_args(GradientBackend)
+_log = logging.getLogger(__name__)
 
 
 def set_optimizer_function_defaults(method, use_grad, use_hess, use_hessp):
@@ -81,265 +84,105 @@ def get_nearest_psd(A: np.ndarray) -> np.ndarray:
     return eigvec @ np.diag(eigval) @ eigvec.T
 
 
-def _unconstrained_vector_to_constrained_rvs(model):
-    constrained_rvs, unconstrained_vector = join_nonshared_inputs(
-        model.initial_point(),
-        inputs=model.value_vars,
-        outputs=get_default_varnames(model.unobserved_value_vars, include_transformed=False),
+def _make_initial_point(model, initvals=None, random_seed=None, jitter_rvs=None):
+    jitter_rvs = [] if jitter_rvs is None else jitter_rvs
+
+    ipfn = make_initial_point_fn(
+        model=model,
+        jitter_rvs=set(jitter_rvs),
+        return_transformed=True,
+        overrides=initvals,
     )
 
-    unconstrained_vector.name = "unconstrained_vector"
-    return constrained_rvs, unconstrained_vector
-
-
-def _create_transformed_draws(H_inv, slices, out_shapes, posterior_draws, model, chains, draws):
-    X = pt.tensor("transformed_draws", shape=(chains, draws, H_inv.shape[0]))
-    out = []
-    for rv, idx in slices.items():
-        f = model.rvs_to_transforms[rv]
-        untransformed_X = f.backward(X[..., idx]) if f is not None else X[..., idx]
-
-        if rv in out_shapes:
-            new_shape = (chains, draws) + out_shapes[rv]
-            untransformed_X = untransformed_X.reshape(new_shape)
-
-        out.append(untransformed_X)
-
-    f_untransform = pytensor.function(
-        inputs=[pytensor.In(X, borrow=True)],
-        outputs=pytensor.Out(out, borrow=True),
-        mode=Mode(linker="py", optimizer="FAST_COMPILE"),
+    start_dict = ipfn(random_seed)
+    vars_dict = {var.name: var for var in model.continuous_value_vars}
+    initial_params = DictToArrayBijection.map(
+        {var_name: value for var_name, value in start_dict.items() if var_name in vars_dict}
     )
-    return f_untransform(posterior_draws)
+
+    return initial_params
 
 
-def _compile_grad_and_hess_to_jax(
-    f_fused: Function, use_hess: bool, use_hessp: bool
-) -> tuple[Callable | None, Callable | None]:
+def _compute_inverse_hessian(
+    optimizer_result: OptimizeResult | None,
+    optimal_point: np.ndarray | None,
+    f_fused: Callable | None,
+    f_hessp: Callable | None,
+    use_hess: bool,
+    method: minimize_method | Literal["BFGS", "L-BFGS-B"],
+):
     """
-    Compile loss function gradients using JAX.
+    Compute the Hessian matrix or its inverse based on the optimization result and the method used.
+
+    Downstream functions (e.g. laplace approximation) will need the inverse Hessian matrix. This function computes it
+    in the cheapest way possible, depending on the optimization method used and the available compiled functions.
 
     Parameters
     ----------
-    f_fused: Function
-        The loss function to compile gradients for. Expected to be a pytensor function that returns a scalar loss,
-        compiled with mode="JAX".
+    optimizer_result: OptimizeResult, optional
+        The result of the optimization, containing the optimized parameters and possibly an approximate inverse Hessian.
+    optimal_point: np.ndarray, optional
+        The optimal point found by the optimizer, used to compute the Hessian if necessary. If not provided, it will be
+        extracted from the optimizer result.
+    f_fused: callable, optional
+        The compiled function representing the loss and possibly its gradient and Hessian.
+    f_hessp: callable, optional
+        The compiled function for Hessian-vector products, if available.
     use_hess: bool
-        Whether to compile a function to compute the hessian of the loss function.
-    use_hessp: bool
-        Whether to compile a function to compute the hessian-vector product of the loss function.
+        Whether the Hessian matrix was used in the optimization.
+    method: minimize_method
+        The optimization method used, which determines how the Hessian is computed.
 
     Returns
     -------
-    f_fused: Callable
-        The compiled loss function and gradient function, which may also compute the hessian if requested.
-    f_hessp: Callable | None
-        The compiled hessian-vector product function, or None if use_hessp is False.
+    H_inv: np.ndarray
+        The inverse Hessian matrix, computed based on the optimization method and available functions.
     """
-    import jax
+    if optimal_point is None and optimizer_result is None:
+        raise ValueError("At least one of `optimal_point` or `optimizer_result` must be provided.")
 
-    f_hessp = None
+    x_star = optimizer_result.x if optimizer_result is not None else optimal_point
+    n_vars = len(x_star)
 
-    orig_loss_fn = f_fused.vm.jit_fn
+    if method == "BFGS" and optimizer_result is not None:
+        # If we used BFGS, the optimizer result will contain the inverse Hessian -- we can just use that rather than
+        # re-computing something
+        if hasattr(optimizer_result, "lowest_optimization_result"):
+            # We did basinhopping, need to get the inner optimizer results
+            H_inv = getattr(optimizer_result.lowest_optimization_result, "hess_inv", None)
+        else:
+            H_inv = getattr(optimizer_result, "hess_inv", None)
 
-    if use_hess:
+    elif method == "L-BFGS-B" and optimizer_result is not None:
+        # Here we will have a LinearOperator representing the inverse Hessian-Vector product.
+        if hasattr(optimizer_result, "lowest_optimization_result"):
+            # We did basinhopping, need to get the inner optimizer results
+            f_hessp_inv = getattr(optimizer_result.lowest_optimization_result, "hess_inv", None)
+        else:
+            f_hessp_inv = getattr(optimizer_result, "hess_inv", None)
 
-        @jax.jit
-        def loss_fn_fused(x):
-            loss_and_grad = jax.value_and_grad(lambda x: orig_loss_fn(x)[0])(x)
-            hess = jax.hessian(lambda x: orig_loss_fn(x)[0])(x)
-            return *loss_and_grad, hess
+        if f_hessp_inv is not None:
+            basis = np.eye(n_vars)
+            H_inv = np.stack([f_hessp_inv(basis[:, i]) for i in range(n_vars)], axis=-1)
+        else:
+            H_inv = None
+
+    elif f_hessp is not None:
+        # In the case that hessp was used, the results object will not save the inverse Hessian, so we can compute it from
+        # the hessp function, using euclidian basis vector.
+        basis = np.eye(n_vars)
+        H = np.stack([f_hessp(x_star, basis[:, i]) for i in range(n_vars)], axis=-1)
+        H_inv = np.linalg.inv(get_nearest_psd(H))
+
+    elif use_hess and f_fused is not None:
+        # If we compiled a hessian function, just use it
+        _, _, H = f_fused(x_star)
+        H_inv = np.linalg.inv(get_nearest_psd(H))
 
     else:
+        H_inv = None
 
-        @jax.jit
-        def loss_fn_fused(x):
-            return jax.value_and_grad(lambda x: orig_loss_fn(x)[0])(x)
-
-    if use_hessp:
-
-        def f_hessp_jax(x, p):
-            y, u = jax.jvp(lambda x: loss_fn_fused(x)[1], (x,), (p,))
-            return jax.numpy.stack(u)
-
-        f_hessp = jax.jit(f_hessp_jax)
-
-    return loss_fn_fused, f_hessp
-
-
-def _compile_functions_for_scipy_optimize(
-    loss: TensorVariable,
-    inputs: list[TensorVariable],
-    compute_grad: bool,
-    compute_hess: bool,
-    compute_hessp: bool,
-    compile_kwargs: dict | None = None,
-) -> list[Function] | list[Function, Function | None, Function | None]:
-    """
-    Compile loss functions for use with scipy.optimize.minimize.
-
-    Parameters
-    ----------
-    loss: TensorVariable
-        The loss function to compile.
-    inputs: list[TensorVariable]
-        A single flat vector input variable, collecting all inputs to the loss function. Scipy optimize routines
-        expect the function signature to be f(x, *args), where x is a 1D array of parameters.
-    compute_grad: bool
-        Whether to compile a function that computes the gradients of the loss function.
-    compute_hess: bool
-        Whether to compile a function that computes the Hessian of the loss function.
-    compute_hessp: bool
-        Whether to compile a function that computes the Hessian-vector product of the loss function.
-    compile_kwargs: dict, optional
-        Additional keyword arguments to pass to the ``pm.compile`` function.
-
-    Returns
-    -------
-    f_fused: Function
-        The compiled loss function, which may also include gradients and hessian if requested.
-    f_hessp: Function | None
-        The compiled hessian-vector product function, or None if compute_hessp is False.
-    """
-    compile_kwargs = {} if compile_kwargs is None else compile_kwargs
-
-    loss = pm.pytensorf.rewrite_pregrad(loss)
-    f_hessp = None
-
-    # In the simplest case, we only compile the loss function. Return it as a list to keep the return type consistent
-    # with the case where we also compute gradients, hessians, or hessian-vector products.
-    if not (compute_grad or compute_hess or compute_hessp):
-        f_loss = pm.compile(inputs, loss, **compile_kwargs)
-        return [f_loss]
-
-    # Otherwise there are three cases. If the user only wants the loss function and gradients, we compile a single
-    # fused function and retun it. If the user also wants the hession, the fused function will return the loss,
-    # gradients and hessian. If the user wants gradients and hess_p, we return a fused function that returns the loss
-    # and gradients, and a separate function for the hessian-vector product.
-
-    if compute_hessp:
-        # Handle this first, since it can be compiled alone.
-        p = pt.tensor("p", shape=inputs[0].type.shape)
-        hessp = pytensor.gradient.hessian_vector_product(loss, inputs, p)
-        f_hessp = pm.compile([*inputs, p], hessp[0], **compile_kwargs)
-
-    outputs = [loss]
-
-    if compute_grad:
-        grads = pytensor.gradient.grad(loss, inputs)
-        grad = pt.concatenate([grad.ravel() for grad in grads])
-        outputs.append(grad)
-
-    if compute_hess:
-        hess = pytensor.gradient.jacobian(grad, inputs)[0]
-        outputs.append(hess)
-
-    f_fused = pm.compile(inputs, outputs, **compile_kwargs)
-
-    return [f_fused, f_hessp]
-
-
-def scipy_optimize_funcs_from_loss(
-    loss: TensorVariable,
-    inputs: list[TensorVariable],
-    initial_point_dict: dict[str, np.ndarray | float | int],
-    use_grad: bool,
-    use_hess: bool,
-    use_hessp: bool,
-    gradient_backend: GradientBackend = "pytensor",
-    compile_kwargs: dict | None = None,
-) -> tuple[Callable, ...]:
-    """
-    Compile loss functions for use with scipy.optimize.minimize.
-
-    Parameters
-    ----------
-    loss: TensorVariable
-        The loss function to compile.
-    inputs: list[TensorVariable]
-        The input variables to the loss function.
-    initial_point_dict: dict[str, np.ndarray | float | int]
-        Dictionary mapping variable names to initial values. Used to determine the shapes of the input variables.
-    use_grad: bool
-        Whether to compile a function that computes the gradients of the loss function.
-    use_hess: bool
-        Whether to compile a function that computes the Hessian of the loss function.
-    use_hessp: bool
-        Whether to compile a function that computes the Hessian-vector product of the loss function.
-    gradient_backend: str, default "pytensor"
-        Which backend to use to compute gradients. Must be one of "jax" or "pytensor"
-    compile_kwargs:
-        Additional keyword arguments to pass to the ``pm.compile`` function.
-
-    Returns
-    -------
-    f_fused: Callable
-        The compiled loss function, which may also include gradients and hessian if requested.
-    f_hessp: Callable | None
-        The compiled hessian-vector product function, or None if use_hessp is False.
-    """
-
-    compile_kwargs = {} if compile_kwargs is None else compile_kwargs
-
-    if (use_hess or use_hessp) and not use_grad:
-        raise ValueError(
-            "Cannot compute hessian or hessian-vector product without also computing the gradient"
-        )
-
-    if gradient_backend not in VALID_BACKENDS:
-        raise ValueError(
-            f"Invalid gradient backend: {gradient_backend}. Must be one of {VALID_BACKENDS}"
-        )
-
-    use_jax_gradients = (gradient_backend == "jax") and use_grad
-    if use_jax_gradients and not find_spec("jax"):
-        raise ImportError("JAX must be installed to use JAX gradients")
-
-    mode = compile_kwargs.get("mode", None)
-    if mode is None and use_jax_gradients:
-        compile_kwargs["mode"] = "JAX"
-    elif mode != "JAX" and use_jax_gradients:
-        raise ValueError(
-            'jax gradients can only be used when ``compile_kwargs["mode"]`` is set to "JAX"'
-        )
-
-    if not isinstance(inputs, list):
-        inputs = [inputs]
-
-    [loss], flat_input = join_nonshared_inputs(
-        point=initial_point_dict, outputs=[loss], inputs=inputs
-    )
-
-    # If we use pytensor gradients, we will use the pytensor function wrapper that handles shared variables. When
-    # computing jax gradients, we discard the function wrapper, so we can't handle shared variables --> rewrite them
-    # away.
-    if use_jax_gradients:
-        from pymc.sampling.jax import _replace_shared_variables
-
-        [loss] = _replace_shared_variables([loss])
-
-    compute_grad = use_grad and not use_jax_gradients
-    compute_hess = use_hess and not use_jax_gradients
-    compute_hessp = use_hessp and not use_jax_gradients
-
-    funcs = _compile_functions_for_scipy_optimize(
-        loss=loss,
-        inputs=[flat_input],
-        compute_grad=compute_grad,
-        compute_hess=compute_hess,
-        compute_hessp=compute_hessp,
-        compile_kwargs=compile_kwargs,
-    )
-
-    # Depending on the requested functions, f_fused will either be the loss function, the loss function with gradients,
-    # or the loss function with gradients and hessian.
-    f_fused = funcs.pop(0)
-    f_hessp = funcs.pop(0) if compute_hessp else None
-
-    if use_jax_gradients:
-        f_fused, f_hessp = _compile_grad_and_hess_to_jax(f_fused, use_hess, use_hessp)
-
-    return f_fused, f_hessp
+    return H_inv
 
 
 def find_MAP(
@@ -351,14 +194,18 @@ def find_MAP(
     use_hess: bool | None = None,
     initvals: dict | None = None,
     random_seed: int | np.random.Generator | None = None,
-    return_raw: bool = False,
     jitter_rvs: list[TensorVariable] | None = None,
     progressbar: bool = True,
     include_transformed: bool = True,
     gradient_backend: GradientBackend = "pytensor",
     compile_kwargs: dict | None = None,
     **optimizer_kwargs,
-) -> dict[str, np.ndarray] | tuple[dict[str, np.ndarray], OptimizeResult]:
+) -> (
+    dict[str, np.ndarray]
+    | tuple[dict[str, np.ndarray], np.ndarray]
+    | tuple[dict[str, np.ndarray], OptimizeResult]
+    | tuple[dict[str, np.ndarray], OptimizeResult, np.ndarray]
+):
     """
     Fit a PyMC model via maximum a posteriori (MAP) estimation using JAX and scipy.optimize.
 
@@ -381,12 +228,10 @@ def find_MAP(
         Whether to use the Hessian matrix in the optimization. Defaults to None, which determines this automatically based on
         the ``method``.
     initvals : None | dict, optional
-        Initial values for the model parameters, as str:ndarray key-value pairs. Paritial initialization is permitted.
+        Initial values for the model parameters, as str:ndarray key-value pairs. Partial initialization is permitted.
          If None, the model's default initial values are used.
     random_seed : None | int | np.random.Generator, optional
         Seed for the random number generator or a numpy Generator for reproducibility
-    return_raw: bool | False, optinal
-        Whether to also return the full output of `scipy.optimize.minimize`
     jitter_rvs : list of TensorVariables, optional
         Variables whose initial values should be jittered. If None, all variables are jittered.
     progressbar : bool, optional
@@ -404,28 +249,15 @@ def find_MAP(
 
     Returns
     -------
-    optimizer_result: dict[str, np.ndarray] or tuple[dict[str, np.ndarray], OptimizerResult]
-        Dictionary with names of random variables as keys, and optimization results as values. If return_raw is True,
-        also returns the object returned by ``scipy.optimize.minimize``.
+    map_result: az.InferenceData
+        Results of Maximum A Posteriori (MAP) estimation, including the optimized point, inverse Hessian, transformed
+        latent variables, and optimizer results.
     """
-    model = pm.modelcontext(model)
+    model = pm.modelcontext(model) if model is None else model
     frozen_model = freeze_dims_and_data(model)
-
-    jitter_rvs = [] if jitter_rvs is None else jitter_rvs
     compile_kwargs = {} if compile_kwargs is None else compile_kwargs
 
-    ipfn = make_initial_point_fn(
-        model=frozen_model,
-        jitter_rvs=set(jitter_rvs),
-        return_transformed=True,
-        overrides=initvals,
-    )
-
-    start_dict = ipfn(random_seed)
-    vars_dict = {var.name: var for var in frozen_model.continuous_value_vars}
-    initial_params = DictToArrayBijection.map(
-        {var_name: value for var_name, value in start_dict.items() if var_name in vars_dict}
-    )
+    initial_params = _make_initial_point(frozen_model, initvals, random_seed, jitter_rvs)
 
     do_basinhopping = method == "basinhopping"
     minimizer_kwargs = optimizer_kwargs.pop("minimizer_kwargs", {})
@@ -443,9 +275,9 @@ def find_MAP(
     )
 
     f_fused, f_hessp = scipy_optimize_funcs_from_loss(
-        loss=-frozen_model.logp(jacobian=False),
+        loss=-frozen_model.logp(),
         inputs=frozen_model.continuous_value_vars + frozen_model.discrete_value_vars,
-        initial_point_dict=start_dict,
+        initial_point_dict=DictToArrayBijection.rmap(initial_params),
         use_grad=use_grad,
         use_hess=use_hess,
         use_hessp=use_hessp,
@@ -491,38 +323,27 @@ def find_MAP(
         DictToArrayBijection.rmap(raveled_optimized)
     )
 
-    # Downstream computation will probably want the covaraince matrix at the optimized point, so we compute it here,
-    # while we still have access to the compiled function.
-    x_star = optimizer_result.x
-    n_vars = len(x_star)
-
-    if method == "BFGS":
-        # If we used BFGS, the optimizer result will contain the inverse Hessian -- we can just use that rather than
-        # re-computing something
-        getattr(optimizer_result, "hess_inv", None)
-    elif method == "L-BFGS-B":
-        # Here we will have a LinearOperator representing the inverse Hessian-Vector product.
-        f_hessp_inv = optimizer_result.hess_inv
-        basis = np.eye(n_vars)
-        np.stack([f_hessp_inv(basis[:, i]) for i in range(n_vars)], axis=-1)
-
-    elif f_hessp is not None:
-        # In the case that hessp was used, the results object will not save the inverse Hessian, so we can compute it from
-        # the hessp function, using euclidian basis vector.
-        basis = np.eye(n_vars)
-        H = np.stack([f_hessp(optimizer_result.x, basis[:, i]) for i in range(n_vars)], axis=-1)
-        np.linalg.inv(get_nearest_psd(H))
-
-    elif use_hess:
-        # If we compiled a hessian function, just use it
-        _, _, H = f_fused(x_star)
-        np.linalg.inv(get_nearest_psd(H))
-
     optimized_point = {
         var.name: value for var, value in zip(unobserved_vars, unobserved_vars_values)
     }
 
-    if return_raw:
-        return optimized_point, optimizer_result
+    H_inv = _compute_inverse_hessian(
+        optimizer_result=optimizer_result,
+        optimal_point=None,
+        f_fused=f_fused,
+        f_hessp=f_hessp,
+        use_hess=use_hess,
+        method=method,
+    )
 
-    return optimized_point
+    idata = az.InferenceData()
+    idata = add_map_posterior_to_inference_data(idata, optimized_point, frozen_model)
+    idata = add_fit_to_inference_data(idata, raveled_optimized, H_inv)
+    idata = add_optimizer_result_to_inference_data(
+        idata, optimizer_result, method, raveled_optimized, model
+    )
+    idata = add_data_to_inference_data(
+        idata, progressbar=False, model=model, compile_kwargs=compile_kwargs
+    )
+
+    return idata
