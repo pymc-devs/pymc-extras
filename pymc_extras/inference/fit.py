@@ -36,7 +36,17 @@ def fit(method: str, **kwargs) -> az.InferenceData:
 
         return fit_pathfinder(**kwargs)
 
-    if method == "laplace":
-        from pymc_extras.inference import fit_laplace
+    elif method == "laplace":
+        from pymc_extras.inference.laplace import fit_laplace
 
         return fit_laplace(**kwargs)
+
+    elif method == "INLA":
+        from pymc_extras.inference.laplace import fit_INLA
+
+        return fit_INLA(**kwargs)
+
+    else:
+        raise ValueError(
+            f"method '{method}' not supported. Use one of 'pathfinder', 'laplace' or 'INLA'."
+        )
