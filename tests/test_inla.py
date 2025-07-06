@@ -76,7 +76,7 @@ def test_get_conditional_gaussian_approximation():
             x=model.rvs_to_values[x],
             Q=Q.reshape((d, d)),
             mu=mu_param,
-            optimizer_kwargs={"tol": 1e-25},
+            optimizer_kwargs={"tol": 1e-8},
         )
 
     cga = pytensor.function(args, [x0, pm.logp(x_g, model.rvs_to_values[x])])
