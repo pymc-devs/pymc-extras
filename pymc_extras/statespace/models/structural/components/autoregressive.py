@@ -100,7 +100,7 @@ class AutoregressiveComponent(Component):
             for i in range(k_states)
         ]
 
-        self.shock_names = self.observed_state_names.copy()
+        self.shock_names = [f"{self.name}[{obs_name}]" for obs_name in self.observed_state_names]
         self.param_names = [f"{self.name}_params", f"{self.name}_sigma"]
         self.param_dims = {f"{self.name}_params": (f"{self.name}_lag",)}
         self.coords = {f"{self.name}_lag": self.ar_lags.tolist()}

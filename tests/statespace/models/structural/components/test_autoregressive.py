@@ -13,13 +13,7 @@ from tests.statespace.test_utilities import simulate_from_numpy_model
 
 @pytest.mark.parametrize("order", [1, 2, [1, 0, 1]], ids=["AR1", "AR2", "AR(1,0,1)"])
 def test_autoregressive_model(order, rng):
-    k = sum(order) if isinstance(order, list) else order
     ar = st.AutoregressiveComponent(order=order).build(verbose=False)
-    params = {
-        "auto_regressive_params": np.full((k,), 0.5, dtype=config.floatX),
-        "auto_regressive_sigma": 0.1,
-        "initial_state_cov": np.eye(k),
-    }
 
     # Check coords
     _assert_basic_coords_correct(ar)
@@ -47,7 +41,7 @@ def test_autoregressive_multiple_observed_build(rng):
         "L3[data_2]",
     ]
 
-    assert mod.shock_names == ["data_1", "data_2"]
+    assert mod.shock_names == ["auto_regressive[data_1]", "auto_regressive[data_2]"]
 
     params = {
         "auto_regressive_params": np.full(
@@ -133,6 +127,6 @@ def test_add_autoregressive_different_observed():
         "L6[data_2]",
     ]
 
-    assert mod.shock_names == ["data_1", "data_2"]
+    assert mod.shock_names == ["ar1[data_1]", "ar6[data_2]"]
     assert mod.coords["ar1_lag"] == [1]
     assert mod.coords["ar6_lag"] == [1, 2, 3, 4, 5, 6]

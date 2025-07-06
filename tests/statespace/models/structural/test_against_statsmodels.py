@@ -416,8 +416,8 @@ def create_structural_model_and_equivalent_statsmodel(
         expected_coords[AR_PARAM_DIM] += tuple(list(range(1, autoregressive + 1)))
         expected_coords[ALL_STATE_DIM] += ar_names
         expected_coords[ALL_STATE_AUX_DIM] += ar_names
-        expected_coords[SHOCK_DIM] += ["data"]
-        expected_coords[SHOCK_AUX_DIM] += ["data"]
+        expected_coords[SHOCK_DIM] += ["ar"]
+        expected_coords[SHOCK_AUX_DIM] += ["ar"]
 
         sm_params["sigma2.ar"] = sigma2
         for i, rho in enumerate(ar_params):
