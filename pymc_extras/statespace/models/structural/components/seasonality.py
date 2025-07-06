@@ -154,27 +154,41 @@ class TimeSeasonality(Component):
             # TODO: Can this be stashed and reconstructed automatically somehow?
             state_names.pop(0)
 
+        self.provided_state_names = state_names
+
         k_states = season_length - int(self.remove_first_state)
+        k_endog = len(observed_state_names)
+        k_posdef = int(innovations)
 
         super().__init__(
             name=name,
-            k_endog=len(observed_state_names),
-            k_states=k_states,
-            k_posdef=int(innovations),
-            state_names=state_names,
+            k_endog=k_endog,
+            k_states=k_states * k_endog,
+            k_posdef=k_posdef * k_endog,
             observed_state_names=observed_state_names,
             measurement_error=False,
             combine_hidden_states=True,
-            obs_state_idxs=np.r_[[1.0], np.zeros(k_states - 1)],
+            obs_state_idxs=np.tile(np.array([1.0] + [0.0] * (k_states - 1)), k_endog),
         )
 
     def populate_component_properties(self):
+        k_states = self.k_states // self.k_endog
+        k_endog = self.k_endog
+
+        self.state_names = [
+            f"{state_name}[{endog_name}]"
+            for endog_name in self.observed_state_names
+            for state_name in self.provided_state_names
+        ]
         self.param_names = [f"{self.name}_coefs"]
+
         self.param_info = {
             f"{self.name}_coefs": {
-                "shape": (self.k_states,),
+                "shape": (k_states,) if k_endog == 1 else (k_endog, k_states),
                 "constraints": None,
-                "dims": (f"{self.name}_state",),
+                "dims": (f"{self.name}_state",)
+                if k_endog == 1
+                else (f"{self.name}_endog", f"{self.name}_state"),
             }
         }
         self.param_dims = {f"{self.name}_coefs": (f"{self.name}_state",)}
@@ -187,32 +201,41 @@ class TimeSeasonality(Component):
                 "constraints": "Positive",
                 "dims": None,
             }
-            self.shock_names = [f"{self.name}"]
+            self.shock_names = [f"{self.name}[{name}]" for name in self.observed_state_names]
 
     def make_symbolic_graph(self) -> None:
+        k_states = self.k_states // self.k_endog
+        k_posdef = self.k_posdef // self.k_endog
+        k_endog = self.k_endog
+
         if self.remove_first_state:
             # In this case, parameters are normalized to sum to zero, so the current state is the negative sum of
             # all previous states.
-            T = np.eye(self.k_states, k=-1)
+            T = np.eye(k_states, k=-1)
             T[0, :] = -1
         else:
             # In this case we assume the user to be responsible for ensuring the states sum to zero, so T is just a
             # circulant matrix that cycles between the states.
-            T = np.eye(self.k_states, k=1)
+            T = np.eye(k_states, k=1)
             T[-1, 0] = 1
 
-        self.ssm["transition", :, :] = T
-        self.ssm["design", 0, 0] = 1
+        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
+
+        Z = pt.zeros((1, k_states))[0, 0].set(1)
+        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
 
         initial_states = self.make_and_register_variable(
-            f"{self.name}_coefs", shape=(self.k_states,)
+            f"{self.name}_coefs", shape=(k_states,) if k_endog == 1 else (k_endog, k_states)
         )
-        self.ssm["initial_state", np.arange(self.k_states, dtype=int)] = initial_states
+        self.ssm["initial_state", :] = initial_states.ravel()
 
         if self.innovations:
-            self.ssm["selection", 0, 0] = 1
-            season_sigma = self.make_and_register_variable(f"sigma_{self.name}", shape=())
-            cov_idx = ("state_cov", *np.diag_indices(1))
+            R = pt.zeros((k_states, k_posdef))[0, 0].set(1.0)
+            self.ssm["selection", :, :] = pt.join(0, *[R for _ in range(k_endog)])
+            season_sigma = self.make_and_register_variable(
+                f"sigma_{self.name}", shape=() if k_endog == 1 else (k_endog,)
+            )
+            cov_idx = ("state_cov", *np.diag_indices(k_posdef * k_endog))
             self.ssm[cov_idx] = season_sigma**2
 
 
