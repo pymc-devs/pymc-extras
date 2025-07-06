@@ -167,7 +167,9 @@ def exog_pymc_mod(exog_ss_mod, exog_data):
         P0_diag = pm.Gamma("P0_diag", alpha=2, beta=4, dims=["state"])
         P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=["state", "state_aux"])
 
-        initial_trend = pm.Normal("initial_trend", mu=[0], sigma=[0.005], dims=["trend_state"])
+        initial_trend = pm.Normal(
+            "level_trend_initial", mu=[0], sigma=[0.005], dims=["level_trend_state"]
+        )
 
         data_exog = pm.Data(
             "data_exog", exog_data["x1"].values[:, None], dims=["time", "exog_state"]
@@ -184,12 +186,12 @@ def pymc_mod_no_exog(ss_mod_no_exog, rng):
     y = pd.DataFrame(rng.normal(size=(100, 1)).astype(floatX), columns=["y"])
 
     with pm.Model(coords=ss_mod_no_exog.coords) as m:
-        initial_trend = pm.Normal("initial_trend", dims=["trend_state"])
+        initial_trend = pm.Normal("level_trend_initial", dims=["level_trend_state"])
         P0_sigma = pm.Exponential("P0_sigma", 1)
         P0 = pm.Deterministic(
             "P0", pt.eye(ss_mod_no_exog.k_states) * P0_sigma, dims=["state", "state_aux"]
         )
-        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["trend_shock"])
+        sigma_trend = pm.Exponential("level_trend_sigma", 1, dims=["level_trend_shock"])
         ss_mod_no_exog.build_statespace_graph(y)
 
     return m
@@ -204,12 +206,12 @@ def pymc_mod_no_exog_dt(ss_mod_no_exog_dt, rng):
     )
 
     with pm.Model(coords=ss_mod_no_exog_dt.coords) as m:
-        initial_trend = pm.Normal("initial_trend", dims=["trend_state"])
+        initial_trend = pm.Normal("level_trend_initial", dims=["level_trend_state"])
         P0_sigma = pm.Exponential("P0_sigma", 1)
         P0 = pm.Deterministic(
             "P0", pt.eye(ss_mod_no_exog_dt.k_states) * P0_sigma, dims=["state", "state_aux"]
         )
-        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["trend_shock"])
+        sigma_trend = pm.Exponential("level_trend_sigma", 1, dims=["level_trend_shock"])
         ss_mod_no_exog_dt.build_statespace_graph(y)
 
     return m
@@ -313,7 +315,7 @@ def test_build_statespace_graph_warns_if_data_has_nans():
     ss_mod = st.LevelTrendComponent(order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
-        initial_trend = pm.Normal("initial_trend", shape=(1,))
+        initial_trend = pm.Normal("level_trend_initial", shape=(1,))
         P0 = pm.Deterministic("P0", pt.eye(1, dtype=floatX))
         with pytest.warns(pm.ImputationWarning):
             ss_mod.build_statespace_graph(
@@ -326,7 +328,7 @@ def test_build_statespace_graph_raises_if_data_has_missing_fill():
     ss_mod = st.LevelTrendComponent(order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
-        initial_trend = pm.Normal("initial_trend", shape=(1,))
+        initial_trend = pm.Normal("level_trend_initial", shape=(1,))
         P0 = pm.Deterministic("P0", pt.eye(1, dtype=floatX))
         with pytest.raises(ValueError, match="Provided data contains the value 1.0"):
             data = np.ones((10, 1), dtype=floatX)
