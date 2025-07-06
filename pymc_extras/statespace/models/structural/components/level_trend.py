@@ -12,7 +12,6 @@ class LevelTrendComponent(Component):
 
     Parameters
     ----------
-    __________
     order : int
 
         Number of time derivatives of the trend to include in the model. For example, when order=3, the trend will
