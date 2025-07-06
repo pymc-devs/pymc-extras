@@ -61,12 +61,16 @@ class RegressionComponent(Component):
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog
         k_states = self.k_states // k_endog
-        self.k_posdef // k_endog
 
-        betas = self.make_and_register_variable(f"beta_{self.name}", shape=(k_endog, k_states))
         regression_data = self.make_and_register_data(f"data_{self.name}", shape=(None, k_states))
 
-        self.ssm["initial_state", :] = betas.reshape((1, -1)).squeeze()
+        if k_endog > 1:
+            betas = self.make_and_register_variable(f"beta_{self.name}", shape=(k_endog, k_states))
+            self.ssm["initial_state", :] = betas.ravel()
+        else:
+            betas = self.make_and_register_variable(f"beta_{self.name}", shape=(k_states,))
+            self.ssm["initial_state", :] = betas
+
         T = np.eye(k_states)
         self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
         self.ssm["selection", :, :] = np.eye(self.k_states)
@@ -85,28 +89,44 @@ class RegressionComponent(Component):
     def populate_component_properties(self) -> None:
         k_endog = self.k_endog
         k_states = self.k_states // k_endog
-        self.k_posdef // k_endog
 
         self.shock_names = self.state_names
 
         self.param_names = [f"beta_{self.name}"]
         self.data_names = [f"data_{self.name}"]
-        self.param_dims = {
-            f"beta_{self.name}": ("exog_endog", "exog_state"),
-        }
+        if k_endog > 1:
+            self.param_dims = {
+                f"beta_{self.name}": ("exog_endog", "exog_state"),
+            }
+
+            self.param_info = {
+                f"beta_{self.name}": {
+                    "shape": (k_endog, k_states),
+                    "constraints": None,
+                    "dims": ("exog_endog", "exog_state"),
+                },
+            }
+        else:
+            self.param_dims = {
+                f"beta_{self.name}": ("exog_state",),
+            }
+            self.param_info = {
+                f"beta_{self.name}": {
+                    "shape": (k_states,),
+                    "constraints": None,
+                    "dims": ("exog_state",),
+                },
+            }
 
         base_names = self.state_names
-        self.state_names = [
-            f"{name}[{obs_name}]" for obs_name in self.observed_state_names for name in base_names
-        ]
-
-        self.param_info = {
-            f"beta_{self.name}": {
-                "shape": (k_endog, k_states),
-                "constraints": None,
-                "dims": ("exog_endog", "exog_state"),
-            },
-        }
+        if k_endog > 1:
+            self.state_names = [
+                f"{name}[{obs_name}]"
+                for obs_name in self.observed_state_names
+                for name in base_names
+            ]
+        else:
+            pass
 
         self.data_info = {
             f"data_{self.name}": {

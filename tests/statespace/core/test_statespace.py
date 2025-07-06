@@ -882,7 +882,9 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
     )
 
     components = exog_ss_mod.extract_components_from_idata(forecast_idata)
-    level = components.forecast_latent.sel(state="LevelTrend[level]")
+    level = components.forecast_latent.sel(
+        state="LevelTrend[level[data]]"
+    )  # temporarily adjusting naming. will re-adjust when naming schema is agreed upon.
     betas = components.forecast_latent.sel(state=["exog[x1]"])
 
     scenario.index.name = "time"
