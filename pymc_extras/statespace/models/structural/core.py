@@ -483,13 +483,12 @@ class Component:
     def _get_combined_shapes(self, other):
         k_states = self.k_states + other.k_states
         k_posdef = self.k_posdef + other.k_posdef
-        if self.k_endog == other.k_endog:
-            k_endog = self.k_endog
-        else:
-            combined_states = self._combine_property(
-                other, "observed_state_names", allow_duplicates=False
-            )
-            k_endog = len(combined_states)
+
+        # To count endog states, we have to count unique names between the two components.
+        combined_states = self._combine_property(
+            other, "observed_state_names", allow_duplicates=False
+        )
+        k_endog = len(combined_states)
 
         return k_states, k_posdef, k_endog
 
