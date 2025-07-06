@@ -220,7 +220,7 @@ def create_structural_model_and_equivalent_statsmodel(
 
     if level:
         level_trend_order[0] = 1
-        expected_coords["trend_state"] += [
+        expected_coords["level_state"] += [
             "level",
         ]
         expected_coords[ALL_STATE_DIM] += [
@@ -231,7 +231,7 @@ def create_structural_model_and_equivalent_statsmodel(
         ]
         if stochastic_level:
             level_trend_innov_order[0] = 1
-            expected_coords["trend_shock"] += ["level"]
+            expected_coords["level_shock"] += ["level"]
             expected_coords[SHOCK_DIM] += [
                 "level",
             ]
@@ -241,7 +241,7 @@ def create_structural_model_and_equivalent_statsmodel(
 
     if trend:
         level_trend_order[1] = 1
-        expected_coords["trend_state"] += [
+        expected_coords["level_state"] += [
             "trend",
         ]
         expected_coords[ALL_STATE_DIM] += [
@@ -253,12 +253,12 @@ def create_structural_model_and_equivalent_statsmodel(
 
         if stochastic_trend:
             level_trend_innov_order[1] = 1
-            expected_coords["trend_shock"] += ["trend"]
+            expected_coords["level_shock"] += ["trend"]
             expected_coords[SHOCK_DIM] += ["trend"]
             expected_coords[SHOCK_AUX_DIM] += ["trend"]
 
     if level or trend:
-        expected_param_dims["initial_trend"] += ("trend_state",)
+        expected_param_dims["level_initial"] += ("level_state",)
         level_value = np.where(
             level_trend_order,
             rng.normal(
@@ -272,13 +272,13 @@ def create_structural_model_and_equivalent_statsmodel(
         max_order = np.flatnonzero(level_value)[-1].item() + 1
         level_trend_order = level_trend_order[:max_order]
 
-        params["initial_trend"] = level_value[:max_order]
+        params["level_initial"] = level_value[:max_order]
         sm_init["level"] = level_value[0]
         sm_init["trend"] = level_value[1]
 
         if sum(level_trend_innov_order) > 0:
-            expected_param_dims["sigma_trend"] += ("trend_shock",)
-            params["sigma_trend"] = np.sqrt(sigma_level_value2)
+            expected_param_dims["level_sigma"] += ("level_shock",)
+            params["level_sigma"] = np.sqrt(sigma_level_value2)
 
         sigma_level_value = sigma_level_value2.tolist()
         if stochastic_level:
