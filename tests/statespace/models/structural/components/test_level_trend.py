@@ -45,7 +45,7 @@ def test_level_trend_multiple_observed_construction():
         "level[data_3]",
         "trend[data_3]",
     ]
-    assert mod.shock_names == ["level_shock[data_1]", "level_shock[data_2]", "level_shock[data_3]"]
+    assert mod.shock_names == ["level[data_1]", "level[data_2]", "level[data_3]"]
 
     Z, T, R = pytensor.function(
         [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
