@@ -76,16 +76,19 @@ class StructuralTimeSeries(PyMCStateSpace):
         param_names, param_dims, param_info = self._add_inital_state_cov_to_properties(
             param_names, param_dims, param_info, k_states
         )
-        self._state_names = state_names.copy()
-        self._data_names = data_names.copy()
-        self._shock_names = shock_names.copy()
-        self._param_names = param_names.copy()
-        self._param_dims = param_dims.copy()
+
+        self._state_names = self._strip_data_names_if_unambiguous(state_names, k_endog)
+        self._data_names = self._strip_data_names_if_unambiguous(data_names, k_endog)
+        self._shock_names = self._strip_data_names_if_unambiguous(shock_names, k_endog)
+        self._param_names = self._strip_data_names_if_unambiguous(param_names, k_endog)
+        self._param_dims = param_dims
 
         default_coords = make_default_coords(self)
         coords.update(default_coords)
 
-        self._coords = coords
+        self._coords = {
+            k: self._strip_data_names_if_unambiguous(v, k_endog) for k, v in coords.items()
+        }
         self._param_info = param_info.copy()
         self._data_info = data_info.copy()
         self.measurement_error = measurement_error
@@ -121,6 +124,25 @@ class StructuralTimeSeries(PyMCStateSpace):
 
         P0 = self.make_and_register_variable("P0", shape=(self.k_states, self.k_states))
         self.ssm["initial_state_cov"] = P0
+
+    def _strip_data_names_if_unambiguous(self, names: list[str], k_endog: int):
+        """
+        State names from components should always be of the form name[data_name], in the case that the component is
+        associated with multiple observed states. Not doing so leads to ambiguity -- we might have two level states,
+        but which goes to which observed component? So we set `level[data_1]` and `level[data_2]`.
+
+        In cases where there is only one observed state (when k_endog == 1), we can strip the data part and just use
+        the state name. This is a bit cleaner.
+        """
+        if k_endog == 1:
+            [data_name] = self.observed_states
+            return [
+                name.replace(f"[{data_name}]", "") if isinstance(name, str) else name
+                for name in names
+            ]
+
+        else:
+            return names
 
     @staticmethod
     def _add_inital_state_cov_to_properties(param_names, param_dims, param_info, k_states):

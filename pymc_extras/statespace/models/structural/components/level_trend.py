@@ -168,9 +168,7 @@ class LevelTrendComponent(Component):
         self.param_names = [f"{self.name}_initial"]
         base_names = [name for name, mask in zip(name_slice, self._order_mask) if mask]
         self.state_names = [
-            f"{name}[{obs_name}]" if k_endog > 1 else name
-            for obs_name in self.observed_state_names
-            for name in base_names
+            f"{name}[{obs_name}]" for obs_name in self.observed_state_names for name in base_names
         ]
         self.param_dims = {f"{self.name}_initial": (f"{self.name}_state",)}
         self.coords = {f"{self.name}_state": base_names}
@@ -193,7 +191,7 @@ class LevelTrendComponent(Component):
                 name for name, mask in zip(name_slice, self.innovations_order) if mask
             ]
             self.shock_names = [
-                f"{name}[{obs_name}]" if k_endog > 1 else name
+                f"{name}[{obs_name}]"
                 for obs_name in self.observed_state_names
                 for name in shock_base_names
             ]

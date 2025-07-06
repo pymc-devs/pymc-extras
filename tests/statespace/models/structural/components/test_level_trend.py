@@ -119,7 +119,7 @@ def test_add_level_trend_with_different_observed():
     assert mod.coords["grw_state"] == ["level"]
 
     assert mod.state_names == ["level[data_1]", "trend[data_1]", "level[data_2]"]
-    assert mod.shock_names == ["trend_shock[data_1]", "level_shock[data_2]"]
+    assert mod.shock_names == ["trend[data_1]", "level[data_2]"]
 
     Z, T, R = pytensor.function(
         [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
