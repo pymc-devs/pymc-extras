@@ -404,20 +404,20 @@ def create_structural_model_and_equivalent_statsmodel(
         components.append(comp)
 
     if autoregressive is not None:
-        ar_names = [f"L{i+1}.data" for i in range(autoregressive)]
+        ar_names = [f"L{i+1}" for i in range(autoregressive)]
         ar_params = rng.normal(size=(autoregressive,)).astype(floatX)
         if autoregressive == 1:
             ar_params = ar_params.item()
         sigma2 = np.abs(rng.normal()).astype(floatX)
 
         params["ar_params"] = ar_params
-        params["sigma_ar"] = np.sqrt(sigma2)
+        params["ar_sigma"] = np.sqrt(sigma2)
         expected_param_dims["ar_params"] += (AR_PARAM_DIM,)
         expected_coords[AR_PARAM_DIM] += tuple(list(range(1, autoregressive + 1)))
         expected_coords[ALL_STATE_DIM] += ar_names
         expected_coords[ALL_STATE_AUX_DIM] += ar_names
-        expected_coords[SHOCK_DIM] += ["data_ar_innovation"]
-        expected_coords[SHOCK_AUX_DIM] += ["data_ar_innovation"]
+        expected_coords[SHOCK_DIM] += ["data"]
+        expected_coords[SHOCK_AUX_DIM] += ["data"]
 
         sm_params["sigma2.ar"] = sigma2
         for i, rho in enumerate(ar_params):
