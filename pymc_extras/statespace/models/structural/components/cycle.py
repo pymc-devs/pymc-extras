@@ -193,6 +193,8 @@ class CycleComponent(Component):
         design_matrix = block_diag(*[Z for _ in range(self.k_endog)])
         self.ssm["design", :, :] = pt.as_tensor_variable(design_matrix)
 
+        # selection matrix R defines structure of innovations (always identity for cycle components)
+        # when innovations=False, state cov Q=0, hence R @ Q @ R.T = 0
         R = np.eye(2)  # 2x2 identity for each cycle component
         selection_matrix = block_diag(*[R for _ in range(self.k_endog)])
         self.ssm["selection", :, :] = pt.as_tensor_variable(selection_matrix)
@@ -228,6 +230,9 @@ class CycleComponent(Component):
                     *[pt.eye(2) * sigma_cycle[i] ** 2 for i in range(self.k_endog)]
                 )
                 self.ssm["state_cov"] = pt.specify_shape(state_cov, (self.k_states, self.k_states))
+        else:
+            # explicitly set state cov to 0 when no innovations
+            self.ssm["state_cov", :, :] = pt.zeros((self.k_posdef, self.k_posdef))
 
     def populate_component_properties(self):
         self.state_names = [
