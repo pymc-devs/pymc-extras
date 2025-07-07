@@ -121,13 +121,13 @@ def pymc_mod(ss_mod):
 
 @pytest.fixture(scope="session")
 def ss_mod_no_exog(rng):
-    ll = st.LevelTrendComponent(order=2, innovations_order=1)
+    ll = st.LevelTrendComponent(name="trend", order=2, innovations_order=1)
     return ll.build()
 
 
 @pytest.fixture(scope="session")
 def ss_mod_no_exog_dt(rng):
-    ll = st.LevelTrendComponent(order=2, innovations_order=1)
+    ll = st.LevelTrendComponent(name="trend", order=2, innovations_order=1)
     return ll.build()
 
 
@@ -148,7 +148,7 @@ def exog_data(rng):
 
 @pytest.fixture(scope="session")
 def exog_ss_mod(exog_data):
-    level_trend = st.LevelTrendComponent(order=1, innovations_order=[0])
+    level_trend = st.LevelTrendComponent(name="trend", order=1, innovations_order=[0])
     exog = st.RegressionComponent(
         name="exog",  # Name of this exogenous variable component
         k_exog=1,  # Only one exogenous variable now
@@ -310,7 +310,7 @@ def test_update_raises_if_missing_variables(ss_mod):
 
 def test_build_statespace_graph_warns_if_data_has_nans():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrendComponent(order=1, innovations_order=0).build(verbose=False)
+    ss_mod = st.LevelTrendComponent(name="trend", order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))
@@ -323,7 +323,7 @@ def test_build_statespace_graph_warns_if_data_has_nans():
 
 def test_build_statespace_graph_raises_if_data_has_missing_fill():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrendComponent(order=1, innovations_order=0).build(verbose=False)
+    ss_mod = st.LevelTrendComponent(name="trend", order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))
@@ -883,7 +883,7 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
 
     components = exog_ss_mod.extract_components_from_idata(forecast_idata)
     level = components.forecast_latent.sel(
-        state="LevelTrend[level[data]]"
+        state="trend[level[data]]"
     )  # temporarily adjusting naming. will re-adjust when naming schema is agreed upon.
     betas = components.forecast_latent.sel(state=["exog[x1]"])
 

@@ -166,35 +166,37 @@ class LevelTrendComponent(Component):
         k_posdef = self.k_posdef // k_endog
 
         name_slice = POSITION_DERIVATIVE_NAMES[:k_states]
-        self.param_names = ["initial_trend"]
+        self.param_names = [f"initial_{self.name}"]
         base_names = [name for name, mask in zip(name_slice, self._order_mask) if mask]
         self.state_names = [
             f"{name}[{obs_name}]" for obs_name in self.observed_state_names for name in base_names
         ]
-        self.param_dims = {"initial_trend": ("trend_state",)}
-        self.coords = {"trend_state": base_names}
+        self.param_dims = {f"initial_{self.name}": (f"{self.name}_state",)}
+        self.coords = {f"{self.name}_state": base_names}
 
         if k_endog > 1:
-            self.param_dims["trend_state"] = (
-                "trend_endog",
-                "trend_state",
+            self.param_dims[f"{self.name}_state"] = (
+                f"{self.name}_endog",
+                f"{self.name}_state",
             )
-            self.param_dims = {"initial_trend": ("trend_endog", "trend_state")}
-            self.coords["trend_endog"] = self.observed_state_names
+            self.param_dims = {f"initial_{self.name}": (f"{self.name}_endog", f"{self.name}_state")}
+            self.coords[f"{self.name}_endog"] = self.observed_state_names
 
         shape = (k_endog, k_states) if k_endog > 1 else (k_states,)
-        self.param_info = {"initial_trend": {"shape": shape, "constraints": None}}
+        self.param_info = {f"initial_{self.name}": {"shape": shape, "constraints": None}}
 
         if self.k_posdef > 0:
-            self.param_names += ["sigma_trend"]
+            self.param_names += [f"sigma_{self.name}"]
             self.shock_names = [
                 name for name, mask in zip(name_slice, self.innovations_order) if mask
             ]
-            self.param_dims["sigma_trend"] = (
-                ("trend_shock",) if k_endog == 1 else ("trend_endog", "trend_shock")
+            self.param_dims[f"sigma_{self.name}"] = (
+                (f"{self.name}_shock",)
+                if k_endog == 1
+                else (f"{self.name}_endog", f"{self.name}_shock")
             )
-            self.coords["trend_shock"] = self.shock_names
-            self.param_info["sigma_trend"] = {
+            self.coords[f"{self.name}_shock"] = self.shock_names
+            self.param_info[f"sigma_{self.name}"] = {
                 "shape": (k_posdef,) if k_endog == 1 else (k_endog, k_posdef),
                 "constraints": "Positive",
             }
@@ -208,7 +210,7 @@ class LevelTrendComponent(Component):
         k_posdef = self.k_posdef // k_endog
 
         initial_trend = self.make_and_register_variable(
-            "initial_trend",
+            f"initial_{self.name}",
             shape=(k_states,) if k_endog == 1 else (k_endog, k_states),
         )
         self.ssm["initial_state", :] = initial_trend.ravel()
@@ -229,7 +231,7 @@ class LevelTrendComponent(Component):
 
         if k_posdef > 0:
             sigma_trend = self.make_and_register_variable(
-                "sigma_trend",
+                f"sigma_{self.name}",
                 shape=(k_posdef,) if k_endog == 1 else (k_endog, k_posdef),
             )
             diag_idx = np.diag_indices(k_posdef * k_endog)
