@@ -211,3 +211,78 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
     for i in range(3):
         expected_Q[2 * i : 2 * i + 2, 2 * i : 2 * i + 2] = np.eye(2) * sigmas[i] ** 2
     np.testing.assert_allclose(Q, expected_Q)
+
+
+def test_add_multivariate_cycle_components_with_different_observed():
+    """
+    Test adding two multivariate CycleComponents with different observed_state_names.
+    Ensures that combining two multivariate CycleComponents with different observed state names
+    results in the correct block-diagonal state space matrices and state naming.
+    """
+    cycle1 = st.CycleComponent(
+        name="cycle1",
+        cycle_length=12,
+        estimate_cycle_length=False,
+        innovations=False,
+        observed_state_names=["a1", "a2"],
+    )
+    cycle2 = st.CycleComponent(
+        name="cycle2",
+        cycle_length=6,
+        estimate_cycle_length=False,
+        innovations=False,
+        observed_state_names=["b1", "b2"],
+    )
+    mod = (cycle1 + cycle2).build(verbose=False)
+
+    # check dimensions
+    assert mod.k_endog == 4
+    assert mod.k_states == 8
+    assert mod.k_posdef == 2 * mod.k_endog  # 2 innovations per variable
+
+    # check state names and coords
+    expected_state_names = [
+        "cycle1_Cos[a1]",
+        "cycle1_Sin[a1]",
+        "cycle1_Cos[a2]",
+        "cycle1_Sin[a2]",
+        "cycle2_Cos[b1]",
+        "cycle2_Sin[b1]",
+        "cycle2_Cos[b2]",
+        "cycle2_Sin[b2]",
+    ]
+    assert mod.state_names == expected_state_names
+
+    assert mod.coords["cycle1_state"] == ["cycle1_Cos", "cycle1_Sin"]
+    assert mod.coords["cycle2_state"] == ["cycle2_Cos", "cycle2_Sin"]
+    assert mod.coords["cycle1_endog"] == ["a1", "a2"]
+    assert mod.coords["cycle2_endog"] == ["b1", "b2"]
+
+    # evaluate design, transition, selection matrices
+    Z, T, R = pytensor.function(
+        [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
+    )()
+
+    # design: each row selects first state of its block
+    expected_Z = np.zeros((4, 8))
+    expected_Z[0, 0] = 1.0  # "a1" -> cycle1_Cos[a1]
+    expected_Z[1, 2] = 1.0  # "a2" -> cycle1_Cos[a2]
+    expected_Z[2, 4] = 1.0  # "b1" -> cycle2_Cos[b1]
+    expected_Z[3, 6] = 1.0  # "b2" -> cycle2_Cos[b2]
+    assert_allclose(Z, expected_Z)
+
+    # transition: block diagonal, each block is 2x2 frequency transition matrix
+    block1 = _frequency_transition_block(12, 1).eval()
+    block2 = _frequency_transition_block(6, 1).eval()
+    expected_T = np.zeros((8, 8))
+    for i in range(2):
+        expected_T[2 * i : 2 * i + 2, 2 * i : 2 * i + 2] = block1
+    for i in range(2):
+        expected_T[4 + 2 * i : 4 + 2 * i + 2, 4 + 2 * i : 4 + 2 * i + 2] = block2
+    assert_allclose(T, expected_T)
+
+    # selection: block diagonal, each block is 2x2 identity
+    expected_R = np.zeros((8, 8))
+    for i in range(4):
+        expected_R[2 * i : 2 * i + 2, 2 * i : 2 * i + 2] = np.eye(2)
+    assert_allclose(R, expected_R)
