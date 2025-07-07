@@ -301,8 +301,10 @@ class FrequencySeasonality(Component):
         if observed_state_names is None:
             observed_state_names = ["data"]
 
+        k_endog = len(observed_state_names)
+
         if n is None:
-            n = int(season_length // 2)
+            n = int(season_length / 2)
         if name is None:
             name = f"Frequency[s={season_length}, n={n}]"
 
@@ -319,12 +321,13 @@ class FrequencySeasonality(Component):
 
         obs_state_idx = np.zeros(k_states)
         obs_state_idx[slice(0, k_states, 2)] = 1
+        obs_state_idx = np.tile(obs_state_idx, k_endog)
 
         super().__init__(
             name=name,
-            k_endog=1,
-            k_states=k_states,
-            k_posdef=k_states * int(self.innovations),
+            k_endog=k_endog,
+            k_states=k_states * k_endog,
+            k_posdef=k_states * int(self.innovations) * k_endog,
             observed_state_names=observed_state_names,
             measurement_error=False,
             combine_hidden_states=True,
@@ -332,45 +335,83 @@ class FrequencySeasonality(Component):
         )
 
     def make_symbolic_graph(self) -> None:
-        self.ssm["design", 0, slice(0, self.k_states, 2)] = 1
+        k_endog = self.k_endog
+        k_states = self.k_states // k_endog
+        k_posdef = self.k_posdef // k_endog
+        n_coefs = self.n_coefs
 
-        init_state = self.make_and_register_variable(f"{self.name}", shape=(self.n_coefs,))
+        Z = pt.zeros((1, k_states))[0, slice(0, k_states, 2)].set(1.0)
 
-        init_state_idx = np.arange(self.n_coefs, dtype=int)
-        self.ssm["initial_state", init_state_idx] = init_state
+        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
+
+        init_state = self.make_and_register_variable(
+            f"{self.name}", shape=(n_coefs,) if k_endog == 1 else (k_endog, n_coefs)
+        )
+
+        init_state_idx = np.concatenate(
+            [
+                np.arange(k_states * i, (i + 1) * k_states, dtype=int)[:n_coefs]
+                for i in range(k_endog)
+            ],
+            axis=0,
+        )
+
+        self.ssm["initial_state", init_state_idx] = init_state.ravel()
 
         T_mats = [_frequency_transition_block(self.season_length, j + 1) for j in range(self.n)]
         T = pt.linalg.block_diag(*T_mats)
-        self.ssm["transition", :, :] = T
+        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
 
         if self.innovations:
-            sigma_season = self.make_and_register_variable(f"sigma_{self.name}", shape=())
-            self.ssm["state_cov", :, :] = pt.eye(self.k_posdef) * sigma_season**2
-            self.ssm["selection", :, :] = np.eye(self.k_states)
+            sigma_season = self.make_and_register_variable(
+                f"sigma_{self.name}", shape=() if k_endog == 1 else (k_endog,)
+            )
+            self.ssm["selection", :, :] = pt.eye(self.k_states)
+            self.ssm["state_cov", :, :] = pt.eye(self.k_posdef) * pt.repeat(
+                sigma_season**2, k_posdef
+            )
 
     def populate_component_properties(self):
-        self.state_names = [f"{self.name}_{f}_{i}" for i in range(self.n) for f in ["Cos", "Sin"]]
+        k_endog = self.k_endog
+        n_coefs = self.n_coefs
+        k_states = self.k_states // k_endog
+
+        self.state_names = [
+            f"{self.name}_{f}_{i}[{obs_state_name}]"
+            for obs_state_name in self.observed_state_names
+            for i in range(self.n)
+            for f in ["Cos", "Sin"]
+        ]
         self.param_names = [f"{self.name}"]
 
         self.param_dims = {self.name: (f"{self.name}_state",)}
         self.param_info = {
             f"{self.name}": {
-                "shape": (self.k_states - int(self.last_state_not_identified),),
+                "shape": (n_coefs,) if k_endog == 1 else (k_endog, n_coefs),
                 "constraints": None,
-                "dims": (f"{self.name}_state",),
+                "dims": (f"{self.name}_state",)
+                if k_endog == 1
+                else (f"{self.name}_endog", f"{self.name}_state"),
             }
         }
 
-        init_state_idx = np.arange(self.k_states, dtype=int)
-        if self.last_state_not_identified:
-            init_state_idx = init_state_idx[:-1]
+        # Regardless of whether the fourier basis are saturated, there will always be one symbolic state per basis.
+        # That's why the self.states is just a simple loop over everything. But when saturated, one of those states
+        # doesn't have an associated **parameter**, so the coords need to be adjusted to reflect this.
+        init_state_idx = np.concatenate(
+            [
+                np.arange(k_states * i, (i + 1) * k_states, dtype=int)[:n_coefs]
+                for i in range(k_endog)
+            ],
+            axis=0,
+        )
         self.coords = {f"{self.name}_state": [self.state_names[i] for i in init_state_idx]}
 
         if self.innovations:
             self.shock_names = self.state_names.copy()
             self.param_names += [f"sigma_{self.name}"]
             self.param_info[f"sigma_{self.name}"] = {
-                "shape": (),
+                "shape": () if k_endog == 1 else (k_endog, n_coefs),
                 "constraints": "Positive",
-                "dims": None,
+                "dims": None if k_endog == 1 else (f"{self.name}_endog",),
             }
