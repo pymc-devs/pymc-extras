@@ -884,7 +884,7 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
     )
 
     components = exog_ss_mod.extract_components_from_idata(forecast_idata)
-    level = components.forecast_latent.sel(state="LevelTrend[level]")
+    level = components.forecast_latent.sel(state="level_trend[level]")
     betas = components.forecast_latent.sel(state=["exog[x1]"])
 
     scenario.index.name = "time"
