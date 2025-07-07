@@ -2,7 +2,6 @@ import numpy as np
 
 from pytensor import tensor as pt
 from pytensor.tensor.slinalg import block_diag
-from scipy import linalg
 
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
@@ -190,22 +189,17 @@ class CycleComponent(Component):
         )
 
     def make_symbolic_graph(self) -> None:
-        if self.k_endog == 1:
-            self.ssm["design", 0, slice(0, self.k_states, 2)] = 1
-            self.ssm["selection", :, :] = np.eye(self.k_states)
-            init_state = self.make_and_register_variable(f"{self.name}", shape=(self.k_states,))
+        Z = np.array([1.0, 0.0]).reshape((1, -1))
+        design_matrix = block_diag(*[Z for _ in range(self.k_endog)])
+        self.ssm["design", :, :] = pt.as_tensor_variable(design_matrix)
 
-        else:
-            Z = np.array([1.0, 0.0]).reshape((1, -1))
-            design_matrix = linalg.block_diag(*[Z for _ in range(self.k_endog)])
-            self.ssm["design", :, :] = pt.as_tensor_variable(design_matrix)
+        R = np.eye(2)  # 2x2 identity for each cycle component
+        selection_matrix = block_diag(*[R for _ in range(self.k_endog)])
+        self.ssm["selection", :, :] = pt.as_tensor_variable(selection_matrix)
 
-            R = np.eye(2)  # 2x2 identity for each cycle component
-            selection_matrix = linalg.block_diag(*[R for _ in range(self.k_endog)])
-            self.ssm["selection", :, :] = pt.as_tensor_variable(selection_matrix)
-
-            init_state = self.make_and_register_variable(f"{self.name}", shape=(self.k_endog, 2))
-
+        init_state = self.make_and_register_variable(
+            f"{self.name}", shape=(self.k_endog, 2) if self.k_endog > 1 else (self.k_states,)
+        )
         self.ssm["initial_state", :] = init_state.ravel()
 
         if self.estimate_cycle_length:
@@ -219,11 +213,8 @@ class CycleComponent(Component):
             rho = 1
 
         T = rho * _frequency_transition_block(lamb, j=1)
-        if self.k_endog == 1:
-            self.ssm["transition", :, :] = T
-        else:
-            transition = block_diag(*[T for _ in range(self.k_endog)])
-            self.ssm["transition"] = pt.specify_shape(transition, (self.k_states, self.k_states))
+        transition = block_diag(*[T for _ in range(self.k_endog)])
+        self.ssm["transition"] = pt.specify_shape(transition, (self.k_states, self.k_states))
 
         if self.innovations:
             if self.k_endog == 1:
@@ -239,13 +230,11 @@ class CycleComponent(Component):
                 self.ssm["state_cov"] = pt.specify_shape(state_cov, (self.k_states, self.k_states))
 
     def populate_component_properties(self):
-        if self.k_endog == 1:
-            self.state_names = [f"{self.name}_{f}" for f in ["Cos", "Sin"]]
-        else:
-            # For multivariate cycles, create state names for each observed state
-            self.state_names = []
-            for var_name in self.observed_state_names:
-                self.state_names.extend([f"{self.name}_{var_name}_{f}" for f in ["Cos", "Sin"]])
+        self.state_names = [
+            f"{self.name}_{f}[{var_name}]" if self.k_endog > 1 else f"{self.name}_{f}"
+            for var_name in self.observed_state_names
+            for f in ["Cos", "Sin"]
+        ]
 
         self.param_names = [f"{self.name}"]
 
@@ -276,17 +265,17 @@ class CycleComponent(Component):
         if self.estimate_cycle_length:
             self.param_names += [f"{self.name}_length"]
             self.param_info[f"{self.name}_length"] = {
-                "shape": (),
+                "shape": () if self.k_endog == 1 else (self.k_endog,),
                 "constraints": "Positive, non-zero",
-                "dims": None,
+                "dims": None if self.k_endog == 1 else f"{self.name}_endog",
             }
 
         if self.dampen:
             self.param_names += [f"{self.name}_dampening_factor"]
             self.param_info[f"{self.name}_dampening_factor"] = {
-                "shape": (),
+                "shape": () if self.k_endog == 1 else (self.k_endog,),
                 "constraints": "0 < x ≤ 1",
-                "dims": None,
+                "dims": None if self.k_endog == 1 else f"{self.name}_endog",
             }
 
         if self.innovations:
