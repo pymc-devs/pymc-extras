@@ -618,16 +618,36 @@ def join_tensors_by_dim_labels(
     # Check for no overlap first. In this case, do a block_diagonal join, which implicitly results in padding zeros
     # everywhere they are needed -- no other sorting or padding necessary
     if combined_labels == [*labels, *other_labels]:
-        return pt.linalg.block_diag(tensor, other_tensor)
+        res = pt.linalg.block_diag(tensor, other_tensor)
+        new_shape = [
+            shape_1 + shape_2 if (shape_1 is not None and shape_2 is not None) else None
+            for shape_1, shape_2 in zip(tensor.type.shape, other_tensor.type.shape)
+        ]
+        return pt.specify_shape(res, new_shape)
 
     # Otherwise there is either total overlap or partial overlap. Let the padding and reordering function figure it out.
     tensor = ndim_pad_and_reorder(tensor, labels, combined_labels, labeled_axis)
     other_tensor = ndim_pad_and_reorder(other_tensor, other_labels, combined_labels, labeled_axis)
 
     if block_diag_join:
-        return pt.linalg.block_diag(tensor, other_tensor)
+        new_shape = [
+            shape_1 + shape_2 if (shape_1 is not None and shape_2 is not None) else None
+            for shape_1, shape_2 in zip(tensor.type.shape, other_tensor.type.shape)
+        ]
+        res = pt.linalg.block_diag(tensor, other_tensor)
     else:
-        return pt.concatenate([tensor, other_tensor], axis=join_axis)
+        new_shape = []
+        join_axis_norm = normalize_axis(tensor, join_axis)
+        for i, (shape_1, shape_2) in enumerate(zip(tensor.type.shape, other_tensor.type.shape)):
+            if i == join_axis_norm:
+                new_shape.append(
+                    shape_1 + shape_2 if (shape_1 is not None and shape_2 is not None) else None
+                )
+            else:
+                new_shape.append(shape_1 if shape_1 is not None else shape_2)
+        res = pt.concatenate([tensor, other_tensor], axis=join_axis)
+
+    return pt.specify_shape(res, new_shape)
 
 
 def get_exog_dims_from_idata(exog_name, idata):

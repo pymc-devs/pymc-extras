@@ -22,8 +22,8 @@ def test_add_components():
     mod = ll + se
 
     ll_params = {
-        "initial_trend": np.zeros(2, dtype=floatX),
-        "sigma_trend": np.ones(2, dtype=floatX),
+        "level_trend_initial": np.zeros(2, dtype=floatX),
+        "level_trend_sigma": np.ones(2, dtype=floatX),
     }
     se_params = {
         "seasonal_coefs": np.ones(11, dtype=floatX),
@@ -93,8 +93,8 @@ def test_extract_components_from_idata(rng):
         x0 = pm.Normal("x0", dims=["state"])
         P0 = pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
         beta_exog = pm.Normal("beta_exog", dims=["exog_state"])
-        initial_trend = pm.Normal("initial_trend", dims=["trend_state"])
-        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["trend_shock"])
+        initial_trend = pm.Normal("level_trend_initial", dims=["level_trend_state"])
+        sigma_trend = pm.Exponential("level_trend_sigma", 1, dims=["level_trend_shock"])
         seasonal_coefs = pm.Normal("seasonal", dims=["seasonal_state"])
         sigma_obs = pm.Exponential("sigma_obs", 1)
 
@@ -106,7 +106,7 @@ def test_extract_components_from_idata(rng):
     filter_prior = mod.sample_conditional_prior(prior)
     comp_prior = mod.extract_components_from_idata(filter_prior)
     comp_states = comp_prior.filtered_prior.coords["state"].values
-    expected_states = ["LevelTrend[level]", "LevelTrend[trend]", "seasonal", "exog[a]", "exog[b]"]
+    expected_states = ["level_trend[level]", "level_trend[trend]", "seasonal", "exog[a]", "exog[b]"]
     missing = set(comp_states) - set(expected_states)
 
     assert len(missing) == 0, missing

@@ -80,8 +80,8 @@ def create_model(load_dataset):
                 dims="state",
             )
             P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=("state", "state_aux"))
-            initial_trend = pm.Normal("initial_trend", dims="trend_state")
-            sigma_trend = pm.Exponential("sigma_trend", 1, dims="trend_shock")
+            initial_trend = pm.Normal("level_trend_initial", dims="level_trend_state")
+            sigma_trend = pm.Exponential("level_trend_sigma", 1, dims="level_trend_shock")
             ss_mod.build_statespace_graph(data, save_kalman_filter_outputs_in_idata=True)
         return mod
 
@@ -103,8 +103,8 @@ def test_model_build_without_coords(load_dataset):
     with pm.Model() as mod:
         P0_diag = pm.Exponential("P0_diag", 1, shape=(2,))
         P0 = pm.Deterministic("P0", pt.diag(P0_diag))
-        initial_trend = pm.Normal("initial_trend", shape=(2,))
-        sigma_trend = pm.Exponential("sigma_trend", 1, shape=(2,))
+        initial_trend = pm.Normal("level_trend_initial", shape=(2,))
+        sigma_trend = pm.Exponential("level_trend_sigma", 1, shape=(2,))
         ss_mod.build_statespace_graph(data, register_data=False)
 
     assert mod.coords == {}
@@ -131,8 +131,8 @@ def make_model(index):
         P0_diag = pm.Gamma("P0_diag", alpha=5, beta=5)
         P0 = pm.Deterministic("P0", pt.eye(ss_mod.k_states) * P0_diag, dims=P0_dims)
 
-        initial_trend = pm.Normal("initial_trend", dims=initial_trend_dims)
-        sigma_trend = pm.Gamma("sigma_trend", alpha=2, beta=50, dims=sigma_trend_dims)
+        initial_trend = pm.Normal("level_trend_initial", dims=initial_trend_dims)
+        sigma_trend = pm.Gamma("level_trend_sigma", alpha=2, beta=50, dims=sigma_trend_dims)
 
         with pytest.warns(UserWarning, match="No time index found on the supplied data"):
             ss_mod.build_statespace_graph(

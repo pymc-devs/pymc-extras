@@ -65,7 +65,7 @@ class AutoregressiveComponent(Component):
     def __init__(
         self,
         order: int = 1,
-        name: str = "AutoRegressive",
+        name: str = "auto_regressive",
         observed_state_names: list[str] | None = None,
     ):
         if observed_state_names is None:
@@ -92,27 +92,30 @@ class AutoregressiveComponent(Component):
         )
 
     def populate_component_properties(self):
+        k_states = self.k_states // self.k_endog
+
         self.state_names = [
-            f"L{i + 1}.{state_name}"
-            for i in range(self.k_states)
+            f"L{i + 1}[{state_name}]"
             for state_name in self.observed_state_names
+            for i in range(k_states)
         ]
-        self.shock_names = [f"{name}_{self.name}_innovation" for name in self.observed_state_names]
-        self.param_names = ["ar_params", "sigma_ar"]
-        self.param_dims = {"ar_params": (AR_PARAM_DIM,)}
-        self.coords = {AR_PARAM_DIM: self.ar_lags.tolist()}
+
+        self.shock_names = [f"{self.name}[{obs_name}]" for obs_name in self.observed_state_names]
+        self.param_names = [f"{self.name}_params", f"{self.name}_sigma"]
+        self.param_dims = {f"{self.name}_params": (f"{self.name}_lag",)}
+        self.coords = {f"{self.name}_lag": self.ar_lags.tolist()}
 
         if self.k_endog > 1:
-            self.param_dims["ar_params"] = (
+            self.param_dims[f"{self.name}_params"] = (
                 f"{self.name}_endog",
                 AR_PARAM_DIM,
             )
-            self.param_dims["sigma_ar"] = (f"{self.name}_endog",)
+            self.param_dims[f"{self.name}_sigma"] = (f"{self.name}_endog",)
 
             self.coords[f"{self.name}_endog"] = self.observed_state_names
 
         self.param_info = {
-            "ar_params": {
+            f"{self.name}_params": {
                 "shape": (self.k_states,) if self.k_endog == 1 else (self.k_endog, self.k_states),
                 "constraints": None,
                 "dims": (AR_PARAM_DIM,)
@@ -122,7 +125,7 @@ class AutoregressiveComponent(Component):
                     AR_PARAM_DIM,
                 ),
             },
-            "sigma_ar": {
+            f"{self.name}_sigma": {
                 "shape": () if self.k_endog == 1 else (self.k_endog,),
                 "constraints": "Positive",
                 "dims": None if self.k_endog == 1 else (f"{self.name}_endog",),
@@ -136,10 +139,10 @@ class AutoregressiveComponent(Component):
 
         k_nonzero = int(sum(self.order))
         ar_params = self.make_and_register_variable(
-            "ar_params", shape=(k_nonzero,) if k_endog == 1 else (k_endog, k_nonzero)
+            f"{self.name}_params", shape=(k_nonzero,) if k_endog == 1 else (k_endog, k_nonzero)
         )
         sigma_ar = self.make_and_register_variable(
-            "sigma_ar", shape=() if k_endog == 1 else (k_endog,)
+            f"{self.name}_sigma", shape=() if k_endog == 1 else (k_endog,)
         )
 
         if k_endog == 1:
