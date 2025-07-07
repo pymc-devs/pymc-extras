@@ -106,7 +106,7 @@ def test_extract_components_from_idata(rng):
     filter_prior = mod.sample_conditional_prior(prior)
     comp_prior = mod.extract_components_from_idata(filter_prior)
     comp_states = comp_prior.filtered_prior.coords["state"].values
-    expected_states = ["LevelTrend[level]", "LevelTrend[trend]", "seasonal", "exog[a]", "exog[b]"]
+    expected_states = ["level_trend[level]", "level_trend[trend]", "seasonal", "exog[a]", "exog[b]"]
     missing = set(comp_states) - set(expected_states)
 
     assert len(missing) == 0, missing

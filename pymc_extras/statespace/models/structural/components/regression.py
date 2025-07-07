@@ -10,7 +10,7 @@ class RegressionComponent(Component):
     def __init__(
         self,
         k_exog: int | None = None,
-        name: str | None = "Exogenous",
+        name: str | None = "regression",
         state_names: list[str] | None = None,
         observed_state_names: list[str] | None = None,
         innovations=False,
@@ -61,15 +61,16 @@ class RegressionComponent(Component):
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog
         k_states = self.k_states // k_endog
-        self.k_posdef // k_endog
 
-        betas = self.make_and_register_variable(f"beta_{self.name}", shape=(k_endog, k_states))
+        betas = self.make_and_register_variable(
+            f"beta_{self.name}", shape=(k_endog, k_states) if k_endog > 1 else (k_states,)
+        )
         regression_data = self.make_and_register_data(f"data_{self.name}", shape=(None, k_states))
 
-        self.ssm["initial_state", :] = betas.reshape((1, -1)).squeeze()
-        T = np.eye(k_states)
-        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
-        self.ssm["selection", :, :] = np.eye(self.k_states)
+        self.ssm["initial_state", :] = betas.ravel()
+        self.ssm["transition", :, :] = pt.eye(self.k_states)
+        self.ssm["selection", :, :] = pt.eye(self.k_states)
+
         Z = pt.linalg.block_diag(*[pt.expand_dims(regression_data, 1) for _ in range(k_endog)])
         self.ssm["design"] = pt.specify_shape(
             Z, (None, k_endog, regression_data.type.shape[1] * k_endog)
@@ -77,22 +78,21 @@ class RegressionComponent(Component):
 
         if self.innovations:
             sigma_beta = self.make_and_register_variable(
-                f"sigma_beta_{self.name}", (self.k_states,)
+                f"sigma_beta_{self.name}", (k_states,) if k_endog == 1 else (k_endog, k_states)
             )
             row_idx, col_idx = np.diag_indices(self.k_states)
-            self.ssm["state_cov", row_idx, col_idx] = sigma_beta**2
+            self.ssm["state_cov", row_idx, col_idx] = sigma_beta.ravel() ** 2
 
     def populate_component_properties(self) -> None:
         k_endog = self.k_endog
         k_states = self.k_states // k_endog
-        self.k_posdef // k_endog
 
         self.shock_names = self.state_names
 
         self.param_names = [f"beta_{self.name}"]
         self.data_names = [f"data_{self.name}"]
         self.param_dims = {
-            f"beta_{self.name}": ("exog_endog", "exog_state"),
+            f"beta_{self.name}": (f"{self.name}_endog", f"{self.name}_state"),
         }
 
         base_names = self.state_names
@@ -102,9 +102,11 @@ class RegressionComponent(Component):
 
         self.param_info = {
             f"beta_{self.name}": {
-                "shape": (k_endog, k_states),
+                "shape": (k_endog, k_states) if k_endog > 1 else (k_states,),
                 "constraints": None,
-                "dims": ("exog_endog", "exog_state"),
+                "dims": (f"{self.name}_endog", f"{self.name}_state")
+                if k_endog > 1
+                else (f"{self.name}_state",),
             },
         }
 
@@ -114,13 +116,18 @@ class RegressionComponent(Component):
                 "dims": (TIME_DIM, "exog_state"),
             },
         }
-        self.coords = {"exog_state": base_names, "exog_endog": self.observed_state_names}
+        self.coords = {
+            f"{self.name}_state": self.state_names,
+            f"{self.name}_endog": self.observed_state_names,
+        }
 
         if self.innovations:
             self.param_names += [f"sigma_beta_{self.name}"]
-            self.param_dims[f"sigma_beta_{self.name}"] = "exog_state"
+            self.param_dims[f"sigma_beta_{self.name}"] = f"{self.name}_state"
             self.param_info[f"sigma_beta_{self.name}"] = {
                 "shape": (),
                 "constraints": "Positive",
-                "dims": ("exog_state",),
+                "dims": (f"{self.name}_state",)
+                if k_endog == 1
+                else (f"{self.name}_endog", f"{self.name}_state"),
             }
