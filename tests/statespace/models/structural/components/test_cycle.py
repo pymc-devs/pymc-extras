@@ -1,9 +1,11 @@
 import numpy as np
+import pytensor
 
 from numpy.testing import assert_allclose
 from pytensor import config
 
 from pymc_extras.statespace.models import structural as st
+from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
 from tests.statespace.models.structural.conftest import _assert_basic_coords_correct
 from tests.statespace.test_utilities import assert_pattern_repeats, simulate_from_numpy_model
 
@@ -31,7 +33,7 @@ def test_cycle_component_with_dampening(rng):
     params = {"cycle": np.array([10.0, 10.0], dtype=config.floatX), "cycle_dampening_factor": 0.75}
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=100)
 
-    # Check that the cycle dampens to zero over time
+    # check that cycle dampens to zero over time
     assert_allclose(y[-1], 0.0, atol=ATOL, rtol=RTOL)
 
 
@@ -74,6 +76,33 @@ def test_cycle_multivariate_deterministic(rng):
     # The second and third variables should have larger amplitudes due to larger initial states
     assert np.std(y[:, 1]) > np.std(y[:, 0])
     assert np.std(y[:, 2]) > np.std(y[:, 0])
+
+    # check design, transition, selection matrices
+    Z, T, R = pytensor.function(
+        [],
+        [cycle.ssm["design"], cycle.ssm["transition"], cycle.ssm["selection"]],
+        mode="FAST_COMPILE",
+    )()
+
+    # each block is [1, 0] for design
+    expected_Z = np.zeros((3, 6))
+    expected_Z[0, 0] = 1.0
+    expected_Z[1, 2] = 1.0
+    expected_Z[2, 4] = 1.0
+    np.testing.assert_allclose(Z, expected_Z)
+
+    # each block is 2x2 frequency transition matrix for given cycle length (12 here)
+    block = _frequency_transition_block(12, 1).eval()
+    expected_T = np.zeros((6, 6))
+    for i in range(3):
+        expected_T[2 * i : 2 * i + 2, 2 * i : 2 * i + 2] = block
+    np.testing.assert_allclose(T, expected_T)
+
+    # each block is 2x2 identity for selection
+    expected_R = np.zeros((6, 6))
+    for i in range(3):
+        expected_R[2 * i : 2 * i + 2, 2 * i : 2 * i + 2] = np.eye(2)
+    np.testing.assert_allclose(R, expected_R)
 
 
 def test_cycle_multivariate_with_dampening(rng):
@@ -118,7 +147,7 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
         "cycle": np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=config.floatX),
         "cycle_length": 12.0,
         "cycle_dampening_factor": 0.95,
-        "sigma_cycle": np.array([0.5, 1.0, 1.5]),  # Different innovation variances per variable
+        "sigma_cycle": np.array([0.5, 1.0, 1.5]),  # different innov variances per var
     }
     x, y = simulate_from_numpy_model(cycle, rng, params)
 
@@ -138,3 +167,47 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
     # Check that each variable shows some variation (due to innovations)
     for i in range(3):
         assert np.std(y[:, i]) > 0
+
+    # check design, transition, selection & state_cov matrices
+    Z, T, R, Q = pytensor.function(
+        [
+            cycle._name_to_variable["cycle_length"],
+            cycle._name_to_variable["cycle_dampening_factor"],
+            cycle._name_to_variable["sigma_cycle"],
+        ],
+        [
+            cycle.ssm["design"],
+            cycle.ssm["transition"],
+            cycle.ssm["selection"],
+            cycle.ssm["state_cov"],
+        ],
+        mode="FAST_COMPILE",
+    )(params["cycle_length"], params["cycle_dampening_factor"], params["sigma_cycle"])
+
+    # each block is [1, 0] for design
+    expected_Z = np.zeros((3, 6))
+    expected_Z[0, 0] = 1.0
+    expected_Z[1, 2] = 1.0
+    expected_Z[2, 4] = 1.0
+    np.testing.assert_allclose(Z, expected_Z)
+
+    # each block is 2x2 frequency transition matrix for given cycle length (12 here),
+    # scaled by dampening factor
+    block = _frequency_transition_block(12, 1).eval() * params["cycle_dampening_factor"]
+    expected_T = np.zeros((6, 6))
+    for i in range(3):
+        expected_T[2 * i : 2 * i + 2, 2 * i : 2 * i + 2] = block
+    np.testing.assert_allclose(T, expected_T)
+
+    # each block is 2x2 identity for selection
+    expected_R = np.zeros((6, 6))
+    for i in range(3):
+        expected_R[2 * i : 2 * i + 2, 2 * i : 2 * i + 2] = np.eye(2)
+    np.testing.assert_allclose(R, expected_R)
+
+    # each block is sigma^2 * I_2 for state_cov
+    sigmas = params["sigma_cycle"]
+    expected_Q = np.zeros((6, 6))
+    for i in range(3):
+        expected_Q[2 * i : 2 * i + 2, 2 * i : 2 * i + 2] = np.eye(2) * sigmas[i] ** 2
+    np.testing.assert_allclose(Q, expected_Q)
