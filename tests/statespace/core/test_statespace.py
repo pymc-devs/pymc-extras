@@ -126,6 +126,14 @@ def ss_mod_no_exog(rng):
 
 
 @pytest.fixture(scope="session")
+def ss_mod_no_exog_mv(rng):
+    ll = st.LevelTrendComponent(
+        name="trend", order=2, innovations_order=1, observed_state_names=["y1", "y2"]
+    )
+    return ll.build()
+
+
+@pytest.fixture(scope="session")
 def ss_mod_no_exog_dt(rng):
     ll = st.LevelTrendComponent(name="trend", order=2, innovations_order=1)
     return ll.build()
@@ -198,6 +206,22 @@ def pymc_mod_no_exog(ss_mod_no_exog, rng):
 
 
 @pytest.fixture(scope="session")
+def pymc_mod_no_exog_mv(ss_mod_no_exog_mv, rng):
+    y = pd.DataFrame(rng.normal(size=(100, 2)).astype(floatX), columns=["y1", "y2"])
+
+    with pm.Model(coords=ss_mod_no_exog_mv.coords) as m:
+        trend_initial = pm.Normal("trend_initial", dims=["trend_endog", "trend_state"])
+        P0_sigma = pm.Exponential("P0_sigma", 1)
+        P0 = pm.Deterministic(
+            "P0", pt.eye(ss_mod_no_exog_mv.k_states) * P0_sigma, dims=["state", "state_aux"]
+        )
+        trend_sigma = pm.Exponential("trend_sigma", 1, dims=["trend_endog", "trend_shock"])
+        ss_mod_no_exog_mv.build_statespace_graph(y)
+
+    return m
+
+
+@pytest.fixture(scope="session")
 def pymc_mod_no_exog_dt(ss_mod_no_exog_dt, rng):
     y = pd.DataFrame(
         rng.normal(size=(100, 1)).astype(floatX),
@@ -239,6 +263,15 @@ def idata_exog(exog_pymc_mod, rng, mock_pymc_sample):
 @pytest.fixture(scope="session")
 def idata_no_exog(pymc_mod_no_exog, rng, mock_pymc_sample):
     with pymc_mod_no_exog:
+        idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
+        idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
+    idata.extend(idata_prior)
+    return idata
+
+
+@pytest.fixture(scope="session")
+def idata_no_exog_mv(pymc_mod_no_exog_mv, rng, mock_pymc_sample):
+    with pymc_mod_no_exog_mv:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
     idata.extend(idata_prior)
@@ -823,6 +856,10 @@ def test_invalid_scenarios():
         ("ss_mod_no_exog_dt", "idata_no_exog_dt", 10, "2020-01-21", None),
         ("ss_mod_no_exog_dt", "idata_no_exog_dt", "2020-03-01", "2020-03-11", None),
         ("ss_mod_no_exog_dt", "idata_no_exog_dt", "2020-03-01", None, 10),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv", None, None, 10),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv", -1, None, 10),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv", 10, None, 10),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv", 10, 21, None),
     ],
     ids=[
         "range_default",
@@ -835,6 +872,10 @@ def test_invalid_scenarios():
         "datetime_int_end",
         "datetime_datetime_end",
         "datetime_datetime",
+        "multivariate_default",
+        "multivariate_negative",
+        "multivariate_int",
+        "multivariate_end",
     ],
 )
 def test_forecast(filter_output, mod_name, idata_name, start, end, periods, rng, request):

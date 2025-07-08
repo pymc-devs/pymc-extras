@@ -117,7 +117,7 @@ class RegressionComponent(Component):
             },
         }
         self.coords = {
-            f"{self.name}_state": self.state_names,
+            f"{self.name}_state": base_names,
             f"{self.name}_endog": self.observed_state_names,
         }
 
