@@ -161,7 +161,7 @@ def test_fit_laplace_ragged_coords(rng):
     assert (idata["posterior"].beta.sel(feature=1).to_numpy() > 0).all()
 
 
-def test_model_with_nonstandard_dimensionality_1(rng):
+def test_model_with_nonstandard_dimensionality(rng):
     y_obs = np.concatenate(
         [rng.normal(-1, 2, size=150), rng.normal(3, 1, size=350), rng.normal(5, 4, size=50)]
     )
@@ -197,6 +197,29 @@ def test_model_with_nonstandard_dimensionality_1(rng):
 
     # The log transform is 1-to-1, so it should have the same dims as the original rv
     assert "class" in list(idata.posterior.sigma_log__.coords.keys())
+
+
+def test_nonscalar_rv_without_dims():
+    with pm.Model(coords={"test": ["A", "B", "C"]}) as model:
+        x_loc = pm.Normal("x_loc", mu=0, sigma=1, dims=["test"])
+        x = pm.Normal("x", mu=x_loc, sigma=1, shape=(2, 3))
+        y = pm.Normal("y", mu=x, sigma=1, observed=np.random.randn(10, 2, 3))
+
+        idata = pmx.fit_laplace(progressbar=False)
+
+    assert idata.posterior["x"].shape == (2, 500, 2, 3)
+    assert all(f"x_dim_{i}" in idata.posterior.coords for i in range(2))
+    assert idata.fit.rows.values.tolist() == [
+        "x_loc[A]",
+        "x_loc[B]",
+        "x_loc[C]",
+        "x[0,0]",
+        "x[0,1]",
+        "x[0,2]",
+        "x[1,0]",
+        "x[1,1]",
+        "x[1,2]",
+    ]
 
 
 # Test these three optimizers because they are either special cases for H_inv (BFGS, L-BFGS-B) or are

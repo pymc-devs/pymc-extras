@@ -195,11 +195,21 @@ def model_to_laplace_approx(
         )
 
         for name, batched_rv in zip(names, batched_rvs):
-            pm.Deterministic(
-                name,
-                batched_rv,
-                dims=("temp_chain", "temp_draw", *model.named_vars_to_dims.get(name, ())),
-            )
+            batch_dims = ("temp_chain", "temp_draw")
+            if batched_rv.ndim == 2:
+                dims = batch_dims
+            elif name in model.named_vars_to_dims:
+                dims = (*batch_dims, *model.named_vars_to_dims[name])
+            else:
+                dims = (*batch_dims, *[f"{name}_dim_{i}" for i in range(batched_rv.ndim - 2)])
+                laplace_model.add_coords(
+                    {
+                        name: np.arange(shape)
+                        for name, shape in zip(dims[2:], batched_rv.type.shape[2:])
+                    }
+                )
+
+            pm.Deterministic(name, batched_rv, dims=dims)
 
     return laplace_model
 
@@ -221,16 +231,21 @@ def unstack_laplace_draws(idata, model):
 
     unstacked_laplace_draws = {}
     laplace_data = idata.laplace_approximation.values
-
     coords = model.coords | {"chain": range(chains), "draw": range(draws)}
+
+    # # There might
+    # idata_coords = {k: v.tolist() for k, v in zip(idata.coords.keys(), [x.values for x in idata.coords.values()])
+    #                 if k not in ['chain', 'draw', 'unpacked_variable_names']}
 
     # There are corner cases where the value_vars will not have the same dimensions as the random variable (e.g.
     # simplex transform of a Dirichlet). In these cases, we don't try to guess what the labels should be, and just
     # add an arviz-style default dim and label.
     for rv, (name, shape, size, dtype) in zip(model.free_RVs, initial_point.point_map_info):
         rv_dims = []
-        for i, dim in enumerate(model.named_vars_to_dims.get(rv.name, ())):
-            if shape[i] == len(coords[dim]):
+        for i, dim in enumerate(
+            model.named_vars_to_dims.get(rv.name, [f"{name}_dim_{i}" for i in range(len(shape))])
+        ):
+            if coords.get(dim) and shape[i] == len(coords[dim]):
                 rv_dims.append(dim)
             else:
                 rv_dims.append(f"{name}_dim_{i}")

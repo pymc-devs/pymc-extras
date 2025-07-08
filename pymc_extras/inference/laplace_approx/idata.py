@@ -14,6 +14,13 @@ from scipy.optimize import OptimizeResult
 from scipy.sparse.linalg import LinearOperator
 
 
+def make_default_labels(name: str, shape: tuple[int, ...]) -> list:
+    if len(shape) == 0:
+        return [name]
+
+    return [list(range(dim)) for dim in shape]
+
+
 def make_unpacked_variable_names(names: list[str], model: pm.Model) -> list[str]:
     coords = model.coords
     initial_point = model.initial_point()
@@ -31,10 +38,14 @@ def make_unpacked_variable_names(names: list[str], model: pm.Model) -> list[str]
     for name in names:
         shape = initial_point[name].shape
         if shape:
-            labels_by_dim = [
-                coords[dim] if shape[i] == len(coords[dim]) else np.arange(shape[i])
-                for i, dim in enumerate(dims_dict.get(name, [name]))
-            ]
+            dims = dims_dict.get(name)
+            if dims:
+                labels_by_dim = [
+                    coords[dim] if shape[i] == len(coords[dim]) else np.arange(shape[i])
+                    for i, dim in enumerate(dims)
+                ]
+            else:
+                labels_by_dim = make_default_labels(name, shape)
             labels = product(*labels_by_dim)
             unpacked_variable_names.extend(
                 [f"{name}[{','.join(map(str, label))}]" for label in labels]
