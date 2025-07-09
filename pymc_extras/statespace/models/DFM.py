@@ -25,14 +25,17 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
     Parameters
     ----------
-    k_endog : int
-        Number of observed time series.
-
     k_factors : int
         Number of latent factors.
 
     factor_order : int
         Order of the VAR process for the latent factors.
+
+    k_endog : int
+        Number of observed time series.
+
+    endog_names : Sequence[str], optional
+        Names of the observed time series. If not provided, default names will be generated as `endog_1`, `endog_2`, ..., `endog_k`.
 
     exog : array_like, optional
         Array of exogenous regressors for the observation equation (nobs x k_exog).
@@ -49,9 +52,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
     error_cov_type : {'scalar', 'diagonal', 'unstructured'}, optional
         Structure of the covariance matrix of the observation errors.
-
-    enforce_stationarity : bool, optional
-        Whether to transform AR parameters to enforce stationarity.
 
     filter_type: str, default "standard"
         The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
