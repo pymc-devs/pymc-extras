@@ -1,16 +1,22 @@
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
+import pytensor
+import pytensor.tensor as pt
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
+from pymc_extras.statespace.models.utilities import make_default_coords
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
     AR_PARAM_DIM,
-    MA_PARAM_DIM,
+    FACTOR_DIM,
+    OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
-    SHOCK_DIM,
 )
+
+floatX = pytensor.config.floatX
 
 
 class BayesianDynamicFactor(PyMCStateSpace):
@@ -47,13 +53,12 @@ class BayesianDynamicFactor(PyMCStateSpace):
     enforce_stationarity : bool, optional
         Whether to transform AR parameters to enforce stationarity.
 
-    filter_type : str, optional
-        Type of Kalman filter to use. See PyMCStateSpace for valid options.
+    filter_type: str, default "standard"
+        The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
+        and "cholesky". See the docs for kalman filters for more details.
 
-    verbose : bool, optional
-        If True, prints model setup details.
-
-
+    verbose: bool, default True
+        If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
 
     Notes
     -----
@@ -62,43 +67,55 @@ class BayesianDynamicFactor(PyMCStateSpace):
     the observed time series are driven by a set of latent factors that evolve
     according to a VAR process, possibly along with an autoregressive error term.
 
-    Up to now just a draft implementation to test the working of the class and comparing
-    with the Custom model done in the Notebook (notebook/Making a Custom DFM.ipynb).
-    The model work just with two observations and one factor (k_endog=2, k_factors=1).
 
 
     """
 
     def __init__(
         self,
-        k_endog: int,
         k_factors: int,
         factor_order: int,
+        k_endog: int | None = None,
+        endog_names: Sequence[str] | None = None,
         exog: np.ndarray | None = None,
         error_order: int = 0,
         error_var: bool = False,
         error_cov_type: str = "diagonal",
-        enforce_stationarity: bool = True,
         filter_type: str = "standard",
         verbose: bool = True,
     ):
+        if k_endog is None and endog_names is None:
+            raise ValueError("Either k_endog or endog_names must be provided.")
+        if k_endog is None:
+            k_endog = len(endog_names)
+        if endog_names is None:
+            endog_names = [f"endog_{i+1}" for i in range(k_endog)]
+
+        if error_var:
+            raise NotImplementedError(
+                "Joint error modeling (error_var=True) is not yet implemented."
+            )
+
+        self.endog_names = endog_names
         self.k_endog = k_endog
         self.k_factors = k_factors
         self.factor_order = factor_order
         self.error_order = error_order
         self.error_var = error_var
         self.error_cov_type = error_cov_type
-        self.enforce_stationarity = enforce_stationarity
         self.exog = exog
+        # TODO add measurement error support
+        # TODO add exogenous variables support?
 
         # Determine the dimension for the latent factor states.
         # For static factors, one might use k_factors.
         # For dynamic factors with lags, the state might include current factors and past lags.
-        k_factor_states = k_factors * (1 + factor_order)
+        # TODO: what if we want different factor orders for different factors?
+        k_factor_states = k_factors * factor_order
 
         # Determine the dimension for the error component.
         # If error_order > 0 then we add additional states for error dynamics, otherwise white noise error.
-        k_error_states = k_endog * (error_order + 1) if error_order > 0 else 0
+        k_error_states = k_endog * error_order if error_order > 0 else 0
 
         # Total state dimension
         k_states = k_factor_states + k_error_states
@@ -135,8 +152,9 @@ class BayesianDynamicFactor(PyMCStateSpace):
             names.remove("factor_ar")
         if self.error_order == 0:
             names.remove("error_ar")
-        if self.error_cov_type in ["diagonal", "scalar"]:
+        if self.error_cov_type in ["unstructured"]:
             names.remove("error_sigma")
+            names.append("error_cov")
 
         return names
 
@@ -144,11 +162,11 @@ class BayesianDynamicFactor(PyMCStateSpace):
     def param_info(self) -> dict[str, dict[str, Any]]:
         info = {
             "x0": {
-                "shape": (self.k_factors,),
+                "shape": (self.k_states,),
                 "constraints": None,
             },
             "P0": {
-                "shape": (self.k_factors, self.k_factors),
+                "shape": (self.k_states, self.k_states),
                 "constraints": "Positive Semi-definite",
             },
             "factor_loadings": {
@@ -156,7 +174,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 "constraints": None,
             },
             "factor_ar": {
-                "shape": (self.k_factors, self.factor_order, self.k_factors),
+                "shape": (self.k_factors, self.factor_order),
                 "constraints": None,
             },
             "factor_sigma": {
@@ -164,24 +182,16 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 "constraints": "Positive",
             },
             "error_ar": {
-                "shape": (self.k_endog, self.error_order, self.k_endog)
-                if self.error_var
-                else (self.k_endog, self.error_order),
+                "shape": (self.k_endog, self.error_order),
                 "constraints": None,
             },
             "error_sigma": {
-                "shape": (self.k_endog,),
-                "constraints": "Positive"
-                if self.error_cov_type in ["diagonal", "scalar"]
-                else "Positive Semi-definite",
+                "shape": (self.k_endog,) if self.error_cov_type in ["diagonal"] else (),
+                "constraints": "Positive",
             },
             "error_cov": {
-                "shape": (self.k_endog, self.k_endog)
-                if self.error_cov_type == "unstructured"
-                else None,
-                "constraints": "Positive Semi-definite"
-                if self.error_cov_type == "unstructured"
-                else None,
+                "shape": (self.k_endog, self.k_endog),
+                "constraints": "Positive Semi-definite",
             },
         }
 
@@ -191,53 +201,48 @@ class BayesianDynamicFactor(PyMCStateSpace):
         return {name: info[name] for name in self.param_names}
 
     @property
-    def state_names(self):
-        state_names = []
-        # Add names for the factor loadings (one per observation and factor)
-        for i in range(self.k_endog):
-            for j in range(self.k_factors):
-                state_names.append(f"loading_{i}_{j}")
+    def state_names(self) -> list[str]:
+        """
+        Returns the names of the hidden states: first factor states (with lags),
+        then idiosyncratic error states (with lags).
+        """
+        names = []
 
-        # Add names for the factor autoregressive coefficients (for each factor's dynamics)
-        for lag in range(1, self.factor_order + 1):
-            for i in range(self.k_factors):
-                for j in range(self.k_factors):
-                    state_names.append(f"factor_ar_{lag}_{i}_{j}")
-
-        # Add names for the error autoregressive coefficients (if error_order > 0)
-        if self.error_order > 0:
-            if self.error_cov_type == "diagonal":
-                # Diagonal error AR, one parameter per series per lag
-                for lag in range(1, self.error_order + 1):
-                    for i in range(self.k_endog):
-                        state_names.append(f"error_ar_{lag}_{i}")
-            elif self.error_cov_type == "unstructured":
-                # Full covariance error AR (unstructured), one for each pair of endogenous variables
-                for lag in range(1, self.error_order + 1):
-                    for i in range(self.k_endog):
-                        for j in range(i + 1):
-                            state_names.append(f"error_ar_{lag}_{i}_{j}")
-
-        # Add names for the factor shocks' variances (one per factor)
+        # Factor states
         for i in range(self.k_factors):
-            state_names.append(f"factor_sigma_{i}")
+            for lag in range(self.factor_order):
+                names.append(f"factor_{i+1}_lag{lag}")
 
-        # Add names for the error shocks' variances/covariances
+        # Idiosyncratic error states
         if self.error_order > 0:
-            if self.error_cov_type == "diagonal":
-                # Diagonal error covariances (one per series)
-                for i in range(self.k_endog):
-                    state_names.append(f"error_sigma_{i}")
-            elif self.error_cov_type == "scalar":
-                # Scalar error covariances (shared variance for all errors)
-                state_names.append("error_sigma")
-            elif self.error_cov_type == "unstructured":
-                # Full error covariance matrix
-                for i in range(self.k_endog):
-                    for j in range(i + 1):
-                        state_names.append(f"error_cov_{i}_{j}")
+            for i in range(self.k_endog):
+                for lag in range(self.error_order):
+                    names.append(f"error_{i+1}_lag{lag}")
 
-        return state_names
+        return names
+
+    @property
+    def observed_states(self) -> list[str]:
+        """
+        Returns the names of the observed states (i.e., the endogenous variables).
+        """
+        return self.endog_names
+
+    @property
+    def coords(self) -> dict[str, Sequence]:
+        coords = make_default_coords(self)
+
+        coords[FACTOR_DIM] = [f"factor_{i+1}" for i in range(self.k_factors)]
+
+        # AR parameter dimensions - add if needed
+        if self.factor_order > 0:
+            coords[AR_PARAM_DIM] = list(range(1, self.factor_order + 1))
+
+        # If error_order > 0
+        if self.error_order > 0:
+            coords["error_ar_param"] = list(range(1, self.error_order + 1))
+
+        return coords
 
     @property
     def shock_names(self):
@@ -245,95 +250,139 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         # Add names for factor shocks (one per factor)
         for i in range(self.k_factors):
-            shock_names.append(f"factor_shock_{i}")
+            shock_names.append(f"factor_shock_{i+1}")
 
         # Add names for idiosyncratic error shocks (one per observed variable)
         if self.error_order > 0:
             for i in range(self.k_endog):
-                shock_names.append(f"error_shock_{i}")
+                shock_names.append(f"error_shock_{i+1}")
 
         return shock_names
 
     @property
     def param_dims(self):
-        """
-        Define parameter dimensions for the Dynamic Factor Model (DFM).
-
-        Returns
-        -------
-        dict
-            Dictionary mapping parameter names to their respective dimensions.
-        """
         coord_map = {
-            "x0": (ALL_STATE_DIM,),  # Initial state dimension
-            "P0": (ALL_STATE_DIM, ALL_STATE_DIM),  # Initial state covariance dimension
-            "factor_loadings": (OBS_STATE_DIM, ALL_STATE_AUX_DIM),  # Factor loadings dimension
-            "factor_sigma": (ALL_STATE_DIM,),  # Factor variances dimension
+            "x0": (ALL_STATE_DIM,),
+            "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
+            "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
+            "factor_sigma": (FACTOR_DIM,),
         }
 
-        # Factor AR coefficients if applicable
         if self.factor_order > 0:
-            coord_map["factor_ar"] = (AR_PARAM_DIM, SHOCK_DIM, SHOCK_DIM)
+            coord_map["factor_ar"] = (FACTOR_DIM, AR_PARAM_DIM)
 
-        # Error AR coefficients and variances
         if self.error_order > 0:
-            if self.error_cov_type == "diagonal":
-                coord_map["error_ar"] = (MA_PARAM_DIM, SHOCK_DIM)  # AR for errors
-                coord_map["error_sigma"] = (SHOCK_DIM,)  # One variance for each observed variable
-            elif self.error_cov_type == "scalar":
-                coord_map["error_ar"] = (MA_PARAM_DIM, SHOCK_DIM)
-                coord_map["error_sigma"] = None  # Single scalar for error variance
-            elif self.error_cov_type == "unstructured":
-                coord_map["error_ar"] = (MA_PARAM_DIM, SHOCK_DIM, SHOCK_DIM)  # AR for errors
-                coord_map["error_cov_L"] = (
-                    SHOCK_DIM,
-                    SHOCK_DIM,
-                )  # Lower triangular Cholesky factor
-                coord_map["error_cov_sd"] = (SHOCK_DIM,)  # Standard deviations for diagonal
-            else:
-                raise ValueError("Invalid error covariance type.")
+            coord_map["error_ar"] = (OBS_STATE_DIM, "error_ar_param")
+
+        if self.error_cov_type in ["scalar"]:
+            coord_map["error_sigma"] = ()
+        elif self.error_cov_type in ["diagonal"]:
+            coord_map["error_sigma"] = (OBS_STATE_DIM,)
+        elif self.error_cov_type in ["unstructured"]:
+            coord_map["error_sigma"] = (OBS_STATE_DIM, OBS_STATE_AUX_DIM)
 
         return coord_map
 
-    # def make_symbolic_graph(self):
-    # We will implement this in a moment. For now, we need to overwrite it with nothing to avoid a NotImplementedError
-    # when we initialize a class instance.
-    #    pass
-
     def make_symbolic_graph(self):
-        """
-        Create the symbolic graph for the Dynamic Factor Model (DFM).
-        This method sets up the state space model, including the design, transition,
-        selection, and initial state matrices, as well as the parameters for the model.
+        # initial states
+        x0 = self.make_and_register_variable("x0", shape=(self.k_states,), dtype=floatX)
 
-
-        Up to know just a draft implementation to test the working of the class and comparing
-        with the Custom model done in the Notebook (notebook/Making a Custom DFM.ipynb).
-        """
-
-        # Create symbolic variables for 1D state
-        x0 = self.make_and_register_variable("x0", shape=(1,))
-        P0 = self.make_and_register_variable("P0", shape=(1, 1))
-        factor_loading = self.make_and_register_variable("factor_loadings", shape=(2, 1))
-
-        factor_ar = self.make_and_register_variable("factor_ar", shape=())
-        sigma_f = self.make_and_register_variable("factor_sigma", shape=())
-
-        # Initialize matrices with correct dimensions
-        self.ssm["design", :, :] = np.array([[0.0], [0.0]])  # 2x1 matrix
-        self.ssm["transition", :, :] = np.array([[0.0]])  # 1x1 matrix
-        self.ssm["selection", :, :] = np.array([[1.0]])  # 1x1 matrix
-
-        # Set initial state and covariance
         self.ssm["initial_state", :] = x0
+
+        # initial covariance
+        P0 = self.make_and_register_variable(
+            "P0", shape=(self.k_states, self.k_states), dtype=floatX
+        )
+
         self.ssm["initial_state_cov", :, :] = P0
 
-        # Set design matrix parameters
-        self.ssm["design", 0, 0] = factor_loading[0, 0]  # First observation loading
-        self.ssm["design", 1, 0] = factor_loading[1, 0]  # Second observation loading
+        # TODO vectorize the design matrix
+        # Design matrix
+        self.ssm["design", :, :] = 0.0
 
-        # Set transition parameter (AR coefficient)
-        self.ssm["transition", 0, 0] = factor_ar
+        factor_loadings = self.make_and_register_variable(
+            "factor_loadings", shape=(self.k_endog, self.k_factors), dtype=floatX
+        )
 
-        # Set state covariance
-        self.ssm["state_cov", 0, 0] = sigma_f
+        for i in range(self.k_endog):
+            for j in range(self.k_factors):
+                # Loadings for each observed variable on the latent factors
+                self.ssm["design", i, j * self.factor_order] = factor_loadings[i, j]
+
+        for i in range(self.k_endog):
+            # Loadings for each observed variable on the latent factors
+            self.ssm["design", i, self.k_factors * self.factor_order + i * self.error_order] = 1.0
+
+        # TODO vectorize the transition matrix or use block matrices (reordering states, check the VAR implementation)
+        if self.factor_order > 0:
+            # Transition matrix
+            factor_ar = self.make_and_register_variable(
+                "factor_ar", shape=(self.k_factors, self.factor_order), dtype=floatX
+            )
+
+            self.ssm["transition", :, :] = 0.0
+
+            for j in range(self.k_factors):
+                block_start = j * self.factor_order
+                for i in range(self.factor_order):
+                    # Assign AR coefficients to the first row of each block
+                    self.ssm["transition", block_start, block_start + i] = factor_ar[j, i]
+
+                    # Fill the subdiagonal with ones, only for rows 1 to p-1
+                    if i < self.factor_order - 1:
+                        self.ssm["transition", block_start + i + 1, block_start + i] = 1.0
+
+        if self.error_order > 0:
+            error_ar = self.make_and_register_variable(
+                "error_ar", shape=(self.k_endog, self.error_order), dtype=floatX
+            )
+
+            for j in range(self.k_endog):
+                block_start = self.k_factors * self.factor_order + j * self.error_order
+                for i in range(self.error_order):
+                    # Set AR coefficients for the top row of each error AR(q) block
+                    self.ssm["transition", block_start, block_start + i] = error_ar[j, i]
+
+                    # Set subdiagonal 1.0s, except last row
+                    if i < self.error_order - 1:
+                        self.ssm["transition", block_start + i + 1, block_start + i] = 1.0
+
+        # TODO vectorize/block matrices (reorder the states accordingly)
+        # Selection matrix
+        self.ssm["selection", :, :] = 0.0
+        for i in range(self.k_factors):
+            self.ssm["selection", i * self.factor_order, i] = 1.0
+
+        for i in range(self.k_endog):
+            self.ssm[
+                "selection",
+                self.k_factors * self.factor_order + i * self.error_order,
+                self.k_factors + i,
+            ] = 1.0
+
+        # State covariance matrix
+        factor_sigma = self.make_and_register_variable(
+            "factor_sigma", shape=(self.k_factors,), dtype=floatX
+        )
+        if self.error_cov_type in ["scalar"]:
+            error_sigma = self.make_and_register_variable("error_sigma", shape=(), dtype=floatX)
+            error_sigma = error_sigma * np.ones(self.k_endog, dtype=floatX)
+        elif self.error_cov_type in ["diagonal"]:
+            error_sigma = self.make_and_register_variable(
+                "error_sigma", shape=(self.k_endog,), dtype=floatX
+            )
+        elif self.error_cov_type in ["unstructured"]:
+            error_cov = self.make_and_register_variable(
+                "error_cov", shape=(self.k_endog, self.k_endog), dtype=floatX
+            )
+
+        factor_cov = pt.diag(factor_sigma)
+
+        if self.error_cov_type in ["scalar", "diagonal"]:
+            error_cov = pt.diag(error_sigma)
+        self.ssm["state_cov", :, :] = (
+            pt.linalg.block_diag(factor_cov, error_cov) if self.error_order > 0 else factor_cov
+        )
+
+        # Observation covariance matrix
+        self.ssm["obs_cov", :, :] = 0.0
