@@ -116,6 +116,7 @@ class GeneralizedPoisson(pm.distributions.Discrete):
 
     .. math:: f(x \mid \mu, \lambda) =
                   \frac{\mu (\mu + \lambda x)^{x-1} e^{-\mu - \lambda x}}{x!}
+
     ========  ======================================
     Support   :math:`x \in \mathbb{N}_0`
     Mean      :math:`\frac{\mu}{1 - \lambda}`
@@ -135,9 +136,10 @@ class GeneralizedPoisson(pm.distributions.Discrete):
     When lam < 0, the mean is greater than the variance (underdispersion).
     When lam > 0, the mean is less than the variance (overdispersion).
 
+    The PMF is taken from [1]_ and the random generator function is adapted from [2]_.
+
     References
     ----------
-    The PMF is taken from [1] and the random generator function is adapted from [2].
     .. [1] Consul, PoC, and Felix Famoye. "Generalized Poisson regression model."
        Communications in Statistics-Theory and Methods 21.1 (1992): 89-109.
     .. [2] Famoye, Felix. "Generalized Poisson random variate generation." American

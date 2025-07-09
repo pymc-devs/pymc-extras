@@ -21,7 +21,7 @@ Where we grow the next batch of cool PyMC features
 Installation
 ============
 
-To install the latest release on [PyPI](https://pypi.org/project/pymc-extras/), you can use a package manager like pip:
+To install the latest release on `PyPI <https://pypi.org/project/pymc-extras/>`_, you can use a package manager like pip:
 
 .. code-block:: bash
 

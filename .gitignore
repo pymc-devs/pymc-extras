@@ -11,6 +11,7 @@ tmtags
 tags
 .DS_Store
 .cache
+_version.py
 # IntelliJ IDE
 .idea
 *.iml
