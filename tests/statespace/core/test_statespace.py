@@ -170,24 +170,23 @@ def exog_ss_mod(exog_data):
 
 @pytest.fixture(scope="session")
 def ss_mod_multi_component(rng):
-    # Ultimately all components will be included with all available parameters per component included (i.e. innovations=True)
     ll = st.LevelTrendComponent(
         name="trend", order=2, innovations_order=1, observed_state_names=["y1", "y2"]
     )
     exog = st.RegressionComponent(
-        name="exog",  # Name of this exogenous variable component
-        k_exog=1,  # Only one exogenous variable now
-        innovations=False,  # Typically fixed effect (no stochastic evolution)
+        name="exog",
+        innovations=True,
         state_names=["x1"],
     )
-    # ar = st.AutoregressiveComponent(observed_state_names=["y1"]) AR component is broken
-    cycle = st.CycleComponent(
-        cycle_length=2, observed_state_names=["y1", "y2"], innovations=False
-    )  # with innovations is broken
-    season = st.TimeSeasonality(
-        season_length=2, observed_state_names=["y1"], innovations=False
-    )  # with innovations is broken
-    return (ll + exog + cycle + season).build()
+    ar = st.AutoregressiveComponent(observed_state_names=["y1"])
+    cycle = st.CycleComponent(cycle_length=2, observed_state_names=["y1", "y2"], innovations=True)
+    season = st.TimeSeasonality(season_length=2, observed_state_names=["y1"], innovations=True)
+
+    fseason = st.FrequencySeasonality(
+        season_length=2, observed_state_names=["y1"], innovations=True
+    )
+    measure_error = st.MeasurementError(observed_state_names=["y1", "y2"])
+    return (ll + exog + ar + cycle + season + fseason + measure_error).build()
 
 
 @pytest.fixture(scope="session")
@@ -1126,7 +1125,10 @@ def test_foreacast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
 def test_param_dims_coords(ss_mod_multi_component):
     for param in ss_mod_multi_component.param_names:
         shape = ss_mod_multi_component.param_info[param]["shape"]
-        dims = ss_mod_multi_component.param_dims[param]
+        dims = ss_mod_multi_component.param_dims.get(param, None)
+        if len(shape) == 0:
+            assert dims is None
+            continue
         for i, s in zip(shape, dims):
             assert i == len(
                 ss_mod_multi_component.coords[s]
