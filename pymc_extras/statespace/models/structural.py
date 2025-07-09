@@ -12,6 +12,7 @@ import pytensor.tensor as pt
 import xarray as xr
 
 from pytensor import Variable
+from pytensor.compile.mode import Mode
 
 from pymc_extras.statespace.core import PytensorRepresentation
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
@@ -81,6 +82,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         name: str | None = None,
         verbose: bool = True,
         filter_type: str = "standard",
+        mode: str | Mode | None = None,
     ):
         # Add the initial state covariance to the parameters
         if name is None:
@@ -112,6 +114,7 @@ class StructuralTimeSeries(PyMCStateSpace):
             filter_type=filter_type,
             verbose=verbose,
             measurement_error=measurement_error,
+            mode=mode,
         )
         self.ssm = ssm.copy()
 
@@ -644,7 +647,9 @@ class Component(ABC):
 
         return new_comp
 
-    def build(self, name=None, filter_type="standard", verbose=True):
+    def build(
+        self, name=None, filter_type="standard", verbose=True, mode: str | Mode | None = None
+    ):
         """
         Build a StructuralTimeSeries statespace model from the current component(s)
 
@@ -659,6 +664,13 @@ class Component(ABC):
 
         verbose : bool, optional
             If True, displays information about the initialized model. Defaults to True.
+
+        mode: str or Mode, optional
+            Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+            ``forecast``. The mode does **not** effect calls to ``pm.sample``.
+
+            Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+            to all sampling methods.
 
         Returns
         -------
@@ -685,6 +697,7 @@ class Component(ABC):
             name_to_data=self._name_to_data,
             filter_type=filter_type,
             verbose=verbose,
+            mode=mode,
         )
 
 
@@ -908,7 +921,7 @@ class MeasurementError(Component):
             intitial_trend = pm.Normal('initial_trend', sigma=10, dims=ss_mod.param_dims['initial_trend'])
             sigma_obs = pm.Exponential('sigma_obs', 1, dims=ss_mod.param_dims['sigma_obs'])
 
-            ss_mod.build_statespace_graph(data, mode='JAX')
+            ss_mod.build_statespace_graph(data)
             idata = pm.sample(nuts_sampler='numpyro')
     """
 
@@ -991,7 +1004,7 @@ class AutoregressiveComponent(Component):
             ar_params = pm.Normal('ar_params', dims=ss_mod.param_dims['ar_params'])
             sigma_ar = pm.Exponential('sigma_ar', 1, dims=ss_mod.param_dims['sigma_ar'])
 
-            ss_mod.build_statespace_graph(data, mode='JAX')
+            ss_mod.build_statespace_graph(data)
             idata = pm.sample(nuts_sampler='numpyro')
 
     """
@@ -1153,7 +1166,7 @@ class TimeSeasonality(Component):
             intitial_trend = pm.Deterministic('initial_trend', pt.zeros(1), dims=ss_mod.param_dims['initial_trend'])
             annual_coefs = pm.Normal('annual_coefs', sigma=1e-2, dims=ss_mod.param_dims['annual_coefs'])
             trend_sigmas = pm.HalfNormal('trend_sigmas', sigma=1e-6, dims=ss_mod.param_dims['trend_sigmas'])
-            ss_mod.build_statespace_graph(data, mode='JAX')
+            ss_mod.build_statespace_graph(data)
             idata = pm.sample(nuts_sampler='numpyro')
 
     References
@@ -1451,7 +1464,7 @@ class CycleComponent(Component):
             cycle_length = pm.Uniform('business_cycle_length', lower=6, upper=12)
 
             sigma_cycle = pm.HalfNormal('sigma_business_cycle', sigma=1)
-            ss_mod.build_statespace_graph(data, mode='JAX')
+            ss_mod.build_statespace_graph(data)
 
             idata = pm.sample(nuts_sampler='numpyro')
 

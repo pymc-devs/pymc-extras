@@ -26,12 +26,7 @@
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
-import os
-import sys
-
-import pymc_extras  # isort:skip
-
-sys.path.insert(0, os.path.abspath("../"))
+import pymc_extras
 
 # -- Project information -----------------------------------------------------
 
@@ -39,10 +34,10 @@ project = "pymc_extras"
 copyright = "2022, pymc-devs"
 author = "pymc-devs"
 
-# The short X.Y version
-version = pymc_extras.__version__
 # The full version, including alpha/beta/rc tags
-release = version
+release = pymc_extras.__version__
+# The short X.Y version
+version = release.split("+")[0] if "+" in release else release
 
 
 # -- General configuration ---------------------------------------------------
@@ -112,9 +107,16 @@ html_theme_options = {
     "collapse_navigation": True,
     "show_toc_level": 2,
     "navigation_depth": 4,
-    "search_bar_text": "Search the docs...",
-    "use_search_override": False,
+    "search_bar_text": "Search within PyMC-extras...",
+    "use_search_override": True,
     "logo": {"text": project},
+    "icon_links": [
+        {
+            "url": "https://github.com/pymc-devs/pymc-extras",
+            "icon": "fa-brands fa-github",
+            "name": "GitHub",
+        },
+    ],
 }
 html_context = {
     "github_user": "pymc-devs",
@@ -128,7 +130,7 @@ html_context = {
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ["../_static"]
+# html_static_path = ["../_static"]
 
 # -- Options for HTMLHelp output ---------------------------------------------
 

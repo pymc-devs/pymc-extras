@@ -11,11 +11,13 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
+import arviz as az
 
 
-def fit(method, **kwargs):
+def fit(method: str, **kwargs) -> az.InferenceData:
     """
-    Fit a model with an inference algorithm
+    Fit a model with an inference algorithm.
+    See :func:`fit_pathfinder` and :func:`fit_laplace` for more details.
 
     Parameters
     ----------
@@ -23,11 +25,11 @@ def fit(method, **kwargs):
         Which inference method to run.
         Supported: pathfinder or laplace
 
-    kwargs are passed on.
+    kwargs: keyword arguments are passed on to the inference method.
 
     Returns
     -------
-    arviz.InferenceData
+    :class:`~arviz.InferenceData`
     """
     if method == "pathfinder":
         from pymc_extras.inference.pathfinder import fit_pathfinder

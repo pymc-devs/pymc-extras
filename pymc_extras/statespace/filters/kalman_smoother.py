@@ -1,7 +1,6 @@
 import pytensor
 import pytensor.tensor as pt
 
-from pytensor.compile import get_mode
 from pytensor.tensor.nlinalg import matrix_dot
 
 from pymc_extras.statespace.filters.utilities import (
@@ -18,8 +17,7 @@ class KalmanSmoother:
 
     """
 
-    def __init__(self, mode: str | None = None):
-        self.mode = mode
+    def __init__(self):
         self.cov_jitter = JITTER_DEFAULT
         self.seq_names = []
         self.non_seq_names = []
@@ -64,9 +62,8 @@ class KalmanSmoother:
         return a, P, a_smooth, P_smooth, T, R, Q
 
     def build_graph(
-        self, T, R, Q, filtered_states, filtered_covariances, mode=None, cov_jitter=JITTER_DEFAULT
+        self, T, R, Q, filtered_states, filtered_covariances, cov_jitter=JITTER_DEFAULT
     ):
-        self.mode = mode
         self.cov_jitter = cov_jitter
 
         n, k = filtered_states.type.shape
@@ -88,7 +85,6 @@ class KalmanSmoother:
             non_sequences=non_sequences,
             go_backwards=True,
             name="kalman_smoother",
-            mode=get_mode(self.mode),
         )
 
         smoothed_states, smoothed_covariances = smoother_result
@@ -109,7 +105,7 @@ class KalmanSmoother:
         a_hat, P_hat = self.predict(a, P, T, R, Q)
 
         # Use pinv, otherwise P_hat is singular when there is missing data
-        smoother_gain = matrix_dot(pt.linalg.pinv(P_hat), T, P).T
+        smoother_gain = matrix_dot(pt.linalg.pinv(P_hat, hermitian=True), T, P).T
         a_smooth_next = a + smoother_gain @ (a_smooth - a_hat)
 
         P_smooth_next = P + quad_form_sym(smoother_gain, P_smooth - P_hat)

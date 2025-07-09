@@ -1,4 +1,0 @@
-nbsphinx>=0.4.2
-pydata-sphinx-theme>=0.6.3
-sphinx>=4
-git+https://github.com/pymc-devs/pymc-sphinx-theme

@@ -5,6 +5,7 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
+from pytensor.compile.mode import Mode
 from pytensor.tensor.slinalg import solve_discrete_lyapunov
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
@@ -72,6 +73,13 @@ class BayesianVARMAX(PyMCStateSpace):
     verbose: bool, default True
         If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
 
+    mode: str or Mode, optional
+        Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+        ``forecast``. The mode does **not** effect calls to ``pm.sample``.
+
+        Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+        to all sampling methods.
+
     Notes
     -----
     The VARMA model is a multivariate extension of the SARIMAX model. Given a set of timeseries :math:`\{x_t\}_{t=0}^T`,
@@ -135,7 +143,7 @@ class BayesianVARMAX(PyMCStateSpace):
             ar_params = pm.Normal("ar_params", mu=0, sigma=1, dims=ar_dims)
             state_cov = pm.Deterministic("state_cov", state_chol @ state_chol.T, dims=state_cov_dims)
 
-            bvar_mod.build_statespace_graph(data, mode="JAX")
+            bvar_mod.build_statespace_graph(data)
             idata = pm.sample(nuts_sampler="numpyro")
     """
 
@@ -147,7 +155,8 @@ class BayesianVARMAX(PyMCStateSpace):
         stationary_initialization: bool = False,
         filter_type: str = "standard",
         measurement_error: bool = False,
-        verbose=True,
+        verbose: bool = True,
+        mode: str | Mode | None = None,
     ):
         if (endog_names is None) and (k_endog is None):
             raise ValueError("Must specify either endog_names or k_endog")
@@ -174,6 +183,7 @@ class BayesianVARMAX(PyMCStateSpace):
             filter_type,
             verbose=verbose,
             measurement_error=measurement_error,
+            mode=mode,
         )
 
         # Save counts of the number of parameters in each category
