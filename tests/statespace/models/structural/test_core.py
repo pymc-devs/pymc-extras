@@ -22,8 +22,8 @@ def test_add_components():
     mod = ll + se
 
     ll_params = {
-        "level_trend_initial": np.zeros(2, dtype=floatX),
-        "level_trend_sigma": np.ones(2, dtype=floatX),
+        "initial_level_trend": np.zeros(2, dtype=floatX),
+        "sigma_level_trend": np.ones(2, dtype=floatX),
     }
     se_params = {
         "seasonal_coefs": np.ones(11, dtype=floatX),
@@ -92,9 +92,9 @@ def test_extract_components_from_idata(rng):
 
         x0 = pm.Normal("x0", dims=["state"])
         P0 = pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
-        beta_exog = pm.Normal("beta_exog", dims=["exog_state"])
-        initial_trend = pm.Normal("level_trend_initial", dims=["level_trend_state"])
-        sigma_trend = pm.Exponential("level_trend_sigma", 1, dims=["level_trend_shock"])
+        beta_exog = pm.Normal("beta_exog", dims=["state_exog"])
+        initial_trend = pm.Normal("initial_level_trend", dims=["state_level_trend"])
+        sigma_trend = pm.Exponential("sigma_level_trend", 1, dims=["level_trend_shock"])
         seasonal_coefs = pm.Normal("seasonal", dims=["seasonal_state"])
         sigma_obs = pm.Exponential("sigma_obs", 1)
 
