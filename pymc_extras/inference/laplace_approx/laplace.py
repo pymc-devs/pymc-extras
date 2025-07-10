@@ -302,7 +302,7 @@ def fit_laplace(
     ----------
     model : pm.Model
         The PyMC model to be fit. If None, the current model context is used.
-    method : str
+    optimize_method : str
         The optimization method to use. Valid choices are: Nelder-Mead, Powell, CG, BFGS, L-BFGS-B, TNC, SLSQP,
         trust-constr, dogleg, trust-ncg, trust-exact, trust-krylov, and basinhopping.
 
@@ -441,9 +441,11 @@ def fit_laplace(
             .rename({"temp_chain": "chain", "temp_draw": "draw"})
         )
 
-        idata.unconstrained_posterior = unstack_laplace_draws(
-            new_posterior.laplace_approximation.values, model, chains=chains, draws=draws
-        )
+        if include_transformed:
+            idata.unconstrained_posterior = unstack_laplace_draws(
+                new_posterior.laplace_approximation.values, model, chains=chains, draws=draws
+            )
+
         idata.posterior = new_posterior.drop_vars(
             ["laplace_approximation", "unpacked_variable_names"]
         )

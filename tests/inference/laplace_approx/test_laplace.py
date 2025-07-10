@@ -83,7 +83,10 @@ def test_fit_laplace_basic(mode, gradient_backend: GradientBackend):
     np.testing.assert_allclose(idata.fit["covariance_matrix"].values, bda_cov, rtol=1e-3, atol=1e-3)
 
 
-def test_fit_laplace_coords(rng):
+@pytest.mark.parametrize(
+    "include_transformed", [True, False], ids=["include_transformed", "no_transformed"]
+)
+def test_fit_laplace_coords(include_transformed, rng):
     coords = {"city": ["A", "B", "C"], "obs_idx": np.arange(100)}
     with pm.Model(coords=coords) as model:
         mu = pm.Normal("mu", mu=3, sigma=0.5, dims=["city"])
@@ -102,6 +105,7 @@ def test_fit_laplace_coords(rng):
             chains=1,
             draws=1000,
             optimizer_kwargs=dict(tol=1e-20),
+            include_transformed=include_transformed,
         )
 
     np.testing.assert_allclose(
@@ -119,6 +123,11 @@ def test_fit_laplace_coords(rng):
         "sigma_log__[B]",
         "sigma_log__[C]",
     ]
+
+    assert hasattr(idata, "unconstrained_posterior") == include_transformed
+    if include_transformed:
+        assert "sigma_log__" in idata.unconstrained_posterior
+        assert "city" in idata.unconstrained_posterior.coords
 
 
 def test_fit_laplace_ragged_coords(rng):
