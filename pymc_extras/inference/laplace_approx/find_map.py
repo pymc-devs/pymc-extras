@@ -3,7 +3,6 @@ import logging
 from collections.abc import Callable
 from typing import Literal, cast
 
-import arviz as az
 import numpy as np
 import pymc as pm
 
@@ -19,8 +18,8 @@ from scipy.optimize import OptimizeResult
 from pymc_extras.inference.laplace_approx.idata import (
     add_data_to_inference_data,
     add_fit_to_inference_data,
-    add_map_posterior_to_inference_data,
     add_optimizer_result_to_inference_data,
+    map_results_to_inference_data,
 )
 from pymc_extras.inference.laplace_approx.scipy_interface import (
     GradientBackend,
@@ -186,7 +185,7 @@ def _compute_inverse_hessian(
 
 
 def find_MAP(
-    method: minimize_method | Literal["basinhopping"],
+    method: minimize_method | Literal["basinhopping"] = "L-BFGS-B",
     *,
     model: pm.Model | None = None,
     use_grad: bool | None = None,
@@ -317,6 +316,15 @@ def find_MAP(
             **optimizer_kwargs,
         )
 
+    H_inv = _compute_inverse_hessian(
+        optimizer_result=optimizer_result,
+        optimal_point=None,
+        f_fused=f_fused,
+        f_hessp=f_hessp,
+        use_hess=use_hess,
+        method=method,
+    )
+
     raveled_optimized = RaveledVars(optimizer_result.x, initial_params.point_map_info)
     unobserved_vars = get_default_varnames(model.unobserved_value_vars, include_transformed)
     unobserved_vars_values = model.compile_fn(unobserved_vars, mode="FAST_COMPILE")(
@@ -327,17 +335,7 @@ def find_MAP(
         var.name: value for var, value in zip(unobserved_vars, unobserved_vars_values)
     }
 
-    H_inv = _compute_inverse_hessian(
-        optimizer_result=optimizer_result,
-        optimal_point=None,
-        f_fused=f_fused,
-        f_hessp=f_hessp,
-        use_hess=use_hess,
-        method=method,
-    )
-
-    idata = az.InferenceData()
-    idata = add_map_posterior_to_inference_data(idata, optimized_point, frozen_model)
+    idata = map_results_to_inference_data(optimized_point, frozen_model)
     idata = add_fit_to_inference_data(idata, raveled_optimized, H_inv)
     idata = add_optimizer_result_to_inference_data(
         idata, optimizer_result, method, raveled_optimized, model

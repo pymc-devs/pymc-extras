@@ -29,8 +29,9 @@ import xarray as xr
 
 from better_optimize.constants import minimize_method
 from numpy.typing import ArrayLike
-from pymc import DictToArrayBijection, join_nonshared_inputs
+from pymc.blocking import DictToArrayBijection
 from pymc.model.transform.optimization import freeze_dims_and_data
+from pymc.pytensorf import join_nonshared_inputs
 from pymc.util import get_default_varnames
 from pytensor.graph import vectorize_graph
 from pytensor.tensor import TensorVariable
@@ -147,17 +148,29 @@ def get_conditional_gaussian_approximation(
 
 
 def _unconstrained_vector_to_constrained_rvs(model):
-    outputs = get_default_varnames(model.unobserved_value_vars, include_transformed=False)
+    outputs = get_default_varnames(model.unobserved_value_vars, include_transformed=True)
+    constrained_names = [
+        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=False)
+    ]
     names = [x.name for x in outputs]
 
-    constrained_rvs, unconstrained_vector = join_nonshared_inputs(
+    unconstrained_names = [name for name in names if name not in constrained_names]
+
+    new_outputs, unconstrained_vector = join_nonshared_inputs(
         model.initial_point(),
         inputs=model.value_vars,
         outputs=outputs,
     )
 
+    constrained_rvs = [x for x, name in zip(new_outputs, names) if name in constrained_names]
+    value_rvs = [x for x in new_outputs if x not in constrained_rvs]
+
     unconstrained_vector.name = "unconstrained_vector"
-    return names, constrained_rvs, unconstrained_vector
+
+    # Redo the names list to ensure it is sorted to match the return order
+    names = [*constrained_names, *unconstrained_names]
+
+    return names, constrained_rvs, value_rvs, unconstrained_vector
 
 
 def model_to_laplace_approx(
@@ -169,7 +182,9 @@ def model_to_laplace_approx(
 
     # temp_chain and temp_draw are a hack to allow sampling from the Laplace approximation. We only have one mu and cov,
     # so we add batch dims (which correspond to chains and draws). But the names "chain" and "draw" are reserved.
-    names, constrained_rvs, unconstrained_vector = _unconstrained_vector_to_constrained_rvs(model)
+    names, constrained_rvs, value_rvs, unconstrained_vector = (
+        _unconstrained_vector_to_constrained_rvs(model)
+    )
 
     coords = model.coords | {
         "temp_chain": np.arange(chains),
@@ -202,11 +217,10 @@ def model_to_laplace_approx(
                 dims = (*batch_dims, *model.named_vars_to_dims[name])
             else:
                 dims = (*batch_dims, *[f"{name}_dim_{i}" for i in range(batched_rv.ndim - 2)])
+                initval = initial_point.get(name, None)
+                dim_shapes = initval.shape if initval is not None else batched_rv.type.shape[2:]
                 laplace_model.add_coords(
-                    {
-                        name: np.arange(shape)
-                        for name, shape in zip(dims[2:], batched_rv.type.shape[2:])
-                    }
+                    {name: np.arange(shape) for name, shape in zip(dims[2:], dim_shapes)}
                 )
 
             pm.Deterministic(name, batched_rv, dims=dims)
@@ -214,7 +228,7 @@ def model_to_laplace_approx(
     return laplace_model
 
 
-def unstack_laplace_draws(idata, model):
+def unstack_laplace_draws(laplace_data, model, chains=2, draws=500):
     """
     The `model_to_laplace_approx` function returns a model with a single MvNormal distribution, draws from which are
     in the unconstrained variable space. These might be interesting to the user, but since they come back stacked in a
@@ -226,16 +240,8 @@ def unstack_laplace_draws(idata, model):
     initial_point = DictToArrayBijection.map(model.initial_point())
 
     cursor = 0
-    chains = idata.coords["chain"].size
-    draws = idata.coords["draw"].size
-
     unstacked_laplace_draws = {}
-    laplace_data = idata.laplace_approximation.values
     coords = model.coords | {"chain": range(chains), "draw": range(draws)}
-
-    # # There might
-    # idata_coords = {k: v.tolist() for k, v in zip(idata.coords.keys(), [x.values for x in idata.coords.values()])
-    #                 if k not in ['chain', 'draw', 'unpacked_variable_names']}
 
     # There are corner cases where the value_vars will not have the same dimensions as the random variable (e.g.
     # simplex transform of a Dirichlet). In these cases, we don't try to guess what the labels should be, and just
@@ -420,23 +426,26 @@ def fit_laplace(
         )
 
     with model_to_laplace_approx(model, unpacked_variable_names, chains, draws) as laplace_model:
-        laplace_idata = pm.sample_posterior_predictive(
-            idata.fit.expand_dims(chain=[0], draw=[0]),
-            extend_inferencedata=False,
-            random_seed=random_seed,
-            var_names=["laplace_approximation", *[x.name for x in laplace_model.deterministics]],
-        )
         new_posterior = (
-            laplace_idata.posterior_predictive.squeeze(["chain", "draw"])
+            pm.sample_posterior_predictive(
+                idata.fit.expand_dims(chain=[0], draw=[0]),
+                extend_inferencedata=False,
+                random_seed=random_seed,
+                var_names=[
+                    "laplace_approximation",
+                    *[x.name for x in laplace_model.deterministics],
+                ],
+            )
+            .posterior_predictive.squeeze(["chain", "draw"])
             .drop_vars(["chain", "draw"])
             .rename({"temp_chain": "chain", "temp_draw": "draw"})
         )
 
-        new_posterior.update(unstack_laplace_draws(new_posterior, model))
-        new_posterior = new_posterior.drop_vars(
+        idata.unconstrained_posterior = unstack_laplace_draws(
+            new_posterior.laplace_approximation.values, model, chains=chains, draws=draws
+        )
+        idata.posterior = new_posterior.drop_vars(
             ["laplace_approximation", "unpacked_variable_names"]
         )
-
-        idata.posterior = new_posterior
 
     return idata

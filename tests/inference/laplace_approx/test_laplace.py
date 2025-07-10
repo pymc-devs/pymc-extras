@@ -188,18 +188,18 @@ def test_model_with_nonstandard_dimensionality(rng):
         idata = pmx.fit_laplace(progressbar=False)
 
     # The dirichlet value variable has a funky shape; check that it got a default
-    assert "w_simplex___dim_0" in list(idata.posterior.w_simplex__.coords.keys())
-    assert "class" not in list(idata.posterior.w_simplex__.coords.keys())
-    assert len(idata.posterior.coords["w_simplex___dim_0"]) == 2
+    assert "w_simplex___dim_0" in list(idata.unconstrained_posterior.w_simplex__.coords.keys())
+    assert "class" not in list(idata.unconstrained_posterior.w_simplex__.coords.keys())
+    assert len(idata.unconstrained_posterior.coords["w_simplex___dim_0"]) == 2
 
     # On the other hand, check that the actual w has the correct dims
     assert "class" in list(idata.posterior.w.coords.keys())
 
     # The log transform is 1-to-1, so it should have the same dims as the original rv
-    assert "class" in list(idata.posterior.sigma_log__.coords.keys())
+    assert "class" in list(idata.unconstrained_posterior.sigma_log__.coords.keys())
 
 
-def test_nonscalar_rv_without_dims():
+def test_laplace_nonscalar_rv_without_dims():
     with pm.Model(coords={"test": ["A", "B", "C"]}) as model:
         x_loc = pm.Normal("x_loc", mu=0, sigma=1, dims=["test"])
         x = pm.Normal("x", mu=x_loc, sigma=1, shape=(2, 3))

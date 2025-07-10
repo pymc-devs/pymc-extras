@@ -1,5 +1,5 @@
 from itertools import product
-from typing import Any, Literal
+from typing import Literal
 
 import arviz as az
 import numpy as np
@@ -10,6 +10,7 @@ from arviz import dict_to_dataset
 from better_optimize.constants import minimize_method
 from pymc.backends.arviz import coords_and_dims_for_inferencedata, find_constants, find_observations
 from pymc.blocking import RaveledVars
+from pymc.util import get_default_varnames
 from scipy.optimize import OptimizeResult
 from scipy.sparse.linalg import LinearOperator
 
@@ -55,31 +56,7 @@ def make_unpacked_variable_names(names: list[str], model: pm.Model) -> list[str]
     return unpacked_variable_names
 
 
-def map_results_to_inference_data(results: dict[str, Any], model: pm.Model | None = None):
-    """
-    Convert a dictionary of results to an InferenceData object.
-
-    Parameters
-    ----------
-    results: dict
-        A dictionary containing the results to convert.
-    model: Model, optional
-        A PyMC model. If None, the model is taken from the current model context.
-
-    Returns
-    -------
-    idata: az.InferenceData
-        An InferenceData object containing the results.
-    """
-    model = pm.modelcontext(model)
-    coords, dims = coords_and_dims_for_inferencedata(model)
-
-    idata = az.convert_to_inference_data(results, coords=coords, dims=dims)
-    return idata
-
-
-def add_map_posterior_to_inference_data(
-    idata: az.InferenceData,
+def map_results_to_inference_data(
     map_point: dict[str, float | int | np.ndarray],
     model: pm.Model | None = None,
 ):
@@ -124,9 +101,35 @@ def add_map_posterior_to_inference_data(
         }
     )
 
+    constrained_names = [
+        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=False)
+    ]
+    all_varnames = [
+        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=True)
+    ]
+
+    unconstrained_names = set(all_varnames) - set(constrained_names)
+
     idata = az.from_dict(
-        {k: np.expand_dims(v, (0, 1)) for k, v in map_point.items()}, coords=coords, dims=dims
+        posterior={
+            k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in constrained_names
+        },
+        coords=coords,
+        dims=dims,
     )
+
+    if unconstrained_names:
+        unconstrained_posterior = az.from_dict(
+            posterior={
+                k: np.expand_dims(v, (0, 1))
+                for k, v in map_point.items()
+                if k in unconstrained_names
+            },
+            coords=coords,
+            dims=dims,
+        )
+
+        idata["unconstrained_posterior"] = unconstrained_posterior.posterior
 
     return idata
 

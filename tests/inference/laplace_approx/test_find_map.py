@@ -159,15 +159,19 @@ def test_find_MAP(
         )
 
     assert hasattr(idata, "posterior")
+    assert hasattr(idata, "unconstrained_posterior")
     assert hasattr(idata, "fit")
     assert hasattr(idata, "optimizer_result")
     assert hasattr(idata, "observed_data")
 
     posterior = idata.posterior.squeeze(["chain", "draw"])
-    assert "mu" in posterior and "sigma_log__" in posterior and "sigma" in posterior
+    assert "mu" in posterior and "sigma" in posterior
     assert posterior["mu"].shape == ()
-    assert posterior["sigma_log__"].shape == ()
     assert posterior["sigma"].shape == ()
+
+    unconstrained_posterior = idata.unconstrained_posterior.squeeze(["chain", "draw"])
+    assert "sigma_log__" in unconstrained_posterior
+    assert unconstrained_posterior["sigma_log__"].shape == ()
 
 
 @pytest.mark.parametrize(
@@ -195,16 +199,21 @@ def test_map_shared_variables(backend, gradient_backend: GradientBackend):
         )
 
     assert hasattr(idata, "posterior")
+    assert hasattr(idata, "unconstrained_posterior")
     assert hasattr(idata, "fit")
     assert hasattr(idata, "optimizer_result")
     assert hasattr(idata, "observed_data")
     assert hasattr(idata, "constant_data")
 
     posterior = idata.posterior.squeeze(["chain", "draw"])
-    assert "mu" in posterior and "sigma_log__" in posterior and "sigma" in posterior
+    unconstrained_posterior = idata.unconstrained_posterior.squeeze(["chain", "draw"])
+
+    assert "mu" in posterior and "sigma" in posterior
     assert posterior["mu"].shape == ()
-    assert posterior["sigma_log__"].shape == ()
     assert posterior["sigma"].shape == ()
+
+    assert "sigma_log__" in unconstrained_posterior
+    assert unconstrained_posterior["sigma_log__"].shape == ()
 
 
 @pytest.mark.parametrize(
@@ -242,10 +251,15 @@ def test_find_MAP_basinhopping(
         )
 
     assert hasattr(idata, "posterior")
+    assert hasattr(idata, "unconstrained_posterior")
+
     posterior = idata.posterior.squeeze(["chain", "draw"])
-    assert "mu" in posterior and "sigma_log__" in posterior
+    unconstrained_posterior = idata.unconstrained_posterior.squeeze(["chain", "draw"])
+    assert "mu" in posterior
     assert posterior["mu"].shape == ()
-    assert posterior["sigma_log__"].shape == ()
+
+    assert "sigma_log__" in unconstrained_posterior
+    assert unconstrained_posterior["sigma_log__"].shape == ()
 
 
 def test_find_MAP_with_coords():
@@ -261,20 +275,48 @@ def test_find_MAP_with_coords():
         idata = find_MAP(progressbar=False, method="L-BFGS-B")
 
     assert hasattr(idata, "posterior")
+    assert hasattr(idata, "unconstrained_posterior")
     assert hasattr(idata, "fit")
 
     posterior = idata.posterior.squeeze(["chain", "draw"])
+    unconstrained_posterior = idata.unconstrained_posterior.squeeze(["chain", "draw"])
+
     assert (
         "mu_loc" in posterior
         and "mu_scale" in posterior
-        and "mu_scale_log__" in posterior
         and "mu" in posterior
-        and "sigma_log__" in posterior
         and "sigma" in posterior
     )
+    assert "mu_scale_log__" in unconstrained_posterior and "sigma_log__" in unconstrained_posterior
+
     assert posterior["mu_loc"].shape == ()
     assert posterior["mu_scale"].shape == ()
-    assert posterior["mu_scale_log__"].shape == ()
     assert posterior["mu"].shape == (5,)
-    assert posterior["sigma_log__"].shape == (5,)
     assert posterior["sigma"].shape == (5,)
+
+    assert unconstrained_posterior["mu_scale_log__"].shape == ()
+    assert unconstrained_posterior["sigma_log__"].shape == (5,)
+
+
+def test_map_nonscalar_rv_without_dims():
+    with pm.Model(coords={"test": ["A", "B", "C"]}) as model:
+        x_loc = pm.Normal("x_loc", mu=0, sigma=1, dims=["test"])
+        x = pm.Normal("x", mu=x_loc, sigma=1, shape=(2, 3))
+        y = pm.Normal("y", mu=x, sigma=1, observed=np.random.randn(10, 2, 3))
+
+        idata = find_MAP(method="L-BFGS-B", progressbar=False)
+
+    assert idata.posterior["x"].shape == (1, 1, 2, 3)
+    assert all(f"x_dim_{i}" in idata.posterior.coords for i in range(2))
+
+    assert idata.fit.rows.values.tolist() == [
+        "x_loc[A]",
+        "x_loc[B]",
+        "x_loc[C]",
+        "x[0,0]",
+        "x[0,1]",
+        "x[0,2]",
+        "x[1,0]",
+        "x[1,1]",
+        "x[1,2]",
+    ]
