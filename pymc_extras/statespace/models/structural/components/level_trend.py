@@ -187,7 +187,10 @@ class LevelTrendComponent(Component):
             self.param_names += [f"sigma_{self.name}"]
 
             self.shock_names = [
-                name for name, mask in zip(name_slice, self.innovations_order) if mask
+                f"{name}[{obs_name}]"
+                for obs_name in self.observed_state_names
+                for name, mask in zip(name_slice, self.innovations_order)
+                if mask
             ]
 
             self.param_dims[f"sigma_{self.name}"] = (
