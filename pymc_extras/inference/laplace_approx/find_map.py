@@ -326,7 +326,7 @@ def find_MAP(
     )
 
     raveled_optimized = RaveledVars(optimizer_result.x, initial_params.point_map_info)
-    unobserved_vars = get_default_varnames(model.unobserved_value_vars, include_transformed)
+    unobserved_vars = get_default_varnames(model.unobserved_value_vars, include_transformed=True)
     unobserved_vars_values = model.compile_fn(unobserved_vars, mode="FAST_COMPILE")(
         DictToArrayBijection.rmap(raveled_optimized)
     )
@@ -335,7 +335,7 @@ def find_MAP(
         var.name: value for var, value in zip(unobserved_vars, unobserved_vars_values)
     }
 
-    idata = map_results_to_inference_data(optimized_point, frozen_model)
+    idata = map_results_to_inference_data(optimized_point, frozen_model, include_transformed)
     idata = add_fit_to_inference_data(idata, raveled_optimized, H_inv)
     idata = add_optimizer_result_to_inference_data(
         idata, optimizer_result, method, raveled_optimized, model

@@ -133,12 +133,19 @@ def test_jax_functions_from_graph(gradient_backend: GradientBackend):
     ],
 )
 @pytest.mark.parametrize(
-    "backend, gradient_backend",
-    [("jax", "jax"), ("jax", "pytensor")],
+    "backend, gradient_backend, include_transformed",
+    [("jax", "jax", True), ("jax", "pytensor", False)],
     ids=str,
 )
 def test_find_MAP(
-    method, use_grad, use_hess, use_hessp, backend, gradient_backend: GradientBackend, rng
+    method,
+    use_grad,
+    use_hess,
+    use_hessp,
+    backend,
+    gradient_backend: GradientBackend,
+    include_transformed,
+    rng,
 ):
     pytest.importorskip("jax")
 
@@ -154,12 +161,12 @@ def test_find_MAP(
             use_hessp=use_hessp,
             progressbar=False,
             gradient_backend=gradient_backend,
+            include_transformed=include_transformed,
             compile_kwargs={"mode": backend.upper()},
             maxiter=5,
         )
 
     assert hasattr(idata, "posterior")
-    assert hasattr(idata, "unconstrained_posterior")
     assert hasattr(idata, "fit")
     assert hasattr(idata, "optimizer_result")
     assert hasattr(idata, "observed_data")
@@ -169,9 +176,13 @@ def test_find_MAP(
     assert posterior["mu"].shape == ()
     assert posterior["sigma"].shape == ()
 
-    unconstrained_posterior = idata.unconstrained_posterior.squeeze(["chain", "draw"])
-    assert "sigma_log__" in unconstrained_posterior
-    assert unconstrained_posterior["sigma_log__"].shape == ()
+    if include_transformed:
+        assert hasattr(idata, "unconstrained_posterior")
+        unconstrained_posterior = idata.unconstrained_posterior.squeeze(["chain", "draw"])
+        assert "sigma_log__" in unconstrained_posterior
+        assert unconstrained_posterior["sigma_log__"].shape == ()
+    else:
+        assert not hasattr(idata, "unconstrained_posterior")
 
 
 @pytest.mark.parametrize(

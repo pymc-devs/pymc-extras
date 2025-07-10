@@ -59,6 +59,7 @@ def make_unpacked_variable_names(names: list[str], model: pm.Model) -> list[str]
 def map_results_to_inference_data(
     map_point: dict[str, float | int | np.ndarray],
     model: pm.Model | None = None,
+    include_transformed: bool = True,
 ):
     """
     Add the MAP point to an InferenceData object in the posterior group.
@@ -68,13 +69,13 @@ def map_results_to_inference_data(
 
     Parameters
     ----------
-    idata: az.InferenceData
-        An InferenceData object to which the MAP point will be added.
     map_point: dict
         A dictionary containing the MAP point estimates for each variable. The keys should be the variable names, and
         the values should be the corresponding MAP estimates.
     model: Model, optional
         A PyMC model. If None, the model is taken from the current model context.
+    include_transformed: bool
+        Whether to return transformed (unconstrained) variables in the constrained_posterior group. Default is True.
 
     Returns
     -------
@@ -118,7 +119,7 @@ def map_results_to_inference_data(
         dims=dims,
     )
 
-    if unconstrained_names:
+    if unconstrained_names and include_transformed:
         unconstrained_posterior = az.from_dict(
             posterior={
                 k: np.expand_dims(v, (0, 1))
