@@ -14,7 +14,7 @@ RTOL = 0 if config.floatX.endswith("64") else 1e-6
 
 def test_level_trend_model(rng):
     mod = st.LevelTrendComponent(order=2, innovations_order=0)
-    params = {"level_trend_initial": [0.0, 1.0]}
+    params = {"initial_level_trend": [0.0, 1.0]}
     x, y = simulate_from_numpy_model(mod, rng, params)
 
     assert_allclose(np.diff(y), 1, atol=ATOL, rtol=RTOL)
@@ -22,7 +22,7 @@ def test_level_trend_model(rng):
     # Check coords
     mod = mod.build(verbose=False)
     _assert_basic_coords_correct(mod)
-    assert mod.coords["level_trend_state"] == ["level", "trend"]
+    assert mod.coords["state_level_trend"] == ["level", "trend"]
 
 
 def test_level_trend_multiple_observed_construction():
@@ -34,8 +34,8 @@ def test_level_trend_multiple_observed_construction():
     assert mod.k_states == 6
     assert mod.k_posdef == 3
 
-    assert mod.coords["level_trend_state"] == ["level", "trend"]
-    assert mod.coords["level_trend_endog"] == ["data_1", "data_2", "data_3"]
+    assert mod.coords["state_level_trend"] == ["level", "trend"]
+    assert mod.coords["endog_level_trend"] == ["data_1", "data_2", "data_3"]
 
     assert mod.state_names == [
         "level[data_1]",
@@ -95,7 +95,7 @@ def test_level_trend_multiple_observed(rng):
     mod = st.LevelTrendComponent(
         order=2, innovations_order=0, observed_state_names=["data_1", "data_2", "data_3"]
     )
-    params = {"level_trend_initial": np.array([[0.0, 1.0], [0.0, 2.0], [0.0, 3.0]])}
+    params = {"initial_level_trend": np.array([[0.0, 1.0], [0.0, 2.0], [0.0, 3.0]])}
 
     x, y = simulate_from_numpy_model(mod, rng, params)
     assert (np.diff(y, axis=0) == np.array([[1.0, 2.0, 3.0]])).all().all()
@@ -115,8 +115,8 @@ def test_add_level_trend_with_different_observed():
     assert mod.k_states == 3
     assert mod.k_posdef == 2
 
-    assert mod.coords["ll_state"] == ["level", "trend"]
-    assert mod.coords["grw_state"] == ["level"]
+    assert mod.coords["state_ll"] == ["level", "trend"]
+    assert mod.coords["state_grw"] == ["level"]
 
     assert mod.state_names == ["level[data_1]", "trend[data_1]", "level[data_2]"]
     assert mod.shock_names == ["trend[data_1]", "level[data_2]"]

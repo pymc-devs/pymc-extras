@@ -28,7 +28,7 @@ def test_exogenous_component(rng):
 
     mod = mod.build(verbose=False)
     _assert_basic_coords_correct(mod)
-    assert mod.coords["exog_state"] == ["feature_1", "feature_2"]
+    assert mod.coords["state_exog"] == ["feature_1", "feature_2"]
 
 
 def test_adding_exogenous_component(rng):
@@ -65,11 +65,9 @@ def test_regression_with_multiple_observed_states(rng):
     assert_allclose(y[:, 1], data @ params["beta_exog"][1], atol=ATOL, rtol=RTOL)
 
     mod = mod.build(verbose=False)
-    assert mod.coords["exog_state"] == [
-        "feature_1[data_1]",
-        "feature_2[data_1]",
-        "feature_1[data_2]",
-        "feature_2[data_2]",
+    assert mod.coords["state_exog"] == [
+        "feature_1",
+        "feature_2",
     ]
 
     Z = mod.ssm["design"].eval({"data_exog": data})
@@ -90,8 +88,8 @@ def test_add_regression_components_with_multiple_observed_states(rng):
     reg2 = st.RegressionComponent(state_names=["c"], name="exog2", observed_state_names=["data_3"])
 
     mod = (reg1 + reg2).build(verbose=False)
-    assert mod.coords["exog1_state"] == ["a[data_1]", "b[data_1]", "a[data_2]", "b[data_2]"]
-    assert mod.coords["exog2_state"] == ["c[data_3]"]
+    assert mod.coords["state_exog1"] == ["a", "b"]
+    assert mod.coords["state_exog2"] == ["c"]
 
     Z = mod.ssm["design"].eval({"data_exog1": data_1, "data_exog2": data_2})
     vec_block_diag = np.vectorize(block_diag, signature="(n,m),(o,p)->(q,r)")
@@ -124,7 +122,7 @@ def test_filter_scans_time_varying_design_matrix(rng):
 
         x0 = pm.Normal("x0", dims=["state"])
         P0 = pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
-        beta_exog = pm.Normal("beta_exog", dims=["exog_state"])
+        beta_exog = pm.Normal("beta_exog", dims=["state_exog"])
 
         mod.build_statespace_graph(y)
         x0, P0, c, d, T, Z, R, H, Q = mod.unpack_statespace()
