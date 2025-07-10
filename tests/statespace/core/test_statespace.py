@@ -121,13 +121,21 @@ def pymc_mod(ss_mod):
 
 @pytest.fixture(scope="session")
 def ss_mod_no_exog(rng):
-    ll = st.LevelTrendComponent(order=2, innovations_order=1)
+    ll = st.LevelTrendComponent(name="trend", order=2, innovations_order=1)
+    return ll.build()
+
+
+@pytest.fixture(scope="session")
+def ss_mod_no_exog_mv(rng):
+    ll = st.LevelTrendComponent(
+        name="trend", order=2, innovations_order=1, observed_state_names=["y1", "y2"]
+    )
     return ll.build()
 
 
 @pytest.fixture(scope="session")
 def ss_mod_no_exog_dt(rng):
-    ll = st.LevelTrendComponent(order=2, innovations_order=1)
+    ll = st.LevelTrendComponent(name="trend", order=2, innovations_order=1)
     return ll.build()
 
 
@@ -147,8 +155,25 @@ def exog_data(rng):
 
 
 @pytest.fixture(scope="session")
+def exog_data_mv(rng):
+    # simulate data
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range(start="2023-05-01", end="2023-05-10", freq="D"),
+            "x1": rng.choice(2, size=10, replace=True).astype(float),
+            "y1": rng.normal(size=(10,)),
+            "y2": rng.normal(size=(10,)),
+        }
+    )
+
+    df.loc[[1, 3, 9], ["y1"]] = np.nan
+    df.loc[[3, 5, 7], ["y2"]] = np.nan
+    return df.set_index("date")
+
+
+@pytest.fixture(scope="session")
 def exog_ss_mod(exog_data):
-    level_trend = st.LevelTrendComponent(order=1, innovations_order=[0])
+    level_trend = st.LevelTrendComponent(name="trend", order=1, innovations_order=[0])
     exog = st.RegressionComponent(
         name="exog",  # Name of this exogenous variable component
         k_exog=1,  # Only one exogenous variable now
@@ -161,22 +186,81 @@ def exog_ss_mod(exog_data):
 
 
 @pytest.fixture(scope="session")
+def exog_ss_mod_mv(exog_data_mv):
+    level_trend = st.LevelTrendComponent(
+        name="trend", order=1, innovations_order=[0], observed_state_names=["y1", "y2"]
+    )
+    exog = st.RegressionComponent(
+        name="exog",  # Name of this exogenous variable component
+        k_exog=1,  # Only one exogenous variable now
+        innovations=False,  # Typically fixed effect (no stochastic evolution)
+        state_names=exog_data_mv[["x1"]].columns.tolist(),
+        observed_state_names=["y1", "y2"],
+    )
+
+    combined_model = level_trend + exog
+    return combined_model.build()
+
+
+@pytest.fixture(scope="session")
+def ss_mod_multi_component(rng):
+    ll = st.LevelTrendComponent(
+        name="trend", order=2, innovations_order=1, observed_state_names=["y1", "y2"]
+    )
+    exog = st.RegressionComponent(
+        name="exog",
+        innovations=True,
+        state_names=["x1"],
+    )
+    ar = st.AutoregressiveComponent(observed_state_names=["y1"])
+    cycle = st.CycleComponent(cycle_length=2, observed_state_names=["y1", "y2"], innovations=True)
+    season = st.TimeSeasonality(season_length=2, observed_state_names=["y1"], innovations=True)
+
+    fseason = st.FrequencySeasonality(
+        season_length=2, observed_state_names=["y1"], innovations=True
+    )
+    measure_error = st.MeasurementError(observed_state_names=["y1", "y2"])
+    return (ll + exog + ar + cycle + season + fseason + measure_error).build()
+
+
+@pytest.fixture(scope="session")
 def exog_pymc_mod(exog_ss_mod, exog_data):
     # define pymc model
     with pm.Model(coords=exog_ss_mod.coords) as struct_model:
         P0_diag = pm.Gamma("P0_diag", alpha=2, beta=4, dims=["state"])
         P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=["state", "state_aux"])
 
+        initial_trend = pm.Normal("initial_trend", mu=[0], sigma=[0.005], dims=["state_trend"])
+
+        data_exog = pm.Data(
+            "data_exog", exog_data["x1"].values[:, None], dims=["time", "state_exog"]
+        )
+        beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=["state_exog"])
+
+        exog_ss_mod.build_statespace_graph(exog_data["y"], save_kalman_filter_outputs_in_idata=True)
+
+    return struct_model
+
+
+@pytest.fixture(scope="session")
+def exog_pymc_mod_mv(exog_ss_mod_mv, exog_data_mv):
+    # define pymc model
+    with pm.Model(coords=exog_ss_mod_mv.coords) as struct_model:
+        P0_diag = pm.Gamma("P0_diag", alpha=2, beta=4, dims=["state"])
+        P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=["state", "state_aux"])
+
         initial_trend = pm.Normal(
-            "level_trend_initial", mu=[0], sigma=[0.005], dims=["level_trend_state"]
+            "initial_trend", mu=[0], sigma=[0.005], dims=["endog_trend", "state_trend"]
         )
 
         data_exog = pm.Data(
-            "data_exog", exog_data["x1"].values[:, None], dims=["time", "exog_state"]
+            "data_exog", exog_data_mv["x1"].values[:, None], dims=["time", "state_exog"]
         )
-        beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=["exog_state"])
+        beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=["endog_exog", "state_exog"])
 
-        exog_ss_mod.build_statespace_graph(exog_data["y"], save_kalman_filter_outputs_in_idata=True)
+        exog_ss_mod_mv.build_statespace_graph(
+            exog_data_mv[["y1", "y2"]], save_kalman_filter_outputs_in_idata=True
+        )
 
     return struct_model
 
@@ -186,13 +270,49 @@ def pymc_mod_no_exog(ss_mod_no_exog, rng):
     y = pd.DataFrame(rng.normal(size=(100, 1)).astype(floatX), columns=["y"])
 
     with pm.Model(coords=ss_mod_no_exog.coords) as m:
-        initial_trend = pm.Normal("level_trend_initial", dims=["level_trend_state"])
+        initial_trend = pm.Normal("initial_trend", dims=["state_trend"])
         P0_sigma = pm.Exponential("P0_sigma", 1)
         P0 = pm.Deterministic(
             "P0", pt.eye(ss_mod_no_exog.k_states) * P0_sigma, dims=["state", "state_aux"]
         )
-        sigma_trend = pm.Exponential("level_trend_sigma", 1, dims=["level_trend_shock"])
+        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["trend_shock"])
         ss_mod_no_exog.build_statespace_graph(y)
+
+    return m
+
+
+@pytest.fixture(scope="session")
+def pymc_mod_no_exog_mv(ss_mod_no_exog_mv, rng):
+    y = pd.DataFrame(rng.normal(size=(100, 2)).astype(floatX), columns=["y1", "y2"])
+
+    with pm.Model(coords=ss_mod_no_exog_mv.coords) as m:
+        trend_initial = pm.Normal("initial_trend", dims=["endog_trend", "state_trend"])
+        P0_sigma = pm.Exponential("P0_sigma", 1)
+        P0 = pm.Deterministic(
+            "P0", pt.eye(ss_mod_no_exog_mv.k_states) * P0_sigma, dims=["state", "state_aux"]
+        )
+        trend_sigma = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "trend_shock"])
+        ss_mod_no_exog_mv.build_statespace_graph(y)
+
+    return m
+
+
+@pytest.fixture(scope="session")
+def pymc_mod_no_exog_mv_dt(ss_mod_no_exog_mv, rng):
+    y = pd.DataFrame(
+        rng.normal(size=(100, 2)).astype(floatX),
+        columns=["y1", "y2"],
+        index=pd.date_range("2020-01-01", periods=100, freq="D"),
+    )
+
+    with pm.Model(coords=ss_mod_no_exog_mv.coords) as m:
+        trend_initial = pm.Normal("initial_trend", dims=["endog_trend", "state_trend"])
+        P0_sigma = pm.Exponential("P0_sigma", 1)
+        P0 = pm.Deterministic(
+            "P0", pt.eye(ss_mod_no_exog_mv.k_states) * P0_sigma, dims=["state", "state_aux"]
+        )
+        trend_sigma = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "trend_shock"])
+        ss_mod_no_exog_mv.build_statespace_graph(y)
 
     return m
 
@@ -206,12 +326,12 @@ def pymc_mod_no_exog_dt(ss_mod_no_exog_dt, rng):
     )
 
     with pm.Model(coords=ss_mod_no_exog_dt.coords) as m:
-        initial_trend = pm.Normal("level_trend_initial", dims=["level_trend_state"])
+        initial_trend = pm.Normal("initial_trend", dims=["state_trend"])
         P0_sigma = pm.Exponential("P0_sigma", 1)
         P0 = pm.Deterministic(
             "P0", pt.eye(ss_mod_no_exog_dt.k_states) * P0_sigma, dims=["state", "state_aux"]
         )
-        sigma_trend = pm.Exponential("level_trend_sigma", 1, dims=["level_trend_shock"])
+        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["trend_shock"])
         ss_mod_no_exog_dt.build_statespace_graph(y)
 
     return m
@@ -237,8 +357,35 @@ def idata_exog(exog_pymc_mod, rng, mock_pymc_sample):
 
 
 @pytest.fixture(scope="session")
+def idata_exog_mv(exog_pymc_mod_mv, rng, mock_pymc_sample):
+    with exog_pymc_mod_mv:
+        idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
+        idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
+    idata.extend(idata_prior)
+    return idata
+
+
+@pytest.fixture(scope="session")
 def idata_no_exog(pymc_mod_no_exog, rng, mock_pymc_sample):
     with pymc_mod_no_exog:
+        idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
+        idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
+    idata.extend(idata_prior)
+    return idata
+
+
+@pytest.fixture(scope="session")
+def idata_no_exog_mv(pymc_mod_no_exog_mv, rng, mock_pymc_sample):
+    with pymc_mod_no_exog_mv:
+        idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
+        idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
+    idata.extend(idata_prior)
+    return idata
+
+
+@pytest.fixture(scope="session")
+def idata_no_exog_mv_dt(pymc_mod_no_exog_mv_dt, rng, mock_pymc_sample):
+    with pymc_mod_no_exog_mv_dt:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
     idata.extend(idata_prior)
@@ -312,10 +459,10 @@ def test_update_raises_if_missing_variables(ss_mod):
 
 def test_build_statespace_graph_warns_if_data_has_nans():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrendComponent(order=1, innovations_order=0).build(verbose=False)
+    ss_mod = st.LevelTrendComponent(name="trend", order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
-        initial_trend = pm.Normal("level_trend_initial", shape=(1,))
+        initial_trend = pm.Normal("initial_trend", shape=(1,))
         P0 = pm.Deterministic("P0", pt.eye(1, dtype=floatX))
         with pytest.warns(pm.ImputationWarning):
             ss_mod.build_statespace_graph(
@@ -325,10 +472,10 @@ def test_build_statespace_graph_warns_if_data_has_nans():
 
 def test_build_statespace_graph_raises_if_data_has_missing_fill():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrendComponent(order=1, innovations_order=0).build(verbose=False)
+    ss_mod = st.LevelTrendComponent(name="trend", order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
-        initial_trend = pm.Normal("level_trend_initial", shape=(1,))
+        initial_trend = pm.Normal("initial_trend", shape=(1,))
         P0 = pm.Deterministic("P0", pt.eye(1, dtype=floatX))
         with pytest.raises(ValueError, match="Provided data contains the value 1.0"):
             data = np.ones((10, 1), dtype=floatX)
@@ -823,6 +970,16 @@ def test_invalid_scenarios():
         ("ss_mod_no_exog_dt", "idata_no_exog_dt", 10, "2020-01-21", None),
         ("ss_mod_no_exog_dt", "idata_no_exog_dt", "2020-03-01", "2020-03-11", None),
         ("ss_mod_no_exog_dt", "idata_no_exog_dt", "2020-03-01", None, 10),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv", None, None, 10),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv", -1, None, 10),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv", 10, None, 10),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv", 10, 21, None),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv_dt", None, None, 10),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv_dt", -1, None, 10),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv_dt", 10, None, 10),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv_dt", 10, "2020-01-21", None),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv_dt", "2020-03-01", "2020-03-11", None),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv_dt", "2020-03-01", None, 10),
     ],
     ids=[
         "range_default",
@@ -835,6 +992,16 @@ def test_invalid_scenarios():
         "datetime_int_end",
         "datetime_datetime_end",
         "datetime_datetime",
+        "multivariate_default",
+        "multivariate_negative",
+        "multivariate_int",
+        "multivariate_end",
+        "multivariate_datetime_default",
+        "multivariate_datetime_negative",
+        "multivariate_datetime_int",
+        "multivariate_datetime_int_end",
+        "multivariate_datetime_datetime_end",
+        "multivariate_datetime_datetime",
     ],
 )
 def test_forecast(filter_output, mod_name, idata_name, start, end, periods, rng, request):
@@ -884,7 +1051,7 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
     )
 
     components = exog_ss_mod.extract_components_from_idata(forecast_idata)
-    level = components.forecast_latent.sel(state="level_trend[level]")
+    level = components.forecast_latent.sel(state="trend[level]")
     betas = components.forecast_latent.sel(state=["exog[x1]"])
 
     scenario.index.name = "time"
@@ -899,6 +1066,51 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
     regression_effect_expected = (betas * scenario_xr).sum(dim=["state"])
 
     assert_allclose(regression_effect, regression_effect_expected)
+
+
+@pytest.mark.filterwarnings("ignore:Provided data contains missing values")
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+@pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.parametrize("start", [None, -1, 5])
+def test_forecast_with_exog_data_mv(rng, exog_ss_mod_mv, idata_exog_mv, start):
+    scenario = pd.DataFrame(np.zeros((10, 1)), columns=["x1"])
+    scenario.iloc[5, 0] = 1e9
+
+    forecast_idata = exog_ss_mod_mv.forecast(
+        idata_exog_mv, start=start, periods=10, random_seed=rng, scenario=scenario
+    )
+
+    components = exog_ss_mod_mv.extract_components_from_idata(forecast_idata)
+    level_y1 = components.forecast_latent.sel(state="trend[level[y1]]")
+    level_y2 = components.forecast_latent.sel(state="trend[level[y2]]")
+    betas_y1 = components.forecast_latent.sel(state=["exog[x1[y1]]"])
+    betas_y2 = components.forecast_latent.sel(state=["exog[x1[y2]]"])
+
+    scenario.index.name = "time"
+    scenario_xr_y1 = (
+        scenario.unstack()
+        .to_xarray()
+        .rename({"level_0": "state"})
+        .assign_coords(state=["exog[x1[y1]]"])
+    )
+
+    scenario_xr_y2 = (
+        scenario.unstack()
+        .to_xarray()
+        .rename({"level_0": "state"})
+        .assign_coords(state=["exog[x1[y2]]"])
+    )
+
+    regression_effect_y1 = forecast_idata.forecast_observed.isel(observed_state=0) - level_y1
+    regression_effect_expected_y1 = (betas_y1 * scenario_xr_y1).sum(dim=["state"])
+
+    regression_effect_y2 = forecast_idata.forecast_observed.isel(observed_state=1) - level_y2
+    regression_effect_expected_y2 = (betas_y2 * scenario_xr_y2).sum(dim=["state"])
+
+    np.testing.assert_allclose(regression_effect_y1, regression_effect_expected_y1)
+    np.testing.assert_allclose(regression_effect_y2, regression_effect_expected_y2)
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
@@ -1019,3 +1231,16 @@ def test_foreacast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
 
     assert forecasts.forecast_latent.shape[2] == n_periods
     assert forecasts.forecast_observed.shape[2] == n_periods
+
+
+def test_param_dims_coords(ss_mod_multi_component):
+    for param in ss_mod_multi_component.param_names:
+        shape = ss_mod_multi_component.param_info[param]["shape"]
+        dims = ss_mod_multi_component.param_dims.get(param, None)
+        if len(shape) == 0:
+            assert dims is None
+            continue
+        for i, s in zip(shape, dims):
+            assert i == len(
+                ss_mod_multi_component.coords[s]
+            ), f"Mismatch between shape {i} and dimension {s}"

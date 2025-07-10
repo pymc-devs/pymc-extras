@@ -191,8 +191,21 @@ class TimeSeasonality(Component):
                 else (f"{self.name}_endog", f"{self.name}_state"),
             }
         }
-        self.param_dims = {f"{self.name}_coefs": (f"{self.name}_state",)}
-        self.coords = {f"{self.name}_state": self.state_names}
+
+        self.param_dims = {
+            f"{self.name}_coefs": (f"{self.name}_state",)
+            if k_endog == 1
+            else (f"{self.name}_endog", f"{self.name}_state")
+        }
+
+        self.coords = (
+            {f"{self.name}_state": self.provided_state_names}
+            if k_endog == 1
+            else {
+                f"{self.name}_endog": self.observed_state_names,
+                f"{self.name}_state": self.provided_state_names,
+            }
+        )
 
         if self.innovations:
             self.param_names += [f"sigma_{self.name}"]

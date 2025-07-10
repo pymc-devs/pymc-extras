@@ -92,7 +92,9 @@ class RegressionComponent(Component):
         self.param_names = [f"beta_{self.name}"]
         self.data_names = [f"data_{self.name}"]
         self.param_dims = {
-            f"beta_{self.name}": (f"{self.name}_endog", f"{self.name}_state"),
+            f"beta_{self.name}": (f"endog_{self.name}", f"state_{self.name}")
+            if k_endog > 1
+            else (f"state_{self.name}",)
         }
 
         base_names = self.state_names
@@ -104,30 +106,30 @@ class RegressionComponent(Component):
             f"beta_{self.name}": {
                 "shape": (k_endog, k_states) if k_endog > 1 else (k_states,),
                 "constraints": None,
-                "dims": (f"{self.name}_endog", f"{self.name}_state")
+                "dims": (f"endog_{self.name}", f"state_{self.name}")
                 if k_endog > 1
-                else (f"{self.name}_state",),
+                else (f"state_{self.name}",),
             },
         }
 
         self.data_info = {
             f"data_{self.name}": {
                 "shape": (None, k_states),
-                "dims": (TIME_DIM, "exog_state"),
+                "dims": (TIME_DIM, f"state_{self.name}"),
             },
         }
         self.coords = {
-            f"{self.name}_state": self.state_names,
-            f"{self.name}_endog": self.observed_state_names,
+            f"state_{self.name}": base_names,
+            f"endog_{self.name}": self.observed_state_names,
         }
 
         if self.innovations:
             self.param_names += [f"sigma_beta_{self.name}"]
-            self.param_dims[f"sigma_beta_{self.name}"] = f"{self.name}_state"
+            self.param_dims[f"sigma_beta_{self.name}"] = (f"state_{self.name}",)
             self.param_info[f"sigma_beta_{self.name}"] = {
-                "shape": (),
+                "shape": (k_states,),
                 "constraints": "Positive",
-                "dims": (f"{self.name}_state",)
+                "dims": (f"state_{self.name}",)
                 if k_endog == 1
-                else (f"{self.name}_endog", f"{self.name}_state"),
+                else (f"endog_{self.name}", f"state_{self.name}"),
             }
