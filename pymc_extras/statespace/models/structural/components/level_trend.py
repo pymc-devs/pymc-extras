@@ -186,11 +186,14 @@ class LevelTrendComponent(Component):
         if self.k_posdef > 0:
             self.param_names += [f"sigma_{self.name}"]
 
+            base_shock_names = [
+                name for name, mask in zip(name_slice, self.innovations_order) if mask
+            ]
+
             self.shock_names = [
                 f"{name}[{obs_name}]"
                 for obs_name in self.observed_state_names
-                for name, mask in zip(name_slice, self.innovations_order)
-                if mask
+                for name in base_shock_names
             ]
 
             self.param_dims[f"sigma_{self.name}"] = (
@@ -198,7 +201,7 @@ class LevelTrendComponent(Component):
                 if k_endog == 1
                 else (f"endog_{self.name}", f"{self.name}_shock")
             )
-            self.coords[f"{self.name}_shock"] = self.shock_names
+            self.coords[f"{self.name}_shock"] = base_shock_names
             self.param_info[f"sigma_{self.name}"] = {
                 "shape": (k_posdef,) if k_endog == 1 else (k_endog, k_posdef),
                 "constraints": "Positive",
