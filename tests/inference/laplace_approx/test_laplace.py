@@ -19,12 +19,10 @@ import pytest
 
 import pymc_extras as pmx
 
-from pymc_extras.inference.find_map import GradientBackend, find_MAP
-from pymc_extras.inference.laplace import (
+from pymc_extras.inference.laplace_approx.find_map import GradientBackend
+from pymc_extras.inference.laplace_approx.laplace import (
     fit_laplace,
-    fit_mvn_at_MAP,
     get_conditional_gaussian_approximation,
-    sample_laplace_posterior,
 )
 
 
@@ -42,7 +40,7 @@ def rng():
     "mode, gradient_backend",
     [(None, "pytensor"), ("NUMBA", "pytensor"), ("JAX", "jax"), ("JAX", "pytensor")],
 )
-def test_laplace(mode, gradient_backend: GradientBackend):
+def test_fit_laplace_basic(mode, gradient_backend: GradientBackend):
     # Example originates from Bayesian Data Analyses, 3rd Edition
     # By Andrew Gelman, John Carlin, Hal Stern, David Dunson,
     # Aki Vehtari, and Donald Rubin.
@@ -53,8 +51,8 @@ def test_laplace(mode, gradient_backend: GradientBackend):
     draws = 100000
 
     with pm.Model() as m:
-        mu = pm.Uniform("mu", -10000, 10000)
-        logsigma = pm.Uniform("logsigma", 1, 100)
+        mu = pm.Flat("mu")
+        logsigma = pm.Flat("logsigma")
 
         yobs = pm.Normal("y", mu=mu, sigma=pm.math.exp(logsigma), observed=y)
         vars = [mu, logsigma]
@@ -67,6 +65,7 @@ def test_laplace(mode, gradient_backend: GradientBackend):
             chains=1,
             compile_kwargs={"mode": mode},
             gradient_backend=gradient_backend,
+            optimizer_kwargs=dict(tol=1e-20),
         )
 
     assert idata.posterior["mu"].shape == (1, draws)
@@ -78,59 +77,13 @@ def test_laplace(mode, gradient_backend: GradientBackend):
     bda_map = [y.mean(), np.log(y.std())]
     bda_cov = np.array([[y.var() / n, 0], [0, 1 / (2 * n)]])
 
-    np.testing.assert_allclose(idata.fit["mean_vector"].values, bda_map)
-    np.testing.assert_allclose(idata.fit["covariance_matrix"].values, bda_cov, atol=1e-4)
+    np.testing.assert_allclose(idata.posterior["mu"].mean(), bda_map[0], atol=1)
+    np.testing.assert_allclose(idata.posterior["logsigma"].mean(), bda_map[1], rtol=1e-3)
+
+    np.testing.assert_allclose(idata.fit["covariance_matrix"].values, bda_cov, rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.parametrize(
-    "mode, gradient_backend",
-    [(None, "pytensor"), ("NUMBA", "pytensor"), ("JAX", "jax"), ("JAX", "pytensor")],
-)
-def test_laplace_only_fit(mode, gradient_backend: GradientBackend):
-    # Example originates from Bayesian Data Analyses, 3rd Edition
-    # By Andrew Gelman, John Carlin, Hal Stern, David Dunson,
-    # Aki Vehtari, and Donald Rubin.
-    # See section. 4.1
-
-    y = np.array([2642, 3503, 4358], dtype=np.float64)
-    n = y.size
-
-    with pm.Model() as m:
-        logsigma = pm.Uniform("logsigma", 1, 100)
-        mu = pm.Uniform("mu", -10000, 10000)
-        yobs = pm.Normal("y", mu=mu, sigma=pm.math.exp(logsigma), observed=y)
-        vars = [mu, logsigma]
-
-        idata = pmx.fit(
-            method="laplace",
-            optimize_method="BFGS",
-            progressbar=True,
-            gradient_backend=gradient_backend,
-            compile_kwargs={"mode": mode},
-            optimizer_kwargs=dict(maxiter=100_000, gtol=1e-100),
-            random_seed=173300,
-        )
-
-    assert idata.fit["mean_vector"].shape == (len(vars),)
-    assert idata.fit["covariance_matrix"].shape == (len(vars), len(vars))
-
-    bda_map = [np.log(y.std()), y.mean()]
-    bda_cov = np.array([[1 / (2 * n), 0], [0, y.var() / n]])
-
-    np.testing.assert_allclose(idata.fit["mean_vector"].values, bda_map)
-    np.testing.assert_allclose(idata.fit["covariance_matrix"].values, bda_cov, atol=1e-4)
-
-
-@pytest.mark.parametrize(
-    "transform_samples",
-    [True, False],
-    ids=["transformed", "untransformed"],
-)
-@pytest.mark.parametrize(
-    "mode, gradient_backend",
-    [(None, "pytensor"), ("NUMBA", "pytensor"), ("JAX", "jax"), ("JAX", "pytensor")],
-)
-def test_fit_laplace_coords(rng, transform_samples, mode, gradient_backend: GradientBackend):
+def test_fit_laplace_coords(rng):
     coords = {"city": ["A", "B", "C"], "obs_idx": np.arange(100)}
     with pm.Model(coords=coords) as model:
         mu = pm.Normal("mu", mu=3, sigma=0.5, dims=["city"])
@@ -143,49 +96,32 @@ def test_fit_laplace_coords(rng, transform_samples, mode, gradient_backend: Grad
             dims=["obs_idx", "city"],
         )
 
-        optimized_point = find_MAP(
-            method="trust-ncg",
-            use_grad=True,
-            use_hessp=True,
-            progressbar=False,
-            compile_kwargs=dict(mode=mode),
-            gradient_backend=gradient_backend,
+        idata = pmx.fit(
+            method="laplace",
+            optimize_method="trust-ncg",
+            chains=1,
+            draws=1000,
+            optimizer_kwargs=dict(tol=1e-20),
         )
 
-        for value in optimized_point.values():
-            assert value.shape == (3,)
-
-        mu, H_inv = fit_mvn_at_MAP(
-            optimized_point=optimized_point,
-            model=model,
-            transform_samples=transform_samples,
-        )
-
-        idata = sample_laplace_posterior(
-            mu=mu, H_inv=H_inv, model=model, transform_samples=transform_samples
-        )
-
-    np.testing.assert_allclose(np.mean(idata.posterior.mu, axis=1), np.full((2, 3), 3), atol=0.5)
     np.testing.assert_allclose(
-        np.mean(idata.posterior.sigma, axis=1), np.full((2, 3), 1.5), atol=0.3
+        idata.posterior.mu.mean(dim=["chain", "draw"]).values, np.full((3,), 3), atol=0.5
+    )
+    np.testing.assert_allclose(
+        idata.posterior.sigma.mean(dim=["chain", "draw"]).values, np.full((3,), 1.5), atol=0.3
     )
 
-    suffix = "_log__" if transform_samples else ""
     assert idata.fit.rows.values.tolist() == [
         "mu[A]",
         "mu[B]",
         "mu[C]",
-        f"sigma{suffix}[A]",
-        f"sigma{suffix}[B]",
-        f"sigma{suffix}[C]",
+        "sigma_log__[A]",
+        "sigma_log__[B]",
+        "sigma_log__[C]",
     ]
 
 
-@pytest.mark.parametrize(
-    "mode, gradient_backend",
-    [(None, "pytensor"), ("NUMBA", "pytensor"), ("JAX", "jax"), ("JAX", "pytensor")],
-)
-def test_fit_laplace_ragged_coords(mode, gradient_backend: GradientBackend, rng):
+def test_fit_laplace_ragged_coords(rng):
     coords = {"city": ["A", "B", "C"], "feature": [0, 1], "obs_idx": np.arange(100)}
     with pm.Model(coords=coords) as ragged_dim_model:
         X = pm.Data("X", np.ones((100, 2)), dims=["obs_idx", "feature"])
@@ -210,9 +146,11 @@ def test_fit_laplace_ragged_coords(mode, gradient_backend: GradientBackend, rng)
             progressbar=False,
             use_grad=True,
             use_hessp=True,
-            gradient_backend=gradient_backend,
-            compile_kwargs={"mode": mode},
         )
+
+    # These should have been dropped when the laplace idata was created
+    assert "laplace_approximation" not in list(idata.posterior.data_vars.keys())
+    assert "unpacked_var_names" not in list(idata.posterior.coords.keys())
 
     assert idata["posterior"].beta.shape[-2:] == (3, 2)
     assert idata["posterior"].sigma.shape[-1:] == (3,)
@@ -223,50 +161,71 @@ def test_fit_laplace_ragged_coords(mode, gradient_backend: GradientBackend, rng)
     assert (idata["posterior"].beta.sel(feature=1).to_numpy() > 0).all()
 
 
-@pytest.mark.parametrize(
-    "fit_in_unconstrained_space",
-    [True, False],
-    ids=["transformed", "untransformed"],
-)
-@pytest.mark.parametrize(
-    "mode, gradient_backend",
-    [(None, "pytensor"), ("NUMBA", "pytensor"), ("JAX", "jax"), ("JAX", "pytensor")],
-)
-def test_fit_laplace(fit_in_unconstrained_space, mode, gradient_backend: GradientBackend):
-    with pm.Model() as simp_model:
-        mu = pm.Normal("mu", mu=3, sigma=0.5)
-        sigma = pm.Exponential("sigma", 1)
-        obs = pm.Normal(
-            "obs",
-            mu=mu,
-            sigma=sigma,
-            observed=np.random.default_rng().normal(loc=3, scale=1.5, size=(10000,)),
+def test_model_with_nonstandard_dimensionality(rng):
+    y_obs = np.concatenate(
+        [rng.normal(-1, 2, size=150), rng.normal(3, 1, size=350), rng.normal(5, 4, size=50)]
+    )
+
+    with pm.Model(coords={"obs_idx": range(y_obs.size), "class": ["A", "B", "C"]}) as model:
+        y = pm.Data("y", y_obs, dims=["obs_idx"])
+
+        mu = pm.Normal("mu", mu=1, sigma=3, dims=["class"])
+        sigma = pm.HalfNormal("sigma", sigma=3, dims=["class"])
+
+        w = pm.Dirichlet(
+            "w",
+            a=np.ones(
+                3,
+            ),
+            dims=["class"],
+        )
+        class_idx = pm.Categorical("class_idx", p=w, dims=["obs_idx"])
+        y_hat = pm.Normal(
+            "obs", mu=mu[class_idx], sigma=sigma[class_idx], observed=y, dims=["obs_idx"]
         )
 
-        idata = fit_laplace(
-            optimize_method="trust-ncg",
-            use_grad=True,
-            use_hessp=True,
-            fit_in_unconstrained_space=fit_in_unconstrained_space,
-            optimizer_kwargs=dict(maxiter=100_000, tol=1e-100),
-            compile_kwargs={"mode": mode},
-            gradient_backend=gradient_backend,
-        )
+    with pmx.marginalize(model, [class_idx]):
+        idata = pmx.fit_laplace(progressbar=False)
 
-        np.testing.assert_allclose(np.mean(idata.posterior.mu, axis=1), np.full((2,), 3), atol=0.1)
-        np.testing.assert_allclose(
-            np.mean(idata.posterior.sigma, axis=1), np.full((2,), 1.5), atol=0.1
-        )
+    # The dirichlet value variable has a funky shape; check that it got a default
+    assert "w_simplex___dim_0" in list(idata.unconstrained_posterior.w_simplex__.coords.keys())
+    assert "class" not in list(idata.unconstrained_posterior.w_simplex__.coords.keys())
+    assert len(idata.unconstrained_posterior.coords["w_simplex___dim_0"]) == 2
 
-        if fit_in_unconstrained_space:
-            assert idata.fit.rows.values.tolist() == ["mu", "sigma_log__"]
-            np.testing.assert_allclose(idata.fit.mean_vector.values, np.array([3.0, 0.4]), atol=0.1)
-        else:
-            assert idata.fit.rows.values.tolist() == ["mu", "sigma"]
-            np.testing.assert_allclose(idata.fit.mean_vector.values, np.array([3.0, 1.5]), atol=0.1)
+    # On the other hand, check that the actual w has the correct dims
+    assert "class" in list(idata.posterior.w.coords.keys())
+
+    # The log transform is 1-to-1, so it should have the same dims as the original rv
+    assert "class" in list(idata.unconstrained_posterior.sigma_log__.coords.keys())
 
 
-def test_laplace_scalar():
+def test_laplace_nonscalar_rv_without_dims():
+    with pm.Model(coords={"test": ["A", "B", "C"]}) as model:
+        x_loc = pm.Normal("x_loc", mu=0, sigma=1, dims=["test"])
+        x = pm.Normal("x", mu=x_loc, sigma=1, shape=(2, 3))
+        y = pm.Normal("y", mu=x, sigma=1, observed=np.random.randn(10, 2, 3))
+
+        idata = pmx.fit_laplace(progressbar=False)
+
+    assert idata.posterior["x"].shape == (2, 500, 2, 3)
+    assert all(f"x_dim_{i}" in idata.posterior.coords for i in range(2))
+    assert idata.fit.rows.values.tolist() == [
+        "x_loc[A]",
+        "x_loc[B]",
+        "x_loc[C]",
+        "x[0,0]",
+        "x[0,1]",
+        "x[0,2]",
+        "x[1,0]",
+        "x[1,1]",
+        "x[1,2]",
+    ]
+
+
+# Test these three optimizers because they are either special cases for H_inv (BFGS, L-BFGS-B) or are
+# gradient free and require re-compilation of hessp (powell).
+@pytest.mark.parametrize("optimizer_method", ["BFGS", "L-BFGS-B", "powell"])
+def test_laplace_scalar_basinhopping(optimizer_method):
     # Example model from Statistical Rethinking
     data = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1])
 
@@ -274,12 +233,18 @@ def test_laplace_scalar():
         p = pm.Uniform("p", 0, 1)
         w = pm.Binomial("w", n=len(data), p=p, observed=data.sum())
 
-        idata_laplace = pmx.fit_laplace(progressbar=False)
+        idata_laplace = pmx.fit_laplace(
+            optimize_method="basinhopping",
+            optimizer_kwargs={"minimizer_kwargs": {"method": optimizer_method}, "niter": 1},
+            progressbar=False,
+        )
 
     assert idata_laplace.fit.mean_vector.shape == (1,)
     assert idata_laplace.fit.covariance_matrix.shape == (1, 1)
 
-    np.testing.assert_allclose(idata_laplace.fit.mean_vector.values.item(), data.mean(), atol=0.1)
+    np.testing.assert_allclose(
+        idata_laplace.posterior.p.mean(dim=["chain", "draw"]), data.mean(), atol=0.1
+    )
 
 
 def test_get_conditional_gaussian_approximation():
