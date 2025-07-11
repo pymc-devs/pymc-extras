@@ -512,11 +512,15 @@ def ndim_pad_and_reorder(
 
     if n_missing > 0:
         pad_size = [(0, 0) if i not in labeled_axis else (0, n_missing) for i in range(x.ndim)]
-        new_shape = [
-            shape + sum(size) if shape is not None else None
-            for shape, size in zip(x.type.shape, pad_size)
-        ]
-        x = pt.specify_shape(pt.pad(x, pad_size, mode="constant", constant_values=0), new_shape)
+        for axis, (_, after) in enumerate(pad_size):
+            if after > 0:
+                shape = list(x.type.shape)
+                shape[axis] = after
+                zero_shape = [
+                    static_shape if static_shape is not None else x.shape[i]
+                    for i, static_shape in enumerate(shape)
+                ]
+                x = pt.join(axis, x, pt.zeros(zero_shape))
 
     return reorder_from_labels(x, labels, ordered_labels, labeled_axis)
 
