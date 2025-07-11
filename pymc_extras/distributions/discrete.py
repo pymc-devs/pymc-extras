@@ -409,7 +409,7 @@ class Skellam:
 class GrassiaIIGeometricRV(RandomVariable):
     name = "g2g"
     signature = "(),(),()->()"
-    ndims_params = [0, 0, 0]  # r, alpha, time_covariate_vector are all scalars
+    ndims_params = [0, 0, 0]  # deprecated in PyTensor 2.31.7, but still required for RandomVariable
 
     dtype = "int64"
     _print_name = ("GrassiaIIGeometric", "\\operatorname{GrassiaIIGeometric}")
@@ -430,14 +430,13 @@ class GrassiaIIGeometricRV(RandomVariable):
         alpha = np.broadcast_to(alpha, size)
         time_covariate_vector = np.broadcast_to(time_covariate_vector, size)
 
-        # Calculate exp(time_covariate_vector) for all samples
-        exp_time_covar = np.exp(time_covariate_vector)
-
-        # Generate gamma samples and apply time covariates
         lam = rng.gamma(shape=r, scale=1 / alpha, size=size)
 
-        # TODO: Add C(t) to the calculation of lam_covar
+        # Calculate exp(time_covariate_vector) for all samples
+        exp_time_covar = np.exp(time_covariate_vector)
         lam_covar = lam * exp_time_covar
+
+        # TODO: This is not aggregated over time
         p = 1 - np.exp(-lam_covar)
 
         # Ensure p is in valid range for geometric distribution
@@ -526,16 +525,18 @@ class GrassiaIIGeometric(Discrete):
         time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
 
         def C_t(t):
-            # Aggregate time_covariate_vector over active time periods
             if t == 0:
                 return pt.constant(0.0)
-            # Handle case where time_covariate_vector is a scalar
             if time_covariate_vector.ndim == 0:
-                return t * pt.exp(time_covariate_vector)
+                return t
             else:
-                # For time covariates, this approximation avoids symbolic indexing issues
-                mean_covariate = pt.mean(time_covariate_vector)
-                return t * pt.exp(mean_covariate)
+                # Ensure t is a valid index
+                t_idx = pt.maximum(0, t - 1)  # Convert to 0-based indexing
+                # If t_idx exceeds length of time_covariate_vector, use last value
+                max_idx = pt.shape(time_covariate_vector)[0] - 1
+                safe_idx = pt.minimum(t_idx, max_idx)
+                covariate_value = time_covariate_vector[safe_idx]
+                return t * pt.exp(covariate_value)
 
         logp = pt.log(
             pt.pow(alpha / (alpha + C_t(value - 1)), r) - pt.pow(alpha / (alpha + C_t(value)), r)
@@ -567,11 +568,15 @@ class GrassiaIIGeometric(Discrete):
             if t == 0:
                 return pt.constant(0.0)
             if time_covariate_vector.ndim == 0:
-                return t * pt.exp(time_covariate_vector)
+                return t
             else:
-                # For time covariates, this approximation avoids symbolic indexing issues
-                mean_covariate = pt.mean(time_covariate_vector)
-                return t * pt.exp(mean_covariate)
+                # Ensure t is a valid index
+                t_idx = pt.maximum(0, t - 1)  # Convert to 0-based indexing
+                # If t_idx exceeds length of time_covariate_vector, use last value
+                max_idx = pt.shape(time_covariate_vector)[0] - 1
+                safe_idx = pt.minimum(t_idx, max_idx)
+                covariate_value = time_covariate_vector[safe_idx]
+                return t * pt.exp(covariate_value)
 
         survival = pt.pow(alpha / (alpha + C_t(value)), r)
         logcdf = pt.log(1 - survival)

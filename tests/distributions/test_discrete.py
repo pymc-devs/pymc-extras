@@ -272,8 +272,8 @@ class TestGrassiaIIGeometric:
                     dist = self.pymc_dist.dist(
                         r=r,
                         alpha=alpha,
-                        time_covariate_vector=0.0,
-                        size=1000,  # Changed from None to 0.0
+                        time_covariate_vector=0.0,  # Changed from None to avoid zip issues
+                        size=1000,
                     )
                     draws = dist.eval()
 
@@ -289,7 +289,7 @@ class TestGrassiaIIGeometric:
                 (0.5, 1.0, 0.0),
                 (1.0, 2.0, 1.0),
                 (2.0, 0.5, -1.0),
-                (5.0, 1.0, 0.0),  # Changed from None to 0.0 to avoid zip issues
+                (5.0, 1.0, 0.0),  # Changed from None to avoid zip issues
             ],
         )
         def test_random_moments(self, r, alpha, time_covariate_vector):
@@ -298,13 +298,8 @@ class TestGrassiaIIGeometric:
             )
             draws = dist.eval()
 
-            # Check that all values are positive integers
             assert np.all(draws > 0)
             assert np.all(draws.astype(int) == draws)
-
-            # Check that values are reasonably distributed
-            # Note: Exact moments are complex for this distribution
-            # so we just check basic properties
             assert np.mean(draws) > 0
             assert np.var(draws) > 0
 
@@ -337,9 +332,8 @@ class TestGrassiaIIGeometric:
         """Test that sampling from the distribution produces reasonable results"""
         r = 2.0
         alpha = 1.0
-        time_covariate_vector = 0.0  # Changed from None to 0.0 to avoid issues
+        time_covariate_vector = [0.0, 1.0, 2.0]
 
-        # First test direct sampling from the distribution
         try:
             dist = GrassiaIIGeometric.dist(
                 r=r, alpha=alpha, time_covariate_vector=time_covariate_vector
@@ -347,11 +341,9 @@ class TestGrassiaIIGeometric:
 
             direct_samples = dist.eval()
 
-            # Convert to numpy array if it's not already
             if not isinstance(direct_samples, np.ndarray):
                 direct_samples = np.array([direct_samples])
 
-            # Ensure we have a 1D array
             if direct_samples.ndim == 0:
                 direct_samples = direct_samples.reshape(1)
 
@@ -371,7 +363,6 @@ class TestGrassiaIIGeometric:
             traceback.print_exc()
             raise
 
-        # Then test MCMC sampling
         try:
             with pm.Model():
                 x = GrassiaIIGeometric(
@@ -382,7 +373,7 @@ class TestGrassiaIIGeometric:
                     chains=1, draws=50, tune=0, random_seed=42, progressbar=False
                 ).posterior
 
-            # Extract samples and ensure they're in the correct shape
+            # Extract samples and ensure correct shape
             samples = trace["x"].values
 
             assert (
@@ -415,9 +406,7 @@ class TestGrassiaIIGeometric:
             ), f"Variance {var} is not in valid range for {time_covariate_vector}"
 
             # Additional checks for distribution properties
-            # The mean should be greater than 1 for these parameters
             assert mean > 1, f"Mean {mean} is not greater than 1 for {time_covariate_vector}"
-            # The variance should be positive and finite
             assert var > 0, f"Variance {var} is not positive for {time_covariate_vector}"
 
         except Exception as e:
