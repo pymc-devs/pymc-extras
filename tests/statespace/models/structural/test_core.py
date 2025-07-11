@@ -100,7 +100,6 @@ def test_extract_components_from_idata(rng):
 
         mod.build_statespace_graph(y)
 
-        x0, P0, c, d, T, Z, R, H, Q = mod.unpack_statespace()
         prior = pm.sample_prior_predictive(draws=10)
 
     filter_prior = mod.sample_conditional_prior(prior)
@@ -110,3 +109,43 @@ def test_extract_components_from_idata(rng):
     missing = set(comp_states) - set(expected_states)
 
     assert len(missing) == 0, missing
+
+
+def test_extract_multiple_observed(rng):
+    time_idx = pd.date_range(start="2000-01-01", freq="D", periods=100)
+    data = pd.DataFrame(rng.normal(size=(100, 2)), columns=["a", "b"], index=time_idx)
+
+    y = pd.DataFrame(
+        rng.normal(size=(100, 3)), columns=["data_1", "data_2", "data_3"], index=time_idx
+    )
+
+    ll = st.LevelTrendComponent(name="trend", observed_state_names=["data_1", "data_2"])
+    season = st.FrequencySeasonality(
+        name="seasonal", observed_state_names=["data_1"], season_length=12, n=2, innovations=False
+    )
+    reg = st.RegressionComponent(
+        state_names=["a", "b"], name="exog", observed_state_names=["data_2", "data_3"]
+    )
+    me = st.MeasurementError("obs", observed_state_names=["data_1", "data_2", "data_3"])
+    mod = (ll + season + reg + me).build(verbose=True)
+
+    with pm.Model(coords=mod.coords) as m:
+        data_exog = pm.Data("data_exog", data.values)
+
+        x0 = pm.Normal("x0", dims=["state"])
+        P0 = pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
+        beta_exog = pm.Normal("beta_exog", dims=["endog_exog", "state_exog"])
+        initial_trend = pm.Normal("initial_trend", dims=["endog_trend", "state_trend"])
+        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "trend_shock"])
+        seasonal_coefs = pm.Normal("seasonal", dims=["seasonal_state"])
+        sigma_obs = pm.Exponential("sigma_obs", 1, dims=["endog_obs"])
+
+        mod.build_statespace_graph(y)
+
+        prior = pm.sample_prior_predictive(draws=10)
+
+    filter_prior = mod.sample_conditional_prior(prior)
+    comp_prior = mod.extract_components_from_idata(filter_prior)
+    comp_states = comp_prior.filtered_prior.coords["state"].values
+    # expected_states = ["level_trend[level]", "level_trend[trend]", "seasonal", "exog[a]", "exog[b]"]
+    # missing = set(comp_states) - set(expected_states)
