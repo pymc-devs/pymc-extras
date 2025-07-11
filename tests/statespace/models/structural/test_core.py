@@ -126,7 +126,7 @@ def test_extract_multiple_observed(rng):
     reg = st.RegressionComponent(
         state_names=["a", "b"], name="exog", observed_state_names=["data_2", "data_3"]
     )
-    me = st.MeasurementError("obs", observed_state_names=["data_1", "data_2", "data_3"])
+    me = st.MeasurementError("obs", observed_state_names=["data_1", "data_3"])
     mod = (ll + season + reg + me).build(verbose=True)
 
     with pm.Model(coords=mod.coords) as m:
@@ -147,5 +147,18 @@ def test_extract_multiple_observed(rng):
     filter_prior = mod.sample_conditional_prior(prior)
     comp_prior = mod.extract_components_from_idata(filter_prior)
     comp_states = comp_prior.filtered_prior.coords["state"].values
-    # expected_states = ["level_trend[level]", "level_trend[trend]", "seasonal", "exog[a]", "exog[b]"]
-    # missing = set(comp_states) - set(expected_states)
+
+    expected_states = [
+        "trend[level[data_1]]",
+        "trend[trend[data_1]]",
+        "trend[level[data_2]]",
+        "trend[trend[data_2]]",
+        "seasonal",
+        "exog[a[data_2]]",
+        "exog[b[data_2]]",
+        "exog[a[data_3]]",
+        "exog[b[data_3]]",
+    ]
+
+    missing = set(comp_states) - set(expected_states)
+    assert len(missing) == 0, missing
