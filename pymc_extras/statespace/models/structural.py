@@ -1068,7 +1068,11 @@ class TimeSeasonality(Component):
     ----------
     season_length: int
         The number of periods in a single seasonal cycle, e.g. 12 for monthly data with annual seasonal pattern, 7 for
-        daily data with weekly seasonal pattern, etc.
+        daily data with weekly seasonal pattern, etc. It must be greater than one.
+
+    duration: int, default 1
+        Number of time steps between successive applications of the same seasonal position (state).
+        This determines how long each seasonal effect is held constant before moving to the next.
 
     innovations: bool, default True
         Whether to include stochastic innovations in the strength of the seasonal effect
@@ -1094,15 +1098,24 @@ class TimeSeasonality(Component):
     -----
     A seasonal effect is any pattern that repeats every fixed interval. Although there are many possible ways to
     model seasonal effects, the implementation used here is the one described by [1] as the "canonical" time domain
-    representation. The seasonal component can be expressed:
+    representation. Given :math:`s` initial states
 
     .. math::
-        \gamma_t = -\sum_{i=1}^{s-1} \gamma_{t-i} + \omega_t, \quad \omega_t \sim N(0, \sigma_\gamma)
+        \tilde{\gamma}_{0}, \tilde{\gamma}_{1}, \ldots, \tilde{\gamma}_{s-1},
 
-    Where :math:`s` is the ``seasonal_length`` parameter and :math:`\omega_t` is the (optional) stochastic innovation.
+    where :math:`s` is the ``seasonal_length`` parameter, the full seasonal component can be expressed:
+
+    .. math::
+        \begin{align}
+            \gamma_t &= \tilde{\gamma}_{k_t}, \quad \text{where} \quad k_t = \left\lfloor \frac{t}{d} \right\rfloor \bmod s \\
+            \tilde{\gamma}_k &= -\sum_{i=1}^{s-1} \tilde{\gamma}_{k - i} + \omega_k, \quad \omega_k \sim \mathcal{N}(0, \sigma)
+        \end{align}
+
+    where :math:`d` is the ``duration`` parameter and :math:`\omega_t` is the (optional) stochastic innovation.
+
     To give interpretation to the :math:`\gamma` terms, it is helpful to work  through the algebra for a simple
-    example. Let :math:`s=4`, and omit the shock term. Define initial conditions :math:`\gamma_0, \gamma_{-1},
-    \gamma_{-2}`. The value of the seasonal component for the first 5 timesteps will be:
+    example. Let :math:`s=4`, :math:`d=1`, and omit the shock term. Define initial conditions :math:`\tilde{\gamma}_0, \tilde{\gamma}_{1},
+    \tilde{\gamma}_{2}`. The value of the seasonal component for the first 5 timesteps will be:
 
     .. math::
         \begin{align}
@@ -1179,13 +1192,14 @@ class TimeSeasonality(Component):
     def __init__(
         self,
         season_length: int,
+        duration: int = 1,
         innovations: bool = True,
         name: str | None = None,
         state_names: list | None = None,
         remove_first_state: bool = True,
     ):
         if name is None:
-            name = f"Seasonal[s={season_length}]"
+            name = f"Seasonal[s={season_length}, d={duration}]"
         if state_names is None:
             state_names = [f"{name}_{i}" for i in range(season_length)]
         else:
@@ -1195,6 +1209,7 @@ class TimeSeasonality(Component):
                 )
             state_names = state_names.copy()
         self.innovations = innovations
+        self.duration = duration
         self.remove_first_state = remove_first_state
 
         if self.remove_first_state:
