@@ -12,8 +12,6 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import warnings
-
 import numpy as np
 import pymc as pm
 
@@ -22,8 +20,6 @@ from pymc.distributions.distribution import Discrete
 from pymc.distributions.shape_utils import rv_size_is_none
 from pytensor import tensor as pt
 from pytensor.tensor.random.op import RandomVariable
-
-warnings.filterwarnings("ignore", category=FutureWarning, message="ndims_params is deprecated")
 
 
 def log1mexp(x):
@@ -409,18 +405,12 @@ class Skellam:
 class GrassiaIIGeometricRV(RandomVariable):
     name = "g2g"
     signature = "(),(),()->()"
-    ndims_params = [0, 0, 0]  # deprecated in PyTensor 2.31.7, but still required for RandomVariable
 
     dtype = "int64"
     _print_name = ("GrassiaIIGeometric", "\\operatorname{GrassiaIIGeometric}")
 
     @classmethod
     def rng_fn(cls, rng, r, alpha, time_covariate_vector, size):
-        # Cast inputs as numpy arrays
-        r = np.asarray(r, dtype=np.float64)
-        alpha = np.asarray(alpha, dtype=np.float64)
-        time_covariate_vector = np.asarray(time_covariate_vector, dtype=np.float64)
-
         # Determine output size
         if size is None:
             size = np.broadcast_shapes(r.shape, alpha.shape, time_covariate_vector.shape)
@@ -525,8 +515,6 @@ class GrassiaIIGeometric(Discrete):
         time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
 
         def C_t(t):
-            if t == 0:
-                return pt.constant(0.0)
             if time_covariate_vector.ndim == 0:
                 return t
             else:
