@@ -141,9 +141,10 @@ def add_data_to_active_model(values, index, data_dims=None):
 
     # If the data has just one column, we need to specify the shape as (None, 1), or else the JAX backend will
     # raise a broadcasting error.
-    data_shape = None
-    if values.shape[-1] == 1:
+    if values.shape[-1] == 1 or values.ndim == 1:
         data_shape = (None, 1)
+    else:
+        data_shape = (None, values.shape[-1])
 
     data = pm.Data("data", values, dims=data_dims, shape=data_shape)
 
