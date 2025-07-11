@@ -12,6 +12,8 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import warnings
+
 import numpy as np
 import pymc as pm
 
@@ -20,6 +22,8 @@ from pymc.distributions.distribution import Discrete
 from pymc.distributions.shape_utils import rv_size_is_none
 from pytensor import tensor as pt
 from pytensor.tensor.random.op import RandomVariable
+
+warnings.filterwarnings("ignore", category=FutureWarning, message="ndims_params is deprecated")
 
 
 def log1mexp(x):
@@ -405,18 +409,13 @@ class Skellam:
 class GrassiaIIGeometricRV(RandomVariable):
     name = "g2g"
     signature = "(),(),()->()"
+    ndims_params = [0, 0, 0]  # r, alpha, time_covariate_vector are all scalars
 
     dtype = "int64"
     _print_name = ("GrassiaIIGeometric", "\\operatorname{GrassiaIIGeometric}")
 
-    def __call__(self, r, alpha, time_covariate_vector=None, size=None, **kwargs):
-        return super().__call__(r, alpha, time_covariate_vector, size, **kwargs)
-
     @classmethod
     def rng_fn(cls, rng, r, alpha, time_covariate_vector, size):
-        if time_covariate_vector is None:
-            time_covariate_vector = 0.0
-
         # Cast inputs as numpy arrays
         r = np.asarray(r, dtype=np.float64)
         alpha = np.asarray(alpha, dtype=np.float64)
@@ -566,7 +565,7 @@ class GrassiaIIGeometric(Discrete):
 
         def C_t(t):
             if t == 0:
-                return pt.constant(1.0)
+                return pt.constant(0.0)
             if time_covariate_vector.ndim == 0:
                 return t * pt.exp(time_covariate_vector)
             else:
@@ -595,6 +594,9 @@ class GrassiaIIGeometric(Discrete):
         When time_covariate_vector is provided, it affects the expected value through
         the exponential link function: exp(time_covariate_vector).
         """
+        if time_covariate_vector is None:
+            time_covariate_vector = pt.constant(0.0)
+
         base_lambda = r / alpha
 
         # Approximate expected value of geometric distribution
@@ -605,8 +607,7 @@ class GrassiaIIGeometric(Discrete):
         )
 
         # Apply time covariates if provided
-        if time_covariate_vector is not None:
-            mean = mean * pt.exp(time_covariate_vector)
+        mean = mean * pt.exp(time_covariate_vector)
 
         # Round up to nearest integer and ensure >= 1
         mean = pt.maximum(pt.ceil(mean), 1.0)
