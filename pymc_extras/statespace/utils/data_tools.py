@@ -35,12 +35,16 @@ def get_data_dims(data):
     return data_dims
 
 
-def _validate_data_shape(data_shape, n_obs, obs_coords=None, check_col_names=False, col_names=None):
+def _validate_data_shape(
+    data_shape, n_obs, obs_coords=None, check_col_names=False, col_names=None, batch_ndim=0
+):
     if col_names is None:
         col_names = []
 
-    if len(data_shape) != 2:
-        raise ValueError("Data must be a 2d matrix")
+    if len(data_shape) != 2 + batch_ndim:
+        raise ValueError(
+            f"Data must be a {2 + batch_ndim}d tensor, found {len(data_shape)}d tensor."
+        )
 
     if data_shape[-1] != n_obs:
         raise ValueError(
@@ -53,14 +57,16 @@ def _validate_data_shape(data_shape, n_obs, obs_coords=None, check_col_names=Fal
         if len(missing_cols) > 0:
             raise ValueError(
                 "Columns of DataFrame provided as data do not match state names. The following states were"
-                f'not found: {", ".join(missing_cols)}. This may result in unexpected results in complex'
+                f"not found: {', '.join(missing_cols)}. This may result in unexpected results in complex"
                 f"statespace models"
             )
 
 
-def preprocess_tensor_data(data, n_obs, obs_coords=None):
+def preprocess_tensor_data(data, n_obs, batch_ndim, obs_coords=None):
     data_shape = data.shape.eval()
-    _validate_data_shape(data_shape, n_obs, obs_coords)
+    _validate_data_shape(
+        data_shape=data_shape, n_obs=n_obs, obs_coords=obs_coords, batch_ndim=batch_ndim
+    )
     if obs_coords is not None:
         warnings.warn(NO_TIME_INDEX_WARNING)
     index = np.arange(data_shape[0], dtype="int")
@@ -68,24 +74,33 @@ def preprocess_tensor_data(data, n_obs, obs_coords=None):
     return data.eval(), index
 
 
-def preprocess_numpy_data(data, n_obs, obs_coords=None):
-    _validate_data_shape(data.shape, n_obs, obs_coords)
+def preprocess_numpy_data(data, n_obs, batch_ndim, obs_coords=None):
+    _validate_data_shape(
+        data_shape=data.shape, n_obs=n_obs, obs_coords=obs_coords, batch_ndim=batch_ndim
+    )
     if obs_coords is not None:
         warnings.warn(NO_TIME_INDEX_WARNING)
 
-    index = np.arange(data.shape[0], dtype="int")
+    index = np.arange(data.shape[-2], dtype="int")
 
     return data, index
 
 
-def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=False):
+def preprocess_pandas_data(data, n_obs, batch_ndim, obs_coords=None, check_column_names=False):
     if isinstance(data, pd.Series):
         if data.name is None:
             data.name = "data"
         data = data.to_frame()
 
     col_names = data.columns
-    _validate_data_shape(data.shape, n_obs, obs_coords, check_column_names, col_names)
+    _validate_data_shape(
+        data_shape=data.shape,
+        n_obs=n_obs,
+        check_column_names=check_column_names,
+        col_names=col_names,
+        obs_coords=obs_coords,
+        batch_ndim=batch_ndim,
+    )
 
     if isinstance(data.index, pd.DatetimeIndex):
         if data.index.freq is None:
@@ -121,11 +136,13 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
         return preprocess_numpy_data(data.values, n_obs, obs_coords)
 
 
-def add_data_to_active_model(values, index, data_dims=None):
+def add_data_to_active_model(values, index, batch_dims=None, data_dims=None):
     pymc_mod = modelcontext(None)
     if data_dims is None:
         data_dims = [TIME_DIM, OBS_STATE_DIM]
-    time_dim = data_dims[0]
+    if batch_dims is not None:
+        data_dims = list(batch_dims) + data_dims
+    time_dim = data_dims[-2]
 
     if time_dim not in pymc_mod.coords:
         pymc_mod.add_coord(time_dim, index)
@@ -144,6 +161,8 @@ def add_data_to_active_model(values, index, data_dims=None):
     data_shape = None
     if values.shape[-1] == 1:
         data_shape = (None, 1)
+    if batch_dims is not None:
+        data_shape = (None,) * len(batch_dims) + data_shape
 
     data = pm.Data("data", values, dims=data_dims, shape=data_shape)
 
@@ -177,21 +196,39 @@ def mask_missing_values_in_data(values, missing_fill_value=None):
 
 
 def register_data_with_pymc(
-    data, n_obs, obs_coords, register_data=True, missing_fill_value=None, data_dims=None
+    data,
+    n_obs,
+    obs_coords,
+    batch_coords=None,
+    register_data=True,
+    missing_fill_value=None,
+    data_dims=None,
 ):
+    if batch_coords is None:
+        batch_coords = {}
+    batch_ndim = len(batch_coords)
+
     if isinstance(data, pt.TensorVariable | TensorSharedVariable):
-        values, index = preprocess_tensor_data(data, n_obs, obs_coords)
+        values, index = preprocess_tensor_data(
+            data=data, n_obs=n_obs, obs_coords=obs_coords, batch_ndim=batch_ndim
+        )
     elif isinstance(data, np.ndarray):
-        values, index = preprocess_numpy_data(data, n_obs, obs_coords)
+        values, index = preprocess_numpy_data(
+            data=data, n_obs=n_obs, obs_coords=obs_coords, batch_ndim=batch_ndim
+        )
     elif isinstance(data, pd.DataFrame | pd.Series):
-        values, index = preprocess_pandas_data(data, n_obs, obs_coords)
+        values, index = preprocess_pandas_data(
+            data=data, n_obs=n_obs, obs_coords=obs_coords, batch_ndim=batch_ndim
+        )
     else:
         raise ValueError("Data should be one of pytensor tensor, numpy array, or pandas dataframe")
 
     data, nan_mask = mask_missing_values_in_data(values, missing_fill_value)
 
     if register_data:
-        data = add_data_to_active_model(data, index, data_dims)
+        data = add_data_to_active_model(
+            values=data, index=index, batch_dims=batch_coords.keys(), data_dims=data_dims
+        )
     else:
         data = pytensor.shared(data, name="data")
     return data, nan_mask

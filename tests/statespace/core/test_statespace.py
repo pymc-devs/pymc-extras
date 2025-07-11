@@ -14,6 +14,8 @@ from pytensor.compile import SharedVariable
 from pytensor.graph.basic import graph_inputs
 
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
+from pymc_extras.statespace.filters.kalman_filter import StandardFilter
+from pymc_extras.statespace.filters.kalman_smoother import KalmanSmoother
 from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.models.utilities import make_default_coords
 from pymc_extras.statespace.utils.constants import (
@@ -733,8 +735,7 @@ def test_invalid_scenarios():
     # Giving a list, tuple, or Series when a matrix of data is expected should always raise
     with pytest.raises(
         ValueError,
-        match="Scenario data for variable 'a' has the wrong number of columns. "
-        "Expected 2, got 1",
+        match="Scenario data for variable 'a' has the wrong number of columns. Expected 2, got 1",
     ):
         for data_type in [list, tuple, pd.Series]:
             ss_mod._validate_scenario_data(data_type(np.zeros(10)))
@@ -743,15 +744,14 @@ def test_invalid_scenarios():
     # Providing irrevelant data raises
     with pytest.raises(
         ValueError,
-        match="Scenario data provided for variable 'jk lol', which is not an exogenous " "variable",
+        match="Scenario data provided for variable 'jk lol', which is not an exogenous variable",
     ):
         ss_mod._validate_scenario_data({"jk lol": np.zeros(10)})
 
     # Incorrect 2nd dimension of a non-dataframe
     with pytest.raises(
         ValueError,
-        match="Scenario data for variable 'a' has the wrong number of columns. Expected "
-        "2, got 1",
+        match="Scenario data for variable 'a' has the wrong number of columns. Expected 2, got 1",
     ):
         scenario = np.zeros(10).tolist()
         ss_mod._validate_scenario_data(scenario)
@@ -1017,3 +1017,57 @@ def test_foreacast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
 
     assert forecasts.forecast_latent.shape[2] == n_periods
     assert forecasts.forecast_observed.shape[2] == n_periods
+
+
+@pytest.mark.parametrize("batch_size", [(10,), (10, 3, 5)])
+def test_insert_batched_rvs(ss_mod, batch_size):
+    with pm.Model():
+        rho = pm.Normal("rho", shape=batch_size)
+        zeta = pm.Normal("zeta", shape=batch_size)
+        ss_mod._insert_random_variables()
+    matrices = ss_mod.unpack_statespace()
+    assert matrices[4].type.shape == (*batch_size, 2, 2)
+
+
+@pytest.mark.parametrize("batch_size", [(10,), (10, 3, 5)])
+def test_insert_batched_rvs_in_kf(ss_mod, batch_size):
+    data = pt.as_tensor(np.random.normal(size=(*batch_size, 7, 1)).astype(floatX))
+    data.name = "data"
+    kf = StandardFilter()
+
+    with pm.Model():
+        rho = pm.Normal("rho", shape=batch_size)
+        zeta = pm.Normal("zeta", shape=batch_size)
+        ss_mod._insert_random_variables()
+
+    matrices = x0, P0, c, d, T, Z, R, H, Q = ss_mod.unpack_statespace()
+    outputs = kf.build_graph(data, *matrices)
+
+    logp = outputs.pop(-1)
+    states, covs = outputs[:3], outputs[3:]
+    filtered_states, predicted_states, observed_states = states
+    filtered_covariances, predicted_covariances, observed_covariances = covs
+
+    assert logp.type.shape == (*batch_size, 7)
+    assert filtered_states.type.shape == (*batch_size, 7, 2)
+    assert predicted_states.type.shape == (*batch_size, 7, 2)
+    assert observed_states.type.shape == (*batch_size, 7, 1)
+    assert filtered_covariances.type.shape == (*batch_size, 7, 2, 2)
+    assert predicted_covariances.type.shape == (*batch_size, 7, 2, 2)
+    assert observed_covariances.type.shape == (*batch_size, 7, 1, 1)
+
+    ks = KalmanSmoother()
+    smoothed_states, smoothed_covariances = ks.build_graph(
+        T, R, Q, filtered_states, filtered_covariances
+    )
+    assert smoothed_states.type.shape == (
+        *batch_size,
+        None,
+        2,
+    )  # TODO: why do we lose the time dimension here?
+    assert smoothed_covariances.type.shape == (
+        *batch_size,
+        None,
+        2,
+        2,
+    )  # TODO: why do we lose the time dimension here?

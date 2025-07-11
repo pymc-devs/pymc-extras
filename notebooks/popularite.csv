@@ -1,0 +1,2036 @@
+,president,sondage,samplesize,method,approve_pr,disapprove_pr
+1978-09-28,vge,Kantar,1040,face to face,60.0,33.0
+1978-10-17,vge,Ifop,949,phone,52.0,35.0
+1978-10-28,vge,Kantar,964,face to face,59.0,34.0
+1978-11-19,vge,Ifop,1069,phone,53.0,37.0
+1978-11-24,vge,Kantar,928,face to face,62.0,33.0
+1978-12-15,vge,Ifop,1035,phone,52.0,37.0
+1978-12-20,vge,Kantar,993,face to face,62.0,34.0
+1979-01-15,vge,Ifop,1049,phone,54.0,35.0
+1979-01-24,vge,Kantar,904,face to face,57.0,38.0
+1979-02-15,vge,Ifop,967,phone,48.0,41.0
+1979-02-23,vge,Kantar,1004,face to face,51.0,43.0
+1979-03-15,vge,Ifop,1037,phone,49.0,40.0
+1979-03-21,vge,Kantar,978,face to face,54.0,40.0
+1979-04-16,vge,Ifop,1002,phone,47.0,42.0
+1979-04-23,vge,Kantar,920,face to face,56.0,39.0
+1979-05-17,vge,Ifop,1084,phone,47.0,43.0
+1979-05-20,vge,Kantar,1066,face to face,56.0,41.0
+1979-06-19,vge,Ifop,1044,phone,46.0,42.0
+1979-06-21,vge,Kantar,1087,face to face,54.0,41.0
+1979-07-20,vge,Ifop,983,phone,48.0,40.0
+1979-07-23,vge,Kantar,1081,face to face,51.0,43.0
+1979-08-27,vge,Kantar,1058,face to face,49.0,45.0
+1979-09-20,vge,Ifop,901,phone,40.0,44.0
+1979-09-27,vge,Kantar,1059,face to face,51.0,44.0
+1979-10-19,vge,Ifop,1071,phone,45.0,40.0
+1979-10-23,vge,Kantar,1049,face to face,52.0,43.0
+1979-11-18,vge,Ifop,1012,phone,47.0,44.0
+1979-11-28,vge,Kantar,927,face to face,55.0,40.0
+1979-12-19,vge,Ifop,918,phone,46.0,39.0
+1979-12-27,vge,Kantar,1034,face to face,54.0,42.0
+1980-01-15,vge,Ifop,1016,phone,46.0,40.0
+1980-01-27,vge,Kantar,1007,face to face,58.0,38.0
+1980-02-19,vge,Ifop,1073,phone,49.0,35.0
+1980-02-24,vge,Kantar,1079,face to face,59.0,37.0
+1980-03-19,vge,Ifop,1041,phone,47.0,37.0
+1980-03-25,vge,Kantar,900,face to face,56.0,41.0
+1980-04-18,vge,Ifop,1046,phone,45.0,42.0
+1980-04-23,vge,Kantar,1047,face to face,51.0,45.0
+1980-05-17,vge,Ifop,1021,phone,45.0,41.0
+1980-05-22,vge,Kantar,985,face to face,53.0,43.0
+1980-06-15,vge,Ifop,978,phone,45.0,42.0
+1980-06-22,vge,Kantar,1061,face to face,51.0,44.0
+1980-07-15,vge,Ifop,984,phone,44.0,40.0
+1980-07-24,vge,Kantar,935,face to face,52.0,42.0
+1980-08-25,vge,Kantar,1015,face to face,54.0,41.0
+1980-09-17,vge,Ifop,1095,phone,41.0,42.0
+1980-09-20,vge,Kantar,945,face to face,51.0,43.0
+1980-10-28,vge,Kantar,944,face to face,50.0,46.0
+1980-11-15,vge,Ifop,1015,phone,44.0,47.0
+1980-11-28,vge,Kantar,975,face to face,53.0,42.0
+1980-12-19,vge,Ifop,1081,phone,40.0,46.0
+1980-12-27,vge,Kantar,1016,face to face,47.0,49.0
+1981-01-17,vge,Ifop,902,phone,37.0,47.0
+1981-01-25,vge,Kantar,1063,face to face,44.0,51.0
+1981-02-20,vge,Ifop,938,phone,37.0,51.0
+1981-02-22,vge,Kantar,992,face to face,41.0,55.0
+1981-03-20,vge,Ifop,1063,phone,35.0,47.0
+1981-03-23,vge,Kantar,963,face to face,44.0,52.0
+1981-04-16,vge,Ifop,1069,phone,40.0,46.0
+1981-04-28,vge,Kantar,997,face to face,44.0,52.0
+1981-05-26,mitterrand1,Kantar,1052,face to face,74.0,20.0
+1981-06-15,mitterrand1,Ifop,973,phone,54.0,16.0
+1981-06-23,mitterrand1,Kantar,1086,face to face,71.0,24.0
+1981-06-29,mitterrand1,BVA,1052,phone,61.0,17.0
+1981-07-24,mitterrand1,Kantar,1052,face to face,66.0,29.0
+1981-08-24,mitterrand1,Kantar,1065,face to face,62.0,32.0
+1981-09-15,mitterrand1,Ifop,916,phone,48.0,25.0
+1981-09-22,mitterrand1,Kantar,1005,face to face,64.0,31.0
+1981-09-23,mitterrand1,BVA,900,phone,49.0,28.0
+1981-10-15,mitterrand1,Ifop,961,phone,47.0,25.0
+1981-10-23,mitterrand1,Kantar,1028,face to face,60.0,35.0
+1981-11-15,mitterrand1,Ifop,996,phone,46.0,29.0
+1981-11-25,mitterrand1,Kantar,983,face to face,57.0,37.0
+1981-12-17,mitterrand1,Ifop,1099,phone,46.0,31.0
+1981-12-28,mitterrand1,Kantar,1053,face to face,59.0,35.0
+1981-12-29,mitterrand1,BVA,991,phone,59.0,30.0
+1982-01-18,mitterrand1,Ifop,1097,phone,51.0,28.0
+1982-01-21,mitterrand1,Kantar,1097,face to face,58.0,37.0
+1982-02-19,mitterrand1,Ifop,1005,phone,51.0,32.0
+1982-02-27,mitterrand1,Kantar,1054,face to face,58.0,36.0
+1982-03-15,mitterrand1,Ifop,1072,phone,49.0,33.0
+1982-03-18,mitterrand1,BVA,1065,phone,51.0,34.0
+1982-03-20,mitterrand1,Kantar,913,face to face,56.0,39.0
+1982-04-20,mitterrand1,Ifop,975,phone,54.0,35.0
+1982-04-25,mitterrand1,Kantar,1063,face to face,58.0,37.0
+1982-05-20,mitterrand1,Ifop,932,phone,54.0,30.0
+1982-05-21,mitterrand1,Kantar,1051,face to face,63.0,33.0
+1982-06-20,mitterrand1,Ifop,999,phone,48.0,32.0
+1982-06-23,mitterrand1,BVA,1052,phone,56.0,33.0
+1982-06-28,mitterrand1,Kantar,1027,face to face,57.0,39.0
+1982-07-17,mitterrand1,Ifop,969,phone,41.0,40.0
+1982-07-18,mitterrand1,BVA,934,phone,56.0,35.0
+1982-07-25,mitterrand1,Kantar,972,face to face,55.0,40.0
+1982-08-23,mitterrand1,Kantar,1020,face to face,54.0,42.0
+1982-09-16,mitterrand1,Ifop,1009,phone,42.0,45.0
+1982-09-21,mitterrand1,Kantar,1024,face to face,51.0,43.0
+1982-09-29,mitterrand1,BVA,973,phone,52.0,37.0
+1982-10-15,mitterrand1,Ifop,911,phone,44.0,45.0
+1982-10-19,mitterrand1,BVA,1039,phone,52.0,36.0
+1982-10-23,mitterrand1,Kantar,918,face to face,53.0,43.0
+1982-11-16,mitterrand1,Ifop,1048,phone,43.0,46.0
+1982-11-17,mitterrand1,BVA,914,phone,48.0,40.0
+1982-11-25,mitterrand1,Kantar,939,face to face,49.0,46.0
+1982-12-15,mitterrand1,Ifop,1054,phone,37.0,46.0
+1982-12-18,mitterrand1,BVA,1026,phone,53.0,37.0
+1982-12-20,mitterrand1,Kantar,1000,face to face,48.0,47.0
+1983-01-20,mitterrand1,Ifop,962,phone,39.0,42.0
+1983-01-24,mitterrand1,BVA,1009,phone,48.0,38.0
+1983-01-28,mitterrand1,Kantar,955,face to face,50.0,45.0
+1983-02-16,mitterrand1,Ifop,920,phone,42.0,42.0
+1983-02-21,mitterrand1,Kantar,1015,face to face,48.0,46.0
+1983-02-26,mitterrand1,BVA,971,phone,55.0,33.0
+1983-03-18,mitterrand1,Ifop,918,phone,45.0,38.0
+1983-03-26,mitterrand1,Kantar,949,face to face,48.0,46.0
+1983-03-27,mitterrand1,BVA,901,phone,48.0,36.0
+1983-04-16,mitterrand1,BVA,1014,phone,46.0,41.0
+1983-04-19,mitterrand1,Ifop,982,phone,38.0,48.0
+1983-04-26,mitterrand1,Kantar,1084,face to face,49.0,47.0
+1983-05-20,mitterrand1,Ifop,1030,phone,33.0,50.0
+1983-05-21,mitterrand1,Kantar,981,face to face,46.0,51.0
+1983-05-26,mitterrand1,BVA,1064,phone,39.0,48.0
+1983-06-20,mitterrand1,Ifop,968,phone,35.0,53.0
+1983-06-21,mitterrand1,Kantar,1077,face to face,40.0,58.0
+1983-06-27,mitterrand1,BVA,949,phone,37.0,47.0
+1983-07-17,mitterrand1,Ifop,1065,phone,35.0,51.0
+1983-07-20,mitterrand1,Kantar,1084,face to face,41.0,54.0
+1983-07-29,mitterrand1,BVA,1076,phone,39.0,47.0
+1983-08-20,mitterrand1,Ifop,1033,phone,35.0,53.0
+1983-08-27,mitterrand1,Kantar,937,face to face,43.0,51.0
+1983-09-16,mitterrand1,Ifop,990,phone,33.0,53.0
+1983-09-18,mitterrand1,BVA,984,phone,40.0,46.0
+1983-09-21,mitterrand1,Kantar,1073,face to face,38.0,56.0
+1983-10-19,mitterrand1,Ifop,950,phone,32.0,54.0
+1983-10-21,mitterrand1,Kantar,996,face to face,42.0,54.0
+1983-10-29,mitterrand1,BVA,1078,phone,41.0,48.0
+1983-11-19,mitterrand1,Ifop,1008,phone,39.0,48.0
+1983-11-20,mitterrand1,Kantar,1075,face to face,46.0,50.0
+1983-12-16,mitterrand1,Ifop,1047,phone,37.0,47.0
+1983-12-20,mitterrand1,BVA,1076,phone,45.0,46.0
+1983-12-22,mitterrand1,Kantar,978,face to face,47.0,48.0
+1984-01-18,mitterrand1,Ifop,917,phone,34.0,52.0
+1984-01-28,mitterrand1,Kantar,999,face to face,44.0,52.0
+1984-01-30,mitterrand1,BVA,1038,phone,43.0,44.0
+1984-02-17,mitterrand1,Ifop,1062,phone,35.0,49.0
+1984-02-21,mitterrand1,Kantar,1016,face to face,43.0,53.0
+1984-02-26,mitterrand1,BVA,1038,phone,43.0,45.0
+1984-03-15,mitterrand1,Ifop,937,phone,32.0,51.0
+1984-03-21,mitterrand1,BVA,974,phone,41.0,46.0
+1984-03-22,mitterrand1,Kantar,987,face to face,44.0,52.0
+1984-04-19,mitterrand1,Ifop,957,phone,34.0,50.0
+1984-04-20,mitterrand1,BVA,1004,phone,36.0,54.0
+1984-04-27,mitterrand1,Kantar,1066,face to face,40.0,54.0
+1984-05-15,mitterrand1,Ifop,1089,phone,30.0,54.0
+1984-05-16,mitterrand1,BVA,1075,phone,35.0,51.0
+1984-05-27,mitterrand1,Kantar,1088,face to face,41.0,54.0
+1984-06-16,mitterrand1,BVA,1078,phone,44.0,47.0
+1984-06-17,mitterrand1,Ifop,996,phone,33.0,53.0
+1984-06-22,mitterrand1,Kantar,1021,face to face,40.0,56.0
+1984-07-17,mitterrand1,Ifop,971,phone,33.0,52.0
+1984-07-19,mitterrand1,BVA,945,phone,35.0,54.0
+1984-07-26,mitterrand1,Kantar,1043,face to face,40.0,56.0
+1984-08-15,mitterrand1,Ifop,936,phone,32.0,51.0
+1984-08-24,mitterrand1,Kantar,1034,face to face,40.0,56.0
+1984-09-19,mitterrand1,Ifop,964,phone,33.0,54.0
+1984-09-20,mitterrand1,Kantar,983,face to face,38.0,57.0
+1984-09-30,mitterrand1,BVA,947,phone,33.0,53.0
+1984-10-19,mitterrand1,Ifop,1000,phone,31.0,52.0
+1984-10-22,mitterrand1,Kantar,931,face to face,37.0,59.0
+1984-10-26,mitterrand1,BVA,994,phone,37.0,55.0
+1984-11-20,mitterrand1,Ifop,920,phone,26.0,57.0
+1984-11-23,mitterrand1,BVA,1074,phone,37.0,56.0
+1984-11-26,mitterrand1,Kantar,945,face to face,36.0,60.0
+1984-12-16,mitterrand1,Ifop,939,phone,28.0,55.0
+1984-12-19,mitterrand1,BVA,973,phone,33.0,55.0
+1984-12-24,mitterrand1,Kantar,916,face to face,36.0,60.0
+1985-01-16,mitterrand1,Ifop,983,phone,31.0,54.0
+1985-01-27,mitterrand1,BVA,977,phone,32.0,58.0
+1985-01-28,mitterrand1,Kantar,1071,face to face,39.0,59.0
+1985-02-16,mitterrand1,Ifop,942,phone,33.0,53.0
+1985-02-17,mitterrand1,BVA,1078,phone,34.0,55.0
+1985-02-22,mitterrand1,Kantar,994,face to face,41.0,54.0
+1985-03-16,mitterrand1,Ifop,1055,phone,35.0,46.0
+1985-03-20,mitterrand1,Kantar,1062,face to face,39.0,56.0
+1985-03-21,mitterrand1,BVA,1021,phone,35.0,52.0
+1985-04-17,mitterrand1,BVA,1023,phone,37.0,50.0
+1985-04-20,mitterrand1,Ifop,1085,phone,33.0,50.0
+1985-04-22,mitterrand1,Kantar,976,face to face,38.0,58.0
+1985-05-16,mitterrand1,BVA,956,phone,37.0,53.0
+1985-05-17,mitterrand1,Ifop,947,phone,33.0,49.0
+1985-05-21,mitterrand1,Kantar,1084,face to face,41.0,54.0
+1985-06-15,mitterrand1,Ifop,922,phone,31.0,48.0
+1985-06-17,mitterrand1,BVA,1071,phone,42.0,51.0
+1985-06-23,mitterrand1,Kantar,1024,face to face,38.0,57.0
+1985-07-18,mitterrand1,Ifop,962,phone,35.0,48.0
+1985-07-26,mitterrand1,BVA,1090,phone,34.0,56.0
+1985-07-28,mitterrand1,Kantar,976,face to face,38.0,56.0
+1985-08-17,mitterrand1,Ifop,1070,phone,33.0,47.0
+1985-08-24,mitterrand1,Kantar,1093,face to face,38.0,56.0
+1985-09-15,mitterrand1,Ifop,1010,phone,34.0,48.0
+1985-09-23,mitterrand1,BVA,1006,phone,32.0,58.0
+1985-09-23,mitterrand1,Kantar,1086,face to face,38.0,57.0
+1985-10-18,mitterrand1,Ifop,972,phone,35.0,46.0
+1985-10-21,mitterrand1,Kantar,932,face to face,41.0,54.0
+1985-10-28,mitterrand1,BVA,949,phone,36.0,53.0
+1985-11-16,mitterrand1,Ifop,1036,phone,32.0,50.0
+1985-11-21,mitterrand1,Kantar,1001,face to face,43.0,51.0
+1985-11-26,mitterrand1,BVA,1078,phone,35.0,53.0
+1985-12-16,mitterrand1,BVA,1069,phone,39.0,53.0
+1985-12-19,mitterrand1,Ifop,960,phone,34.0,48.0
+1985-12-21,mitterrand1,Kantar,967,face to face,43.0,53.0
+1986-01-15,mitterrand1,BVA,1007,phone,39.0,50.0
+1986-01-17,mitterrand1,Ifop,916,phone,36.0,45.0
+1986-01-20,mitterrand1,Kantar,1056,face to face,45.0,50.0
+1986-02-17,mitterrand1,Ifop,1077,phone,39.0,43.0
+1986-02-23,mitterrand1,Kantar,909,face to face,46.0,48.0
+1986-02-27,mitterrand1,BVA,937,phone,44.0,47.0
+1986-03-16,mitterrand1,Ifop,1100,phone,48.0,35.0
+1986-03-17,mitterrand1,Ifop,1027,phone,39.0,41.0
+1986-03-23,mitterrand1,Kantar,991,face to face,56.0,39.0
+1986-03-28,mitterrand1,BVA,1049,phone,45.0,45.0
+1986-04-15,mitterrand1,BVA,988,phone,54.0,35.0
+1986-04-17,mitterrand1,Ifop,1039,phone,44.0,36.0
+1986-04-22,mitterrand1,Kantar,1050,face to face,56.0,39.0
+1986-05-20,mitterrand1,Ifop,944,phone,52.0,30.0
+1986-05-23,mitterrand1,BVA,1041,phone,54.0,35.0
+1986-05-23,mitterrand1,Kantar,1017,face to face,55.0,40.0
+1986-06-16,mitterrand1,Ifop,999,phone,55.0,34.0
+1986-06-21,mitterrand1,Kantar,1046,face to face,59.0,35.0
+1986-06-22,mitterrand1,BVA,1014,phone,61.0,35.0
+1986-07-16,mitterrand1,Ifop,964,phone,59.0,29.0
+1986-07-20,mitterrand1,BVA,1042,phone,62.0,29.0
+1986-07-25,mitterrand1,Kantar,920,face to face,57.0,37.0
+1986-08-17,mitterrand1,Ifop,947,phone,51.0,35.0
+1986-08-24,mitterrand1,Kantar,915,face to face,55.0,40.0
+1986-09-16,mitterrand1,BVA,1094,phone,55.0,34.0
+1986-09-19,mitterrand1,Ifop,990,phone,57.0,30.0
+1986-09-28,mitterrand1,Kantar,971,face to face,61.0,34.0
+1986-10-16,mitterrand1,BVA,901,phone,58.0,32.0
+1986-10-19,mitterrand1,Ifop,1043,phone,57.0,32.0
+1986-10-26,mitterrand1,Kantar,1067,face to face,58.0,35.0
+1986-11-16,mitterrand1,Ifop,922,phone,61.0,28.0
+1986-11-20,mitterrand1,BVA,1035,phone,59.0,32.0
+1986-11-20,mitterrand1,Kantar,962,face to face,56.0,39.0
+1986-12-16,mitterrand1,Ifop,1005,phone,57.0,31.0
+1986-12-19,mitterrand1,BVA,1082,phone,56.0,32.0
+1986-12-28,mitterrand1,Kantar,930,face to face,58.0,38.0
+1987-01-17,mitterrand1,Ifop,916,phone,50.0,34.0
+1987-01-21,mitterrand1,BVA,1006,phone,56.0,34.0
+1987-01-26,mitterrand1,Kantar,935,face to face,56.0,39.0
+1987-02-20,mitterrand1,Ifop,915,phone,52.0,35.0
+1987-02-24,mitterrand1,BVA,1040,phone,52.0,35.0
+1987-02-25,mitterrand1,Kantar,1073,face to face,51.0,45.0
+1987-03-16,mitterrand1,BVA,903,phone,55.0,32.0
+1987-03-18,mitterrand1,Ifop,1032,phone,53.0,35.0
+1987-03-21,mitterrand1,Kantar,928,face to face,54.0,40.0
+1987-04-16,mitterrand1,Ifop,1081,phone,56.0,32.0
+1987-04-20,mitterrand1,Kantar,1089,face to face,57.0,37.0
+1987-04-25,mitterrand1,BVA,1011,phone,58.0,31.0
+1987-05-15,mitterrand1,Ifop,1096,phone,52.0,33.0
+1987-05-18,mitterrand1,BVA,979,phone,56.0,33.0
+1987-05-21,mitterrand1,Kantar,1094,face to face,54.0,40.0
+1987-06-15,mitterrand1,Ifop,1014,phone,55.0,31.0
+1987-06-23,mitterrand1,Kantar,917,face to face,57.0,37.0
+1987-06-29,mitterrand1,BVA,902,phone,55.0,32.0
+1987-07-15,mitterrand1,Ifop,925,phone,52.0,35.0
+1987-07-20,mitterrand1,BVA,1065,phone,55.0,35.0
+1987-07-20,mitterrand1,Kantar,1004,face to face,59.0,35.0
+1987-08-18,mitterrand1,Ifop,975,phone,52.0,27.0
+1987-08-27,mitterrand1,Kantar,917,face to face,61.0,34.0
+1987-09-17,mitterrand1,Ifop,1061,phone,56.0,31.0
+1987-09-22,mitterrand1,Kantar,976,face to face,60.0,34.0
+1987-09-25,mitterrand1,BVA,983,phone,57.0,31.0
+1987-10-17,mitterrand1,Ifop,964,phone,53.0,35.0
+1987-10-26,mitterrand1,Kantar,930,face to face,58.0,37.0
+1987-10-29,mitterrand1,BVA,995,phone,60.0,31.0
+1987-11-20,mitterrand1,Ifop,948,phone,51.0,32.0
+1987-11-24,mitterrand1,Kantar,1025,face to face,56.0,38.0
+1987-11-28,mitterrand1,BVA,1066,phone,58.0,32.0
+1987-12-20,mitterrand1,Ifop,1089,phone,56.0,30.0
+1987-12-21,mitterrand1,Kantar,1021,face to face,58.0,37.0
+1987-12-25,mitterrand1,BVA,1043,phone,59.0,29.0
+1988-01-16,mitterrand1,Ifop,965,phone,60.0,29.0
+1988-01-23,mitterrand1,BVA,991,phone,61.0,31.0
+1988-01-24,mitterrand1,Kantar,1058,face to face,62.0,34.0
+1988-02-17,mitterrand1,Ifop,995,phone,55.0,33.0
+1988-02-24,mitterrand1,BVA,1080,phone,61.0,28.0
+1988-02-28,mitterrand1,Kantar,927,face to face,61.0,33.0
+1988-03-20,mitterrand1,Ifop,1004,phone,55.0,33.0
+1988-03-25,mitterrand1,Kantar,921,face to face,59.0,38.0
+1988-03-26,mitterrand1,BVA,1066,phone,63.0,28.0
+1988-04-18,mitterrand1,Ifop,1059,phone,54.0,33.0
+1988-04-23,mitterrand1,Kantar,1067,face to face,57.0,39.0
+1988-04-26,mitterrand1,BVA,1074,phone,60.0,36.0
+1988-05-17,mitterrand2,BVA,1023,phone,65.0,29.0
+1988-05-18,mitterrand2,Ifop,1023,phone,54.0,29.0
+1988-05-25,mitterrand2,Kantar,993,face to face,63.0,35.0
+1988-06-15,mitterrand2,Ifop,1029,phone,49.0,36.0
+1988-06-25,mitterrand2,BVA,971,phone,63.0,31.0
+1988-06-26,mitterrand2,Kantar,917,face to face,63.0,33.0
+1988-07-20,mitterrand2,Ifop,974,phone,49.0,32.0
+1988-07-26,mitterrand2,Kantar,1084,face to face,62.0,33.0
+1988-07-30,mitterrand2,BVA,1027,phone,63.0,26.0
+1988-08-18,mitterrand2,Ifop,1026,phone,51.0,31.0
+1988-08-24,mitterrand2,Kantar,995,face to face,62.0,34.0
+1988-09-15,mitterrand2,Ifop,984,phone,51.0,32.0
+1988-09-23,mitterrand2,Kantar,982,face to face,64.0,32.0
+1988-09-27,mitterrand2,BVA,1078,phone,63.0,26.0
+1988-10-19,mitterrand2,Ifop,1093,phone,50.0,36.0
+1988-10-23,mitterrand2,Kantar,1034,face to face,63.0,33.0
+1988-10-28,mitterrand2,BVA,1053,phone,60.0,30.0
+1988-11-19,mitterrand2,Ifop,1058,phone,49.0,36.0
+1988-11-27,mitterrand2,BVA,1081,phone,56.0,33.0
+1988-11-27,mitterrand2,Kantar,997,face to face,58.0,38.0
+1988-12-15,mitterrand2,Ifop,1005,phone,46.0,39.0
+1988-12-22,mitterrand2,Kantar,966,face to face,60.0,36.0
+1988-12-27,mitterrand2,BVA,1025,phone,54.0,34.0
+1989-01-16,mitterrand2,Ifop,930,phone,47.0,38.0
+1989-01-22,mitterrand2,BVA,1042,phone,53.0,34.0
+1989-01-28,mitterrand2,Kantar,996,face to face,58.0,38.0
+1989-02-18,mitterrand2,Ifop,958,phone,48.0,35.0
+1989-02-28,mitterrand2,BVA,1018,phone,54.0,36.0
+1989-02-28,mitterrand2,Kantar,974,face to face,58.0,39.0
+1989-03-20,mitterrand2,Ifop,1027,phone,47.0,37.0
+1989-03-28,mitterrand2,Kantar,990,face to face,60.0,36.0
+1989-04-15,mitterrand2,Ifop,932,phone,46.0,33.0
+1989-04-22,mitterrand2,BVA,1089,phone,58.0,35.0
+1989-04-25,mitterrand2,Kantar,927,face to face,61.0,34.0
+1989-05-18,mitterrand2,Ifop,1015,phone,49.0,33.0
+1989-05-22,mitterrand2,BVA,941,phone,61.0,31.0
+1989-05-24,mitterrand2,Kantar,980,face to face,62.0,35.0
+1989-06-17,mitterrand2,Ifop,1070,phone,46.0,34.0
+1989-06-20,mitterrand2,BVA,1052,phone,60.0,32.0
+1989-06-22,mitterrand2,Kantar,996,face to face,58.0,38.0
+1989-07-18,mitterrand2,BVA,1073,phone,58.0,33.0
+1989-07-20,mitterrand2,Ifop,975,phone,43.0,37.0
+1989-07-27,mitterrand2,Kantar,931,face to face,58.0,38.0
+1989-08-17,mitterrand2,Ifop,929,phone,50.0,32.0
+1989-08-24,mitterrand2,Kantar,1090,face to face,59.0,37.0
+1989-09-16,mitterrand2,Ifop,942,phone,43.0,36.0
+1989-09-21,mitterrand2,Kantar,949,face to face,57.0,37.0
+1989-09-24,mitterrand2,BVA,984,phone,55.0,34.0
+1989-10-16,mitterrand2,Ifop,1073,phone,43.0,38.0
+1989-10-20,mitterrand2,BVA,1068,phone,52.0,38.0
+1989-10-25,mitterrand2,Kantar,1035,face to face,55.0,42.0
+1989-11-19,mitterrand2,Ifop,983,phone,44.0,37.0
+1989-11-20,mitterrand2,Kantar,977,face to face,58.0,40.0
+1989-11-30,mitterrand2,BVA,981,phone,53.0,37.0
+1989-12-18,mitterrand2,BVA,1026,phone,56.0,33.0
+1989-12-19,mitterrand2,Ifop,924,phone,42.0,38.0
+1989-12-21,mitterrand2,Kantar,1033,face to face,56.0,41.0
+1990-01-19,mitterrand2,Ifop,961,phone,45.0,36.0
+1990-01-23,mitterrand2,BVA,1083,phone,59.0,32.0
+1990-01-24,mitterrand2,Kantar,942,face to face,61.0,37.0
+1990-02-18,mitterrand2,Ifop,1041,phone,45.0,36.0
+1990-02-19,mitterrand2,BVA,1066,phone,58.0,34.0
+1990-02-26,mitterrand2,Kantar,1007,face to face,61.0,35.0
+1990-03-18,mitterrand2,Ifop,1038,phone,44.0,36.0
+1990-03-19,mitterrand2,BVA,1051,phone,55.0,35.0
+1990-03-26,mitterrand2,Kantar,1100,face to face,55.0,41.0
+1990-04-19,mitterrand2,Ifop,1092,phone,39.0,42.0
+1990-04-21,mitterrand2,BVA,999,phone,53.0,38.0
+1990-04-25,mitterrand2,Kantar,971,face to face,53.0,43.0
+1990-05-19,mitterrand2,BVA,929,phone,54.0,37.0
+1990-05-19,mitterrand2,Ifop,1087,phone,35.0,44.0
+1990-05-23,mitterrand2,Kantar,949,face to face,52.0,45.0
+1990-06-19,mitterrand2,Ifop,974,phone,39.0,43.0
+1990-06-25,mitterrand2,BVA,923,phone,52.0,37.0
+1990-06-28,mitterrand2,Kantar,1076,face to face,54.0,43.0
+1990-07-15,mitterrand2,BVA,940,phone,49.0,41.0
+1990-07-17,mitterrand2,Ifop,1048,phone,37.0,41.0
+1990-07-26,mitterrand2,Kantar,1033,face to face,54.0,41.0
+1990-08-18,mitterrand2,Ifop,986,phone,37.0,42.0
+1990-08-21,mitterrand2,Kantar,923,face to face,55.0,40.0
+1990-09-19,mitterrand2,BVA,925,phone,55.0,36.0
+1990-09-20,mitterrand2,Ifop,1075,phone,42.0,38.0
+1990-09-22,mitterrand2,Kantar,1014,face to face,64.0,33.0
+1990-10-16,mitterrand2,BVA,1087,phone,53.0,37.0
+1990-10-18,mitterrand2,Ifop,1053,phone,43.0,39.0
+1990-10-20,mitterrand2,Kantar,949,face to face,60.0,36.0
+1990-11-15,mitterrand2,Ifop,929,phone,41.0,39.0
+1990-11-25,mitterrand2,Kantar,950,face to face,53.0,44.0
+1990-11-28,mitterrand2,BVA,1052,phone,53.0,38.0
+1990-12-19,mitterrand2,Ifop,921,phone,38.0,45.0
+1990-12-20,mitterrand2,BVA,1094,phone,49.0,40.0
+1990-12-27,mitterrand2,Kantar,934,face to face,55.0,42.0
+1991-01-17,mitterrand2,Ifop,997,phone,37.0,45.0
+1991-01-26,mitterrand2,BVA,1008,phone,54.0,36.0
+1991-01-28,mitterrand2,Kantar,914,face to face,65.0,32.0
+1991-02-17,mitterrand2,BVA,1054,phone,61.0,33.0
+1991-02-17,mitterrand2,Ifop,1044,phone,47.0,36.0
+1991-02-27,mitterrand2,Kantar,1027,face to face,62.0,34.0
+1991-03-20,mitterrand2,BVA,1026,phone,65.0,28.0
+1991-03-20,mitterrand2,Ifop,958,phone,56.0,27.0
+1991-03-28,mitterrand2,Kantar,983,face to face,61.0,36.0
+1991-04-15,mitterrand2,Ifop,1069,phone,47.0,36.0
+1991-04-26,mitterrand2,Kantar,951,face to face,56.0,42.0
+1991-04-28,mitterrand2,BVA,935,phone,55.0,38.0
+1991-05-15,mitterrand2,Ifop,928,phone,42.0,42.0
+1991-05-21,mitterrand2,BVA,1062,phone,57.0,38.0
+1991-05-22,mitterrand2,Kantar,1093,face to face,54.0,43.0
+1991-06-16,mitterrand2,BVA,939,phone,48.0,44.0
+1991-06-16,mitterrand2,Ifop,939,phone,40.0,42.0
+1991-06-26,mitterrand2,Kantar,998,face to face,48.0,48.0
+1991-07-20,mitterrand2,BVA,984,phone,51.0,40.0
+1991-07-20,mitterrand2,Ifop,954,phone,33.0,48.0
+1991-07-26,mitterrand2,Kantar,1011,face to face,50.0,46.0
+1991-08-16,mitterrand2,Ifop,924,phone,33.0,50.0
+1991-08-20,mitterrand2,Kantar,938,face to face,52.0,45.0
+1991-09-15,mitterrand2,Ifop,1058,phone,34.0,49.0
+1991-09-16,mitterrand2,BVA,989,phone,46.0,45.0
+1991-09-25,mitterrand2,Kantar,965,face to face,46.0,51.0
+1991-10-16,mitterrand2,Ifop,1022,phone,33.0,52.0
+1991-10-17,mitterrand2,BVA,963,phone,44.0,48.0
+1991-10-24,mitterrand2,Kantar,1031,face to face,39.0,58.0
+1991-11-19,mitterrand2,Ifop,1027,phone,28.0,57.0
+1991-11-26,mitterrand2,Kantar,1065,face to face,31.0,66.0
+1991-11-30,mitterrand2,BVA,958,phone,39.0,52.0
+1991-12-16,mitterrand2,BVA,1073,phone,36.0,53.0
+1991-12-20,mitterrand2,Ifop,965,phone,22.0,65.0
+1991-12-21,mitterrand2,Kantar,973,face to face,35.0,62.0
+1992-01-17,mitterrand2,BVA,1071,phone,34.0,58.0
+1992-01-19,mitterrand2,Ifop,958,phone,26.0,63.0
+1992-01-25,mitterrand2,Kantar,1059,face to face,35.0,61.0
+1992-02-18,mitterrand2,Ifop,1061,phone,24.0,63.0
+1992-02-20,mitterrand2,Kantar,997,face to face,35.0,60.0
+1992-02-29,mitterrand2,BVA,1073,phone,35.0,58.0
+1992-03-16,mitterrand2,Ifop,1051,phone,26.0,59.0
+1992-03-26,mitterrand2,Kantar,918,face to face,33.0,65.0
+1992-03-30,mitterrand2,BVA,1055,phone,31.0,62.0
+1992-04-16,mitterrand2,BVA,1058,phone,38.0,55.0
+1992-04-20,mitterrand2,Ifop,1008,phone,26.0,60.0
+1992-04-23,mitterrand2,Kantar,946,face to face,37.0,59.0
+1992-05-17,mitterrand2,Ifop,968,phone,29.0,56.0
+1992-05-26,mitterrand2,BVA,1092,phone,40.0,50.0
+1992-05-28,mitterrand2,Kantar,1041,face to face,37.0,60.0
+1992-06-15,mitterrand2,Ifop,989,phone,28.0,58.0
+1992-06-17,mitterrand2,BVA,1038,phone,38.0,55.0
+1992-06-21,mitterrand2,Kantar,1003,face to face,38.0,59.0
+1992-07-15,mitterrand2,Ifop,939,phone,26.0,62.0
+1992-07-21,mitterrand2,Kantar,1042,face to face,37.0,60.0
+1992-07-30,mitterrand2,BVA,1099,phone,35.0,58.0
+1992-08-15,mitterrand2,Ifop,1099,phone,26.0,60.0
+1992-08-21,mitterrand2,Kantar,908,face to face,36.0,61.0
+1992-08-28,mitterrand2,BVA,1019,phone,33.0,59.0
+1992-09-19,mitterrand2,Ifop,1099,phone,32.0,58.0
+1992-09-22,mitterrand2,Kantar,1052,face to face,43.0,54.0
+1992-10-15,mitterrand2,BVA,902,phone,36.0,56.0
+1992-10-19,mitterrand2,Ifop,931,phone,31.0,59.0
+1992-10-24,mitterrand2,BVA,980,phone,39.0,54.0
+1992-10-25,mitterrand2,Kantar,1078,face to face,34.0,63.0
+1992-11-15,mitterrand2,BVA,1016,phone,36.0,56.0
+1992-11-17,mitterrand2,Ifop,920,phone,29.0,59.0
+1992-11-28,mitterrand2,Kantar,1050,face to face,32.0,65.0
+1992-12-16,mitterrand2,BVA,945,phone,32.0,60.0
+1992-12-16,mitterrand2,Ifop,1044,phone,28.0,61.0
+1992-12-25,mitterrand2,Kantar,978,face to face,33.0,65.0
+1993-01-15,mitterrand2,BVA,1098,phone,37.0,57.0
+1993-01-16,mitterrand2,Ifop,1019,phone,26.0,63.0
+1993-01-26,mitterrand2,Kantar,990,face to face,31.0,67.0
+1993-02-15,mitterrand2,Ifop,1064,phone,26.0,61.0
+1993-02-24,mitterrand2,BVA,915,phone,35.0,60.0
+1993-02-27,mitterrand2,Kantar,978,face to face,31.0,66.0
+1993-03-17,mitterrand2,Ifop,935,phone,24.0,62.0
+1993-03-18,mitterrand2,BVA,1036,phone,36.0,57.0
+1993-03-22,mitterrand2,BVA,1082,phone,33.0,61.0
+1993-03-27,mitterrand2,Kantar,1011,face to face,39.0,58.0
+1993-04-16,mitterrand2,Ifop,976,phone,34.0,55.0
+1993-04-18,mitterrand2,BVA,1098,phone,41.0,52.0
+1993-04-20,mitterrand2,Kantar,1067,face to face,34.0,62.0
+1993-04-21,mitterrand2,BVA,1095,phone,40.0,52.0
+1993-05-19,mitterrand2,Ifop,1025,phone,39.0,50.0
+1993-05-22,mitterrand2,BVA,1071,phone,41.0,52.0
+1993-05-25,mitterrand2,Kantar,1050,face to face,35.0,62.0
+1993-06-16,mitterrand2,Ifop,931,phone,41.0,48.0
+1993-06-22,mitterrand2,BVA,970,phone,46.0,47.0
+1993-06-24,mitterrand2,Kantar,928,face to face,37.0,59.0
+1993-07-17,mitterrand2,Ifop,1038,phone,39.0,47.0
+1993-07-24,mitterrand2,BVA,939,phone,45.0,48.0
+1993-07-24,mitterrand2,Kantar,1035,face to face,38.0,58.0
+1993-08-20,mitterrand2,Ifop,1045,phone,44.0,44.0
+1993-08-22,mitterrand2,Kantar,1099,face to face,39.0,58.0
+1993-09-20,mitterrand2,Ifop,1099,phone,42.0,47.0
+1993-09-25,mitterrand2,Kantar,976,face to face,40.0,57.0
+1993-09-28,mitterrand2,BVA,1063,phone,49.0,43.0
+1993-10-18,mitterrand2,Ifop,1045,phone,42.0,49.0
+1993-10-26,mitterrand2,Kantar,1003,face to face,40.0,57.0
+1993-10-28,mitterrand2,BVA,1032,phone,47.0,47.0
+1993-11-15,mitterrand2,Ifop,1052,phone,39.0,52.0
+1993-11-17,mitterrand2,BVA,1034,phone,47.0,45.0
+1993-11-23,mitterrand2,Kantar,1038,face to face,38.0,59.0
+1993-12-15,mitterrand2,BVA,1059,phone,44.0,48.0
+1993-12-15,mitterrand2,Ifop,1096,phone,41.0,49.0
+1993-12-26,mitterrand2,Kantar,1011,face to face,41.0,57.0
+1994-01-18,mitterrand2,Ifop,1006,phone,42.0,48.0
+1994-01-25,mitterrand2,Kantar,1004,face to face,38.0,60.0
+1994-01-26,mitterrand2,BVA,1022,phone,49.0,44.0
+1994-02-19,mitterrand2,Ifop,986,phone,41.0,50.0
+1994-02-20,mitterrand2,Kantar,1022,face to face,40.0,57.0
+1994-02-26,mitterrand2,BVA,1033,phone,44.0,48.0
+1994-03-16,mitterrand2,Ifop,979,phone,44.0,48.0
+1994-03-24,mitterrand2,Kantar,911,face to face,39.0,57.0
+1994-03-25,mitterrand2,BVA,1061,phone,47.0,46.0
+1994-04-15,mitterrand2,Ifop,917,phone,41.0,49.0
+1994-04-23,mitterrand2,Kantar,1092,face to face,40.0,56.0
+1994-04-27,mitterrand2,BVA,969,phone,46.0,45.0
+1994-05-20,mitterrand2,Ifop,961,phone,45.0,46.0
+1994-05-23,mitterrand2,Kantar,960,face to face,43.0,52.0
+1994-05-26,mitterrand2,BVA,930,phone,47.0,47.0
+1994-06-16,mitterrand2,Ifop,938,phone,46.0,45.0
+1994-06-23,mitterrand2,Kantar,1095,face to face,40.0,56.0
+1994-06-27,mitterrand2,BVA,1003,phone,47.0,45.0
+1994-07-19,mitterrand2,Ifop,1032,phone,51.0,43.0
+1994-07-20,mitterrand2,Kantar,997,face to face,42.0,55.0
+1994-07-29,mitterrand2,BVA,1043,phone,52.0,38.0
+1994-08-15,mitterrand2,Ifop,992,phone,51.0,44.0
+1994-08-20,mitterrand2,Kantar,1082,face to face,43.0,55.0
+1994-09-20,mitterrand2,Ifop,1072,phone,45.0,44.0
+1994-09-23,mitterrand2,Kantar,1011,face to face,42.0,55.0
+1994-09-27,mitterrand2,BVA,959,phone,51.0,40.0
+1994-10-17,mitterrand2,Ifop,1020,phone,45.0,45.0
+1994-10-19,mitterrand2,BVA,907,phone,51.0,42.0
+1994-10-20,mitterrand2,Kantar,973,face to face,41.0,57.0
+1994-11-15,mitterrand2,Ifop,956,phone,49.0,45.0
+1994-11-21,mitterrand2,BVA,926,phone,53.0,40.0
+1994-11-23,mitterrand2,Kantar,982,face to face,38.0,59.0
+1994-12-15,mitterrand2,Ifop,924,phone,48.0,45.0
+1994-12-22,mitterrand2,BVA,943,phone,51.0,44.0
+1994-12-28,mitterrand2,Kantar,1045,face to face,42.0,52.0
+1995-01-16,mitterrand2,Ifop,1068,phone,53.0,43.0
+1995-01-22,mitterrand2,BVA,1020,phone,50.0,45.0
+1995-01-22,mitterrand2,Kantar,904,face to face,42.0,56.0
+1995-02-17,mitterrand2,Ifop,1042,phone,49.0,46.0
+1995-02-23,mitterrand2,BVA,1092,phone,52.0,45.0
+1995-02-25,mitterrand2,Kantar,1033,face to face,41.0,56.0
+1995-03-18,mitterrand2,Ifop,945,phone,46.0,49.0
+1995-03-22,mitterrand2,BVA,1009,phone,51.0,42.0
+1995-03-24,mitterrand2,Kantar,1063,face to face,35.0,60.0
+1995-04-20,mitterrand2,Ifop,1086,phone,45.0,49.0
+1995-04-25,mitterrand2,Kantar,1084,face to face,34.0,61.0
+1995-04-30,mitterrand2,BVA,966,phone,51.0,45.0
+1995-05-19,chirac1,Ifop,935,phone,59.0,22.0
+1995-05-20,chirac1,Kantar,1004,face to face,64.0,32.0
+1995-05-30,chirac1,BVA,1042,phone,62.0,22.0
+1995-06-18,chirac1,Ifop,958,phone,54.0,31.0
+1995-06-22,chirac1,Kantar,1055,face to face,63.0,35.0
+1995-06-30,chirac1,BVA,1086,phone,55.0,27.0
+1995-07-15,chirac1,BVA,981,phone,51.0,33.0
+1995-07-19,chirac1,Ifop,1045,phone,44.0,36.0
+1995-07-20,chirac1,Kantar,992,face to face,56.0,41.0
+1995-08-20,chirac1,Ifop,992,phone,39.0,39.0
+1995-08-22,chirac1,Kantar,1081,face to face,54.0,44.0
+1995-09-16,chirac1,BVA,909,phone,44.0,47.0
+1995-09-20,chirac1,Ifop,935,phone,33.0,51.0
+1995-09-25,chirac1,Kantar,940,face to face,41.0,57.0
+1995-10-16,chirac1,Ifop,1081,phone,28.0,59.0
+1995-10-26,chirac1,Kantar,921,face to face,37.0,61.0
+1995-10-28,chirac1,BVA,1025,phone,36.0,56.0
+1995-11-16,chirac1,Ifop,956,phone,27.0,64.0
+1995-11-27,chirac1,Kantar,927,face to face,39.0,59.0
+1995-11-30,chirac1,BVA,990,phone,32.0,61.0
+1995-12-17,chirac1,Ifop,1092,phone,30.0,63.0
+1995-12-26,chirac1,BVA,1071,phone,37.0,59.0
+1995-12-28,chirac1,Kantar,958,face to face,35.0,63.0
+1996-01-12,chirac1,Ipsos,980,phone,37.6,55.9
+1996-01-17,chirac1,BVA,957,phone,37.0,56.0
+1996-01-18,chirac1,Ifop,981,phone,36.0,53.0
+1996-01-25,chirac1,Kantar,912,face to face,40.0,58.0
+1996-02-15,chirac1,Ipsos,959,phone,42.7,49.9
+1996-02-19,chirac1,Ifop,1064,phone,36.0,54.0
+1996-02-20,chirac1,Kantar,1054,face to face,40.0,59.0
+1996-02-23,chirac1,BVA,911,phone,37.0,58.0
+1996-03-12,chirac1,Ipsos,921,phone,43.3,50.9
+1996-03-15,chirac1,Ifop,994,phone,38.0,51.0
+1996-03-23,chirac1,BVA,1007,phone,44.0,50.0
+1996-03-27,chirac1,Kantar,961,face to face,45.0,53.0
+1996-04-16,chirac1,Ifop,1093,phone,37.0,49.0
+1996-04-26,chirac1,Kantar,1027,face to face,44.0,55.0
+1996-04-27,chirac1,BVA,900,phone,48.0,46.0
+1996-04-27,chirac1,Ipsos,1017,phone,42.1,48.6
+1996-05-19,chirac1,Ifop,1061,phone,37.0,47.0
+1996-05-22,chirac1,Ipsos,1006,phone,44.5,49.1
+1996-05-24,chirac1,BVA,967,phone,44.0,49.0
+1996-05-28,chirac1,Kantar,951,face to face,47.0,51.0
+1996-06-10,chirac1,Ipsos,1086,phone,44.0,50.6
+1996-06-20,chirac1,Ifop,1066,phone,35.0,52.0
+1996-06-23,chirac1,BVA,926,phone,44.0,51.0
+1996-06-23,chirac1,Kantar,981,face to face,42.0,56.0
+1996-07-19,chirac1,BVA,929,phone,40.0,53.0
+1996-07-19,chirac1,Ifop,974,phone,35.0,53.0
+1996-07-25,chirac1,Ipsos,917,phone,40.9,51.4
+1996-07-27,chirac1,Kantar,987,face to face,43.0,55.0
+1996-08-16,chirac1,Ipsos,1069,phone,41.4,52.1
+1996-08-20,chirac1,Ifop,1053,phone,38.0,50.0
+1996-08-20,chirac1,Kantar,1072,face to face,40.0,58.0
+1996-08-22,chirac1,BVA,982,phone,46.0,46.0
+1996-09-19,chirac1,Ifop,938,phone,31.0,55.0
+1996-09-21,chirac1,Ipsos,1053,phone,36.1,57.7
+1996-09-23,chirac1,BVA,1035,phone,40.0,54.0
+1996-09-26,chirac1,Kantar,1058,face to face,37.0,61.0
+1996-10-19,chirac1,Ifop,981,phone,28.0,61.0
+1996-10-21,chirac1,Ipsos,968,phone,31.7,63.9
+1996-10-22,chirac1,Kantar,1085,face to face,32.0,66.0
+1996-10-23,chirac1,BVA,1050,phone,35.0,60.0
+1996-11-17,chirac1,Ipsos,1019,phone,31.7,63.8
+1996-11-20,chirac1,Ifop,972,phone,27.0,58.0
+1996-11-21,chirac1,Kantar,947,face to face,37.0,62.0
+1996-11-30,chirac1,BVA,967,phone,35.0,60.0
+1996-12-17,chirac1,BVA,1053,phone,35.0,58.0
+1996-12-20,chirac1,Ifop,1081,phone,30.0,59.0
+1996-12-20,chirac1,Ipsos,965,phone,34.2,62.8
+1996-12-26,chirac1,Kantar,960,face to face,36.0,63.0
+1997-01-19,chirac1,Ifop,998,phone,30.0,56.0
+1997-01-22,chirac1,Ipsos,951,phone,34.0,60.9
+1997-01-25,chirac1,BVA,904,phone,37.0,57.0
+1997-01-28,chirac1,Kantar,925,face to face,35.0,64.0
+1997-02-19,chirac1,Ifop,922,phone,34.0,55.0
+1997-02-19,chirac1,Ipsos,1001,phone,33.3,62.9
+1997-02-24,chirac1,Kantar,1058,face to face,41.0,60.0
+1997-02-25,chirac1,BVA,980,phone,39.0,55.0
+1997-03-11,chirac1,Ipsos,923,phone,38.9,52.9
+1997-03-19,chirac1,Ifop,1084,phone,32.0,55.0
+1997-03-22,chirac1,Kantar,926,face to face,38.0,60.0
+1997-03-26,chirac1,BVA,1040,phone,39.0,55.0
+1997-04-20,chirac1,Ifop,965,phone,31.0,56.0
+1997-04-20,chirac1,Kantar,994,face to face,38.0,60.0
+1997-04-21,chirac1,Ipsos,935,phone,36.8,55.3
+1997-04-30,chirac1,BVA,1022,phone,35.0,57.0
+1997-05-20,chirac1,Ifop,1003,phone,39.0,52.0
+1997-05-23,chirac1,BVA,1029,phone,40.0,55.0
+1997-05-26,chirac1,Ipsos,1057,phone,45.4,52.0
+1997-05-27,chirac1,Kantar,996,face to face,41.0,57.0
+1997-06-16,chirac1,Ifop,910,phone,38.0,45.0
+1997-06-17,chirac1,Ipsos,975,phone,35.4,55.0
+1997-06-26,chirac1,Kantar,913,face to face,46.0,52.0
+1997-07-16,chirac1,Ifop,918,phone,42.0,43.0
+1997-07-17,chirac1,Ipsos,946,phone,45.6,48.2
+1997-07-23,chirac1,BVA,1004,phone,48.0,44.0
+1997-07-23,chirac1,Kantar,948,face to face,47.0,51.0
+1997-08-13,chirac1,Ipsos,993,phone,47.2,42.3
+1997-08-16,chirac1,Ifop,1011,phone,40.0,42.0
+1997-08-20,chirac1,Kantar,949,face to face,45.0,53.0
+1997-09-18,chirac1,Ifop,1072,phone,44.0,36.0
+1997-09-20,chirac1,Ipsos,997,phone,45.7,43.6
+1997-09-21,chirac1,Kantar,1040,face to face,41.0,58.0
+1997-09-24,chirac1,BVA,952,phone,50.0,40.0
+1997-10-12,chirac1,Ipsos,907,phone,48.0,38.8
+1997-10-16,chirac1,BVA,1053,phone,51.0,40.0
+1997-10-17,chirac1,Ifop,1070,phone,45.0,41.0
+1997-10-24,chirac1,Kantar,1030,face to face,41.0,56.0
+1997-11-17,chirac1,Ifop,1098,phone,47.0,30.0
+1997-11-20,chirac1,Ipsos,1083,phone,48.7,41.9
+1997-11-20,chirac1,Kantar,1004,face to face,41.0,56.0
+1997-11-25,chirac1,BVA,990,phone,51.0,39.0
+1997-12-17,chirac1,Ifop,988,phone,48.0,37.0
+1997-12-22,chirac1,Ipsos,1003,phone,51.2,40.7
+1997-12-23,chirac1,BVA,1043,phone,51.0,38.0
+1997-12-26,chirac1,Kantar,1075,face to face,44.0,43.0
+1998-01-19,chirac1,Ifop,1010,phone,45.0,41.0
+1998-01-20,chirac1,BVA,991,phone,47.0,43.0
+1998-01-22,chirac1,Kantar,1027,face to face,47.0,49.0
+1998-01-24,chirac1,Ipsos,938,phone,47.1,42.5
+1998-02-15,chirac1,Ifop,909,phone,54.0,33.0
+1998-02-24,chirac1,Ipsos,965,phone,54.2,35.6
+1998-02-26,chirac1,BVA,1098,phone,54.0,35.0
+1998-02-26,chirac1,Kantar,948,face to face,55.0,43.0
+1998-03-15,chirac1,Ifop,1022,phone,47.0,38.0
+1998-03-19,chirac1,Ipsos,1000,phone,60.8,31.4
+1998-03-23,chirac1,BVA,996,phone,55.0,35.0
+1998-03-25,chirac1,Kantar,1073,face to face,51.0,47.0
+1998-04-10,chirac1,Ipsos,935,phone,52.3,37.8
+1998-04-15,chirac1,Ifop,1041,phone,44.0,38.0
+1998-04-20,chirac1,BVA,1079,phone,55.0,33.0
+1998-04-22,chirac1,Kantar,915,face to face,48.0,50.0
+1998-05-10,chirac1,Ipsos,1078,phone,53.7,35.9
+1998-05-17,chirac1,Ifop,984,phone,44.0,37.0
+1998-05-22,chirac1,Kantar,956,face to face,45.0,53.0
+1998-05-26,chirac1,BVA,900,phone,51.0,37.0
+1998-06-16,chirac1,BVA,936,phone,60.0,31.0
+1998-06-19,chirac1,Ifop,954,phone,48.0,35.0
+1998-06-25,chirac1,Kantar,1056,face to face,52.0,45.0
+1998-06-26,chirac1,Ipsos,988,phone,53.2,40.3
+1998-07-16,chirac1,Ipsos,927,phone,67.7,25.0
+1998-07-18,chirac1,Ifop,1044,phone,59.0,25.0
+1998-07-24,chirac1,Kantar,935,face to face,59.0,38.0
+1998-07-29,chirac1,BVA,974,phone,67.0,23.0
+1998-08-16,chirac1,Ipsos,946,phone,67.3,26.7
+1998-08-18,chirac1,Ifop,925,phone,62.0,26.0
+1998-08-28,chirac1,Kantar,1005,face to face,56.0,41.0
+1998-09-17,chirac1,Ipsos,1100,phone,65.5,24.3
+1998-09-19,chirac1,Ifop,934,phone,62.0,24.0
+1998-09-23,chirac1,Kantar,1059,face to face,57.0,40.0
+1998-09-30,chirac1,BVA,1089,phone,64.0,27.0
+1998-10-15,chirac1,Ipsos,1062,phone,65.8,25.3
+1998-10-20,chirac1,Ifop,908,phone,56.0,29.0
+1998-10-23,chirac1,BVA,1013,phone,62.0,29.0
+1998-10-26,chirac1,Kantar,1098,face to face,52.0,45.0
+1998-11-17,chirac1,Ifop,1065,phone,54.0,28.0
+1998-11-18,chirac1,Ipsos,1057,phone,63.3,26.1
+1998-11-20,chirac1,BVA,925,phone,61.0,31.0
+1998-11-21,chirac1,Kantar,1030,face to face,52.0,45.0
+1998-12-11,chirac1,Ipsos,944,phone,66.6,27.3
+1998-12-18,chirac1,BVA,951,phone,60.0,30.0
+1998-12-18,chirac1,Ifop,1033,phone,55.0,29.0
+1998-12-27,chirac1,Kantar,995,face to face,54.0,44.0
+1999-01-12,chirac1,Ipsos,1003,phone,74.2,20.8
+1999-01-16,chirac1,Ifop,1040,phone,55.0,27.0
+1999-01-20,chirac1,Kantar,1048,face to face,52.0,46.0
+1999-01-27,chirac1,BVA,958,phone,59.0,28.0
+1999-02-14,chirac1,Ipsos,1094,phone,67.5,27.9
+1999-02-19,chirac1,Ifop,1002,phone,57.0,28.0
+1999-02-23,chirac1,BVA,946,phone,60.0,28.0
+1999-02-27,chirac1,Kantar,940,face to face,55.0,43.0
+1999-03-15,chirac1,Ifop,1028,phone,56.0,30.0
+1999-03-21,chirac1,Ipsos,902,phone,62.0,27.1
+1999-03-25,chirac1,BVA,952,phone,60.0,29.0
+1999-03-25,chirac1,Kantar,1030,face to face,53.0,44.0
+1999-04-11,chirac1,Ipsos,970,phone,67.3,26.9
+1999-04-17,chirac1,Ifop,1043,phone,63.0,27.0
+1999-04-27,chirac1,Kantar,969,face to face,63.0,34.0
+1999-04-28,chirac1,BVA,910,phone,65.0,25.0
+1999-05-17,chirac1,BVA,944,phone,62.0,27.0
+1999-05-19,chirac1,Ifop,1100,phone,63.0,29.0
+1999-05-23,chirac1,Ipsos,1027,phone,70.6,21.1
+1999-05-26,chirac1,Kantar,973,face to face,54.0,43.0
+1999-06-16,chirac1,Ifop,963,phone,58.0,29.0
+1999-06-20,chirac1,Ipsos,989,phone,61.7,33.1
+1999-06-20,chirac1,Kantar,1032,face to face,55.0,42.0
+1999-06-30,chirac1,BVA,930,phone,60.0,29.0
+1999-07-13,chirac1,Ipsos,1022,phone,64.5,28.0
+1999-07-17,chirac1,Ifop,1060,phone,60.0,28.0
+1999-07-25,chirac1,BVA,1067,phone,64.0,24.0
+1999-07-26,chirac1,Kantar,1005,face to face,58.0,39.0
+1999-08-11,chirac1,Ipsos,968,phone,65.0,26.3
+1999-08-18,chirac1,Ifop,946,phone,55.0,28.0
+1999-08-24,chirac1,Kantar,942,face to face,52.0,45.0
+1999-09-15,chirac1,Ifop,976,phone,60.0,29.0
+1999-09-15,chirac1,Ipsos,938,phone,63.0,28.0
+1999-09-23,chirac1,Kantar,975,face to face,56.0,40.0
+1999-09-26,chirac1,BVA,931,phone,60.0,28.0
+1999-10-17,chirac1,BVA,900,phone,59.0,26.0
+1999-10-19,chirac1,Ifop,924,phone,58.0,30.0
+1999-10-24,chirac1,Kantar,982,face to face,51.0,46.0
+1999-10-25,chirac1,Ipsos,974,phone,62.8,27.8
+1999-11-16,chirac1,Ifop,1042,phone,58.0,29.0
+1999-11-25,chirac1,Ipsos,971,phone,63.5,30.3
+1999-11-26,chirac1,Kantar,1017,face to face,50.0,47.0
+1999-11-28,chirac1,BVA,1023,phone,57.0,29.0
+1999-12-12,chirac1,Ipsos,907,phone,62.5,28.9
+1999-12-15,chirac1,Ifop,1058,phone,61.0,30.0
+1999-12-23,chirac1,BVA,950,phone,60.0,27.0
+1999-12-25,chirac1,Kantar,972,face to face,53.0,44.0
+2000-01-15,chirac1,Ipsos,947,phone,61.5,29.0
+2000-01-18,chirac1,Ifop,987,phone,60.0,30.0
+2000-01-28,chirac1,Kantar,976,face to face,49.0,48.0
+2000-01-30,chirac1,BVA,917,phone,62.0,23.0
+2000-02-13,chirac1,Ipsos,987,phone,58.7,31.5
+2000-02-17,chirac1,Ifop,1094,phone,56.0,31.0
+2000-02-22,chirac1,Kantar,999,face to face,52.0,44.0
+2000-02-25,chirac1,BVA,930,phone,55.0,31.0
+2000-03-15,chirac1,Ipsos,1021,phone,63.9,27.5
+2000-03-20,chirac1,Ifop,1006,phone,59.0,31.0
+2000-03-20,chirac1,Kantar,962,face to face,53.0,44.0
+2000-03-21,chirac1,BVA,1016,phone,58.0,28.0
+2000-04-18,chirac1,Ifop,991,phone,61.0,28.0
+2000-04-24,chirac1,BVA,1041,phone,60.0,25.0
+2000-04-24,chirac1,Kantar,900,face to face,54.0,43.0
+2000-04-26,chirac1,Ipsos,1055,phone,61.5,29.4
+2000-05-15,chirac1,Ifop,978,phone,64.0,25.0
+2000-05-15,chirac1,Ipsos,1097,phone,68.7,22.5
+2000-05-16,chirac1,BVA,925,phone,63.0,25.0
+2000-05-22,chirac1,Kantar,927,face to face,52.0,44.0
+2000-06-17,chirac1,BVA,1036,phone,62.0,27.0
+2000-06-20,chirac1,Ifop,1062,phone,60.0,30.0
+2000-06-20,chirac1,Ipsos,1087,phone,61.6,29.1
+2000-06-22,chirac1,Kantar,960,face to face,55.0,42.0
+2000-07-19,chirac1,Ifop,916,phone,60.0,26.0
+2000-07-21,chirac1,BVA,1003,phone,66.0,23.0
+2000-07-21,chirac1,Kantar,915,face to face,57.0,40.0
+2000-07-27,chirac1,Ipsos,960,phone,67.4,24.1
+2000-08-15,chirac1,Ipsos,984,phone,64.3,22.2
+2000-08-20,chirac1,Ifop,1048,phone,61.0,25.0
+2000-08-23,chirac1,Kantar,946,face to face,52.0,45.0
+2000-09-15,chirac1,Ifop,1044,phone,51.0,36.0
+2000-09-15,chirac1,Ipsos,1005,phone,61.6,29.3
+2000-09-22,chirac1,Kantar,1080,face to face,41.0,57.0
+2000-09-23,chirac1,BVA,979,phone,57.0,32.0
+2000-10-17,chirac1,Ifop,923,phone,55.0,34.0
+2000-10-18,chirac1,Ipsos,964,phone,54.8,35.9
+2000-10-21,chirac1,BVA,909,phone,53.0,35.0
+2000-10-28,chirac1,Kantar,1023,face to face,49.0,49.0
+2000-11-18,chirac1,Ipsos,910,phone,57.0,31.0
+2000-11-19,chirac1,Ifop,1045,phone,56.0,32.0
+2000-11-21,chirac1,Kantar,909,face to face,47.0,49.0
+2000-11-29,chirac1,BVA,908,phone,55.0,30.0
+2000-12-16,chirac1,Ifop,1027,phone,55.0,35.0
+2000-12-20,chirac1,Ipsos,1030,phone,55.0,34.0
+2000-12-26,chirac1,Kantar,950,face to face,50.0,47.0
+2000-12-29,chirac1,BVA,1004,phone,61.0,29.0
+2001-01-16,chirac1,Ipsos,904,phone,54.0,34.0
+2001-01-18,chirac1,Ifop,923,phone,57.0,34.0
+2001-01-27,chirac1,BVA,950,phone,57.0,31.0
+2001-01-28,chirac1,Kantar,930,face to face,50.0,48.0
+2001-02-15,chirac1,Ipsos,1021,phone,61.0,28.0
+2001-02-17,chirac1,BVA,1022,phone,62.0,27.0
+2001-02-19,chirac1,Ifop,1067,phone,57.0,35.0
+2001-02-21,chirac1,Kantar,995,face to face,49.0,49.0
+2001-03-17,chirac1,Ifop,916,phone,60.0,28.0
+2001-03-18,chirac1,BVA,931,phone,59.0,30.0
+2001-03-20,chirac1,Ipsos,1050,phone,56.0,33.0
+2001-03-22,chirac1,Kantar,1021,face to face,51.0,46.0
+2001-03-27,chirac1,BVA,1076,phone,58.0,31.0
+2001-04-17,chirac1,Ifop,1073,phone,56.0,33.0
+2001-04-17,chirac1,Ipsos,971,phone,53.0,34.0
+2001-04-23,chirac1,BVA,1057,phone,59.0,31.0
+2001-04-24,chirac1,Kantar,1017,face to face,46.0,51.0
+2001-05-20,chirac1,Ifop,931,phone,54.0,32.0
+2001-05-22,chirac1,Ipsos,923,phone,58.0,30.0
+2001-05-26,chirac1,BVA,945,phone,57.0,31.0
+2001-05-28,chirac1,Kantar,1077,face to face,45.0,51.0
+2001-06-16,chirac1,Ipsos,974,phone,57.0,32.0
+2001-06-20,chirac1,Ifop,969,phone,61.0,33.0
+2001-06-26,chirac1,BVA,931,phone,58.0,30.0
+2001-06-26,chirac1,Kantar,981,face to face,45.0,52.0
+2001-07-14,chirac1,Ipsos,995,phone,57.0,30.0
+2001-07-15,chirac1,Ifop,960,phone,54.0,31.0
+2001-07-20,chirac1,Kantar,1087,face to face,45.0,51.0
+2001-07-23,chirac1,BVA,935,phone,55.0,33.0
+2001-08-19,chirac1,Ifop,1065,phone,60.0,31.0
+2001-08-21,chirac1,Ipsos,1072,phone,55.0,32.0
+2001-08-25,chirac1,Kantar,971,face to face,47.0,50.0
+2001-09-11,chirac1,Ipsos,1095,phone,50.0,35.0
+2001-09-15,chirac1,Ifop,997,phone,62.0,30.0
+2001-09-23,chirac1,Kantar,1030,face to face,57.0,40.0
+2001-09-25,chirac1,BVA,954,phone,61.0,33.0
+2001-10-16,chirac1,Ifop,927,phone,58.0,34.0
+2001-10-23,chirac1,Kantar,928,face to face,56.0,41.0
+2001-10-25,chirac1,Ipsos,1051,phone,65.0,24.0
+2001-10-26,chirac1,BVA,957,phone,59.0,31.0
+2001-11-19,chirac1,Ifop,1096,phone,54.0,31.0
+2001-11-20,chirac1,BVA,904,phone,58.0,31.0
+2001-11-21,chirac1,Kantar,901,face to face,50.0,48.0
+2001-11-23,chirac1,Ipsos,932,phone,63.0,30.0
+2001-12-18,chirac1,BVA,903,phone,55.0,35.0
+2001-12-18,chirac1,Ipsos,962,phone,55.0,35.0
+2001-12-20,chirac1,Ifop,988,phone,54.0,36.0
+2001-12-20,chirac1,Kantar,1096,face to face,46.0,51.0
+2002-01-17,chirac1,Ifop,1087,phone,53.0,39.0
+2002-01-20,chirac1,Kantar,963,face to face,46.0,51.0
+2002-01-21,chirac1,BVA,919,phone,57.0,32.0
+2002-01-22,chirac1,Ipsos,1074,phone,57.0,32.0
+2002-02-17,chirac1,BVA,1081,phone,55.0,40.0
+2002-02-20,chirac1,Ifop,1004,phone,50.0,44.0
+2002-02-20,chirac1,Ipsos,959,phone,47.0,46.0
+2002-02-20,chirac1,Kantar,986,face to face,43.0,54.0
+2002-03-18,chirac1,Ifop,967,phone,43.0,51.0
+2002-03-21,chirac1,Ipsos,1093,phone,43.0,49.0
+2002-03-22,chirac1,Kantar,959,face to face,40.0,58.0
+2002-03-28,chirac1,BVA,930,phone,50.0,45.0
+2002-04-15,chirac1,BVA,962,phone,52.0,42.0
+2002-04-15,chirac1,Ifop,1047,phone,47.0,48.0
+2002-04-20,chirac1,Kantar,979,face to face,52.0,47.0
+2002-04-23,chirac1,Ipsos,1056,phone,47.0,49.0
+2002-05-15,chirac2,Ifop,924,phone,51.0,44.0
+2002-05-20,chirac2,Kantar,972,face to face,50.0,48.0
+2002-05-23,chirac2,BVA,1054,phone,52.0,37.0
+2002-05-26,chirac2,Ipsos,907,phone,48.0,48.0
+2002-06-16,chirac2,Ifop,974,phone,49.0,43.0
+2002-06-17,chirac2,Ipsos,1050,phone,53.0,40.0
+2002-06-20,chirac2,BVA,938,phone,53.0,36.0
+2002-06-27,chirac2,Kantar,918,face to face,47.0,51.0
+2002-07-18,chirac2,Ifop,989,phone,53.0,38.0
+2002-07-19,chirac2,Ipsos,933,phone,53.0,39.0
+2002-07-26,chirac2,Kantar,920,face to face,54.0,45.0
+2002-08-13,chirac2,Ipsos,1008,phone,56.0,34.0
+2002-08-20,chirac2,Ifop,977,phone,53.0,40.0
+2002-08-28,chirac2,Kantar,1099,face to face,47.0,51.0
+2002-09-15,chirac2,Ifop,1095,phone,52.0,42.0
+2002-09-20,chirac2,BVA,1037,phone,56.0,37.0
+2002-09-24,chirac2,Ipsos,967,phone,52.0,41.0
+2002-09-26,chirac2,Kantar,971,face to face,50.0,48.0
+2002-10-16,chirac2,Ifop,1079,phone,57.0,37.0
+2002-10-22,chirac2,Ipsos,1051,phone,54.0,38.0
+2002-10-23,chirac2,BVA,906,phone,53.0,40.0
+2002-10-26,chirac2,Kantar,903,face to face,49.0,48.0
+2002-11-16,chirac2,Ifop,1014,phone,56.0,37.0
+2002-11-20,chirac2,BVA,930,phone,56.0,36.0
+2002-11-23,chirac2,Ipsos,1006,phone,62.0,33.0
+2002-11-27,chirac2,Kantar,964,face to face,47.0,50.0
+2002-12-17,chirac2,Ifop,951,phone,57.0,36.0
+2002-12-20,chirac2,Kantar,1100,face to face,52.0,45.0
+2002-12-22,chirac2,BVA,1064,phone,61.0,32.0
+2002-12-23,chirac2,Ipsos,1081,phone,60.0,36.0
+2003-01-10,chirac2,Ipsos,1029,phone,58.0,34.0
+2003-01-16,chirac2,Ifop,940,phone,60.0,33.0
+2003-01-20,chirac2,BVA,926,phone,58.0,36.0
+2003-01-21,chirac2,Kantar,985,face to face,50.0,49.0
+2003-02-16,chirac2,Ifop,965,phone,57.0,35.0
+2003-02-24,chirac2,Kantar,903,face to face,55.0,42.0
+2003-02-26,chirac2,Ipsos,947,phone,62.0,33.0
+2003-02-27,chirac2,BVA,983,phone,61.0,31.0
+2003-03-15,chirac2,Ipsos,976,phone,69.0,25.0
+2003-03-19,chirac2,BVA,923,phone,69.0,25.0
+2003-03-20,chirac2,Ifop,1091,phone,67.0,27.0
+2003-03-28,chirac2,Kantar,982,face to face,60.0,37.0
+2003-04-15,chirac2,Ifop,1087,phone,65.0,27.0
+2003-04-15,chirac2,Ipsos,1058,phone,70.0,25.0
+2003-04-20,chirac2,Kantar,1073,face to face,53.0,44.0
+2003-04-25,chirac2,BVA,1013,phone,66.0,28.0
+2003-05-18,chirac2,Ifop,978,phone,58.0,36.0
+2003-05-22,chirac2,Ipsos,918,phone,68.0,28.0
+2003-05-23,chirac2,Kantar,946,face to face,49.0,49.0
+2003-05-28,chirac2,BVA,946,phone,64.0,28.0
+2003-06-10,chirac2,Ipsos,1064,phone,61.0,35.0
+2003-06-19,chirac2,BVA,932,phone,60.0,30.0
+2003-06-19,chirac2,Ifop,949,phone,56.0,37.0
+2003-06-25,chirac2,Kantar,1076,face to face,47.0,50.0
+2003-07-18,chirac2,Ipsos,1027,phone,57.0,37.0
+2003-07-19,chirac2,Ifop,966,phone,56.0,40.0
+2003-07-21,chirac2,BVA,1076,phone,57.0,34.0
+2003-07-27,chirac2,Kantar,987,face to face,50.0,48.0
+2003-08-18,chirac2,Ifop,1071,phone,54.0,42.0
+2003-08-20,chirac2,Ipsos,1036,phone,53.0,41.0
+2003-08-20,chirac2,Kantar,1085,face to face,46.0,51.0
+2003-09-15,chirac2,Ipsos,1086,phone,55.0,40.0
+2003-09-17,chirac2,Ifop,949,phone,50.0,47.0
+2003-09-23,chirac2,Kantar,1092,face to face,43.0,54.0
+2003-09-29,chirac2,BVA,1085,phone,52.0,39.0
+2003-10-12,chirac2,Ipsos,1005,phone,50.0,42.0
+2003-10-18,chirac2,BVA,980,phone,51.0,39.0
+2003-10-19,chirac2,Ifop,1020,phone,49.0,48.0
+2003-10-25,chirac2,Kantar,1035,face to face,40.0,59.0
+2003-11-16,chirac2,Ifop,1024,phone,49.0,48.0
+2003-11-22,chirac2,Ipsos,1008,phone,52.0,43.0
+2003-11-23,chirac2,BVA,995,phone,50.0,41.0
+2003-11-28,chirac2,Kantar,1094,face to face,40.0,58.0
+2003-12-18,chirac2,Ifop,929,phone,50.0,48.0
+2003-12-20,chirac2,Ipsos,1043,phone,52.0,40.0
+2003-12-23,chirac2,BVA,918,phone,53.0,39.0
+2003-12-27,chirac2,Kantar,947,face to face,43.0,55.0
+2004-01-12,chirac2,Ipsos,901,phone,58.0,38.0
+2004-01-17,chirac2,BVA,1001,phone,53.0,39.0
+2004-01-20,chirac2,Ifop,956,phone,53.0,45.0
+2004-01-21,chirac2,Kantar,978,face to face,39.0,59.0
+2004-02-10,chirac2,Ipsos,1081,phone,51.0,45.0
+2004-02-19,chirac2,Ifop,914,phone,47.0,51.0
+2004-02-26,chirac2,Kantar,1012,face to face,35.0,62.0
+2004-03-16,chirac2,Ifop,1038,phone,48.0,49.0
+2004-03-23,chirac2,Kantar,948,face to face,40.0,57.0
+2004-03-27,chirac2,Ipsos,1071,phone,46.0,48.0
+2004-03-30,chirac2,BVA,1055,phone,46.0,45.0
+2004-04-15,chirac2,Ipsos,1047,phone,46.0,51.0
+2004-04-20,chirac2,Ifop,1004,phone,44.0,53.0
+2004-04-21,chirac2,Kantar,1043,face to face,32.0,65.0
+2004-04-28,chirac2,BVA,951,phone,42.0,50.0
+2004-05-10,chirac2,Ipsos,1004,phone,50.0,46.0
+2004-05-18,chirac2,Ifop,922,phone,43.0,53.0
+2004-05-22,chirac2,Kantar,950,face to face,35.0,62.0
+2004-06-18,chirac2,Ipsos,941,phone,51.0,44.0
+2004-06-19,chirac2,Ifop,970,phone,45.0,51.0
+2004-06-23,chirac2,BVA,959,phone,46.0,46.0
+2004-06-23,chirac2,Kantar,954,face to face,34.0,64.0
+2004-07-16,chirac2,Ifop,928,phone,49.0,49.0
+2004-07-22,chirac2,Ipsos,1078,phone,49.0,45.0
+2004-07-26,chirac2,Kantar,921,face to face,37.0,61.0
+2004-08-18,chirac2,Ifop,915,phone,49.0,48.0
+2004-08-20,chirac2,Ipsos,1080,phone,49.0,46.0
+2004-08-26,chirac2,Kantar,1062,face to face,36.0,62.0
+2004-09-16,chirac2,Ifop,1092,phone,43.0,53.0
+2004-09-18,chirac2,BVA,1043,phone,54.0,37.0
+2004-09-20,chirac2,Kantar,992,face to face,36.0,61.0
+2004-09-25,chirac2,Ipsos,1049,phone,54.0,40.0
+2004-10-11,chirac2,Ipsos,981,phone,53.0,41.0
+2004-10-15,chirac2,BVA,1067,phone,53.0,39.0
+2004-10-20,chirac2,Ifop,946,phone,41.0,56.0
+2004-10-25,chirac2,Kantar,1086,face to face,36.0,62.0
+2004-11-15,chirac2,Ipsos,1097,phone,52.0,43.0
+2004-11-18,chirac2,BVA,1070,phone,54.0,39.0
+2004-11-19,chirac2,Ifop,958,phone,48.0,48.0
+2004-11-20,chirac2,Kantar,963,face to face,38.0,60.0
+2004-12-15,chirac2,BVA,1080,phone,57.0,36.0
+2004-12-18,chirac2,Ifop,980,phone,50.0,47.0
+2004-12-18,chirac2,Ipsos,963,phone,54.0,40.0
+2004-12-24,chirac2,Kantar,955,face to face,41.0,56.0
+2005-01-15,chirac2,Ifop,1053,phone,49.0,49.0
+2005-01-22,chirac2,BVA,1035,phone,55.0,37.0
+2005-01-24,chirac2,Ipsos,917,phone,53.0,40.0
+2005-01-24,chirac2,Kantar,1039,face to face,37.0,59.0
+2005-02-15,chirac2,Ipsos,960,phone,49.0,43.0
+2005-02-17,chirac2,Ifop,938,phone,47.0,48.0
+2005-02-22,chirac2,Kantar,917,face to face,36.0,61.0
+2005-02-26,chirac2,BVA,1076,phone,50.0,40.0
+2005-03-16,chirac2,Ifop,978,phone,42.0,54.0
+2005-03-22,chirac2,Ipsos,1063,phone,49.0,44.0
+2005-03-23,chirac2,Kantar,1074,face to face,36.0,62.0
+2005-03-24,chirac2,BVA,937,phone,50.0,45.0
+2005-04-16,chirac2,Ifop,1089,phone,45.0,52.0
+2005-04-19,chirac2,BVA,990,phone,48.0,46.0
+2005-04-25,chirac2,Ipsos,1030,phone,48.0,49.0
+2005-04-26,chirac2,Kantar,1052,face to face,32.0,66.0
+2005-05-15,chirac2,Ifop,1026,phone,40.0,59.0
+2005-05-20,chirac2,BVA,1001,phone,39.0,56.0
+2005-05-24,chirac2,Ipsos,1002,phone,47.0,51.0
+2005-05-28,chirac2,Kantar,1081,face to face,24.0,74.0
+2005-06-15,chirac2,BVA,956,phone,35.0,59.0
+2005-06-20,chirac2,Ifop,1030,phone,28.0,70.0
+2005-06-24,chirac2,Ipsos,909,phone,27.0,69.0
+2005-06-24,chirac2,Kantar,927,face to face,21.0,77.0
+2005-07-13,chirac2,Ipsos,1060,phone,32.0,63.0
+2005-07-16,chirac2,Ifop,959,phone,32.0,66.0
+2005-07-25,chirac2,BVA,1004,phone,36.0,56.0
+2005-07-25,chirac2,Kantar,911,face to face,28.0,69.0
+2005-08-15,chirac2,Ifop,1048,phone,35.0,64.0
+2005-08-21,chirac2,Ipsos,966,phone,39.0,55.0
+2005-08-27,chirac2,Kantar,1036,face to face,26.0,71.0
+2005-09-17,chirac2,BVA,1070,phone,46.0,47.0
+2005-09-17,chirac2,Ifop,1035,phone,37.0,61.0
+2005-09-23,chirac2,Ipsos,915,phone,42.0,53.0
+2005-09-24,chirac2,Kantar,901,face to face,26.0,72.0
+2005-10-16,chirac2,Ifop,951,phone,38.0,61.0
+2005-10-19,chirac2,Ipsos,1009,phone,33.0,62.0
+2005-10-20,chirac2,Kantar,1028,face to face,24.0,74.0
+2005-10-23,chirac2,BVA,972,phone,39.0,54.0
+2005-11-18,chirac2,Ifop,935,phone,35.0,64.0
+2005-11-24,chirac2,Ipsos,937,phone,39.0,58.0
+2005-11-24,chirac2,Kantar,937,face to face,26.0,72.0
+2005-11-27,chirac2,BVA,904,phone,39.0,54.0
+2005-12-13,chirac2,Ipsos,975,phone,40.0,53.0
+2005-12-16,chirac2,Ifop,935,phone,33.0,65.0
+2005-12-22,chirac2,Kantar,1064,face to face,21.0,77.0
+2005-12-28,chirac2,BVA,1052,phone,36.0,55.0
+2006-01-16,chirac2,Ifop,905,phone,37.0,61.0
+2006-01-17,chirac2,Ipsos,987,phone,38.0,57.0
+2006-01-19,chirac2,BVA,1043,phone,40.0,52.0
+2006-01-24,chirac2,Kantar,911,face to face,21.0,77.0
+2006-02-18,chirac2,BVA,953,phone,39.0,53.0
+2006-02-19,chirac2,Ipsos,971,phone,41.0,56.0
+2006-02-20,chirac2,Ifop,971,phone,37.0,61.0
+2006-02-26,chirac2,Kantar,933,face to face,23.0,75.0
+2006-03-17,chirac2,Ifop,982,phone,39.0,60.0
+2006-03-21,chirac2,Ipsos,1062,phone,40.0,57.0
+2006-03-27,chirac2,Kantar,914,face to face,20.0,78.0
+2006-04-11,chirac2,Ipsos,1097,phone,29.0,67.0
+2006-04-17,chirac2,Ifop,905,phone,29.0,70.0
+2006-04-26,chirac2,BVA,1055,phone,36.0,56.0
+2006-04-28,chirac2,Kantar,1031,face to face,19.0,80.0
+2006-05-16,chirac2,Ifop,964,phone,29.0,70.0
+2006-05-17,chirac2,Ipsos,1068,phone,32.0,65.0
+2006-05-25,chirac2,Kantar,991,face to face,17.0,81.0
+2006-05-26,chirac2,BVA,1096,phone,32.0,58.0
+2006-06-18,chirac2,Ifop,927,phone,27.0,70.0
+2006-06-18,chirac2,Ipsos,1023,phone,32.0,64.0
+2006-06-21,chirac2,Kantar,1092,face to face,16.0,81.0
+2006-06-27,chirac2,BVA,972,phone,35.0,57.0
+2006-07-16,chirac2,Ifop,958,phone,38.0,61.0
+2006-07-22,chirac2,Kantar,993,face to face,21.0,77.0
+2006-07-23,chirac2,Ipsos,984,phone,38.0,58.0
+2006-08-15,chirac2,Ifop,1074,phone,36.0,63.0
+2006-08-24,chirac2,Kantar,1019,face to face,25.0,73.0
+2006-08-26,chirac2,Ipsos,904,phone,41.0,55.0
+2006-09-20,chirac2,Ifop,1022,phone,38.0,61.0
+2006-09-24,chirac2,Ipsos,956,phone,41.0,55.0
+2006-09-24,chirac2,Kantar,1084,face to face,24.0,74.0
+2006-10-18,chirac2,Ipsos,1038,phone,42.0,55.0
+2006-10-19,chirac2,Ifop,1100,phone,38.0,61.0
+2006-10-23,chirac2,Kantar,1084,face to face,24.0,74.0
+2006-10-28,chirac2,BVA,1034,phone,40.0,49.0
+2006-11-17,chirac2,Ifop,971,phone,36.0,63.0
+2006-11-23,chirac2,Ipsos,1079,phone,45.0,53.0
+2006-11-24,chirac2,BVA,900,phone,43.0,49.0
+2006-11-25,chirac2,Kantar,1037,face to face,25.0,73.0
+2006-12-19,chirac2,Ifop,941,phone,38.0,61.0
+2006-12-20,chirac2,Kantar,1091,face to face,23.0,75.0
+2006-12-24,chirac2,Ipsos,1036,phone,46.0,51.0
+2007-01-15,chirac2,Ifop,1041,phone,41.0,57.0
+2007-01-20,chirac2,Ipsos,1018,phone,41.0,56.0
+2007-01-20,chirac2,Kantar,1098,face to face,25.0,72.0
+2007-02-15,chirac2,Ifop,1013,phone,43.0,56.0
+2007-02-22,chirac2,Ipsos,1024,phone,46.0,50.0
+2007-02-22,chirac2,Kantar,1013,face to face,29.0,69.0
+2007-03-15,chirac2,Ifop,1026,phone,46.0,53.0
+2007-03-24,chirac2,Kantar,950,face to face,30.0,67.0
+2007-03-25,chirac2,Ipsos,992,phone,53.0,45.0
+2007-04-15,chirac2,Ifop,969,phone,47.0,52.0
+2007-04-22,chirac2,Ipsos,1011,phone,53.0,45.0
+2007-04-25,chirac2,Kantar,904,face to face,30.0,64.0
+2007-05-16,sarkozy,Ifop,1001,phone,65.0,31.0
+2007-05-20,sarkozy,Kantar,982,face to face,63.0,34.0
+2007-05-24,sarkozy,Ipsos,1086,phone,64.0,24.0
+2007-06-20,sarkozy,Ifop,1003,phone,65.0,34.0
+2007-06-20,sarkozy,Kantar,943,face to face,65.0,31.0
+2007-06-22,sarkozy,Ipsos,912,phone,61.0,31.0
+2007-07-18,sarkozy,Ifop,1046,phone,66.0,30.0
+2007-07-23,sarkozy,Ipsos,936,phone,66.0,25.0
+2007-07-25,sarkozy,Kantar,908,face to face,64.0,33.0
+2007-08-17,sarkozy,Ifop,907,phone,69.0,29.0
+2007-08-20,sarkozy,Kantar,950,face to face,64.0,32.0
+2007-08-27,sarkozy,Ipsos,1067,phone,61.0,30.0
+2007-09-15,sarkozy,BVA,926,phone,57.0,33.0
+2007-09-18,sarkozy,Ipsos,982,phone,64.0,30.0
+2007-09-19,sarkozy,Ifop,918,phone,61.0,36.0
+2007-09-27,sarkozy,Kantar,984,face to face,57.0,40.0
+2007-10-13,sarkozy,Ipsos,1052,phone,63.0,34.0
+2007-10-17,sarkozy,BVA,1077,phone,55.0,37.0
+2007-10-18,sarkozy,Ifop,904,phone,59.0,39.0
+2007-10-20,sarkozy,Kantar,1016,face to face,53.0,42.0
+2007-11-17,sarkozy,Ifop,1060,phone,55.0,44.0
+2007-11-19,sarkozy,Ipsos,1091,phone,58.0,39.0
+2007-11-23,sarkozy,BVA,914,phone,55.0,38.0
+2007-11-24,sarkozy,Kantar,1091,face to face,49.0,49.0
+2007-12-16,sarkozy,Ifop,942,phone,52.0,47.0
+2007-12-20,sarkozy,Ipsos,933,phone,55.0,41.0
+2007-12-24,sarkozy,Kantar,950,face to face,49.0,48.0
+2007-12-25,sarkozy,BVA,1070,phone,51.0,43.0
+2008-01-16,sarkozy,Ifop,1020,phone,47.0,52.0
+2008-01-18,sarkozy,Ipsos,1004,phone,49.0,49.0
+2008-01-21,sarkozy,Kantar,974,face to face,41.0,55.0
+2008-01-24,sarkozy,BVA,936,phone,45.0,48.0
+2008-02-18,sarkozy,BVA,1078,phone,36.0,58.0
+2008-02-20,sarkozy,Ifop,924,phone,38.0,62.0
+2008-02-21,sarkozy,Kantar,1087,face to face,37.0,61.0
+2008-02-27,sarkozy,Ipsos,975,phone,39.0,58.0
+2008-03-16,sarkozy,Ipsos,941,phone,41.0,56.0
+2008-03-17,sarkozy,Ifop,1010,phone,37.0,63.0
+2008-03-25,sarkozy,Kantar,911,face to face,37.0,60.0
+2008-03-30,sarkozy,BVA,955,phone,40.0,55.0
+2008-04-15,sarkozy,Ipsos,972,phone,40.0,57.0
+2008-04-17,sarkozy,Ifop,919,phone,36.0,64.0
+2008-04-20,sarkozy,BVA,990,phone,32.0,64.0
+2008-04-21,sarkozy,Kantar,997,face to face,32.0,66.0
+2008-05-18,sarkozy,Ifop,1056,phone,35.0,64.0
+2008-05-23,sarkozy,BVA,1069,phone,35.0,60.0
+2008-05-24,sarkozy,Kantar,1002,face to face,37.0,61.0
+2008-05-27,sarkozy,Ipsos,1095,phone,40.0,58.0
+2008-06-18,sarkozy,Ifop,1009,phone,37.0,62.0
+2008-06-20,sarkozy,Kantar,1038,face to face,33.0,65.0
+2008-06-26,sarkozy,Ipsos,1091,phone,38.0,60.0
+2008-06-28,sarkozy,BVA,954,phone,36.0,59.0
+2008-07-17,sarkozy,BVA,1039,phone,35.0,60.0
+2008-07-18,sarkozy,Ifop,1074,phone,38.0,61.0
+2008-07-24,sarkozy,Ipsos,983,phone,39.0,57.0
+2008-08-18,sarkozy,Ifop,1086,phone,40.0,59.0
+2008-08-24,sarkozy,Kantar,1080,face to face,34.0,62.0
+2008-08-26,sarkozy,Ipsos,938,phone,44.0,52.0
+2008-09-15,sarkozy,Ifop,1048,phone,37.0,62.0
+2008-09-17,sarkozy,Ipsos,1010,phone,42.0,55.0
+2008-09-20,sarkozy,Kantar,931,face to face,36.0,61.0
+2008-09-28,sarkozy,BVA,999,phone,47.0,48.0
+2008-10-20,sarkozy,Ifop,919,phone,43.0,56.0
+2008-10-21,sarkozy,Ipsos,993,phone,41.0,56.0
+2008-10-26,sarkozy,Kantar,936,face to face,39.0,57.0
+2008-10-30,sarkozy,BVA,929,phone,43.0,54.0
+2008-11-12,sarkozy,Ipsos,948,phone,49.0,49.0
+2008-11-16,sarkozy,Ifop,1005,phone,44.0,56.0
+2008-11-17,sarkozy,BVA,917,phone,48.0,47.0
+2008-11-23,sarkozy,Kantar,1055,face to face,37.0,59.0
+2008-12-15,sarkozy,Ifop,1003,phone,44.0,55.0
+2008-12-25,sarkozy,Ipsos,975,phone,46.0,51.0
+2008-12-26,sarkozy,Kantar,1015,face to face,41.0,56.0
+2009-01-17,sarkozy,Ifop,932,phone,44.0,56.0
+2009-01-21,sarkozy,Ipsos,1033,phone,45.0,51.0
+2009-01-22,sarkozy,Kantar,984,face to face,37.0,60.0
+2009-01-25,sarkozy,BVA,955,phone,47.0,45.0
+2009-02-16,sarkozy,Ifop,964,phone,37.0,62.0
+2009-02-21,sarkozy,BVA,989,phone,41.0,53.0
+2009-02-23,sarkozy,Kantar,932,face to face,38.0,58.0
+2009-02-27,sarkozy,Ipsos,1010,phone,36.0,61.0
+2009-03-16,sarkozy,BVA,1013,phone,42.0,53.0
+2009-03-17,sarkozy,Ifop,907,phone,36.0,63.0
+2009-03-22,sarkozy,Ipsos,1095,phone,37.0,58.0
+2009-03-23,sarkozy,Kantar,1030,face to face,36.0,62.0
+2009-04-16,sarkozy,Ifop,1038,phone,40.0,59.0
+2009-04-19,sarkozy,Ipsos,1077,phone,43.0,55.0
+2009-04-23,sarkozy,Kantar,1093,face to face,32.0,65.0
+2009-04-26,sarkozy,BVA,985,phone,43.0,49.0
+2009-05-16,sarkozy,Ifop,1087,phone,38.0,62.0
+2009-05-18,sarkozy,BVA,977,phone,43.0,50.0
+2009-05-21,sarkozy,Ipsos,1080,phone,45.0,54.0
+2009-05-25,sarkozy,Kantar,1074,face to face,41.0,57.0
+2009-06-15,sarkozy,BVA,928,phone,45.0,51.0
+2009-06-19,sarkozy,Ifop,1035,phone,41.0,59.0
+2009-06-20,sarkozy,Ipsos,948,phone,48.0,51.0
+2009-06-25,sarkozy,Kantar,917,face to face,38.0,60.0
+2009-07-19,sarkozy,Ifop,953,phone,43.0,56.0
+2009-07-26,sarkozy,Ipsos,1025,phone,45.0,52.0
+2009-08-16,sarkozy,Ifop,1069,phone,45.0,54.0
+2009-08-22,sarkozy,Kantar,1080,face to face,39.0,57.0
+2009-08-23,sarkozy,Ipsos,1077,phone,46.0,50.0
+2009-09-15,sarkozy,Ipsos,1094,phone,46.0,51.0
+2009-09-19,sarkozy,Ifop,903,phone,39.0,60.0
+2009-09-20,sarkozy,Kantar,900,face to face,39.0,57.0
+2009-09-22,sarkozy,BVA,904,phone,47.0,49.0
+2009-10-17,sarkozy,Ifop,1099,phone,38.0,61.0
+2009-10-22,sarkozy,BVA,904,phone,42.0,54.0
+2009-10-24,sarkozy,Kantar,1060,face to face,37.0,60.0
+2009-10-25,sarkozy,Ipsos,961,phone,44.0,54.0
+2009-11-16,sarkozy,BVA,1010,phone,43.0,52.0
+2009-11-17,sarkozy,Ipsos,1081,phone,39.0,60.0
+2009-11-19,sarkozy,Ifop,948,phone,36.0,63.0
+2009-11-27,sarkozy,Kantar,1016,face to face,34.0,63.0
+2009-12-15,sarkozy,Ifop,1088,phone,37.0,62.0
+2009-12-23,sarkozy,Ipsos,947,phone,38.0,60.0
+2009-12-27,sarkozy,Kantar,1067,face to face,32.0,63.0
+2009-12-29,sarkozy,BVA,1013,phone,42.0,53.0
+2010-01-15,sarkozy,Ifop,1092,phone,38.0,61.0
+2010-01-27,sarkozy,Ipsos,1021,phone,38.0,59.0
+2010-01-28,sarkozy,BVA,1068,phone,43.0,53.0
+2010-01-28,sarkozy,Kantar,910,face to face,31.0,65.0
+2010-02-15,sarkozy,Ipsos,951,phone,39.0,59.0
+2010-02-17,sarkozy,Ifop,1021,phone,36.0,63.0
+2010-02-21,sarkozy,Kantar,1090,face to face,31.0,65.0
+2010-02-27,sarkozy,BVA,983,phone,39.0,56.0
+2010-03-14,sarkozy,Ipsos,987,phone,32.0,65.0
+2010-03-15,sarkozy,BVA,1048,phone,41.0,56.0
+2010-03-18,sarkozy,Ifop,917,phone,30.0,65.0
+2010-03-27,sarkozy,Kantar,1053,face to face,28.0,70.0
+2010-04-19,sarkozy,Ifop,976,phone,31.0,68.0
+2010-04-22,sarkozy,BVA,988,phone,40.0,57.0
+2010-04-27,sarkozy,Ipsos,1040,phone,32.0,65.0
+2010-04-27,sarkozy,Kantar,1087,face to face,30.0,67.0
+2010-05-12,sarkozy,Ipsos,921,phone,36.0,61.0
+2010-05-20,sarkozy,Ifop,1004,phone,33.0,66.0
+2010-05-21,sarkozy,BVA,936,phone,36.0,59.0
+2010-05-26,sarkozy,Kantar,1036,face to face,28.0,67.0
+2010-06-16,sarkozy,Ifop,994,phone,34.0,66.0
+2010-06-25,sarkozy,Ipsos,971,phone,35.0,63.0
+2010-06-28,sarkozy,Kantar,1043,face to face,26.0,71.0
+2010-07-19,sarkozy,Ifop,1043,phone,34.0,66.0
+2010-07-25,sarkozy,Ipsos,985,phone,35.0,61.0
+2010-07-26,sarkozy,BVA,1045,phone,33.0,64.0
+2010-08-10,sarkozy,Ipsos,1019,phone,34.0,63.0
+2010-08-20,sarkozy,Ifop,1089,phone,36.0,64.0
+2010-08-23,sarkozy,Kantar,1023,face to face,30.0,67.0
+2010-09-14,sarkozy,Ipsos,983,phone,34.0,62.0
+2010-09-16,sarkozy,Ifop,1015,phone,32.0,67.0
+2010-09-20,sarkozy,Kantar,969,face to face,26.0,72.0
+2010-09-21,sarkozy,BVA,995,phone,32.0,64.0
+2010-10-16,sarkozy,Ifop,915,phone,29.0,70.0
+2010-10-20,sarkozy,Ipsos,971,phone,31.0,65.0
+2010-10-24,sarkozy,Kantar,947,face to face,26.0,71.0
+2010-10-29,sarkozy,BVA,1100,phone,30.0,69.0
+2010-11-12,sarkozy,Ipsos,978,phone,30.0,66.0
+2010-11-19,sarkozy,Ifop,1080,phone,32.0,68.0
+2010-11-24,sarkozy,BVA,925,phone,34.0,63.0
+2010-11-25,sarkozy,Kantar,908,face to face,24.0,71.0
+2010-12-18,sarkozy,BVA,1040,phone,33.0,61.0
+2010-12-18,sarkozy,Ifop,1086,phone,31.0,69.0
+2010-12-22,sarkozy,Kantar,1041,face to face,27.0,70.0
+2010-12-27,sarkozy,Ipsos,981,phone,35.0,61.0
+2011-01-17,sarkozy,Ifop,910,phone,30.0,70.0
+2011-01-18,sarkozy,Ipsos,1087,phone,33.0,65.0
+2011-01-23,sarkozy,BVA,927,phone,34.0,61.0
+2011-01-23,sarkozy,Kantar,946,face to face,24.0,72.0
+2011-02-10,sarkozy,Ipsos,1042,phone,34.0,63.0
+2011-02-20,sarkozy,Ifop,1062,phone,31.0,69.0
+2011-02-23,sarkozy,Kantar,920,face to face,22.0,75.0
+2011-02-28,sarkozy,BVA,1045,phone,30.0,66.0
+2011-03-18,sarkozy,Ifop,928,phone,29.0,71.0
+2011-03-20,sarkozy,Kantar,1074,face to face,23.0,74.0
+2011-03-21,sarkozy,Ipsos,934,phone,31.0,68.0
+2011-03-25,sarkozy,BVA,926,phone,32.0,65.0
+2011-04-10,sarkozy,Ipsos,908,phone,29.0,68.0
+2011-04-17,sarkozy,Ifop,1027,phone,28.0,72.0
+2011-04-27,sarkozy,Kantar,1034,face to face,20.0,76.0
+2011-04-28,sarkozy,BVA,989,phone,31.0,66.0
+2011-05-15,sarkozy,Ifop,1009,phone,29.0,71.0
+2011-05-19,sarkozy,Ipsos,1055,phone,31.0,66.0
+2011-05-22,sarkozy,Kantar,1100,face to face,22.0,76.0
+2011-05-23,sarkozy,BVA,942,phone,35.0,62.0
+2011-06-13,sarkozy,Ipsos,980,phone,30.0,66.0
+2011-06-20,sarkozy,BVA,923,phone,37.0,62.0
+2011-06-20,sarkozy,Ifop,917,phone,30.0,70.0
+2011-06-21,sarkozy,Kantar,913,face to face,25.0,73.0
+2011-07-10,sarkozy,Ipsos,953,phone,35.0,61.0
+2011-07-20,sarkozy,Ifop,939,phone,36.0,64.0
+2011-08-17,sarkozy,Ifop,927,phone,33.0,67.0
+2011-08-17,sarkozy,Ipsos,1043,phone,35.0,61.0
+2011-08-22,sarkozy,Kantar,950,face to face,24.0,72.0
+2011-09-13,sarkozy,Ipsos,1017,phone,35.0,62.0
+2011-09-16,sarkozy,Ifop,1097,phone,32.0,67.0
+2011-09-20,sarkozy,BVA,1061,phone,32.0,65.0
+2011-09-23,sarkozy,Kantar,970,face to face,24.0,72.0
+2011-10-12,sarkozy,Ipsos,936,phone,35.0,61.0
+2011-10-15,sarkozy,Ifop,1044,phone,31.0,69.0
+2011-10-20,sarkozy,Kantar,1042,face to face,30.0,66.0
+2011-10-26,sarkozy,BVA,980,phone,32.0,66.0
+2011-11-18,sarkozy,Ifop,958,phone,34.0,66.0
+2011-11-20,sarkozy,BVA,1092,phone,38.0,61.0
+2011-11-20,sarkozy,Kantar,1065,face to face,29.0,68.0
+2011-11-24,sarkozy,Ipsos,958,phone,37.0,59.0
+2011-12-14,sarkozy,Ipsos,942,phone,36.0,61.0
+2011-12-20,sarkozy,Ifop,1026,phone,34.0,66.0
+2011-12-27,sarkozy,Kantar,1004,face to face,29.0,68.0
+2012-01-18,sarkozy,Ipsos,1080,phone,34.0,63.0
+2012-01-19,sarkozy,Ifop,934,phone,32.0,68.0
+2012-01-20,sarkozy,BVA,1056,phone,32.0,67.0
+2012-01-22,sarkozy,Kantar,1064,face to face,29.0,68.0
+2012-02-13,sarkozy,Ipsos,980,phone,36.0,60.0
+2012-02-16,sarkozy,BVA,955,phone,32.0,67.0
+2012-02-19,sarkozy,Ifop,1043,phone,33.0,67.0
+2012-02-25,sarkozy,Kantar,1024,face to face,26.0,72.0
+2012-03-15,sarkozy,Ifop,1087,phone,36.0,64.0
+2012-03-21,sarkozy,Kantar,998,face to face,33.0,63.0
+2012-03-22,sarkozy,BVA,912,phone,33.0,66.0
+2012-03-23,sarkozy,Ipsos,1093,phone,38.0,59.0
+2012-04-15,sarkozy,Ifop,989,phone,36.0,64.0
+2012-04-21,sarkozy,Kantar,1004,face to face,37.0,60.0
+2012-04-26,sarkozy,Ipsos,992,phone,40.0,58.0
+2012-05-11,hollande,Ipsos,1052,phone,53.0,27.0
+2012-05-20,hollande,Ifop,1026,phone,61.0,33.0
+2012-05-28,hollande,Kantar,912,face to face,55.0,37.0
+2012-05-30,hollande,BVA,1047,internet,61.0,37.0
+2012-06-12,hollande,Ipsos,952,phone,53.0,37.0
+2012-06-15,hollande,BVA,1035,internet,61.0,38.0
+2012-06-17,hollande,Ifop,905,phone,59.0,40.0
+2012-06-24,hollande,Kantar,903,face to face,55.0,39.0
+2012-07-11,hollande,Ipsos,997,phone,55.0,37.0
+2012-07-20,hollande,Ifop,1061,phone,56.0,44.0
+2012-08-15,hollande,Ifop,990,phone,54.0,45.0
+2012-08-21,hollande,Kantar,1075,face to face,50.0,45.0
+2012-08-22,hollande,Ipsos,1085,phone,44.0,47.0
+2012-09-10,hollande,Ipsos,989,phone,44.0,49.0
+2012-09-18,hollande,Ifop,1070,phone,43.0,56.0
+2012-09-23,hollande,BVA,1095,internet,46.0,53.0
+2012-09-23,hollande,Kantar,1009,face to face,41.0,56.0
+2012-10-15,hollande,Ifop,900,phone,42.0,57.0
+2012-10-21,hollande,Kantar,919,face to face,36.0,60.0
+2012-10-22,hollande,Ipsos,973,phone,42.0,51.0
+2012-10-25,hollande,BVA,918,internet,44.0,55.0
+2012-11-13,hollande,Ipsos,944,phone,41.0,53.0
+2012-11-17,hollande,BVA,1014,internet,44.0,55.0
+2012-11-18,hollande,Ifop,1061,phone,41.0,58.0
+2012-11-25,hollande,Kantar,1027,face to face,35.0,61.0
+2012-12-13,hollande,Ipsos,1036,phone,35.0,60.0
+2012-12-19,hollande,Ifop,909,phone,37.0,62.0
+2012-12-21,hollande,Kantar,1036,face to face,35.0,62.0
+2012-12-27,hollande,BVA,1096,internet,40.0,59.0
+2013-01-18,hollande,Ifop,927,phone,38.0,62.0
+2013-01-19,hollande,BVA,973,internet,44.0,55.0
+2013-01-24,hollande,Ipsos,1026,phone,36.0,58.0
+2013-01-28,hollande,Kantar,926,face to face,35.0,61.0
+2013-02-17,hollande,Ifop,1040,phone,37.0,62.0
+2013-02-18,hollande,Ipsos,997,phone,36.0,59.0
+2013-02-23,hollande,BVA,989,internet,43.0,56.0
+2013-02-27,hollande,Kantar,930,face to face,30.0,66.0
+2013-03-18,hollande,BVA,909,internet,35.0,64.0
+2013-03-19,hollande,Ifop,1012,phone,31.0,68.0
+2013-03-20,hollande,Kantar,1007,face to face,27.0,70.0
+2013-03-26,hollande,Ipsos,1086,phone,31.0,64.0
+2013-04-15,hollande,Ifop,988,phone,25.0,74.0
+2013-04-19,hollande,Ipsos,1057,phone,26.0,70.0
+2013-04-20,hollande,BVA,1024,internet,34.0,66.0
+2013-04-21,hollande,Kantar,935,face to face,24.0,73.0
+2013-05-15,hollande,Ifop,992,phone,29.0,71.0
+2013-05-22,hollande,Ipsos,957,phone,25.0,72.0
+2013-05-23,hollande,Kantar,996,face to face,29.0,68.0
+2013-05-25,hollande,BVA,1015,internet,35.0,64.0
+2013-06-11,hollande,Ipsos,1017,phone,26.0,70.0
+2013-06-15,hollande,Ifop,1043,phone,26.0,73.0
+2013-06-24,hollande,BVA,938,internet,31.0,68.0
+2013-06-24,hollande,Kantar,963,face to face,27.0,70.0
+2013-07-14,hollande,Ipsos,1001,phone,26.0,71.0
+2013-07-16,hollande,Ifop,1059,phone,27.0,72.0
+2013-08-19,hollande,Ifop,948,phone,28.0,71.0
+2013-08-25,hollande,Ipsos,1083,phone,28.0,67.0
+2013-08-26,hollande,Kantar,1068,face to face,27.0,70.0
+2013-09-17,hollande,BVA,970,internet,32.0,66.0
+2013-09-18,hollande,Ifop,954,phone,23.0,76.0
+2013-09-27,hollande,Ipsos,1096,phone,27.0,68.0
+2013-09-28,hollande,Kantar,1074,face to face,23.0,74.0
+2013-10-18,hollande,Ifop,952,phone,23.0,77.0
+2013-10-22,hollande,BVA,914,internet,26.0,73.0
+2013-10-23,hollande,Ipsos,993,phone,24.0,71.0
+2013-10-23,hollande,Kantar,1038,face to face,21.0,76.0
+2013-11-10,hollande,Ipsos,1070,phone,21.0,75.0
+2013-11-19,hollande,Ifop,949,phone,20.0,79.0
+2013-11-20,hollande,BVA,953,internet,29.0,69.0
+2013-11-26,hollande,Kantar,1076,face to face,21.0,76.0
+2013-12-12,hollande,Ipsos,1077,phone,23.0,74.0
+2013-12-17,hollande,Ifop,975,phone,22.0,78.0
+2013-12-20,hollande,BVA,1031,internet,33.0,66.0
+2013-12-25,hollande,Kantar,975,face to face,21.0,74.0
+2014-01-14,hollande,Ipsos,1081,phone,24.0,74.0
+2014-01-16,hollande,Ifop,1014,phone,22.0,77.0
+2014-01-26,hollande,Kantar,1096,face to face,19.0,78.0
+2014-01-30,hollande,BVA,986,internet,31.0,68.0
+2014-02-11,hollande,Ipsos,1066,phone,21.0,76.0
+2014-02-18,hollande,BVA,964,internet,27.0,72.0
+2014-02-18,hollande,Ifop,965,phone,20.0,79.0
+2014-02-20,hollande,Kantar,925,face to face,17.0,80.0
+2014-03-18,hollande,Ifop,1011,phone,23.0,76.0
+2014-03-22,hollande,Ipsos,1076,phone,22.0,74.0
+2014-03-27,hollande,BVA,1097,internet,28.0,71.0
+2014-03-28,hollande,Kantar,997,face to face,20.0,77.0
+2014-04-15,hollande,BVA,925,internet,21.0,78.0
+2014-04-19,hollande,Ifop,1097,phone,18.0,82.0
+2014-04-20,hollande,Ipsos,987,phone,18.0,76.0
+2014-04-20,hollande,Kantar,1048,face to face,18.0,78.0
+2014-05-16,hollande,BVA,996,internet,21.0,78.0
+2014-05-20,hollande,Ifop,917,phone,18.0,82.0
+2014-05-21,hollande,Kantar,1091,face to face,16.0,81.0
+2014-05-23,hollande,Ipsos,996,phone,19.0,78.0
+2014-06-14,hollande,Ipsos,1043,phone,19.0,78.0
+2014-06-16,hollande,Ifop,941,phone,18.0,81.0
+2014-06-17,hollande,BVA,947,internet,22.0,77.0
+2014-06-23,hollande,Kantar,1024,face to face,18.0,79.0
+2014-07-15,hollande,Ifop,952,phone,18.0,81.0
+2014-07-25,hollande,Ipsos,947,phone,20.0,75.0
+2014-08-17,hollande,BVA,1075,internet,19.0,80.0
+2014-08-17,hollande,Ipsos,1048,phone,17.0,79.0
+2014-08-19,hollande,Ifop,975,phone,17.0,81.0
+2014-08-20,hollande,Kantar,1027,face to face,13.0,85.0
+2014-09-12,hollande,Ipsos,1056,phone,13.0,83.0
+2014-09-18,hollande,BVA,967,internet,23.0,76.0
+2014-09-18,hollande,Ifop,972,phone,13.0,86.0
+2014-09-22,hollande,Kantar,1079,face to face,14.0,84.0
+2014-10-17,hollande,Odoxa,972,internet,20.0,80.0
+2014-10-18,hollande,Ipsos,1078,phone,16.0,81.0
+2014-10-20,hollande,Ifop,1077,phone,14.0,84.0
+2014-10-24,hollande,BVA,1096,internet,20.0,79.0
+2014-10-28,hollande,Kantar,1016,face to face,13.0,85.0
+2014-11-14,hollande,Ipsos,1021,phone,15.0,81.0
+2014-11-15,hollande,Ifop,1048,phone,13.0,85.0
+2014-11-20,hollande,BVA,941,internet,20.0,79.0
+2014-11-21,hollande,Odoxa,988,internet,16.0,83.0
+2014-11-22,hollande,Kantar,983,face to face,15.0,83.0
+2014-12-12,hollande,Odoxa,1030,internet,21.0,78.0
+2014-12-19,hollande,Ifop,1089,phone,17.0,82.0
+2014-12-24,hollande,Ipsos,959,phone,18.0,78.0
+2014-12-24,hollande,Kantar,1037,face to face,20.0,77.0
+2014-12-27,hollande,BVA,1017,internet,24.0,76.0
+2015-01-16,hollande,Ipsos,913,phone,38.0,57.0
+2015-01-17,hollande,Ifop,1039,phone,29.0,70.0
+2015-01-23,hollande,Odoxa,1033,internet,31.0,68.0
+2015-01-27,hollande,Kantar,1035,face to face,23.0,75.0
+2015-01-28,hollande,BVA,1080,internet,34.0,65.0
+2015-02-18,hollande,Ifop,945,phone,24.0,76.0
+2015-02-20,hollande,Odoxa,975,internet,26.0,73.0
+2015-02-25,hollande,Kantar,1025,face to face,22.0,75.0
+2015-02-26,hollande,BVA,1011,internet,30.0,69.0
+2015-02-27,hollande,Ipsos,988,phone,30.0,67.0
+2015-03-18,hollande,Ifop,930,phone,25.0,75.0
+2015-03-20,hollande,Odoxa,904,internet,24.0,75.0
+2015-03-22,hollande,BVA,1016,internet,27.0,72.0
+2015-03-24,hollande,Kantar,995,face to face,18.0,77.0
+2015-03-27,hollande,Ipsos,980,phone,26.0,69.0
+2015-04-14,hollande,Ipsos,926,phone,23.0,73.0
+2015-04-16,hollande,Ifop,968,phone,21.0,78.0
+2015-04-17,hollande,Odoxa,903,internet,21.0,78.0
+2015-04-18,hollande,BVA,1042,internet,26.0,74.0
+2015-04-27,hollande,Kantar,1045,face to face,16.0,82.0
+2015-05-15,hollande,BVA,993,internet,27.0,72.0
+2015-05-15,hollande,Ifop,908,phone,21.0,78.0
+2015-05-22,hollande,Odoxa,979,internet,23.0,76.0
+2015-05-25,hollande,Kantar,929,face to face,19.0,78.0
+2015-05-26,hollande,Ipsos,1055,phone,24.0,74.0
+2015-06-14,hollande,Ipsos,937,phone,20.0,77.0
+2015-06-17,hollande,BVA,921,internet,26.0,73.0
+2015-06-20,hollande,Ifop,1061,phone,22.0,77.0
+2015-06-24,hollande,Kantar,1000,face to face,19.0,78.0
+2015-06-26,hollande,Odoxa,979,internet,22.0,76.0
+2015-07-11,hollande,Ipsos,931,phone,26.0,71.0
+2015-07-15,hollande,BVA,1007,internet,28.0,71.0
+2015-07-18,hollande,Ifop,1083,phone,22.0,77.0
+2015-07-30,hollande,BVA,1073,internet,23.0,76.0
+2015-08-16,hollande,Ifop,986,phone,24.0,75.0
+2015-08-20,hollande,Kantar,968,face to face,18.0,80.0
+2015-09-10,hollande,Ipsos,966,phone,24.0,72.0
+2015-09-16,hollande,Ifop,919,phone,23.0,77.0
+2015-09-25,hollande,Odoxa,1027,internet,21.0,77.0
+2015-09-27,hollande,BVA,926,internet,23.0,76.0
+2015-09-28,hollande,Kantar,944,face to face,16.0,82.0
+2015-10-12,hollande,Ipsos,1068,phone,24.0,72.0
+2015-10-16,hollande,Odoxa,968,internet,22.0,77.0
+2015-10-18,hollande,Ifop,1049,phone,20.0,79.0
+2015-10-23,hollande,Kantar,992,face to face,15.0,82.0
+2015-10-26,hollande,BVA,1096,internet,25.0,75.0
+2015-11-15,hollande,Ifop,908,phone,27.0,73.0
+2015-11-20,hollande,Odoxa,1012,internet,32.0,67.0
+2015-11-22,hollande,Ipsos,911,phone,41.0,55.0
+2015-11-24,hollande,BVA,1048,internet,33.0,65.0
+2015-11-24,hollande,Kantar,1032,face to face,35.0,63.0
+2015-12-17,hollande,Ifop,1006,phone,27.0,73.0
+2015-12-18,hollande,Odoxa,1063,internet,27.0,71.0
+2015-12-22,hollande,BVA,1088,internet,30.0,69.0
+2015-12-26,hollande,Kantar,1029,face to face,23.0,74.0
+2016-01-16,hollande,Ifop,922,phone,24.0,75.0
+2016-01-19,hollande,BVA,1012,internet,25.0,74.0
+2016-01-19,hollande,Ipsos,961,phone,29.0,66.0
+2016-01-20,hollande,Kantar,930,face to face,15.0,82.0
+2016-01-22,hollande,Odoxa,1028,internet,22.0,78.0
+2016-02-10,hollande,Ipsos,973,phone,20.0,75.0
+2016-02-16,hollande,Ifop,935,phone,19.0,81.0
+2016-02-18,hollande,BVA,905,internet,22.0,77.0
+2016-02-19,hollande,Odoxa,985,internet,20.0,80.0
+2016-02-21,hollande,Kantar,917,face to face,16.0,82.0
+2016-03-19,hollande,Ifop,1040,phone,17.0,82.0
+2016-03-20,hollande,Ipsos,1040,phone,15.0,80.0
+2016-03-20,hollande,Kantar,968,face to face,15.0,83.0
+2016-03-21,hollande,BVA,1071,internet,21.0,79.0
+2016-03-25,hollande,Odoxa,1020,internet,18.0,81.0
+2016-04-10,hollande,Ipsos,933,phone,16.0,80.0
+2016-04-17,hollande,Ifop,988,phone,14.0,85.0
+2016-04-21,hollande,BVA,1027,internet,19.0,80.0
+2016-04-22,hollande,Odoxa,1020,internet,17.0,83.0
+2016-04-27,hollande,Kantar,1099,face to face,13.0,84.0
+2016-05-14,hollande,Ipsos,935,phone,18.0,79.0
+2016-05-20,hollande,Ifop,977,phone,15.0,84.0
+2016-05-20,hollande,Odoxa,944,internet,16.0,83.0
+2016-05-22,hollande,BVA,906,internet,19.0,80.0
+2016-05-25,hollande,Kantar,1095,face to face,13.0,84.0
+2016-06-14,hollande,Ipsos,916,phone,16.0,80.0
+2016-06-17,hollande,Odoxa,961,internet,16.0,84.0
+2016-06-19,hollande,Ifop,1063,phone,14.0,85.0
+2016-06-25,hollande,BVA,1075,internet,18.0,81.0
+2016-06-27,hollande,Kantar,1052,face to face,12.0,86.0
+2016-07-15,hollande,Ifop,1001,phone,17.0,82.0
+2016-07-23,hollande,BVA,1095,internet,19.0,79.0
+2016-08-14,hollande,Ipsos,931,phone,18.0,75.0
+2016-08-15,hollande,Ifop,995,phone,16.0,82.0
+2016-08-23,hollande,Kantar,986,face to face,17.0,80.0
+2016-09-10,hollande,Ipsos,1051,phone,15.0,80.0
+2016-09-16,hollande,Ifop,929,phone,15.0,84.0
+2016-09-16,hollande,Odoxa,1055,internet,16.0,84.0
+2016-09-17,hollande,BVA,1054,internet,18.0,80.0
+2016-09-22,hollande,Kantar,1056,face to face,13.0,84.0
+2016-10-14,hollande,Odoxa,995,internet,16.0,84.0
+2016-10-18,hollande,Ipsos,1065,phone,18.0,79.0
+2016-10-20,hollande,Ifop,1058,phone,14.0,85.0
+2016-10-23,hollande,Kantar,1071,face to face,11.0,87.0
+2016-10-29,hollande,BVA,966,internet,15.0,83.0
+2016-11-14,hollande,Ipsos,1003,phone,18.0,80.0
+2016-11-17,hollande,Ifop,1045,phone,15.0,84.0
+2016-11-19,hollande,BVA,989,internet,18.0,81.0
+2016-11-26,hollande,Kantar,958,face to face,13.0,85.0
+2016-11-29,hollande,Odoxa,972,internet,17.0,83.0
+2016-12-11,hollande,Ipsos,1058,phone,21.0,76.0
+2016-12-15,hollande,Odoxa,1009,internet,18.0,82.0
+2016-12-19,hollande,Ifop,927,phone,19.0,81.0
+2016-12-20,hollande,Kantar,935,face to face,19.0,78.0
+2017-01-13,hollande,Odoxa,982,internet,20.0,80.0
+2017-01-17,hollande,Ifop,975,phone,20.0,80.0
+2017-01-23,hollande,Kantar,1097,face to face,18.0,80.0
+2017-01-24,hollande,BVA,995,internet,24.0,76.0
+2017-01-24,hollande,Ipsos,921,phone,22.0,73.0
+2017-02-09,hollande,Odoxa,1079,internet,21.0,79.0
+2017-02-13,hollande,Ipsos,980,phone,20.0,75.0
+2017-02-17,hollande,BVA,1084,internet,22.0,77.0
+2017-02-19,hollande,Ifop,915,phone,19.0,81.0
+2017-02-22,hollande,Kantar,983,face to face,16.0,82.0
+2017-03-15,hollande,BVA,1057,internet,24.0,74.0
+2017-03-15,hollande,Ifop,1036,phone,22.0,77.0
+2017-03-20,hollande,Ipsos,1042,phone,25.0,71.0
+2017-03-23,hollande,Kantar,964,face to face,21.0,76.0
+2017-03-23,hollande,Odoxa,933,internet,21.0,79.0
+2017-04-15,hollande,Ifop,921,phone,22.0,77.0
+2017-04-20,hollande,Ipsos,918,phone,23.0,73.0
+2017-04-20,hollande,Odoxa,1016,internet,22.0,78.0
+2017-04-27,hollande,Kantar,934,face to face,14.0,83.0
+2017-04-30,hollande,BVA,985,internet,25.0,75.0
+2017-05-17,macron,Elabe,999,internet,45.0,46.0
+2017-05-20,macron,Ifop,973,phone,62.0,31.0
+2017-05-20,macron,Ipsos,1015,internet,46.0,27.0
+2017-05-21,macron,Viavoice,1006,internet,49.0,30.0
+2017-05-23,macron,BVA,1011,internet,62.0,35.0
+2017-05-23,macron,Odoxa,1014,internet,58.0,41.0
+2017-05-24,macron,Elabe,1051,internet,67.0,31.0
+2017-05-25,macron,YouGov,1008,internet,39.0,32.0
+2017-05-27,macron,Ipsos,2138,internet,58.0,42.0
+2017-05-27,macron,Kantar,1008,face to face,57.0,38.0
+2017-06-04,macron,BVA,4772,internet,68.0,31.0
+2017-06-06,macron,Elabe,1001,internet,45.0,45.0
+2017-06-07,macron,Elabe,1000,internet,66.0,33.0
+2017-06-09,macron,Ipsos,4003,internet,58.0,42.0
+2017-06-19,macron,Ifop,1883,phone&internet,64.0,35.0
+2017-06-20,macron,BVA,1187,internet,59.0,39.0
+2017-06-22,macron,Odoxa,1008,internet,58.0,41.0
+2017-06-24,macron,Ipsos,1058,internet,45.0,27.0
+2017-06-24,macron,Kantar,1000,face to face,54.0,39.0
+2017-06-25,macron,Viavoice,1011,internet,53.0,27.0
+2017-06-29,macron,YouGov,1016,internet,43.0,36.0
+2017-07-05,macron,Elabe,999,internet,45.0,46.0
+2017-07-18,macron,BVA,1007,internet,54.0,44.0
+2017-07-20,macron,Ifop,1947,phone&internet,54.0,43.0
+2017-07-22,macron,Ipsos,1022,internet,42.0,42.0
+2017-07-27,macron,YouGov,1003,internet,36.0,49.0
+2017-08-02,macron,Elabe,1000,internet,40.0,55.0
+2017-08-08,macron,Ifop,1001,internet,36.0,64.0
+2017-08-26,macron,Ifop,1023,phone&internet,40.0,57.0
+2017-08-26,macron,Kantar,983,face to face,41.0,52.0
+2017-08-29,macron,BVA,1162,internet,43.0,55.0
+2017-08-29,macron,Yougov,1003,internet,30.0,54.0
+2017-09-06,macron,Elabe,1002,internet,37.0,58.0
+2017-09-09,macron,Ipsos,988,internet,32.0,54.0
+2017-09-13,macron,Viavoice,1007,internet,38.0,47.0
+2017-09-14,macron,Odoxa,992,internet,44.0,56.0
+2017-09-19,macron,Ifop,1989,phone&internet,45.0,53.0
+2017-09-26,macron,BVA,1092,internet,45.0,51.0
+2017-09-28,macron,Yougov,1002,internet,32.0,56.0
+2017-09-30,macron,Kantar,1000,face to face,39.0,56.0
+2017-10-04,macron,Elabe,1001,internet,40.0,54.0
+2017-10-14,macron,Ipsos,957,internet,34.0,54.0
+2017-10-17,macron,Ifop,1938,phone&internet,42.0,56.0
+2017-10-19,macron,Odoxa,995,internet,44.0,56.0
+2017-10-25,macron,BVA,1193,internet,42.0,56.0
+2017-10-26,macron,Yougov,1034,internet,32.0,55.0
+2017-10-27,macron,Kantar,983,face to face,38.0,57.0
+2017-10-31,macron,Elabe,1152,internet,38.0,56.0
+2017-11-01,macron,Viavoice,1002,internet,40.0,46.0
+2017-11-11,macron,Ipsos,1043,internet,37.0,53.0
+2017-11-14,macron,Ifop,1964,phone&internet,46.0,52.0
+2017-11-23,macron,Odoxa,1009,internet,45.0,55.0
+2017-11-25,macron,Kantar,1000,face to face,42.0,54.0
+2017-11-28,macron,BVA,972,internet,46.0,51.0
+2017-11-29,macron,Elabe,1001,internet,40.0,54.0
+2017-11-30,macron,Yougov,1006,internet,35.0,50.0
+2017-12-09,macron,Ipsos,1016,internet,39.0,50.0
+2017-12-12,macron,Ifop,1942,phone&internet,52.0,46.0
+2017-12-14,macron,Odoxa,1028,internet,54.0,46.0
+2017-12-19,macron,BVA,1199,internet,52.0,45.0
+2018-01-03,macron,Elabe,1001,internet,42.0,50.0
+2018-01-06,macron,Kantar,1000,face to face,44.0,51.0
+2018-01-13,macron,Ipsos,1050,internet,40.0,49.0
+2018-01-16,macron,Ifop,1947,phone&internet,50.0,49.0
+2018-01-18,macron,Odoxa,1006,internet,49.0,50.0
+2018-01-25,macron,Yougov,1008,internet,41.0,45.0
+2018-01-27,macron,Kantar,1000,face to face,44.0,51.0
+2018-01-30,macron,BVA,1101,internet,47.0,48.0
+2018-01-31,macron,Elabe,1000,internet,38.0,56.0
+2018-02-10,macron,Ipsos,1001,internet,35.0,55.0
+2018-02-13,macron,Ifop,1953,phone&internet,44.0,55.0
+2018-02-22,macron,Odoxa,973,internet,43.0,57.0
+2018-02-22,macron,Yougov,1026,internet,30.0,58.0
+2018-02-23,macron,Viavoice,1010,internet,41.0,45.0
+2018-02-24,macron,Kantar,1000,face to face,43.0,53.0
+2018-02-27,macron,BVA,1019,internet,43.0,53.0
+2018-02-28,macron,Elabe,999,internet,41.0,52.0
+2018-03-13,macron,Ifop,1946,phone&internet,42.0,57.0
+2018-03-17,macron,Ipsos,1011,internet,37.0,55.0
+2018-03-22,macron,BVA,1053,internet,40.0,57.0
+2018-03-23,macron,Odoxa,1018,internet,45.0,54.0
+2018-03-28,macron,Yougov,1004,internet,32.0,56.0
+2018-03-30,macron,Kantar,1000,face to face,40.0,56.0
+2018-04-04,macron,Elabe,1008,internet,39.0,55.0
+2018-04-14,macron,Ifop,1201,internet,42.0,58.0
+2018-04-17,macron,Ifop,1949,phone&internet,44.0,55.0
+2018-04-17,macron,Viavoice,1000,internet,41.0,46.0
+2018-04-19,macron,BVA,1011,internet,43.0,54.0
+2018-04-19,macron,Odoxa,1017,internet,47.0,53.0
+2018-04-21,macron,Ipsos,1013,internet,40.0,52.0
+2018-04-25,macron,Kantar,1000,face to face,41.0,56.0
+2018-04-26,macron,Yougov,1013,internet,33.0,54.0
+2018-05-01,macron,Elabe,1008,internet,41.0,53.0
+2018-05-16,macron,Odoxa,1015,internet,46.0,54.0
+2018-05-19,macron,Ipsos,1025,internet,37.0,58.0
+2018-05-24,macron,BVA,1000,internet,40.0,56.0
+2018-05-26,macron,Kantar,1000,face to face,38.0,57.0
+2018-06-06,macron,Elabe,1002,internet,40.0,55.0
+2018-06-19,macron,Ifop,1963,phone&internet,40.0,58.0
+2018-06-21,macron,BVA,1000,internet,41.0,53.0
+2018-06-22,macron,Odoxa,1007,internet,41.0,59.0
+2018-06-23,macron,Ipsos,996,internet,36.0,59.0
+2018-06-28,macron,Ifop,1008,internet,41.0,59.0
+2018-06-28,macron,Yougov,1028,internet,32.0,59.0
+2018-06-30,macron,Kantar,923,face to face,32.0,64.0
+2018-07-04,macron,Elabe,1001,internet,34.0,60.0
+2018-07-16,macron,Odoxa,1005,internet,39.0,61.0
+2018-07-19,macron,BVA,1003,internet,39.0,59.0
+2018-07-21,macron,Ipsos,999,internet,32.0,60.0
+2018-07-23,macron,Ifop,1981,internet,39.0,61.0
+2018-07-25,macron,Harris,966,internet,42.0,58.0
+2018-07-26,macron,Yougov,1017,internet,27.0,62.0
+2018-08-01,macron,Elabe,1007,internet,36.0,60.0
+2018-08-21,macron,Viavoice,1008,internet,36.0,51.0
+2018-08-24,macron,Ifop,995,internet,34.0,66.0
+2018-08-25,macron,Kantar,1000,face to face,33.0,64.0
+2018-08-29,macron,Harris,977,internet,36.0,64.0
+2018-08-30,macron,BVA,1040,internet,34.0,66.0
+2018-08-30,macron,Yougov,1099,internet,23.0,69.0
+2018-08-31,macron,Ifop,1015,internet,31.0,69.0
+2018-09-05,macron,Elabe,1000,internet,31.0,64.0
+2018-09-06,macron,Odoxa,1004,internet,29.0,71.0
+2018-09-08,macron,Ipsos,998,internet,25.0,69.0
+2018-09-18,macron,Ifop,1964,phone&internet,29.0,70.0
+2018-09-20,macron,OpinionWay,1061,internet,28.0,70.0
+2018-09-26,macron,Harris,1022,internet,34.0,66.0
+2018-09-27,macron,BVA,1011,internet,32.0,67.0
+2018-09-27,macron,Yougov,1006,internet,25.0,67.0
+2018-09-28,macron,Ifop,1008,internet,33.0,67.0
+2018-09-29,macron,Kantar,1000,face to face,30.0,67.0
+2018-10-03,macron,Elabe,1001,internet,30.0,66.0
+2018-10-05,macron,Odoxa,1014,internet,33.0,66.0
+2018-10-17,macron,Ifop,1968,phone&internet,29.0,70.0
+2018-10-18,macron,OpinionWay,1063,internet,29.0,68.0
+2018-10-20,macron,Ipsos,1003,internet,26.0,70.0
+2018-10-21,macron,Viavoice,1007,internet,26.0,65.0
+2018-10-24,macron,Harris,989,internet,33.0,67.0
+2018-10-25,macron,BVA,1090,internet,29.0,70.0
+2018-10-25,macron,Yougov,1010,internet,21.0,69.0
+2018-10-26,macron,Ifop,1024,internet,29.0,71.0
+2018-10-26,macron,Kantar,1000,face to face,26.0,71.0
+2018-11-07,macron,Elabe,1002,internet,27.0,69.0
+2018-11-13,macron,Ifop,1957,phone&internet,25.0,73.0
+2018-11-15,macron,OpinionWay,1064,internet,29.0,69.0
+2018-11-16,macron,Odoxa,1005,internet,32.0,68.0
+2018-11-17,macron,Ipsos,1000,internet,26.0,70.0
+2018-11-22,macron,BVA,1258,internet,26.0,73.0
+2018-11-28,macron,Harris,908,internet,32.0,68.0
+2018-11-29,macron,Viavoice,1021,internet,23.0,69.0
+2018-11-29,macron,Yougov,1006,internet,18.0,76.0
+2018-11-30,macron,Ifop,1004,internet,23.0,76.0
+2018-12-01,macron,Kantar,1000,face to face,21.0,77.0
+2018-12-05,macron,Elabe,1002,internet,23.0,74.0
+2018-12-08,macron,Ipsos,971,internet,20.0,76.0
+2018-12-11,macron,Ifop,1943,phone&internet,23.0,76.0
+2018-12-13,macron,OpinionWay,1029,internet,31.0,67.0
+2018-12-14,macron,Odoxa,990,internet,27.0,73.0
+2018-12-19,macron,BVA,1105,internet,27.0,72.0
+2018-12-24,macron,Harris,1028,internet,31.0,69.0
+2019-01-04,macron,Ifop,1004,internet,28.0,72.0
+2019-01-05,macron,Kantar,1000,face to face,22.0,75.0
+2019-01-09,macron,Elabe,1003,internet,25.0,71.0
+2019-01-12,macron,Ipsos,1005,internet,23.0,74.0
+2019-01-15,macron,Ifop,1928,phone&internet,27.0,72.0
+2019-01-18,macron,OpinionWay,1042,internet,30.0,68.0
+2019-01-23,macron,Harris,1039,internet,35.0,65.0
+2019-01-23,macron,Odoxa,1003,internet,30.0,69.0
+2019-01-24,macron,BVA,1023,internet,31.0,69.0
+2019-01-26,macron,Kantar,1000,face to face,24.0,73.0
+2019-01-31,macron,Yougov,1037,internet,21.0,73.0
+2019-02-01,macron,Ifop,1004,internet,34.0,66.0
+2019-02-06,macron,Elabe,1000,internet,27.0,69.0
+2019-02-12,macron,Ifop,1891,phone&internet,28.0,71.0
+2019-02-14,macron,OpinionWay,1027,internet,29.0,69.0
+2019-02-20,macron,Viavoice,1004,internet,28.0,61.0
+2019-02-21,macron,BVA,1012,internet,30.0,69.0
+2019-02-21,macron,Harris,897,internet,39.0,61.0
+2019-02-21,macron,Odoxa,1004,internet,32.0,68.0
+2019-02-23,macron,Kantar,1000,face to face,26.0,71.0
+2019-02-28,macron,Yougov,1004,internet,24.0,70.0
+2019-03-01,macron,Ifop,1009,internet,31.0,69.0
+2019-03-02,macron,Ipsos,1035,internet,28.0,67.0
+2019-03-06,macron,Elabe,1003,internet,31.0,66.0
+2019-03-14,macron,OpinionWay,1070,internet,32.0,66.0
+2019-03-19,macron,Ifop,1929,phone&internet,29.0,69.0
+2019-03-21,macron,BVA,1001,internet,29.0,70.0
+2019-03-21,macron,Odoxa,1001,internet,30.0,70.0
+2019-03-21,macron,OpinionWay,1009,internet,29.0,69.0
+2019-03-27,macron,Harris,933,internet,38.0,62.0
+2019-03-28,macron,OpinionWay,1051,internet,29.0,70.0
+2019-03-28,macron,Yougov,1001,internet,25.0,68.0
+2019-03-29,macron,Ifop,1001,internet,29.0,71.0
+2019-03-30,macron,Kantar,1000,face to face,26.0,71.0
+2019-04-03,macron,Elabe,1004,internet,28.0,69.0
+2019-04-06,macron,Ipsos,1001,internet,27.0,69.0
+2019-04-16,macron,Ifop,1921,phone&internet,29.0,69.0
+2019-04-18,macron,BVA,1002,internet,32.0,67.0
+2019-04-18,macron,Odoxa,1003,internet,32.0,67.0
+2019-04-18,macron,OpinionWay,1057,internet,27.0,70.0
+2019-04-24,macron,Harris,934,internet,38.0,62.0
+2019-04-26,macron,Kantar,1000,face to face,25.0,72.0
+2019-04-28,macron,Viavoice,1002,internet,26.0,65.0
+2019-05-03,macron,Ifop,1008,internet,30.0,70.0
+2019-05-07,macron,Elabe,1583,internet,27.0,67.0
+2019-05-11,macron,Ipsos,1001,internet,27.0,68.0
+2019-05-14,macron,Ifop,1946,phone&internet,30.0,67.0
+2019-05-16,macron,BVA,1000,internet,32.0,68.0
+2019-05-27,macron,Odoxa,980,internet,30.0,70.0
+2019-05-29,macron,Harris,922,internet,40.0,60.0
+2019-05-29,macron,Ifop,1005,internet,32.0,68.0
+2019-05-30,macron,Kantar,1000,face to face,29.0,68.0
+2019-06-05,macron,Elabe,1007,internet,32.0,63.0
+2019-06-06,macron,OpinionWay,1014,internet,33.0,65.0
+2019-06-15,macron,Ipsos,1002,internet,32.0,64.0
+2019-06-18,macron,Ifop,1910,phone&internet,30.0,67.0
+2019-06-20,macron,BVA,1003,internet,35.0,65.0
+2019-06-20,macron,Odoxa,1002,internet,36.0,64.0
+2019-06-26,macron,Harris,894,internet,40.0,60.0
+2019-06-27,macron,Ifop,1002,internet,38.0,62.0
+2019-06-29,macron,Kantar,1000,face to face,27.0,69.0
+2019-07-02,macron,Viavoice,1002,internet,32.0,57.0
+2019-07-02,macron,Yougov,1045,internet,26.0,66.0
+2019-07-03,macron,Elabe,1009,internet,31.0,64.0
+2019-07-04,macron,OpinionWay,1002,internet,33.0,65.0
+2019-07-18,macron,BVA,1000,internet,34.0,66.0
+2019-07-18,macron,Ifop,996,internet,32.0,68.0
+2019-07-20,macron,Ipsos,1002,internet,31.0,64.0
+2019-07-24,macron,Harris,930,internet,41.0,59.0
+2019-07-31,macron,Elabe,1002,internet,28.0,67.0
+2019-08-22,macron,BVA,966,internet,34.0,66.0
+2019-08-22,macron,Ifop,988,internet,34.0,66.0
+2019-08-28,macron,Harris,910,internet,43.0,57.0
+2019-08-30,macron,Ifop,1010,internet,38.0,62.0
+2019-08-31,macron,Kantar,1000,face to face,32.0,66.0
+2019-09-04,macron,Elabe,1002,internet,33.0,61.0
+2019-09-11,macron,Viavoice,1008,internet,32.0,54.0
+2019-09-14,macron,Ipsos,1009,internet,36.0,59.0
+2019-09-17,macron,Ifop,1960,phone&internet,33.0,64.0
+2019-09-19,macron,BVA,1004,internet,37.0,63.0
+2019-09-19,macron,Odoxa,1005,internet,36.0,63.0
+2019-09-25,macron,Harris,905,internet,42.0,58.0
+2019-09-28,macron,Kantar,1000,face to face,29.0,67.0
+2019-10-02,macron,Elabe,1000,internet,33.0,60.0
+2019-10-12,macron,Ipsos,1008,internet,33.0,62.0
+2019-10-15,macron,Ifop,1953,phone&internet,34.0,64.0
+2019-10-17,macron,BVA,1000,internet,37.0,62.0
+2019-10-23,macron,Harris,905,internet,40.0,60.0
+2019-10-24,macron,Odoxa,1005,internet,35.0,65.0
+2019-10-25,macron,Kantar,1000,face to face,30.0,67.0
+2019-10-29,macron,Yougov,1031,internet,27.0,65.0
+2019-11-06,macron,Elabe,1002,internet,28.0,65.0
+2019-11-12,macron,Ifop,1911,phone&internet,33.0,65.0
+2019-11-14,macron,BVA,968,internet,36.0,64.0
+2019-11-16,macron,Ipsos,1053,internet,33.0,63.0
+2019-11-17,macron,Viavoice,1003,internet,31.0,57.0
+2019-11-21,macron,Odoxa,1002,internet,34.0,65.0
+2019-11-27,macron,Harris,900,internet,39.0,61.0
+2019-11-28,macron,Kantar,1000,face to face,27.0,70.0
+2019-12-10,macron,Ifop,1899,phone&internet,34.0,65.0
+2019-12-12,macron,BVA,968,internet,34.0,66.0
+2019-12-13,macron,Elabe,1003,internet,30.0,65.0
+2019-12-14,macron,Ipsos,1001,internet,29.0,67.0
+2019-12-19,macron,Odoxa,1002,internet,33.0,67.0
+2019-12-26,macron,Harris,915,internet,40.0,60.0
+2020-01-15,macron,Elabe,1006,internet,32.0,63.0
+2020-01-18,macron,Ipsos,1004,internet,30.0,64.0
+2020-01-21,macron,Ifop,1952,phone&internet,30.0,68.0
+2020-01-22,macron,Harris,934,internet,40.0,60.0
+2020-01-23,macron,BVA,1005,internet,33.0,66.0
+2020-01-23,macron,Odoxa,1002,internet,36.0,64.0
+2020-01-30,macron,Ifop,1000,internet,34.0,66.0
+2020-02-01,macron,Kantar,1000,face to face,24.0,72.0
+2020-02-05,macron,Elabe,1005,internet,31.0,63.0
+2020-02-18,macron,Ifop,1947,phone&internet,32.0,66.0
+2020-02-19,macron,Harris,909,internet,38.0,62.0
+2020-02-20,macron,BVA,1000,internet,33.0,67.0
+2020-02-20,macron,Odoxa,1005,internet,33.0,66.0
+2020-02-22,macron,Ipsos,1005,internet,30.0,63.0
+2020-02-23,macron,Viavoice,1000,internet,28.0,59.0
+2020-02-29,macron,Kantar,1000,face to face,28.0,69.0
+2020-03-04,macron,Elabe,1007,internet,29.0,66.0
+2020-03-18,macron,Harris,917,internet,51.0,49.0
+2020-03-21,macron,Ipsos,1000,internet,44.0,51.0
+2020-03-21,macron,Viavoice,1000,internet,34.0,51.0
+2020-03-23,macron,Ifop,1930,phone&internet,43.0,56.0
+2020-03-25,macron,Odoxa,1005,internet,38.0,62.0
+2020-03-26,macron,BVA,1010,internet,40.0,59.0
+2020-03-28,macron,Kantar,1000,internet,47.0,47.0
+2020-03-31,macron,Elabe,1003,internet,39.0,57.0
+2020-04-13,macron,Ifop,1942,phone&internet,42.0,57.0
+2020-04-23,macron,BVA,976,internet,38.0,61.0
+2020-04-23,macron,Odoxa,1005,internet,42.0,58.0
+2020-04-24,macron,Ipsos,1002,internet,38.0,58.0
+2020-04-29,macron,Harris,947,internet,43.0,57.0
+2020-05-05,macron,Elabe,1009,internet,34.0,61.0
+2020-05-19,macron,BVA,980,internet,37.0,62.0
+2020-05-19,macron,Ifop,1918,phone&internet,39.0,60.0
+2020-05-20,macron,Odoxa,1004,internet,35.0,65.0
+2020-05-27,macron,Harris,961,internet,44.0,56.0
+2020-05-30,macron,Ipsos,1013,internet,38.0,59.0
+2020-05-31,macron,Viavoice,1000,internet,33.0,53.0
+2020-06-02,macron,Elabe,1002,internet,33.0,62.0
+2020-06-16,macron,Ifop,1865,phone&internet,38.0,60.0
+2020-06-18,macron,BVA,1003,internet,38.0,62.0
+2020-06-18,macron,Odoxa,1004,internet,39.0,61.0
+2020-06-24,macron,Harris,975,internet,44.0,56.0
+2020-06-27,macron,Kantar,1000,face to face,33.0,64.0
+2020-06-30,macron,Yougov,1024,internet,29.0,64.0
+2020-07-01,macron,Elabe,1004,internet,35.0,65.0
+2020-07-10,macron,Ifop,1018,internet,38.0,62.0
+2020-07-16,macron,BVA,1000,internet,39.0,61.0
+2020-07-16,macron,Ifop,974,internet,37.0,63.0
+2020-07-22,macron,Harris,960,internet,50.0,50.0
+2020-08-04,macron,Yougov,1041,internet,30.0,61.0
+2020-08-05,macron,Elabe,1002,internet,39.0,56.0
+2020-08-13,macron,Viavoice,1001,internet,32.0,53.0
+2020-08-26,macron,Harris,994,internet,45.0,55.0
+2020-08-27,macron,BVA,1002,internet,44.0,55.0
+2020-08-28,macron,Ifop,1016,internet,39.0,61.0
+2020-08-29,macron,Kantar,1000,face to face,35.0,61.0
+2020-09-01,macron,Yougov,1024,internet,31.0,61.0
+2020-09-09,macron,Elabe,1001,internet,35.0,57.0
+2020-09-23,macron,Harris,994,internet,45.0,55.0
+2020-09-23,macron,Odoxa,1005,internet,38.0,62.0
+2020-09-24,macron,BVA,1001,internet,38.0,62.0
+2020-09-26,macron,Kantar,1000,face to face,29.0,68.0
+2020-09-29,macron,Yougov,1034,internet,29.0,63.0
+2020-10-07,macron,Elabe,1000,internet,32.0,63.0
+2020-10-10,macron,Ipsos,1000,internet,40.0,54.0
+2020-10-11,macron,Ifop,1937,phone&internet,38.0,60.0
+2020-10-22,macron,BVA,1002,internet,42.0,57.0
+2020-10-22,macron,Odoxa,1001,internet,41.0,58.0
+2020-10-25,macron,Viavoice,1001,internet,34.0,52.0
+2020-10-28,macron,Harris,961,internet,46.0,54.0
+2020-10-30,macron,Ifop,1028,internet,46.0,54.0
+2020-10-30,macron,Kantar,1000,face to face,40.0,55.0
+2020-11-03,macron,Yougov,1004,internet,34.0,58.0
+2020-11-04,macron,Elabe,1003,internet,35.0,61.0
+2020-11-11,macron,Odoxa,1005,internet,43.0,57.0
+2020-11-14,macron,Ipsos,1000,internet,37.0,58.0
+2020-11-16,macron,Ifop,1924,phone&internet,41.0,57.0
+2020-11-19,macron,BVA,921,internet,42.0,58.0
+2020-11-25,macron,Harris,970,internet,49.0,51.0
+2020-11-27,macron,Ifop,1013,internet,41.0,59.0
+2020-11-28,macron,Kantar,1000,face to face,38.0,58.0
+2020-12-01,macron,Yougov,1008,internet,32.0,61.0
+2020-12-02,macron,Elabe,1000,internet,32.0,64.0
+2020-12-11,macron,Odoxa,990,internet,42.0,58.0
+2020-12-13,macron,Ifop,1936,phone&internet,38.0,60.0
+2020-12-17,macron,BVA,1005,internet,40.0,60.0
+2020-12-23,macron,Harris,1000,internet,49.0,51.0
+2021-01-06,macron,Elabe,1001,internet,35.0,61.0
+2021-01-06,macron,Yougov,1061,internet,32.0,61.0
+2021-01-08,macron,Ifop,1028,internet,45.0,55.0
+2021-01-09,macron,Kantar,1000,face to face,36.0,61.0
+2021-01-14,macron,Odoxa,1003,internet,40.0,60.0
+2021-01-15,macron,Ifop,1913,phone&internet,40.0,58.0
+2021-01-21,macron,BVA,1002,internet,37.0,63.0
+2021-01-21,macron,Viavoice,1001,internet,34.0,58.0
+2021-01-23,macron,Ipsos,1000,internet,35.0,60.0
+2021-01-27,macron,Harris,1017,internet,45.0,55.0
+2021-01-31,macron,Kantar,2000,face-to-face&internet,39.0,56.0
+2021-02-02,macron,Yougov,1013,internet,34.0,59.0
+2021-02-03,macron,Elabe,1001,internet,36.0,60.0
+2021-02-05,macron,Ifop,1004,internet,41.0,59.0
+2021-02-15,macron,Ifop,1954,phone&internet,41.0,56.0
+2021-02-18,macron,BVA,1003,internet,42.0,58.0
+2021-02-18,macron,Odoxa,1005,internet,41.0,59.0
+2021-02-24,macron,Harris,1037,internet,48.0,52.0
+2021-02-26,macron,Ifop,1012,internet,41.0,58.0
+2021-03-02,macron,Kantar,1000,internet,39.0,54.0
+2021-03-02,macron,Yougov,1084,internet,33.0,58.0
+2021-03-03,macron,Elabe,1003,internet,34.0,60.0
+2021-03-06,macron,Ipsos,1000,internet,41.0,53.0
+2021-03-15,macron,Ifop,1911,phone&internet,37.0,60.0
+2021-03-18,macron,BVA,1001,internet,39.0,61.0
+2021-03-20,macron,Viavoice,1000,internet,33.0,58.0
+2021-03-24,macron,Harris,1023,internet,46.0,54.0
+2021-03-25,macron,Odoxa,1005,internet,39.0,61.0
+2021-03-26,macron,Ifop,1011,internet,39.0,61.0
+2021-03-29,macron,Kantar,1000,internet,36.0,58.0
+2021-03-30,macron,Yougov,1068,internet,30.0,61.0
+2021-04-07,macron,Elabe,1003,internet,33.0,63.0
+2021-04-10,macron,Ipsos,1002,internet,37.0,58.0
+2021-04-22,macron,BVA,1002,internet,39.0,60.0
+2021-04-22,macron,Odoxa,1005,internet,38.0,61.0
+2021-04-26,macron,Kantar,1000,internet,35.0,58.0
+2021-04-28,macron,Harris,1041,internet,46.0,54.0
+2021-04-29,macron,Ifop,1002,internet,41.0,59.0
+2021-05-04,macron,Yougov,1001,internet,31.0,62.0
+2021-05-05,macron,Elabe,1000,internet,33.0,62.0
+2021-05-16,macron,Ifop,1928,phone&internet,40.0,58.0
+2021-05-20,macron,BVA,1004,internet,42.0,58.0
+2021-05-21,macron,Odoxa,1005,internet,41.0,58.0
+2021-05-27,macron,Harris,1025,internet,48.0,52.0
+2021-05-28,macron,Ifop,1015,internet,41.0,59.0
+2021-05-29,macron,Ipsos,1000,internet,40.0,57.0
+2021-06-01,macron,Kantar,1000,internet,35.0,57.0
+2021-06-02,macron,Elabe,1002,internet,36.0,58.0
+2021-06-07,macron,Yougov,1003,internet,30.0,61.0
+2021-06-24,macron,Odoxa,1005,internet,41.0,58.0
+2021-06-24,macron,Harris,1050,internet,50.0,50.0
+2021-06-25,macron,Ifop,1006,internet,41.0,59.0
+2021-06-28,macron,Kantar,1000,internet,39.0,55.0
+2021-06-30,macron,Yougov,1081,internet,31.0,59.0
+2021-07-01,macron,BVA,1004,internet,39.0,60.0
+2021-07-07,macron,Elabe,1003,internet,36.0,59.0
+2021-07-10,macron,Ipsos,1000,internet,39.0,55.0
+2021-07-16,macron,Odoxa,1005,internet,39.0,61.0
+2021-07-29,macron,Harris,1044,internet,47.0,53.0
+2021-08-04,macron,Elabe,1003,internet,34.0,61.0
+2021-08-12,macron,Yougov,1107,internet,28.0,72.0
+2021-08-21,macron,Ifop,992,phone&internet,41.0,59.0
+2021-08-26,macron,Harris,1054,internet,48.0,52.0
+2021-08-27,macron,BVA,1003,internet,40.0,60.0
+2021-08-30,macron,Kantar,1000,internet,38.0,55.0
+2021-09-01,macron,Elabe,1000,internet,37.0,57.0
+2021-09-01,macron,Ifop,1003,phone&internet,38.0,62.0
+2021-09-04,macron,Ipsos,1000,internet,40.0,53.0
+2021-09-16,macron,Ifop,1939,internet,38.0,59.0
+2021-09-23,macron,BVA,1000,internet,46.0,53.0
+2021-09-23,macron,Odoxa,1005,internet,42.0,58.0
+2021-09-27,macron,Kantar,1000,internet,34.0,57.0
+2021-10-01,macron,Ifop,1018,internet,39.0,61.0
+2021-10-06,macron,Elabe,1309,internet,35.0,58.0
+2021-10-09,macron,Ipsos,1000,internet,40.0,56.0
+2021-10-11,macron,Ifop,1887,phone&internet,40.0,58.0
+2021-10-21,macron,BVA,1007,internet,42.0,58.0
+2021-10-21,macron,Odoxa,1005,internet,40.0,60.0
+2021-11-01,macron,Kantar,1000,internet,36.0,57.0
+2021-11-03,macron,Elabe,1001,internet,34.0,60.0
+2021-11-25,macron,BVA,1001,internet,42.0,58.0
+2021-11-18,macron,Odoxa,1005,internet,44.0,56.0
+2021-11-13,macron,Ifop,1891,phone&internet,40.0,57.0
+2021-11-25,macron,Harris,1078,internet,51.0,49.0
+2021-12-06,macron,Kantar,1000,internet,37.0,55.0
+2021-12-07,macron,Elabe,1480,internet,36.0,58.0
+2021-12-16,macron,BVA,1000,internet,44.0,56.0
+2021-12-11,macron,Ipsos,1000,internet,41.0,52.0
+2021-12-08,macron,Odoxa,1005,internet,44.0,56.0
+2021-12-13,macron,Ifop,1947,phone&internet,41.0,55.0
+2021-12-22,macron,Harris,1211,internet,51.0,49.0
+2022-01-08,macron,Ipsos,1000,internet,40.0,56.0
+2022-01-10,macron,Kantar,1000,internet,38.0,56.0
+2022-01-11,macron,Elabe,1465,internet,32.0,65.0
+2022-01-17,macron,Ifop,1952,phone&internet,37.0,60.0
+2022-01-20,macron,BVA,1000,internet,38.0,62.0
+2022-01-20,macron,Odoxa,1005,internet,39.0,61.0
+2022-01-31,macron,Kantar,1000,internet,39.0,55.0
+2022-02-01,macron,Elabe,1482,internet,35.0,60.0
+2022-02-12,macron,Ipsos,1000,internet,43.0,54.0
+2022-02-13,macron,Ifop,1936,phone&internet,39.0,55.0
+2022-02-16,macron,Odoxa,1005,internet,41.0,57.0
+2022-02-24,macron,BVA,1000,internet,42.0,58.0
+2022-02-28,macron,Kantar,1000,internet,45.0,48.0
+2022-02-28,macron,Elabe,1431,internet,40.0,55.0
+2022-03-11,macron,Ifop,1913,phone&internet,41.0,58.0
+2022-03-12,macron,Ipsos,1000,internet,47.0,49.0
+2022-03-13,macron,Ifop,1925,phone&internet,42.0,56.0
+2022-03-31,macron,Harris,1065,internet,51.0,49.0
+2022-03-22,macron,BVA,1004,internet,46.0,54.0
+2022-03-24,macron,Odoxa,1005,internet,46.0,54.0
+2022-03-28,macron,Kantar,1000,internet,43.0,51.0
+2022-03-29,macron,Elabe,1531,internet,38.0,55.0
+2022-04-14,macron,Odoxa,1005,internet,40.0,59.0
+2022-04-27,macron2,BVA,1005,internet,42.0,58.0
+2022-04-27,macron2,Harris,1027,internet,49.0,51.0
+2022-05-02,macron2,Kantar,1000,internet,41.0,59.0
+2022-05-04,macron2,Elabe,1000,internet,34.0,58.0
+2022-05-12,macron2,Ipsos,1000,internet,42.0,54.0
+2022-05-19,macron2,BVA,1022,internet,42.0,57.0
+2022-05-21,macron2,Ifop,1946,phone&internet,41.0,58.0
+2022-05-25,macron2,Odoxa,1005,internet,44.0,56.0
+2022-05-26,macron2,Harris,1002,internet,49.0,51.0
+2022-05-30,macron2,Kantar,1000,internet,37.0,56.0
+2022-06-01,macron2,Elabe,2000,internet,32.0,59.0

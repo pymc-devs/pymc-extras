@@ -60,12 +60,12 @@ class PytensorRepresentation:
 
     .. math::
         \begin{align}
-            x_t &= A_t x_{t-1} + c_t + R_t \varepsilon_t \tag{1} \\
+            x_t &= T_t x_{t-1} + c_t + R_t \varepsilon_t \tag{1} \\
             y_t &= Z_t x_t + d_t + \eta_t \tag{2} \\
         \end{align}
 
     Where :math:`\{x_t\}_{t=0}^T` is a trajectory of hidden states, and :math:`\{y_t\}_{t=0}^T` is a trajectory of
-    observable states. Equation 1 is known as the "state transition equation", while describes how the system evolves
+    observable states. Equation 1 is known as the "state transition equation", which describes how the system evolves
     over time. Equation 2 is the "observation equation", and maps the latent state processes to observed data.
     The system is Gaussian when the innovations, :math:`\varepsilon_t`, and the measurement errors, :math:`\eta_t`,
     are normally distributed. The definition is completed by specification of these distributions, as
