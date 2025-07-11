@@ -410,15 +410,14 @@ class GrassiaIIGeometricRV(RandomVariable):
     _print_name = ("GrassiaIIGeometric", "\\operatorname{GrassiaIIGeometric}")
 
     def __call__(self, r, alpha, time_covariate_vector=None, size=None, **kwargs):
-        return super().__call__(r, alpha, time_covariate_vector, size=size, **kwargs)
+        return super().__call__(r, alpha, time_covariate_vector, size, **kwargs)
 
     @classmethod
     def rng_fn(cls, rng, r, alpha, time_covariate_vector, size):
-        # Handle None case for time_covariate_vector
         if time_covariate_vector is None:
             time_covariate_vector = 0.0
 
-        # Convert inputs to numpy arrays - these should be concrete values
+        # Cast inputs as numpy arrays
         r = np.asarray(r, dtype=np.float64)
         alpha = np.asarray(alpha, dtype=np.float64)
         time_covariate_vector = np.asarray(time_covariate_vector, dtype=np.float64)
@@ -427,33 +426,28 @@ class GrassiaIIGeometricRV(RandomVariable):
         if size is None:
             size = np.broadcast_shapes(r.shape, alpha.shape, time_covariate_vector.shape)
 
-        # Broadcast parameters to the output size
+        # Broadcast parameters to output size
         r = np.broadcast_to(r, size)
         alpha = np.broadcast_to(alpha, size)
         time_covariate_vector = np.broadcast_to(time_covariate_vector, size)
 
         # Calculate exp(time_covariate_vector) for all samples
-        exp_time_covar_sum = np.exp(time_covariate_vector)
+        exp_time_covar = np.exp(time_covariate_vector)
 
         # Generate gamma samples and apply time covariates
         lam = rng.gamma(shape=r, scale=1 / alpha, size=size)
-        lam_covar = lam * exp_time_covar_sum
 
-        # Calculate probability parameter for geometric distribution
-        # Use the mathematically correct approach: 1 - exp(-lambda)
-        # This matches the first test case and is theoretically sound
+        # TODO: Add C(t) to the calculation of lam_covar
+        lam_covar = lam * exp_time_covar
         p = 1 - np.exp(-lam_covar)
 
         # Ensure p is in valid range for geometric distribution
-        # Use a more conservative lower bound to prevent extremely large values
         min_p = max(1e-6, np.finfo(float).tiny)  # Minimum probability to prevent infinite values
         p = np.clip(p, min_p, 1.0)
 
-        # Generate geometric samples
         samples = rng.geometric(p)
 
         # Clip samples to reasonable bounds to prevent infinite values
-        # Geometric distribution with small p can produce very large values
         max_sample = 10000  # Reasonable upper bound for discrete time-to-event data
         samples = np.clip(samples, 1, max_sample)
 
@@ -507,7 +501,7 @@ class GrassiaIIGeometric(Discrete):
     alpha : tensor_like of float
         Scale parameter (alpha > 0).
     time_covariate_vector : tensor_like of float, optional
-        Optional vector of dot product of time-varying covariates and their coefficients by time period.
+        Optional vector containing dot products of time-varying covariates and coefficients.
 
     References
     ----------
@@ -535,19 +529,15 @@ class GrassiaIIGeometric(Discrete):
         def C_t(t):
             # Aggregate time_covariate_vector over active time periods
             if t == 0:
-                return pt.constant(1.0)
+                return pt.constant(0.0)
             # Handle case where time_covariate_vector is a scalar
             if time_covariate_vector.ndim == 0:
                 return t * pt.exp(time_covariate_vector)
             else:
-                # For vector time_covariate_vector, use a simpler approach
-                # that works with PyTensor's symbolic system
-                # We'll use the mean of the time covariates multiplied by t
-                # This is an approximation but avoids symbolic indexing issues
+                # For time covariates, this approximation avoids symbolic indexing issues
                 mean_covariate = pt.mean(time_covariate_vector)
                 return t * pt.exp(mean_covariate)
 
-        # Calculate the PMF on log scale
         logp = pt.log(
             pt.pow(alpha / (alpha + C_t(value - 1)), r) - pt.pow(alpha / (alpha + C_t(value)), r)
         )
@@ -574,21 +564,13 @@ class GrassiaIIGeometric(Discrete):
             time_covariate_vector = pt.constant(0.0)
         time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
 
-        # Calculate CDF on log scale
-        # For the GrassiaIIGeometric, the CDF is 1 - survival function
-        # S(t) = (alpha/(alpha + C(t)))^r
-        # CDF(t) = 1 - S(t)
-
         def C_t(t):
             if t == 0:
                 return pt.constant(1.0)
             if time_covariate_vector.ndim == 0:
                 return t * pt.exp(time_covariate_vector)
             else:
-                # For vector time_covariate_vector, use a simpler approach
-                # that works with PyTensor's symbolic system
-                # We'll use the mean of the time covariates multiplied by t
-                # This is an approximation but avoids symbolic indexing issues
+                # For time covariates, this approximation avoids symbolic indexing issues
                 mean_covariate = pt.mean(time_covariate_vector)
                 return t * pt.exp(mean_covariate)
 
@@ -613,14 +595,9 @@ class GrassiaIIGeometric(Discrete):
         When time_covariate_vector is provided, it affects the expected value through
         the exponential link function: exp(time_covariate_vector).
         """
-        # Base mean from the gamma mixing distribution: E[lambda] = r/alpha
-        # For a geometric distribution with parameter p, E[X] = 1/p
-        # Since p = 1 - exp(-lambda), we approximate E[X] ≈ 1/(1 - exp(-E[lambda]))
         base_lambda = r / alpha
 
-        # Approximate the expected value of the geometric distribution
-        # For small lambda, 1 - exp(-lambda) ≈ lambda, so E[X] ≈ 1/lambda
-        # For larger lambda, we use the full expression
+        # Approximate expected value of geometric distribution
         mean = pt.switch(
             base_lambda < 0.1,
             1.0 / base_lambda,  # Approximation for small lambda
@@ -631,7 +608,7 @@ class GrassiaIIGeometric(Discrete):
         if time_covariate_vector is not None:
             mean = mean * pt.exp(time_covariate_vector)
 
-        # Round up to nearest integer and ensure it's at least 1
+        # Round up to nearest integer and ensure >= 1
         mean = pt.maximum(pt.ceil(mean), 1.0)
 
         # Handle size parameter
