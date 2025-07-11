@@ -551,6 +551,13 @@ class Component:
         obs_intercept.name = d.name
 
         transition = pt.linalg.block_diag(T, o_T)
+        transition = pt.specify_shape(
+            transition,
+            shape=[
+                sum(shapes) if not any([s is None for s in shapes]) else None
+                for shapes in zip(*[T.type.shape, o_T.type.shape])
+            ],
+        )
         transition.name = T.name
 
         design = join_tensors_by_dim_labels(
@@ -563,6 +570,13 @@ class Component:
         design.name = Z.name
 
         selection = pt.linalg.block_diag(R, o_R)
+        selection = pt.specify_shape(
+            selection,
+            shape=[
+                sum(shapes) if not any([s is None for s in shapes]) else None
+                for shapes in zip(*[R.type.shape, o_R.type.shape])
+            ],
+        )
         selection.name = R.name
 
         obs_cov = add_tensors_by_dim_labels(

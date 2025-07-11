@@ -428,7 +428,8 @@ def reorder_from_labels(
     if indices.tolist() != list(range(n_out)):
         for axis in labeled_axis:
             idx = np.s_[tuple([slice(None, None) if i != axis else indices for i in range(x.ndim)])]
-            x = x[idx]
+            shape = x.type.shape
+            x = pt.specify_shape(x[idx], shape)
 
     return x
 
@@ -511,7 +512,11 @@ def ndim_pad_and_reorder(
 
     if n_missing > 0:
         pad_size = [(0, 0) if i not in labeled_axis else (0, n_missing) for i in range(x.ndim)]
-        x = pt.pad(x, pad_size, mode="constant", constant_values=0)
+        new_shape = [
+            shape + sum(size) if shape is not None else None
+            for shape, size in zip(x.type.shape, pad_size)
+        ]
+        x = pt.specify_shape(pt.pad(x, pad_size, mode="constant", constant_values=0), new_shape)
 
     return reorder_from_labels(x, labels, ordered_labels, labeled_axis)
 
