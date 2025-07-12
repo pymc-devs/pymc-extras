@@ -509,7 +509,7 @@ class GrassiaIIGeometric(Discrete):
         time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
         return super().dist([r, alpha, time_covariate_vector], *args, **kwargs)
 
-    def logp(value, r, alpha, time_covariate_vector=None):
+    def logp(value, r, alpha, time_covariate_vector):
         if time_covariate_vector is None:
             time_covariate_vector = pt.constant(0.0)
         time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
@@ -547,14 +547,12 @@ class GrassiaIIGeometric(Discrete):
             msg="r > 0, alpha > 0",
         )
 
-    def logcdf(value, r, alpha, time_covariate_vector=None):
+    def logcdf(value, r, alpha, time_covariate_vector):
         if time_covariate_vector is None:
             time_covariate_vector = pt.constant(0.0)
         time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
 
         def C_t(t):
-            if t == 0:
-                return pt.constant(0.0)
             if time_covariate_vector.ndim == 0:
                 return t
             else:
@@ -576,7 +574,7 @@ class GrassiaIIGeometric(Discrete):
             msg="r > 0, alpha > 0",
         )
 
-    def support_point(rv, size, r, alpha, time_covariate_vector=None):
+    def support_point(rv, size, r, alpha, time_covariate_vector):
         """Calculate a reasonable starting point for sampling.
 
         For the GrassiaIIGeometric distribution, we use a point estimate based on
