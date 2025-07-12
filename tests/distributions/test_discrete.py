@@ -19,6 +19,7 @@ import pytensor.tensor as pt
 import pytest
 import scipy.stats
 
+from pymc.logprob.utils import ParameterValueError
 from pymc.testing import (
     BaseTestDistributionRandom,
     Domain,
@@ -92,11 +93,15 @@ class TestGeneralizedPoisson:
         logp_fn(-1, mu=5, lam=0) == -np.inf
         logp_fn(9, mu=5, lam=-1) == -np.inf
 
-        # Test invalid values
-        assert logp_fn(np.array([0])) == -np.inf  # Value must be > 0
+        # Check mu/lam restrictions
+        with pytest.raises(ValueError):
+            logp_fn(1, mu=1, lam=2)
 
-        with pytest.raises(TypeError):
-            logp_fn(np.array([1.5]))  # Value must be integer
+        with pytest.raises(ValueError):
+            logp_fn(1, mu=0, lam=0)
+
+        with pytest.raises(ParameterValueError):
+            logp_fn(1, mu=1, lam=-1)
 
     def test_logp_lam_expected_moments(self):
         mu = 30
