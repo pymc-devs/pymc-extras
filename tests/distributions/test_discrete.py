@@ -94,10 +94,10 @@ class TestGeneralizedPoisson:
         logp_fn(9, mu=5, lam=-1) == -np.inf
 
         # Check mu/lam restrictions
-        with pytest.raises(ValueError):
+        with pytest.raises(ParameterValueError):
             logp_fn(1, mu=1, lam=2)
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ParameterValueError):
             logp_fn(1, mu=0, lam=0)
 
         with pytest.raises(ParameterValueError):
