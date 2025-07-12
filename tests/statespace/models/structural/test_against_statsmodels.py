@@ -231,7 +231,7 @@ def create_structural_model_and_equivalent_statsmodel(
         ]
         if stochastic_level:
             level_trend_innov_order[0] = 1
-            expected_coords["level_shock"] += ["level"]
+            expected_coords["shock_level"] += ["level"]
             expected_coords[SHOCK_DIM] += [
                 "level",
             ]
@@ -253,7 +253,7 @@ def create_structural_model_and_equivalent_statsmodel(
 
         if stochastic_trend:
             level_trend_innov_order[1] = 1
-            expected_coords["level_shock"] += ["trend"]
+            expected_coords["shock_level"] += ["trend"]
             expected_coords[SHOCK_DIM] += ["trend"]
             expected_coords[SHOCK_AUX_DIM] += ["trend"]
 
@@ -277,7 +277,7 @@ def create_structural_model_and_equivalent_statsmodel(
         sm_init["trend"] = level_value[1]
 
         if sum(level_trend_innov_order) > 0:
-            expected_param_dims["sigma_level"] += ("level_shock",)
+            expected_param_dims["sigma_level"] += ("shock_level",)
             params["sigma_level"] = np.sqrt(sigma_level_value2)
 
         sigma_level_value = sigma_level_value2.tolist()
@@ -296,10 +296,10 @@ def create_structural_model_and_equivalent_statsmodel(
     if seasonal is not None:
         state_names = [f"seasonal_{i}" for i in range(seasonal)][1:]
         seasonal_coefs = rng.normal(size=(seasonal - 1,)).astype(floatX)
-        params["seasonal_coefs"] = seasonal_coefs
-        expected_param_dims["seasonal_coefs"] += ("seasonal_state",)
+        params["coefs_seasonal"] = seasonal_coefs
+        expected_param_dims["coefs_seasonal"] += ("state_seasonal",)
 
-        expected_coords["seasonal_state"] += tuple(state_names)
+        expected_coords["state_seasonal"] += tuple(state_names)
         expected_coords[ALL_STATE_DIM] += state_names
         expected_coords[ALL_STATE_AUX_DIM] += state_names
 
@@ -331,15 +331,15 @@ def create_structural_model_and_equivalent_statsmodel(
             s = d["period"]
             last_state_not_identified = (s / n) == 2.0
             n_states = 2 * n - int(last_state_not_identified)
-            state_names = [f"seasonal_{s}_{f}_{i}" for i in range(n) for f in ["Cos", "Sin"]]
+            state_names = [f"{f}_seasonal_{s}_{i}" for i in range(n) for f in ["Cos", "Sin"]]
 
             seasonal_params = rng.normal(size=n_states).astype(floatX)
 
             params[f"seasonal_{s}"] = seasonal_params
-            expected_param_dims[f"seasonal_{s}"] += (f"seasonal_{s}_state",)
+            expected_param_dims[f"seasonal_{s}"] += (f"state_seasonal_{s}",)
             expected_coords[ALL_STATE_DIM] += state_names
             expected_coords[ALL_STATE_AUX_DIM] += state_names
-            expected_coords[f"seasonal_{s}_state"] += (
+            expected_coords[f"state_seasonal_{s}"] += (
                 tuple(state_names[:-1]) if last_state_not_identified else tuple(state_names)
             )
 
@@ -367,14 +367,14 @@ def create_structural_model_and_equivalent_statsmodel(
 
         # Statsmodels takes the frequency not the cycle length, so convert it.
         sm_params["frequency.cycle"] = 2.0 * np.pi / cycle_length
-        params["cycle_length"] = cycle_length
+        params["length_cycle"] = cycle_length
 
         init_cycle = rng.normal(size=(2,)).astype(floatX)
         params["cycle"] = init_cycle
-        expected_param_dims["cycle"] += ("cycle_state",)
+        expected_param_dims["cycle"] += ("state_cycle",)
 
-        state_names = ["cycle_Cos", "cycle_Sin"]
-        expected_coords["cycle_state"] += state_names
+        state_names = ["Cos_cycle", "Sin_cycle"]
+        expected_coords["state_cycle"] += state_names
         expected_coords[ALL_STATE_DIM] += state_names
         expected_coords[ALL_STATE_AUX_DIM] += state_names
 
@@ -391,7 +391,7 @@ def create_structural_model_and_equivalent_statsmodel(
 
         if damped_cycle:
             rho = rng.beta(1, 1)
-            params["cycle_dampening_factor"] = rho
+            params["dampening_factor_cycle"] = rho
             sm_params["damping.cycle"] = rho
 
         comp = st.CycleComponent(

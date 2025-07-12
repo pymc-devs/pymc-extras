@@ -275,7 +275,7 @@ def pymc_mod_no_exog(ss_mod_no_exog, rng):
         P0 = pm.Deterministic(
             "P0", pt.eye(ss_mod_no_exog.k_states) * P0_sigma, dims=["state", "state_aux"]
         )
-        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["trend_shock"])
+        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
         ss_mod_no_exog.build_statespace_graph(y)
 
     return m
@@ -291,7 +291,7 @@ def pymc_mod_no_exog_mv(ss_mod_no_exog_mv, rng):
         P0 = pm.Deterministic(
             "P0", pt.eye(ss_mod_no_exog_mv.k_states) * P0_sigma, dims=["state", "state_aux"]
         )
-        trend_sigma = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "trend_shock"])
+        trend_sigma = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "shock_trend"])
         ss_mod_no_exog_mv.build_statespace_graph(y)
 
     return m
@@ -311,7 +311,7 @@ def pymc_mod_no_exog_mv_dt(ss_mod_no_exog_mv, rng):
         P0 = pm.Deterministic(
             "P0", pt.eye(ss_mod_no_exog_mv.k_states) * P0_sigma, dims=["state", "state_aux"]
         )
-        trend_sigma = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "trend_shock"])
+        trend_sigma = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "shock_trend"])
         ss_mod_no_exog_mv.build_statespace_graph(y)
 
     return m
@@ -331,7 +331,7 @@ def pymc_mod_no_exog_dt(ss_mod_no_exog_dt, rng):
         P0 = pm.Deterministic(
             "P0", pt.eye(ss_mod_no_exog_dt.k_states) * P0_sigma, dims=["state", "state_aux"]
         )
-        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["trend_shock"])
+        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
         ss_mod_no_exog_dt.build_statespace_graph(y)
 
     return m

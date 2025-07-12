@@ -30,7 +30,7 @@ def test_cycle_component_with_dampening(rng):
     cycle = st.CycleComponent(
         name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False, dampen=True
     )
-    params = {"cycle": np.array([10.0, 10.0], dtype=config.floatX), "cycle_dampening_factor": 0.75}
+    params = {"cycle": np.array([10.0, 10.0], dtype=config.floatX), "dampening_factor_cycle": 0.75}
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=100)
 
     # check that cycle dampens to zero over time
@@ -43,8 +43,8 @@ def test_cycle_component_with_innovations_and_cycle_length(rng):
     )
     params = {
         "cycle": np.array([1.0, 1.0], dtype=config.floatX),
-        "cycle_length": 12.0,
-        "cycle_dampening_factor": 0.95,
+        "length_cycle": 12.0,
+        "dampening_factor_cycle": 0.95,
         "sigma_cycle": 1.0,
     }
     x, y = simulate_from_numpy_model(cycle, rng, params)
@@ -117,7 +117,7 @@ def test_cycle_multivariate_with_dampening(rng):
     )
     params = {
         "cycle": np.array([[10.0, 10.0], [20.0, 20.0], [30.0, 30.0]], dtype=config.floatX),
-        "cycle_dampening_factor": 0.75,
+        "dampening_factor_cycle": 0.75,
     }
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=100)
 
@@ -145,8 +145,8 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
     )
     params = {
         "cycle": np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=config.floatX),
-        "cycle_length": 12.0,
-        "cycle_dampening_factor": 0.95,
+        "length_cycle": 12.0,
+        "dampening_factor_cycle": 0.95,
         "sigma_cycle": np.array([0.5, 1.0, 1.5]),  # different innov variances per var
     }
     x, y = simulate_from_numpy_model(cycle, rng, params)
@@ -154,8 +154,8 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
     cycle.build(verbose=False)
     _assert_basic_coords_correct(cycle)
 
-    assert cycle.coords["cycle_state"] == ["cycle_Cos", "cycle_Sin"]
-    assert cycle.coords["cycle_endog"] == ["data_1", "data_2", "data_3"]
+    assert cycle.coords["state_cycle"] == ["Cos_cycle", "Sin_cycle"]
+    assert cycle.coords["endog_cycle"] == ["data_1", "data_2", "data_3"]
 
     assert cycle.k_endog == 3
     assert cycle.k_states == 6  # 2 states per variable
@@ -171,8 +171,8 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
     # check design, transition, selection & state_cov matrices
     Z, T, R, Q = pytensor.function(
         [
-            cycle._name_to_variable["cycle_length"],
-            cycle._name_to_variable["cycle_dampening_factor"],
+            cycle._name_to_variable["length_cycle"],
+            cycle._name_to_variable["dampening_factor_cycle"],
             cycle._name_to_variable["sigma_cycle"],
         ],
         [
@@ -182,7 +182,7 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
             cycle.ssm["state_cov"],
         ],
         mode="FAST_COMPILE",
-    )(params["cycle_length"], params["cycle_dampening_factor"], params["sigma_cycle"])
+    )(params["length_cycle"], params["dampening_factor_cycle"], params["sigma_cycle"])
 
     # each block is [1, 0] for design
     expected_Z = np.zeros((3, 6))
@@ -193,7 +193,7 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
 
     # each block is 2x2 frequency transition matrix for given cycle length (12 here),
     # scaled by dampening factor
-    block = _frequency_transition_block(12, 1).eval() * params["cycle_dampening_factor"]
+    block = _frequency_transition_block(12, 1).eval() * params["dampening_factor_cycle"]
     expected_T = np.zeros((6, 6))
     for i in range(3):
         expected_T[2 * i : 2 * i + 2, 2 * i : 2 * i + 2] = block
@@ -242,21 +242,21 @@ def test_add_multivariate_cycle_components_with_different_observed():
 
     # check state names and coords
     expected_state_names = [
-        "cycle1_Cos[a1]",
-        "cycle1_Sin[a1]",
-        "cycle1_Cos[a2]",
-        "cycle1_Sin[a2]",
-        "cycle2_Cos[b1]",
-        "cycle2_Sin[b1]",
-        "cycle2_Cos[b2]",
-        "cycle2_Sin[b2]",
+        "Cos_cycle1[a1]",
+        "Sin_cycle1[a1]",
+        "Cos_cycle1[a2]",
+        "Sin_cycle1[a2]",
+        "Cos_cycle2[b1]",
+        "Sin_cycle2[b1]",
+        "Cos_cycle2[b2]",
+        "Sin_cycle2[b2]",
     ]
     assert mod.state_names == expected_state_names
 
-    assert mod.coords["cycle1_state"] == ["cycle1_Cos", "cycle1_Sin"]
-    assert mod.coords["cycle2_state"] == ["cycle2_Cos", "cycle2_Sin"]
-    assert mod.coords["cycle1_endog"] == ["a1", "a2"]
-    assert mod.coords["cycle2_endog"] == ["b1", "b2"]
+    assert mod.coords["state_cycle1"] == ["Cos_cycle1", "Sin_cycle1"]
+    assert mod.coords["state_cycle2"] == ["Cos_cycle2", "Sin_cycle2"]
+    assert mod.coords["endog_cycle1"] == ["a1", "a2"]
+    assert mod.coords["endog_cycle2"] == ["b1", "b2"]
 
     # evaluate design, transition, selection matrices
     Z, T, R = pytensor.function(

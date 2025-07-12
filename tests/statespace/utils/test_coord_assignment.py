@@ -81,7 +81,7 @@ def create_model(load_dataset):
             )
             P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=("state", "state_aux"))
             initial_trend = pm.Normal("initial_level_trend", dims="state_level_trend")
-            sigma_trend = pm.Exponential("sigma_level_trend", 1, dims="level_trend_shock")
+            sigma_trend = pm.Exponential("sigma_level_trend", 1, dims="shock_level_trend")
             ss_mod.build_statespace_graph(data, save_kalman_filter_outputs_in_idata=True)
         return mod
 
