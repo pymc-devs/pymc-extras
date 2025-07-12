@@ -426,7 +426,7 @@ class GrassiaIIGeometricRV(RandomVariable):
         exp_time_covar = np.exp(time_covariate_vector)
         lam_covar = lam * exp_time_covar
 
-        # TODO: This is not aggregated over time
+        # TODO: Derive inverse log_cdf and use rng.uniform or rng.log_uniform
         p = 1 - np.exp(-lam_covar)
 
         # Ensure p is in valid range for geometric distribution
