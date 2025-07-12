@@ -510,24 +510,9 @@ class GrassiaIIGeometric(Discrete):
         return super().dist([r, alpha, time_covariate_vector], *args, **kwargs)
 
     def logp(value, r, alpha, time_covariate_vector):
-        if time_covariate_vector is None:
-            time_covariate_vector = pt.constant(0.0)
-        time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
-
-        def C_t(t):
-            if time_covariate_vector.ndim == 0:
-                return t
-            else:
-                # Ensure t is a valid index
-                t_idx = pt.maximum(0, t - 1)  # Convert to 0-based indexing
-                # If t_idx exceeds length of time_covariate_vector, use last value
-                max_idx = pt.shape(time_covariate_vector)[0] - 1
-                safe_idx = pt.minimum(t_idx, max_idx)
-                covariate_value = time_covariate_vector[safe_idx]
-                return t * pt.exp(covariate_value)
-
         logp = pt.log(
-            pt.pow(alpha / (alpha + C_t(value - 1)), r) - pt.pow(alpha / (alpha + C_t(value)), r)
+            pt.pow(alpha / (alpha + C_t(value - 1, time_covariate_vector)), r)
+            - pt.pow(alpha / (alpha + C_t(value, time_covariate_vector)), r)
         )
 
         # Handle invalid values
@@ -548,24 +533,10 @@ class GrassiaIIGeometric(Discrete):
         )
 
     def logcdf(value, r, alpha, time_covariate_vector):
-        if time_covariate_vector is None:
-            time_covariate_vector = pt.constant(0.0)
-        time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
-
-        def C_t(t):
-            if time_covariate_vector.ndim == 0:
-                return t
-            else:
-                # Ensure t is a valid index
-                t_idx = pt.maximum(0, t - 1)  # Convert to 0-based indexing
-                # If t_idx exceeds length of time_covariate_vector, use last value
-                max_idx = pt.shape(time_covariate_vector)[0] - 1
-                safe_idx = pt.minimum(t_idx, max_idx)
-                covariate_value = time_covariate_vector[safe_idx]
-                return t * pt.exp(covariate_value)
-
-        survival = pt.pow(alpha / (alpha + C_t(value)), r)
-        logcdf = pt.log(1 - survival)
+        logcdf = r * (
+            pt.log(C_t(value, time_covariate_vector))
+            - pt.log(alpha + C_t(value, time_covariate_vector))
+        )
 
         return check_parameters(
             logcdf,
@@ -585,8 +556,6 @@ class GrassiaIIGeometric(Discrete):
         When time_covariate_vector is provided, it affects the expected value through
         the exponential link function: exp(time_covariate_vector).
         """
-        if time_covariate_vector is None:
-            time_covariate_vector = pt.constant(0.0)
 
         base_lambda = r / alpha
 
@@ -608,3 +577,17 @@ class GrassiaIIGeometric(Discrete):
             mean = pt.full(size, mean)
 
         return mean
+
+
+def C_t(t: pt.TensorVariable, time_covariate_vector: pt.TensorVariable) -> pt.TensorVariable:
+    """Utility for processing time-varying covariates in GrassiaIIGeometric distribution."""
+    if time_covariate_vector.ndim == 0:
+        return t
+    else:
+        # Ensure t is a valid index
+        t_idx = pt.maximum(0, t - 1)  # Convert to 0-based indexing
+        # If t_idx exceeds length of time_covariate_vector, use last value
+        max_idx = pt.shape(time_covariate_vector)[0] - 1
+        safe_idx = pt.minimum(t_idx, max_idx)
+        covariate_value = time_covariate_vector[safe_idx]
+        return t * pt.exp(covariate_value)
