@@ -27,6 +27,8 @@ from pymc.testing import (
     Rplus,
     assert_support_point_is_expected,
     check_logp,
+    check_logcdf,
+    check_support_point,
     discrete_random_tester,
 )
 from pytensor import config
