@@ -36,7 +36,7 @@ def test_time_seasonality(s, innovations, remove_first_state, rng):
     x0 = np.zeros(mod.k_states, dtype=config.floatX)
     x0[0] = 1
 
-    params = {"season_coefs": x0}
+    params = {"coefs_season": x0}
     if innovations:
         params["sigma_season"] = 0.0
 
@@ -49,7 +49,7 @@ def test_time_seasonality(s, innovations, remove_first_state, rng):
     mod = mod.build(verbose=False)
     _assert_basic_coords_correct(mod)
     test_slice = slice(1, None) if remove_first_state else slice(None)
-    assert mod.coords["season_state"] == state_names[test_slice]
+    assert mod.coords["state_season"] == state_names[test_slice]
 
 
 @pytest.mark.parametrize(
@@ -77,7 +77,7 @@ def test_time_seasonality_multiple_observed(rng, remove_first_state):
     x0[0, 0] = 1
     x0[1, 0] = 2.0
 
-    params = {"season_coefs": x0, "sigma_season": np.array([0.0, 0.0], dtype=config.floatX)}
+    params = {"coefs_season": x0, "sigma_season": np.array([0.0, 0.0], dtype=config.floatX)}
 
     x, y = simulate_from_numpy_model(mod, rng, params, steps=123)
     assert_pattern_repeats(y[:, 0], s, atol=ATOL, rtol=RTOL)
@@ -157,8 +157,8 @@ def test_add_two_time_seasonality_different_observed(rng):
     mod = (mod1 + mod2).build(verbose=False)
 
     params = {
-        "season1_coefs": np.array([1.0, 0.0, 0.0], dtype=config.floatX),
-        "season2_coefs": np.array([3.0, 0.0, 0.0, 0.0], dtype=config.floatX),
+        "coefs_season1": np.array([1.0, 0.0, 0.0], dtype=config.floatX),
+        "coefs_season2": np.array([3.0, 0.0, 0.0, 0.0], dtype=config.floatX),
         "sigma_season1": np.array(0.0, dtype=config.floatX),
         "sigma_season2": np.array(0.0, dtype=config.floatX),
         "initial_state_cov": np.eye(mod.k_states, dtype=config.floatX),
@@ -189,8 +189,8 @@ def test_add_two_time_seasonality_different_observed(rng):
     )
 
     x0, T = fn(
-        season1_coefs=np.array([1.0, 0.0, 0.0], dtype=config.floatX),
-        season2_coefs=np.array([3.0, 0.0, 0.0, 1.2], dtype=config.floatX),
+        coefs_season1=np.array([1.0, 0.0, 0.0], dtype=config.floatX),
+        coefs_season2=np.array([3.0, 0.0, 0.0, 1.2], dtype=config.floatX),
     )
 
     np.testing.assert_allclose(
@@ -240,12 +240,12 @@ def test_frequency_seasonality(n, s, rng):
     _assert_basic_coords_correct(mod)
     if n is None:
         n = int(s // 2)
-    states = [f"season_{f}_{i}" for i in range(n) for f in ["Cos", "Sin"]]
+    states = [f"{f}_season_{i}" for i in range(n) for f in ["Cos", "Sin"]]
 
     # Remove the last state when the model is completely saturated
     if s / n == 2.0:
         states.pop()
-    assert mod.coords["season_state"] == states
+    assert mod.coords["state_season"] == states
 
 
 def test_frequency_seasonality_multiple_observed(rng):
@@ -259,25 +259,25 @@ def test_frequency_seasonality_multiple_observed(rng):
         observed_state_names=observed_state_names,
     )
     expected_state_names = [
-        "season_Cos_0[data_1]",
-        "season_Sin_0[data_1]",
-        "season_Cos_1[data_1]",
-        "season_Sin_1[data_1]",
-        "season_Cos_0[data_2]",
-        "season_Sin_0[data_2]",
-        "season_Cos_1[data_2]",
-        "season_Sin_1[data_2]",
+        "Cos_season_0[data_1]",
+        "Sin_season_0[data_1]",
+        "Cos_season_1[data_1]",
+        "Sin_season_1[data_1]",
+        "Cos_season_0[data_2]",
+        "Sin_season_0[data_2]",
+        "Cos_season_1[data_2]",
+        "Sin_season_1[data_2]",
     ]
     assert mod.state_names == expected_state_names
     assert mod.shock_names == [
-        "season_Cos_0[data_1]",
-        "season_Sin_0[data_1]",
-        "season_Cos_1[data_1]",
-        "season_Sin_1[data_1]",
-        "season_Cos_0[data_2]",
-        "season_Sin_0[data_2]",
-        "season_Cos_1[data_2]",
-        "season_Sin_1[data_2]",
+        "Cos_season_0[data_1]",
+        "Sin_season_0[data_1]",
+        "Cos_season_1[data_1]",
+        "Sin_season_1[data_1]",
+        "Cos_season_0[data_2]",
+        "Sin_season_0[data_2]",
+        "Cos_season_1[data_2]",
+        "Sin_season_1[data_2]",
     ]
 
     # Simulate
@@ -292,13 +292,13 @@ def test_frequency_seasonality_multiple_observed(rng):
     assert_pattern_repeats(y[:, 1], 4, atol=ATOL, rtol=RTOL)
 
     mod = mod.build(verbose=False)
-    assert list(mod.coords["season_state"]) == [
-        "season_Cos_0[data_1]",
-        "season_Sin_0[data_1]",
-        "season_Cos_1[data_1]",
-        "season_Cos_0[data_2]",
-        "season_Sin_0[data_2]",
-        "season_Cos_1[data_2]",
+    assert list(mod.coords["state_season"]) == [
+        "Cos_season_0[data_1]",
+        "Sin_season_0[data_1]",
+        "Cos_season_1[data_1]",
+        "Cos_season_0[data_2]",
+        "Sin_season_0[data_2]",
+        "Cos_season_1[data_2]",
     ]
 
     x0_sym, *_, T_sym, Z_sym, R_sym, _, Q_sym = mod._unpack_statespace_with_placeholders()
@@ -384,21 +384,21 @@ def test_add_two_frequency_seasonality_different_observed(rng):
     assert_pattern_repeats(y[:, 1], 6, atol=ATOL, rtol=RTOL)
 
     assert mod.state_names == [
-        "freq1_Cos_0[data_1]",
-        "freq1_Sin_0[data_1]",
-        "freq1_Cos_1[data_1]",
-        "freq1_Sin_1[data_1]",
-        "freq2_Cos_0[data_2]",
-        "freq2_Sin_0[data_2]",
+        "Cos_freq1_0[data_1]",
+        "Sin_freq1_0[data_1]",
+        "Cos_freq1_1[data_1]",
+        "Sin_freq1_1[data_1]",
+        "Cos_freq2_0[data_2]",
+        "Sin_freq2_0[data_2]",
     ]
 
     assert mod.shock_names == [
-        "freq1_Cos_0[data_1]",
-        "freq1_Sin_0[data_1]",
-        "freq1_Cos_1[data_1]",
-        "freq1_Sin_1[data_1]",
-        "freq2_Cos_0[data_2]",
-        "freq2_Sin_0[data_2]",
+        "Cos_freq1_0[data_1]",
+        "Sin_freq1_0[data_1]",
+        "Cos_freq1_1[data_1]",
+        "Sin_freq1_1[data_1]",
+        "Cos_freq2_0[data_2]",
+        "Sin_freq2_0[data_2]",
     ]
 
     x0, *_, T = mod._unpack_statespace_with_placeholders()[:5]

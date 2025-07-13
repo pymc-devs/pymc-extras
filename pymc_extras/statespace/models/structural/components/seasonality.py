@@ -180,30 +180,30 @@ class TimeSeasonality(Component):
             for endog_name in self.observed_state_names
             for state_name in self.provided_state_names
         ]
-        self.param_names = [f"{self.name}_coefs"]
+        self.param_names = [f"coefs_{self.name}"]
 
         self.param_info = {
-            f"{self.name}_coefs": {
+            f"coefs_{self.name}": {
                 "shape": (k_states,) if k_endog == 1 else (k_endog, k_states),
                 "constraints": None,
-                "dims": (f"{self.name}_state",)
+                "dims": (f"state_{self.name}",)
                 if k_endog == 1
-                else (f"{self.name}_endog", f"{self.name}_state"),
+                else (f"endog_{self.name}", f"state_{self.name}"),
             }
         }
 
         self.param_dims = {
-            f"{self.name}_coefs": (f"{self.name}_state",)
+            f"coefs_{self.name}": (f"state_{self.name}",)
             if k_endog == 1
-            else (f"{self.name}_endog", f"{self.name}_state")
+            else (f"endog_{self.name}", f"state_{self.name}")
         }
 
         self.coords = (
-            {f"{self.name}_state": self.provided_state_names}
+            {f"state_{self.name}": self.provided_state_names}
             if k_endog == 1
             else {
-                f"{self.name}_endog": self.observed_state_names,
-                f"{self.name}_state": self.provided_state_names,
+                f"endog_{self.name}": self.observed_state_names,
+                f"state_{self.name}": self.provided_state_names,
             }
         )
 
@@ -238,7 +238,7 @@ class TimeSeasonality(Component):
         self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
 
         initial_states = self.make_and_register_variable(
-            f"{self.name}_coefs", shape=(k_states,) if k_endog == 1 else (k_endog, k_states)
+            f"coefs_{self.name}", shape=(k_states,) if k_endog == 1 else (k_endog, k_states)
         )
         self.ssm["initial_state", :] = initial_states.ravel()
 
@@ -390,21 +390,21 @@ class FrequencySeasonality(Component):
         k_states = self.k_states // k_endog
 
         self.state_names = [
-            f"{self.name}_{f}_{i}[{obs_state_name}]"
+            f"{f}_{self.name}_{i}[{obs_state_name}]"
             for obs_state_name in self.observed_state_names
             for i in range(self.n)
             for f in ["Cos", "Sin"]
         ]
         self.param_names = [f"{self.name}"]
 
-        self.param_dims = {self.name: (f"{self.name}_state",)}
+        self.param_dims = {self.name: (f"state_{self.name}",)}
         self.param_info = {
             f"{self.name}": {
                 "shape": (n_coefs,) if k_endog == 1 else (k_endog, n_coefs),
                 "constraints": None,
-                "dims": (f"{self.name}_state",)
+                "dims": (f"state_{self.name}",)
                 if k_endog == 1
-                else (f"{self.name}_endog", f"{self.name}_state"),
+                else (f"endog_{self.name}", f"state_{self.name}"),
             }
         }
 
@@ -418,7 +418,7 @@ class FrequencySeasonality(Component):
             ],
             axis=0,
         )
-        self.coords = {f"{self.name}_state": [self.state_names[i] for i in init_state_idx]}
+        self.coords = {f"state_{self.name}": [self.state_names[i] for i in init_state_idx]}
 
         if self.innovations:
             self.shock_names = self.state_names.copy()
@@ -426,5 +426,5 @@ class FrequencySeasonality(Component):
             self.param_info[f"sigma_{self.name}"] = {
                 "shape": () if k_endog == 1 else (k_endog, n_coefs),
                 "constraints": "Positive",
-                "dims": None if k_endog == 1 else (f"{self.name}_endog",),
+                "dims": None if k_endog == 1 else (f"endog_{self.name}",),
             }

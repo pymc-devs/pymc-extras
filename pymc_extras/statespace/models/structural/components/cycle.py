@@ -205,12 +205,12 @@ class CycleComponent(Component):
         self.ssm["initial_state", :] = init_state.ravel()
 
         if self.estimate_cycle_length:
-            lamb = self.make_and_register_variable(f"{self.name}_length", shape=())
+            lamb = self.make_and_register_variable(f"length_{self.name}", shape=())
         else:
             lamb = self.cycle_length
 
         if self.dampen:
-            rho = self.make_and_register_variable(f"{self.name}_dampening_factor", shape=())
+            rho = self.make_and_register_variable(f"dampening_factor_{self.name}", shape=())
         else:
             rho = 1
 
@@ -236,7 +236,7 @@ class CycleComponent(Component):
 
     def populate_component_properties(self):
         self.state_names = [
-            f"{self.name}_{f}[{var_name}]" if self.k_endog > 1 else f"{self.name}_{f}"
+            f"{f}_{self.name}[{var_name}]" if self.k_endog > 1 else f"{f}_{self.name}"
             for var_name in self.observed_state_names
             for f in ["Cos", "Sin"]
         ]
@@ -244,43 +244,43 @@ class CycleComponent(Component):
         self.param_names = [f"{self.name}"]
 
         if self.k_endog == 1:
-            self.param_dims = {self.name: (f"{self.name}_state",)}
-            self.coords = {f"{self.name}_state": self.state_names}
+            self.param_dims = {self.name: (f"state_{self.name}",)}
+            self.coords = {f"state_{self.name}": self.state_names}
             self.param_info = {
                 f"{self.name}": {
                     "shape": (2,),
                     "constraints": None,
-                    "dims": (f"{self.name}_state",),
+                    "dims": (f"state_{self.name}",),
                 }
             }
         else:
-            self.param_dims = {self.name: (f"{self.name}_endog", f"{self.name}_state")}
+            self.param_dims = {self.name: (f"endog_{self.name}", f"state_{self.name}")}
             self.coords = {
-                f"{self.name}_state": [f"{self.name}_Cos", f"{self.name}_Sin"],
-                f"{self.name}_endog": self.observed_state_names,
+                f"state_{self.name}": [f"Cos_{self.name}", f"Sin_{self.name}"],
+                f"endog_{self.name}": self.observed_state_names,
             }
             self.param_info = {
                 f"{self.name}": {
                     "shape": (self.k_endog, 2),
                     "constraints": None,
-                    "dims": (f"{self.name}_endog", f"{self.name}_state"),
+                    "dims": (f"endog_{self.name}", f"state_{self.name}"),
                 }
             }
 
         if self.estimate_cycle_length:
-            self.param_names += [f"{self.name}_length"]
-            self.param_info[f"{self.name}_length"] = {
+            self.param_names += [f"length_{self.name}"]
+            self.param_info[f"length_{self.name}"] = {
                 "shape": () if self.k_endog == 1 else (self.k_endog,),
                 "constraints": "Positive, non-zero",
-                "dims": None if self.k_endog == 1 else f"{self.name}_endog",
+                "dims": None if self.k_endog == 1 else f"endog_{self.name}",
             }
 
         if self.dampen:
-            self.param_names += [f"{self.name}_dampening_factor"]
-            self.param_info[f"{self.name}_dampening_factor"] = {
+            self.param_names += [f"dampening_factor_{self.name}"]
+            self.param_info[f"dampening_factor_{self.name}"] = {
                 "shape": () if self.k_endog == 1 else (self.k_endog,),
                 "constraints": "0 < x ≤ 1",
-                "dims": None if self.k_endog == 1 else f"{self.name}_endog",
+                "dims": None if self.k_endog == 1 else (f"endog_{self.name}",),
             }
 
         if self.innovations:
@@ -292,10 +292,10 @@ class CycleComponent(Component):
                     "dims": None,
                 }
             else:
-                self.param_dims[f"sigma_{self.name}"] = (f"{self.name}_endog",)
+                self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
                 self.param_info[f"sigma_{self.name}"] = {
                     "shape": (self.k_endog,),
                     "constraints": "Positive",
-                    "dims": (f"{self.name}_endog",),
+                    "dims": (f"endog_{self.name}",),
                 }
             self.shock_names = self.state_names.copy()

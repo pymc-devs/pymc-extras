@@ -197,11 +197,11 @@ class LevelTrendComponent(Component):
             ]
 
             self.param_dims[f"sigma_{self.name}"] = (
-                (f"{self.name}_shock",)
+                (f"shock_{self.name}",)
                 if k_endog == 1
-                else (f"endog_{self.name}", f"{self.name}_shock")
+                else (f"endog_{self.name}", f"shock_{self.name}")
             )
-            self.coords[f"{self.name}_shock"] = base_shock_names
+            self.coords[f"shock_{self.name}"] = base_shock_names
             self.param_info[f"sigma_{self.name}"] = {
                 "shape": (k_posdef,) if k_endog == 1 else (k_endog, k_posdef),
                 "constraints": "Positive",
