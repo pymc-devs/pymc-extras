@@ -27,6 +27,7 @@ from pymc.testing import (
     Rplus,
     assert_support_point_is_expected,
     check_logp,
+    check_selfconsistency_discrete_logcdf,
     discrete_random_tester,
 )
 from pytensor import config
@@ -330,6 +331,12 @@ class TestGrassiaIIGeometric:
         with pytest.raises(TypeError):
             logp_fn(np.array([1.5]))  # Value must be integer
 
+    def test_logcdf(self):
+        # test logcdf matches log sums across parameter values
+        check_selfconsistency_discrete_logcdf(
+            GrassiaIIGeometric, I, {"r": Rplus, "alpha": Rplus, "time_covariate_vector": I}
+        )
+
     @pytest.mark.parametrize(
         "r, alpha, time_covariate_vector, size, expected_shape",
         [
@@ -359,3 +366,6 @@ class TestGrassiaIIGeometric:
         # Check values are finite and reasonable
         assert np.all(np.isfinite(init_point))
         assert np.all(init_point < 1e6)  # Should not be extremely large
+
+        # TODO: expected values must be provided
+        # assert_support_point_is_expected(model, init_point)
