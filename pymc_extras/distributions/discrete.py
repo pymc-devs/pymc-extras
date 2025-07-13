@@ -423,21 +423,12 @@ class GrassiaIIGeometricRV(RandomVariable):
         lam = rng.gamma(shape=r, scale=1 / alpha, size=size)
 
         # Calculate exp(time_covariate_vector) for all samples
-        exp_time_covar = np.exp(time_covariate_vector)
+        exp_time_covar = np.exp(
+            time_covariate_vector
+        ).mean()  # must average over time for correct broadcasting
         lam_covar = lam * exp_time_covar
 
-        # TODO: Derive inverse log_cdf and use rng.uniform or rng.log_uniform
-        p = 1 - np.exp(-lam_covar)
-
-        # Ensure p is in valid range for geometric distribution
-        min_p = max(1e-6, np.finfo(float).tiny)  # Minimum probability to prevent infinite values
-        p = np.clip(p, min_p, 1.0)
-
-        samples = rng.geometric(p)
-
-        # Clip samples to reasonable bounds to prevent infinite values
-        max_sample = 10000  # Reasonable upper bound for discrete time-to-event data
-        samples = np.clip(samples, 1, max_sample)
+        samples = np.ceil(rng.exponential(size=size) / lam_covar)
 
         return samples
 
@@ -445,6 +436,7 @@ class GrassiaIIGeometricRV(RandomVariable):
 g2g = GrassiaIIGeometricRV()
 
 
+# TODO: Add covariate expressions to docstrings.
 class GrassiaIIGeometric(Discrete):
     r"""Grassia(II)-Geometric distribution.
 
