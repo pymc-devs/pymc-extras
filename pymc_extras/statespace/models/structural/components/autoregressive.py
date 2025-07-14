@@ -101,31 +101,31 @@ class AutoregressiveComponent(Component):
         ]
 
         self.shock_names = [f"{self.name}[{obs_name}]" for obs_name in self.observed_state_names]
-        self.param_names = [f"{self.name}_params", f"{self.name}_sigma"]
-        self.param_dims = {f"{self.name}_params": (f"{self.name}_lag",)}
-        self.coords = {f"{self.name}_lag": self.ar_lags.tolist()}
+        self.param_names = [f"params_{self.name}", f"sigma_{self.name}"]
+        self.param_dims = {f"params_{self.name}": (f"lag_{self.name}",)}
+        self.coords = {f"lag_{self.name}": self.ar_lags.tolist()}
 
         if self.k_endog > 1:
-            self.param_dims[f"{self.name}_params"] = (
-                f"{self.name}_endog",
+            self.param_dims[f"params_{self.name}"] = (
+                f"endog_{self.name}",
                 AR_PARAM_DIM,
             )
-            self.param_dims[f"{self.name}_sigma"] = (f"{self.name}_endog",)
+            self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
 
-            self.coords[f"{self.name}_endog"] = self.observed_state_names
+            self.coords[f"endog_{self.name}"] = self.observed_state_names
 
         self.param_info = {
-            f"{self.name}_params": {
+            f"params_{self.name}": {
                 "shape": (self.k_states,) if self.k_endog == 1 else (self.k_endog, self.k_states),
                 "constraints": None,
                 "dims": (AR_PARAM_DIM,)
                 if self.k_endog == 1
                 else (
-                    f"{self.name}_endog",
+                    f"endog_{self.name}",
                     AR_PARAM_DIM,
                 ),
             },
-            f"{self.name}_sigma": {
+            f"sigma_{self.name}": {
                 "shape": () if self.k_endog == 1 else (self.k_endog,),
                 "constraints": "Positive",
                 "dims": None if self.k_endog == 1 else (f"{self.name}_endog",),
@@ -139,10 +139,10 @@ class AutoregressiveComponent(Component):
 
         k_nonzero = int(sum(self.order))
         ar_params = self.make_and_register_variable(
-            f"{self.name}_params", shape=(k_nonzero,) if k_endog == 1 else (k_endog, k_nonzero)
+            f"params_{self.name}", shape=(k_nonzero,) if k_endog == 1 else (k_endog, k_nonzero)
         )
         sigma_ar = self.make_and_register_variable(
-            f"{self.name}_sigma", shape=() if k_endog == 1 else (k_endog,)
+            f"sigma_{self.name}", shape=() if k_endog == 1 else (k_endog,)
         )
 
         if k_endog == 1:
