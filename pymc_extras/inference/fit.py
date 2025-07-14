@@ -37,6 +37,6 @@ def fit(method: str, **kwargs) -> az.InferenceData:
         return fit_pathfinder(**kwargs)
 
     if method == "laplace":
-        from pymc_extras.inference.laplace import fit_laplace
+        from pymc_extras.inference import fit_laplace
 
         return fit_laplace(**kwargs)
