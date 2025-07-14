@@ -1071,48 +1071,98 @@ class TimeSeasonality(Component):
         daily data with weekly seasonal pattern, etc. It must be greater than one.
 
     duration: int, default 1
-        Number of time steps between successive applications of the same seasonal position (state).
-        This determines how long each seasonal effect is held constant before moving to the next.
+        Number of time steps for each seasonal period.
+        This determines how long each seasonal period is held constant before moving to the next.
 
     innovations: bool, default True
         Whether to include stochastic innovations in the strength of the seasonal effect
 
     name: str, default None
         A name for this seasonal component. Used to label dimensions and coordinates. Useful when multiple seasonal
-        components are included in the same model. Default is ``f"Seasonal[s={season_length}]"``
+        components are included in the same model. Default is ``f"Seasonal[s={season_length}, d={duration}]"``
 
     state_names: list of str, default None
         List of strings for seasonal effect labels. If provided, it must be of length ``season_length``. An example
         would be ``state_names = ['Mon', 'Tue', 'Wed', 'Thur', 'Fri', 'Sat', 'Sun']`` when data is daily with a weekly
         seasonal pattern (``season_length = 7``).
 
-        If None, states will be numbered ``[State_0, ..., State_s]``
+        If None, states will be numbered ``[State_0, ..., State_s-1]``
 
     remove_first_state: bool, default True
-        If True, the first state will be removed from the model. This is done because there are only n-1 degrees of
+        If True, the first state will be removed from the model. This is done because there are only ``season_length-1`` degrees of
         freedom in the seasonal component, and one state is not identified. If False, the first state will be
         included in the model, but it will not be identified -- you will need to handle this in the priors (e.g. with
         ZeroSumNormal).
 
     Notes
     -----
-    A seasonal effect is any pattern that repeats every fixed interval. Although there are many possible ways to
-    model seasonal effects, the implementation used here is the one described by [1] as the "canonical" time domain
-    representation. Given :math:`s` initial states
+    A seasonal effect is any pattern that repeats at fixed intervals. There are several ways to model such effects;
+    here, we present two models that are straightforward extensions of those described in [1].
+
+    First model (``remove_first_state=True``)
+
+    In this model, the state vector is defined as:
 
     .. math::
-        \tilde{\gamma}_{0}, \tilde{\gamma}_{1}, \ldots, \tilde{\gamma}_{s-1},
+        \alpha_t :=(\gamma_t, \ldots, \gamma_{t-d(s-1)+1}), \quad t \ge 1.
 
-    where :math:`s` is the ``seasonal_length`` parameter, the full seasonal component can be expressed:
+    This vector has length :math:`d(s-1)`, where:
+
+    - :math:`s` is the ``seasonal_length`` parameter, and
+    - :math:`d` is the ``duration`` parameter.
+
+    The components of the initial vector :math:`\alpha_{1}` are given by
 
     .. math::
-        \begin{align}
-            \gamma_t &= \tilde{\gamma}_{k_t}, \quad \text{where} \quad k_t = \left\lfloor \frac{t}{d} \right\rfloor \bmod s \\
-            \tilde{\gamma}_k &= -\sum_{i=1}^{s-1} \tilde{\gamma}_{k - i} + \omega_k, \quad \omega_k \sim \mathcal{N}(0, \sigma)
-        \end{align}
+        \gamma_{1-l} := \tilde{\gamma}_{1+k_l}, \quad \text{where} \quad k_l := \left\lfloor \frac{l}{d} \right\rfloor \bmod s \quad \text{and} \quad l=0,\ldots, d(s-1)-1.
 
-    where :math:`d` is the ``duration`` parameter and :math:`\omega_t` is the (optional) stochastic innovation.
+    Here, the values
 
+    .. math::
+        \tilde{\gamma}_{1}, \ldots, \tilde{\gamma}_{s-1},
+
+    represent the initial seasonal states. The transition matrix of this model is the :math:`d(s-1) \times d(s-1)` matrix
+
+    .. math::
+        \begin{bmatrix}
+            -\mathbf{1}_d & -\mathbf{1}_d & \cdots & -\mathbf{1}_d \\
+            \mathbf{0}_d & \mathbf{1}_d & \cdots & \mathbf{0}_d \\
+            \vdots & \vdots & \ddots & \vdots \\
+            \mathbf{0}_d & \mathbf{0}_d & \cdots & \mathbf{1}_d
+        \end{bmatrix}
+
+    where :math:`\mathbf{1}_d` and  :math:`\mathbf{0}_d` denote the :math:`d \times d` identity and null matrices, respectively.
+
+    Second model (``remove_first_state=False``)
+
+    In contrast, the state vector in the second model is defined as:
+
+    .. math::
+        \alpha_t=(\gamma_t, \ldots, \gamma_{t-ds+1}), \quad t \ge 1.
+
+    This vector has length :math:`ds`. The components of the initial state vector :math:`\alpha_{1}` are defined similarly:
+
+    .. math::
+        \gamma_{1-l} := \tilde{\gamma}_{1+k_l}, \quad \text{where} \quad k_l := \left\lfloor \frac{l}{d} \right\rfloor \bmod s \quad \text{and} \quad l=0,\ldots, ds-1.
+
+    In this case, the initial seasonal states are required to satisfy the following condition:
+
+    .. math::
+        \sum_{i=1}^{s} \tilde{\gamma}_{i} = 0.
+
+    The transition matrix of this model is the following :math:`ds \times ds` circulant matrix:
+
+    .. math::
+        \begin{bmatrix}
+            0 & 1 & 0 & \cdots & 0 \\
+            0 & 0 & 1 & \cdots & 0 \\
+            \vdots & \vdots & \ddots & \ddots & \vdots \\
+            0 & 0 & \cdots & 0 & 1 \\
+            1 & 0 & \cdots & 0 & 0
+        \end{bmatrix}
+
+    Examples
+    --------
     To give interpretation to the :math:`\gamma` terms, it is helpful to work  through the algebra for a simple
     example. Let :math:`s=4`, :math:`d=1`, and omit the shock term. Define initial conditions :math:`\tilde{\gamma}_0, \tilde{\gamma}_{1},
     \tilde{\gamma}_{2}`. The value of the seasonal component for the first 5 timesteps will be:
@@ -1198,6 +1248,8 @@ class TimeSeasonality(Component):
         state_names: list | None = None,
         remove_first_state: bool = True,
     ):
+        if season_length <= 1:
+            raise ValueError(f"season_length must be greater than 1, got {season_length}")
         if name is None:
             name = f"Seasonal[s={season_length}, d={duration}]"
         if state_names is None:
@@ -1218,7 +1270,7 @@ class TimeSeasonality(Component):
             # TODO: Can this be stashed and reconstructed automatically somehow?
             state_names.pop(0)
 
-        k_states = season_length - int(self.remove_first_state)
+        k_states = season_length * duration - int(self.remove_first_state) * duration
 
         super().__init__(
             name=name,
