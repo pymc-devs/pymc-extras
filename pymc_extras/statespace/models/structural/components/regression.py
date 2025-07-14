@@ -7,6 +7,99 @@ from pymc_extras.statespace.utils.constants import TIME_DIM
 
 
 class RegressionComponent(Component):
+    r"""
+    Regression component for exogenous variables in a structural time series model
+
+    Parameters
+    ----------
+    k_exog : int | None, default None
+        Number of exogenous variables to include in the regression. Must be specified if
+        state_names is not provided.
+
+    name : str | None, default "regression"
+        A name for this regression component. Used to label dimensions and coordinates.
+
+    state_names : list[str] | None, default None
+        List of strings for regression coefficient labels. If provided, must be of length
+        k_exog. If None and k_exog is provided, coefficients will be named
+        "{name}_1, {name}_2, ...".
+
+    observed_state_names : list[str] | None, default None
+        List of strings for observed state labels. If None, defaults to ["data"].
+
+    innovations : bool, default False
+        Whether to include stochastic innovations in the regression coefficients,
+        allowing them to vary over time. If True, coefficients follow a random walk.
+
+    Notes
+    -----
+    This component implements regression with exogenous variables in a structural time series
+    model. The regression component can be expressed as:
+
+    .. math::
+        y_t = \beta_t^T x_t + \epsilon_t
+
+    Where :math:`y_t` is the dependent variable, :math:`x_t` is the vector of exogenous
+    variables, :math:`\beta_t` is the vector of regression coefficients, and :math:`\epsilon_t`
+    is the error term.
+
+    When ``innovations=False`` (default), the coefficients are constant over time:
+    :math:`\beta_t = \beta_0` for all t.
+
+    When ``innovations=True``, the coefficients follow a random walk:
+    :math:`\beta_{t+1} = \beta_t + \eta_t`, where :math:`\eta_t \sim N(0, \Sigma_\beta)`.
+
+    The component supports both univariate and multivariate regression. In the multivariate
+    case, separate coefficients are estimated for each endogenous variable (i.e time series).
+
+    Examples
+    --------
+    Simple regression with constant coefficients:
+
+    .. code:: python
+
+        from pymc_extras.statespace import structural as st
+        import pymc as pm
+        import pytensor.tensor as pt
+
+        trend = st.LevelTrendComponent(order=1, innovations_order=1)
+        regression = st.RegressionComponent(k_exog=2, state_names=['intercept', 'slope'])
+        ss_mod = (trend + regression).build()
+
+        with pm.Model(coords=ss_mod.coords) as model:
+            # Prior for regression coefficients
+            betas = pm.Normal('betas', dims=ss_mod.param_dims['beta_regression'])
+
+            # Prior for trend innovations
+            sigma_trend = pm.Exponential('sigma_trend', 1)
+
+            ss_mod.build_statespace_graph(data)
+            idata = pm.sample()
+
+    Multivariate regression with time-varying coefficients:
+    - There are 2 exogenous variables (price and income effects)
+    - There are 2 endogenous variables (sales and revenue)
+    - The regression coefficients are allowed to vary over time (`innovations=True`)
+
+    .. code:: python
+
+        regression = st.RegressionComponent(
+            k_exog=2,
+            state_names=['price_effect', 'income_effect'],
+            observed_state_names=['sales', 'revenue'],
+            innovations=True
+        )
+
+        with pm.Model(coords=ss_mod.coords) as model:
+            betas = pm.Normal('betas', dims=ss_mod.param_dims['beta_regression'])
+
+            # Innovation variance for time-varying coefficients
+            sigma_beta = pm.Exponential('sigma_beta', 1, dims=ss_mod.param_dims['sigma_beta_regression'])
+
+            ss_mod.build_statespace_graph(data)
+            idata = pm.sample()
+    """
+
     def __init__(
         self,
         k_exog: int | None = None,

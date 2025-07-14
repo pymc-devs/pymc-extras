@@ -36,6 +36,9 @@ class TimeSeasonality(Component):
         included in the model, but it will not be identified -- you will need to handle this in the priors (e.g. with
         ZeroSumNormal).
 
+    observed_state_names: list[str] | None, default None
+        List of strings for observed state labels. If None, defaults to ["data"].
+
     Notes
     -----
     A seasonal effect is any pattern that repeats every fixed interval. Although there are many possible ways to
@@ -273,6 +276,9 @@ class FrequencySeasonality(Component):
 
     innovations: bool, default True
         Whether to include stochastic innovations in the strength of the seasonal effect
+
+    observed_state_names: list[str] | None, default None
+        List of strings for observed state labels. If None, defaults to ["data"].
 
     Notes
     -----

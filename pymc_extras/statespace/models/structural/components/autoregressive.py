@@ -17,6 +17,12 @@ class AutoregressiveComponent(Component):
         If int, the number of lags to include in the model.
         If a sequence, an array-like of zeros and ones indicating which lags to include in the model.
 
+    name: str, default "auto_regressive"
+        A name for this autoregressive component. Used to label dimensions and coordinates.
+
+    observed_state_names: list[str] | None, default None
+        List of strings for observed state labels. If None, defaults to ["data"].
+
     Notes
     -----
     An autoregressive component can be thought of as a way o introducing serially correlated errors into the model.

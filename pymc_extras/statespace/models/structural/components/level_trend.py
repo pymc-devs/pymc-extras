@@ -22,6 +22,12 @@ class LevelTrendComponent(Component):
 
         The number of stochastic innovations to include in the model. By default, ``innovations_order = order``
 
+    name : str, default "level_trend"
+        A name for this level-trend component. Used to label dimensions and coordinates.
+
+    observed_state_names : list[str] | None, default None
+        List of strings for observed state labels. If None, defaults to ["data"].
+
     Notes
     -----
     This class implements the level and trend components of the general structural time series model. In the most
