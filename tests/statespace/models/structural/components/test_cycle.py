@@ -265,10 +265,10 @@ def test_add_multivariate_cycle_components_with_different_observed():
 
     # design: each row selects first state of its block
     expected_Z = np.zeros((4, 8))
-    expected_Z[0, 0] = 1.0  # "a1" -> cycle1_Cos[a1]
-    expected_Z[1, 2] = 1.0  # "a2" -> cycle1_Cos[a2]
-    expected_Z[2, 4] = 1.0  # "b1" -> cycle2_Cos[b1]
-    expected_Z[3, 6] = 1.0  # "b2" -> cycle2_Cos[b2]
+    expected_Z[0, 0] = 1.0  # "a1" -> Cos_cycle1[a1]
+    expected_Z[1, 2] = 1.0  # "a2" -> Cos_cycle1[a2]
+    expected_Z[2, 4] = 1.0  # "b1" -> Cos_cycle2[b1]
+    expected_Z[3, 6] = 1.0  # "b2" -> Cos_cycle2[b2]
     assert_allclose(Z, expected_Z)
 
     # transition: block diagonal, each block is 2x2 frequency transition matrix
