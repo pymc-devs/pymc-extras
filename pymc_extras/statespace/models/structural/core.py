@@ -36,13 +36,104 @@ class StructuralTimeSeries(PyMCStateSpace):
     decomposing a univariate time series into level, trend, seasonal, and cycle components. It also admits the
     possibility of exogenous regressors. Unlike the SARIMAX framework, the time series is not assumed to be stationary.
 
+    Parameters
+    ----------
+    ssm : PytensorRepresentation
+        The state space representation containing system matrices.
+    name : str
+        Name of the model. If None, defaults to "StructuralTimeSeries".
+    state_names : list[str]
+        Names of the hidden states in the model.
+    observed_state_names : list[str]
+        Names of the observed variables.
+    data_names : list[str]
+        Names of data variables expected by the model.
+    shock_names : list[str]
+        Names of innovation/shock processes.
+    param_names : list[str]
+        Names of model parameters.
+    exog_names : list[str]
+        Names of exogenous variables.
+    param_dims : dict[str, tuple[int]]
+        Dimension specifications for parameters.
+    coords : dict[str, Sequence]
+        Coordinate specifications for the model.
+    param_info : dict[str, dict[str, Any]]
+        Information about parameters including shapes and constraints.
+    data_info : dict[str, dict[str, Any]]
+        Information about data variables.
+    component_info : dict[str, dict[str, Any]]
+        Information about model components.
+    measurement_error : bool
+        Whether the model includes measurement error.
+    name_to_variable : dict[str, Variable]
+        Mapping from parameter names to PyTensor variables.
+    name_to_data : dict[str, Variable] | None, optional
+        Mapping from data names to PyTensor variables. Default is None.
+    verbose : bool, optional
+        Whether to print model information. Default is True.
+    filter_type : str, optional
+        Type of Kalman filter to use. Default is "standard".
+    mode : str | Mode | None, optional
+        PyTensor compilation mode. Default is None.
+
     Notes
     -----
+    The structural time series model decomposes a time series into interpretable components:
 
     .. math::
 
-         y_t = \mu_t + \gamma_t + c_t + \varepsilon_t
+        y_t = \mu_t + \nu_t + \cdots + \gamma_t + c_t + \xi_t + \varepsilon_t
 
+    Where:
+        - :math:`\mu_t` is the level component
+        - :math:`\nu_t` is the slope/trend component
+        - :math:`\cdots` represents higher-order trend components
+        - :math:`\gamma_t` is the seasonal component
+        - :math:`c_t` is the cycle component
+        - :math:`\xi_t` is the autoregressive component
+        - :math:`\varepsilon_t` is the measurement error
+
+    The model is built by combining individual components (e.g., LevelTrendComponent,
+    TimeSeasonality, CycleComponent) using the addition operator. Each component
+    contributes to the overall state space representation.
+
+    Examples
+    --------
+    Create a model with trend and seasonal components:
+
+    .. code:: python
+
+        from pymc_extras.statespace import structural as st
+        import pymc as pm
+        import pytensor.tensor as pt
+
+        trend = st.LevelTrendComponent(order=2 innovations_order=1)
+        seasonal = st.TimeSeasonality(season_length=12, innovations=True)
+        error = st.MeasurementError()
+
+        ss_mod = (trend + seasonal + error).build()
+
+        with pm.Model(coords=ss_mod.coords) as model:
+            P0 = pm.Deterministic('P0', pt.eye(ss_mod.k_states) * 10, dims=ss_mod.param_dims['P0'])
+
+            initial_trend = pm.Normal('initial_trend', sigma=10, dims=ss_mod.param_dims['initial_trend'])
+            sigma_trend = pm.HalfNormal('sigma_trend', sigma=1, dims=ss_mod.param_dims['sigma_trend'])
+
+            seasonal_coefs = pm.Normal('seasonal_coefs', sigma=1, dims=ss_mod.param_dims['seasonal_coefs'])
+            sigma_seasonal = pm.HalfNormal('sigma_seasonal', sigma=1)
+
+            sigma_obs = pm.Exponential('sigma_obs', 1, dims=ss_mod.param_dims['sigma_obs'])
+
+            ss_mod.build_statespace_graph(data)
+            idata = pm.sample()
+
+    References
+    ----------
+    .. [1] Harvey, A. C. (1989). Forecasting, structural time series models and the
+           Kalman filter. Cambridge University Press.
+    .. [2] Durbin, J., & Koopman, S. J. (2012). Time series analysis by state space
+           methods (2nd ed.). Oxford University Press.
     """
 
     def __init__(
@@ -306,7 +397,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         dropped_vars = set(var_names) - set(latent_names)
         if len(dropped_vars) > 0:
             _log.warning(
-                f'Variables {", ".join(dropped_vars)} do not contain all hidden states (their last dimension '
+                f"Variables {', '.join(dropped_vars)} do not contain all hidden states (their last dimension "
                 f"is not {self.k_states}). They will not be present in the modified idata."
             )
         if len(dropped_vars) == len(var_names):
@@ -333,23 +424,63 @@ class Component:
 
     Parameters
     ----------
-    name: str
-        The name of the component
-    k_endog: int
-        Number of endogenous variables being modeled.
-    k_states: int
-        Number of hidden states in the component model
-    k_posdef: int
-        Rank of the state covariance matrix, or the number of sources of innovations in the component model
-    observed_state_names: str or list or str, optional
-        Names of the observed states associated with this component. Must have the same length as k_endog. If not
-        provided, generic names are generated: ``observed_state_1, observed_state_2, ..., observed_state_k_endog``.
-    measurement_error: bool
-        Whether the observation associated with the component has measurement error. Default is False.
-    combine_hidden_states: bool
-        Flag for the ``extract_hidden_states_from_data`` method. When ``True``, hidden states from the component model
-        are extracted as ``hidden_states[:, np.flatnonzero(Z)]``. Should be True in models where hidden states
-        individually have no interpretation, such as seasonal or autoregressive components.
+    name : str
+        The name of the component.
+    k_endog : int
+        Number of endogenous (observed) variables being modeled.
+    k_states : int
+        Number of hidden states in the component model.
+    k_posdef : int
+        Rank of the state covariance matrix, or the number of sources of innovations
+        in the component model.
+    state_names : list[str] | None, optional
+        Names of the hidden states. If None, defaults to empty list.
+    observed_state_names : list[str] | None, optional
+        Names of the observed states associated with this component. Must have the same
+        length as k_endog. If None, defaults to empty list.
+    data_names : list[str] | None, optional
+        Names of data variables expected by the component. If None, defaults to empty list.
+    shock_names : list[str] | None, optional
+        Names of innovation/shock processes. If None, defaults to empty list.
+    param_names : list[str] | None, optional
+        Names of component parameters. If None, defaults to empty list.
+    exog_names : list[str] | None, optional
+        Names of exogenous variables. If None, defaults to empty list.
+    representation : PytensorRepresentation | None, optional
+        Pre-existing state space representation. If None, creates a new one.
+    measurement_error : bool, optional
+        Whether the component includes measurement error. Default is False.
+    combine_hidden_states : bool, optional
+        Whether to combine hidden states when extracting from data. Should be True for
+        components where individual states have no interpretation (e.g., seasonal,
+        autoregressive). Default is True.
+    component_from_sum : bool, optional
+        Whether this component is created from combining other components. Default is False.
+    obs_state_idxs : np.ndarray | None, optional
+        Indices indicating which states contribute to observed variables. If None,
+        defaults to None.
+
+    Examples
+    --------
+    Create a simple trend component:
+
+    .. code:: python
+
+        from pymc_extras.statespace import structural as st
+
+        trend = st.LevelTrendComponent(order=2, innovations_order=1)
+        seasonal = st.TimeSeasonality(season_length=12, innovations=True)
+        model = (trend + seasonal).build()
+
+        print(f"Model has {model.k_states} states and {model.k_posdef} innovations")
+
+    See Also
+    --------
+    StructuralTimeSeries : The complete model class that combines components.
+    LevelTrendComponent : Component for modeling level and trend.
+    TimeSeasonality : Component for seasonal effects.
+    CycleComponent : Component for cyclical effects.
+    RegressionComponent : Component for regression effects.
     """
 
     def __init__(
@@ -637,7 +768,7 @@ class Component:
 
     def _make_combined_name(self):
         components = self._component_info.keys()
-        name = f'StateSpace[{", ".join(components)}]'
+        name = f"StateSpace[{', '.join(components)}]"
         return name
 
     def __add__(self, other):
