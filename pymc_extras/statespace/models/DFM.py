@@ -11,6 +11,7 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
     AR_PARAM_DIM,
+    ERROR_AR_PARAM_DIM,
     FACTOR_DIM,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
@@ -31,11 +32,13 @@ class BayesianDynamicFactor(PyMCStateSpace):
     factor_order : int
         Order of the VAR process for the latent factors.
 
-    k_endog : int
-        Number of observed time series.
+    k_endog : int, optional
+        Number of observed time series. If not provided, the number of observed series will be inferred from `endog_names`.
+        At least one of `k_endog` or `endog_names` must be provided.
 
-    endog_names : Sequence[str], optional
-        Names of the observed time series. If not provided, default names will be generated as `endog_1`, `endog_2`, ..., `endog_k`.
+    endog_names : list of str, optional
+        Names of the observed time series. If not provided, default names will be generated as `endog_1`, `endog_2`, ..., `endog_k` based on `k_endog`.
+        At least one of `k_endog` or `endog_names` must be provided.
 
     exog : array_like, optional
         Array of exogenous regressors for the observation equation (nobs x k_exog).
@@ -60,14 +63,90 @@ class BayesianDynamicFactor(PyMCStateSpace):
     verbose: bool, default True
         If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
 
+
     Notes
     -----
-    This model implements a dynamic factor model in the spirit of
-    statsmodels.tsa.statespace.dynamic_factor.DynamicFactor. The model assumes that
-    the observed time series are driven by a set of latent factors that evolve
-    according to a VAR process, possibly along with an autoregressive error term.
+    The Dynamic Factor Model (DFM) is a multivariate state-space model used to represent high-dimensional time series
+    as driven by a smaller set of unobserved dynamic factors. Given a set of observed time series
+    :math:`\{y_t\}_{t=0}^T`, with :math:`y_t = \begin{bmatrix} y_{1,t} & y_{2,t} & \cdots & y_{k_endog,t} \end{bmatrix}^T`,
+    the DFM assumes that each series is a linear combination of a few latent factors and optional autoregressive errors.
+
+    Specifically, denoting the number of dynamic factors as :math:`k_factors`, the order of the latent factor
+    process as :math:`p = \text{factor\_order}`, and the order of the observation error as
+    :math:`q = \text{error\_order}`, the model is written as:
+
+    .. math::
+        y_t & = \Lambda f_t + B x_t + u_t \\
+        f_t & = A_1 f_{t-1} + \dots + A_p f_{t-p} + \eta_t \\
+        u_t & = C_1 u_{t-1} + \dots + C_q u_{t-q} + \varepsilon_t
 
 
+    Where:
+    - :math:`f_t` is a vector of latent factors following a VAR(p) process:
+    - :math:`\x_t` are optional exogenous vectors (Not implemented yet).
+    - :math:`u_t` is a vector of observation errors, possibly VAR(q) if error_var = True otherwise treated as individual autoregressions.
+    - :math:`\eta_t` and :math:`\varepsilon_t` are white noise error terms. In order to identify the factors, :math:`Var(\eta_t) = I`.
+    Denote :math:`Var(\varepsilon_t) \equiv \Sigma`.
+
+
+    Internally, this model is represented in state-space form by stacking all current and lagged latent factors and,
+    if present, autoregressive observation errors into a single state vector. The full state vector has dimension
+    :math:`k_factors \cdot factor_order + k_endog \cdot error_order`, where :math:`k_endog` is the number of observed time series.
+
+    The number of independent shocks in the system (i.e., the number of nonzero diagonal elements in the state noise
+    covariance matrix) is equal to the number of latent factors plus the number of observed series if AR errors are present.
+
+    As in other high-dimensional models, identification can be an issue, especially when many observed series load on few
+    factors. Careful prior specification is typically required for good estimation.
+
+    Currently, the implementation assumes same factor order for all the factors,
+    does not yet support measurement error, exogenous variables and joint (VAR) error modeling.
+
+    Examples
+    --------
+    The following code snippet estimates a dynamic factor model with 1 latent factors,
+    a AR(2) structure on the factor and a AR(1) structure on the errors:
+
+    .. code:: python
+
+        import pymc_extras.statespace as pmss
+        import pymc as pm
+
+        # Create DFM Statespace Model
+        dfm_mod = pmss.BayesianDynamicFactor(
+                k_factors=1,
+                factor_order=2,
+                endog_names=data.columns,
+                error_order=1,
+                error_var=False,
+                error_cov_type="diagonal",
+                filter_type="standard",
+                verbose=True
+            )
+
+        # Unpack dims and coords
+        x0_dims, P0_dims, factor_loadings_dims, factor_sigma_dims, factor_ar_dims, error_ar_dims, error_sigma_dims = dfm_mod.param_dims.values()
+        coords = dfm_mod.coords
+
+        with pm.Model(coords=coords) as pymc_mod:
+            # Initial state
+            x0 = pm.Normal("x0", dims=x0_dims)
+            P0 = pm.Normal("P0", dims=P0_dims)
+            factor_loadings = pm.Normal("factor_loadings", sigma=1, dims=factor_loadings_dims)
+            factor_ar = pm.Normal("factor_ar", sigma=1, dims=factor_ar_dims)
+            factor_sigma = pm.Deterministic("factor_sigma", pt.constant([1.0], dtype=float))
+            error_ar = pm.Normal("error_ar", sigma=1, dims=error_ar_dims)
+            sigmas = pm.HalfNormal("error_sigma", dims=error_sigma_dims)
+            # Build symbolic graph
+            dfm_mod.build_statespace_graph(data=data, mode="JAX")
+
+        with pymc_mod:
+            idata = pm.sample(
+            draws=500,
+            chains=2,
+            nuts_sampler="nutpie",
+            nuts_sampler_kwargs={"backend": "jax", "gradient_backend": "jax"},
+        )
 
     """
 
@@ -95,6 +174,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
             raise NotImplementedError(
                 "Joint error modeling (error_var=True) is not yet implemented."
             )
+        if exog is not None:
+            raise NotImplementedError("Exogenous variables (exog) are not yet implemented.")
 
         self.endog_names = endog_names
         self.k_endog = k_endog
@@ -110,7 +191,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         # Determine the dimension for the latent factor states.
         # For static factors, one might use k_factors.
         # For dynamic factors with lags, the state might include current factors and past lags.
-        # TODO: what if we want different factor orders for different factors?
+        # TODO: what if we want different factor orders for different factors? (follow suggestions in GitHub)
         k_factor_states = k_factors * factor_order
 
         # Determine the dimension for the error component.
@@ -152,7 +233,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             names.remove("factor_ar")
         if self.error_order == 0:
             names.remove("error_ar")
-        if self.error_cov_type in ["unstructured"]:
+        if self.error_cov_type == "unstructured":
             names.remove("error_sigma")
             names.append("error_cov")
 
@@ -186,7 +267,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 "constraints": None,
             },
             "error_sigma": {
-                "shape": (self.k_endog,) if self.error_cov_type in ["diagonal"] else (),
+                "shape": (self.k_endog,) if self.error_cov_type == "diagonal" else (),
                 "constraints": "Positive",
             },
             "error_cov": {
@@ -207,17 +288,17 @@ class BayesianDynamicFactor(PyMCStateSpace):
         then idiosyncratic error states (with lags).
         """
         names = []
-
+        # TODO adjust notation by looking at the VARMAX implementation
         # Factor states
         for i in range(self.k_factors):
             for lag in range(self.factor_order):
-                names.append(f"factor_{i+1}_lag{lag}")
+                names.append(f"L{lag}.factor_{i+1}")
 
         # Idiosyncratic error states
         if self.error_order > 0:
             for i in range(self.k_endog):
                 for lag in range(self.error_order):
-                    names.append(f"error_{i+1}_lag{lag}")
+                    names.append(f"L{lag}.error_{i+1}")
 
         return names
 
@@ -231,7 +312,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
     @property
     def coords(self) -> dict[str, Sequence]:
         coords = make_default_coords(self)
-
+        # Add factor dimensions
         coords[FACTOR_DIM] = [f"factor_{i+1}" for i in range(self.k_factors)]
 
         # AR parameter dimensions - add if needed
@@ -240,7 +321,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         # If error_order > 0
         if self.error_order > 0:
-            coords["error_ar_param"] = list(range(1, self.error_order + 1))
+            coords[ERROR_AR_PARAM_DIM] = list(range(1, self.error_order + 1))
 
         return coords
 
@@ -272,13 +353,13 @@ class BayesianDynamicFactor(PyMCStateSpace):
             coord_map["factor_ar"] = (FACTOR_DIM, AR_PARAM_DIM)
 
         if self.error_order > 0:
-            coord_map["error_ar"] = (OBS_STATE_DIM, "error_ar_param")
+            coord_map["error_ar"] = (OBS_STATE_DIM, ERROR_AR_PARAM_DIM)
 
         if self.error_cov_type in ["scalar"]:
             coord_map["error_sigma"] = ()
         elif self.error_cov_type in ["diagonal"]:
             coord_map["error_sigma"] = (OBS_STATE_DIM,)
-        elif self.error_cov_type in ["unstructured"]:
+        if self.error_cov_type == "unstructured":
             coord_map["error_sigma"] = (OBS_STATE_DIM, OBS_STATE_AUX_DIM)
 
         return coord_map
