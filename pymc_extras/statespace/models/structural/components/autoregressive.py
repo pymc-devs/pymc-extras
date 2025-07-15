@@ -98,7 +98,7 @@ class AutoregressiveComponent(Component):
         )
 
     def populate_component_properties(self):
-        k_states = self.k_states // self.k_endog
+        k_states = self.k_states // self.k_endog  # this is also the number of AR lags
 
         self.state_names = [
             f"L{i + 1}[{state_name}]"
@@ -122,7 +122,7 @@ class AutoregressiveComponent(Component):
 
         self.param_info = {
             f"params_{self.name}": {
-                "shape": (self.k_states,) if self.k_endog == 1 else (self.k_endog, self.k_states),
+                "shape": (k_states,) if self.k_endog == 1 else (self.k_endog, k_states),
                 "constraints": None,
                 "dims": (AR_PARAM_DIM,)
                 if self.k_endog == 1
