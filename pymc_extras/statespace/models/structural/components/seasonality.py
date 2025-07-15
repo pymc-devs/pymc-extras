@@ -106,17 +106,26 @@ class TimeSeasonality(Component):
 
         # Build the structural model
         grw = st.LevelTrendComponent(order=1, innovations_order=1)
-        annual_season = st.TimeSeasonality(season_length=12, name='annual', state_names=state_names, innovations=False)
+        annual_season = st.TimeSeasonality(
+            season_length=12, name="annual", state_names=state_names, innovations=False
+        )
         ss_mod = (grw + annual_season).build()
 
-        # Estimate with PyMC
         with pm.Model(coords=ss_mod.coords) as model:
             P0 = pm.Deterministic('P0', pt.eye(ss_mod.k_states) * 10, dims=ss_mod.param_dims['P0'])
-            intitial_trend = pm.Deterministic('initial_trend', pt.zeros(1), dims=ss_mod.param_dims['initial_trend'])
-            annual_coefs = pm.Normal('annual_coefs', sigma=1e-2, dims=ss_mod.param_dims['annual_coefs'])
-            trend_sigmas = pm.HalfNormal('trend_sigmas', sigma=1e-6, dims=ss_mod.param_dims['trend_sigmas'])
+
+            initial_level_trend = pm.Deterministic(
+                "initial_level_trend", pt.zeros(1), dims=ss_mod.param_dims["initial_level_trend"]
+            )
+            sigma_level_trend = pm.HalfNormal(
+                "sigma_level_trend", sigma=1e-6, dims=ss_mod.param_dims["sigma_level_trend"]
+            )
+            coefs_annual = pm.Normal("coefs_annual", sigma=1e-2, dims=ss_mod.param_dims["coefs_annual"])
+
             ss_mod.build_statespace_graph(data)
-            idata = pm.sample(nuts_sampler='numpyro')
+            idata = pm.sample(
+                nuts_sampler="nutpie", nuts_sampler_kwargs={"backend": "JAX", "gradient_backend": "JAX"}
+            )
 
     References
     ----------

@@ -85,21 +85,26 @@ class CycleComponent(Component):
 
         # Build the structural model
         grw = st.LevelTrendComponent(order=1, innovations_order=1)
-        cycle = st.CycleComponent('business_cycle', estimate_cycle_length=True, dampen=False)
+        cycle = st.CycleComponent(
+            "business_cycle", cycle_length=12, estimate_cycle_length=False, innovations=True, dampen=True
+        )
         ss_mod = (grw + cycle).build()
 
         # Estimate with PyMC
         with pm.Model(coords=ss_mod.coords) as model:
             P0 = pm.Deterministic('P0', pt.eye(ss_mod.k_states), dims=ss_mod.param_dims['P0'])
-            intitial_trend = pm.Normal('initial_trend', dims=ss_mod.param_dims['initial_trend'])
-            sigma_trend = pm.HalfNormal('sigma_trend', dims=ss_mod.param_dims['sigma_trend'])
 
-            cycle_strength = pm.Normal("business_cycle", dims=ss_mod.param_dims["business_cycle"])
-            cycle_length = pm.Uniform('business_cycle_length', lower=6, upper=12)
-            sigma_cycle = pm.HalfNormal('sigma_business_cycle', sigma=1)
+            initial_level_trend = pm.Normal('initial_level_trend', dims=ss_mod.param_dims['initial_level_trend'])
+            sigma_level_trend = pm.HalfNormal('sigma_level_trend', dims=ss_mod.param_dims['sigma_level_trend'])
+
+            business_cycle = pm.Normal("business_cycle", dims=ss_mod.param_dims["business_cycle"])
+            dampening = pm.Beta("dampening_factor_business_cycle", 2, 2)
+            sigma_cycle = pm.HalfNormal("sigma_business_cycle", sigma=1)
 
             ss_mod.build_statespace_graph(data)
-            idata = pm.sample()
+            idata = pm.sample(
+                nuts_sampler="nutpie", nuts_sampler_kwargs={"backend": "JAX", "gradient_backend": "JAX"}
+            )
 
     **Multivariate Example:**
     Model cycles for multiple economic indicators with variable-specific innovation variances:
@@ -115,18 +120,15 @@ class CycleComponent(Component):
             dampen=True,
             observed_state_names=['gdp', 'unemployment', 'inflation']
         )
-
-        # Build the model
         ss_mod = cycle.build()
 
-        # In PyMC model:
         with pm.Model(coords=ss_mod.coords) as model:
             P0 = pm.Deterministic("P0", pt.eye(ss_mod.k_states), dims=ss_mod.param_dims["P0"])
             # Initial states: shape (3, 2) for 3 variables, 2 states each
-            cycle_init = pm.Normal('business_cycle', dims=ss_mod.param_dims["business_cycle"])
+            business_cycle = pm.Normal('business_cycle', dims=ss_mod.param_dims["business_cycle"])
 
             # Dampening factor: scalar (shared across variables)
-            dampening = pm.Beta("business_cycle_dampening_factor", 2, 2)
+            dampening = pm.Beta("dampening_factor_business_cycle", 2, 2)
 
             # Innovation variances: shape (3,) for variable-specific variances
             sigma_cycle = pm.HalfNormal(
@@ -134,7 +136,9 @@ class CycleComponent(Component):
             )
 
             ss_mod.build_statespace_graph(data)
-            idata = pm.sample()
+            idata = pm.sample(
+                nuts_sampler="nutpie", nuts_sampler_kwargs={"backend": "JAX", "gradient_backend": "JAX"}
+            )
 
     References
     ----------
