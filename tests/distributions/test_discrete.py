@@ -249,7 +249,7 @@ class TestGrassiaIIGeometric:
             # Test with small r and large alpha values
             r_vals = [0.1, 0.5]
             alpha_vals = [5.0, 10.0]
-            time_cov_vals = [0.0, 1.0]
+            time_cov_vals = [[0.0], [1.0]]
 
             for r in r_vals:
                 for alpha in alpha_vals:

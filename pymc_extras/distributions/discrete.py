@@ -425,10 +425,12 @@ class GrassiaIIGeometricRV(RandomVariable):
         # Calculate exp(time_covariate_vector) for all samples
         exp_time_covar = np.exp(
             time_covariate_vector
-        ).mean()  # must average over time for correct broadcasting
+        ).mean()  # Approximation required to return a t-scalar from a covariate vector
         lam_covar = lam * exp_time_covar
 
-        samples = np.ceil(rng.exponential(size=size) / lam_covar)
+        # Take uniform draws from the inverse CDF
+        u = rng.uniform(size=size)
+        samples = np.ceil(np.log(1 - u) / (-lam_covar))
 
         return samples
 
@@ -581,5 +583,5 @@ def C_t(t: pt.TensorVariable, time_covariate_vector: pt.TensorVariable) -> pt.Te
         # If t_idx exceeds length of time_covariate_vector, use last value
         max_idx = pt.shape(time_covariate_vector)[0] - 1
         safe_idx = pt.minimum(t_idx, max_idx)
-        covariate_value = time_covariate_vector[safe_idx]
-        return t * pt.exp(covariate_value)
+        covariate_value = time_covariate_vector[..., safe_idx]
+        return pt.exp(covariate_value).sum()
