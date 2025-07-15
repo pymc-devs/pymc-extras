@@ -36,9 +36,8 @@ dynamic = ["version"]  # specify the version in the __init__.py file
 dependencies = [
   "pymc>=5.21.1",
   "scikit-learn",
-  "better-optimize>=0.1.2",
+  "better-optimize>=0.1.4",
   "pydantic>=2.0.0",
-  "preliz",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +51,7 @@ dev = [
   "dask[all]<2025.1.1",
   "blackjax",
   "statsmodels",
+  "preliz>=0.5.0",
 ]
 docs = [
   "nbsphinx>=0.4.2",
