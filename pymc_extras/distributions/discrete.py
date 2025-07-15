@@ -404,7 +404,7 @@ class Skellam:
 
 class GrassiaIIGeometricRV(RandomVariable):
     name = "g2g"
-    signature = "(),(),()->()"
+    signature = "(),(),(t)->()"
 
     dtype = "int64"
     _print_name = ("GrassiaIIGeometric", "\\operatorname{GrassiaIIGeometric}")
@@ -422,15 +422,13 @@ class GrassiaIIGeometricRV(RandomVariable):
 
         lam = rng.gamma(shape=r, scale=1 / alpha, size=size)
 
-        # Calculate exp(time_covariate_vector) for all samples
+        # Aggregate time covariates for each sample
         exp_time_covar = np.exp(
-            time_covariate_vector
-        ).mean()  # Approximation required to return a t-scalar from a covariate vector
+            time_covariate_vector.sum(axis=0)
+        )  # TODO: try np.exp(time_covariate_vector).sum(axis=0) instead?
         lam_covar = lam * exp_time_covar
 
-        # Take uniform draws from the inverse CDF
-        u = rng.uniform(size=size)
-        samples = np.ceil(np.log(1 - u) / (-lam_covar))
+        samples = np.ceil(np.log(1 - rng.uniform(size=size)) / (-lam_covar))
 
         return samples
 
@@ -536,6 +534,7 @@ class GrassiaIIGeometric(Discrete):
             logcdf,
             r > 0,
             alpha > 0,
+            time_covariate_vector >= 0,
             msg="r > 0, alpha > 0",
         )
 
@@ -573,6 +572,7 @@ class GrassiaIIGeometric(Discrete):
         return mean
 
 
+# TODO: can this be moved into logp? Indexing not required for logcdf
 def C_t(t: pt.TensorVariable, time_covariate_vector: pt.TensorVariable) -> pt.TensorVariable:
     """Utility for processing time-varying covariates in GrassiaIIGeometric distribution."""
     if time_covariate_vector.ndim == 0:
