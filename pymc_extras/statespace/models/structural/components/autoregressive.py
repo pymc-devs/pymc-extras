@@ -128,13 +128,13 @@ class AutoregressiveComponent(Component):
                 if self.k_endog == 1
                 else (
                     f"endog_{self.name}",
-                    AR_PARAM_DIM,
+                    f"lag_{self.name}",
                 ),
             },
             f"sigma_{self.name}": {
                 "shape": () if self.k_endog == 1 else (self.k_endog,),
                 "constraints": "Positive",
-                "dims": None if self.k_endog == 1 else (f"{self.name}_endog",),
+                "dims": None if self.k_endog == 1 else (f"endog_{self.name}",),
             },
         }
 
