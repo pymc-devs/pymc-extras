@@ -1099,7 +1099,7 @@ class TimeSeasonality(Component):
     A seasonal effect is any pattern that repeats at fixed intervals. There are several ways to model such effects;
     here, we present two models that are straightforward extensions of those described in [1].
 
-    First model (``remove_first_state=True``)
+    **First model** (``remove_first_state=True``)
 
     In this model, the state vector is defined as:
 
@@ -1125,15 +1125,16 @@ class TimeSeasonality(Component):
 
     .. math::
         \begin{bmatrix}
-            -\mathbf{1}_d & -\mathbf{1}_d & \cdots & -\mathbf{1}_d \\
-            \mathbf{0}_d & \mathbf{1}_d & \cdots & \mathbf{0}_d \\
+            -\mathbf{1}_d & -\mathbf{1}_d & \cdots & -\mathbf{1}_d & -\mathbf{1}_d \\
+            \mathbf{1}_d & \mathbf{0}_d & \cdots & \mathbf{0}_d & \mathbf{0}_d \\
+            \mathbf{0}_d & \mathbf{1}_d & \cdots & \mathbf{0}_d & \mathbf{0}_d \\
             \vdots & \vdots & \ddots & \vdots \\
-            \mathbf{0}_d & \mathbf{0}_d & \cdots & \mathbf{1}_d
+            \mathbf{0}_d & \mathbf{0}_d & \cdots & \mathbf{1}_d & \mathbf{0}_d
         \end{bmatrix}
 
     where :math:`\mathbf{1}_d` and  :math:`\mathbf{0}_d` denote the :math:`d \times d` identity and null matrices, respectively.
 
-    Second model (``remove_first_state=False``)
+    **Second model** (``remove_first_state=False``)
 
     In contrast, the state vector in the second model is defined as:
 
@@ -1161,9 +1162,7 @@ class TimeSeasonality(Component):
             1 & 0 & \cdots & 0 & 0
         \end{bmatrix}
 
-    Examples
-    --------
-    To give interpretation to the :math:`\gamma` terms, it is helpful to work  through the algebra for a simple
+    To give interpretation to the :math:`\gamma` terms, it is helpful to work through the algebra for a simple
     example. Let :math:`s=4`, :math:`d=1`, and omit the shock term. Define initial conditions :math:`\tilde{\gamma}_0, \tilde{\gamma}_{1},
     \tilde{\gamma}_{2}`. The value of the seasonal component for the first 5 timesteps will be:
 
@@ -1253,11 +1252,11 @@ class TimeSeasonality(Component):
         if name is None:
             name = f"Seasonal[s={season_length}, d={duration}]"
         if state_names is None:
-            state_names = [f"{name}_{i}" for i in range(season_length)]
+            state_names = [f"{name}_{i}_{j}" for i in range(season_length) for j in range(duration)]
         else:
-            if len(state_names) != season_length:
+            if len(state_names) != season_length * duration:
                 raise ValueError(
-                    f"state_names must be a list of length season_length, got {len(state_names)}"
+                    f"state_names must be a list of length season_length*duration, got {len(state_names)}"
                 )
             state_names = state_names.copy()
         self.innovations = innovations
@@ -1268,7 +1267,7 @@ class TimeSeasonality(Component):
             # In traditional models, the first state isn't identified, so we can help out the user by automatically
             # discarding it.
             # TODO: Can this be stashed and reconstructed automatically somehow?
-            state_names.pop(0)
+            state_names = state_names[duration:]
 
         k_states = season_length * duration - int(self.remove_first_state) * duration
 
@@ -1308,8 +1307,28 @@ class TimeSeasonality(Component):
         if self.remove_first_state:
             # In this case, parameters are normalized to sum to zero, so the current state is the negative sum of
             # all previous states.
-            T = np.eye(self.k_states, k=-1)
-            T[0, :] = -1
+            one_d = np.ones((self.duration, self.duration))
+            zero_d = np.zeros((self.duration, self.duration))
+            id_d = np.eye(self.duration)
+
+            blocks = []
+
+            # First row: all -1_d blocks
+            first_row = [-one_d for _ in range(self.season_length - 1)]
+            blocks.append(first_row)
+
+            # Rows 2 to season_length-1: shifted identity blocks
+            for i in range(self.season_length - 2):
+                row = []
+                for j in range(self.season_length - 1):
+                    if j == i:
+                        row.append(id_d)
+                    else:
+                        row.append(zero_d)
+                blocks.append(row)
+
+            # Stack blocks
+            T = np.block(blocks)
         else:
             # In this case we assume the user to be responsible for ensuring the states sum to zero, so T is just a
             # circulant matrix that cycles between the states.
