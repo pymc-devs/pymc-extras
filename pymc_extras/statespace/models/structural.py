@@ -1104,22 +1104,22 @@ class TimeSeasonality(Component):
     In this model, the state vector is defined as:
 
     .. math::
-        \alpha_t :=(\gamma_t, \ldots, \gamma_{t-d(s-1)+1}), \quad t \ge 1.
+        \alpha_t :=(\gamma_t, \ldots, \gamma_{t-d(s-1)+1}), \quad t \ge 0.
 
     This vector has length :math:`d(s-1)`, where:
 
     - :math:`s` is the ``seasonal_length`` parameter, and
     - :math:`d` is the ``duration`` parameter.
 
-    The components of the initial vector :math:`\alpha_{1}` are given by
+    The components of the initial vector :math:`\alpha_{0}` are given by
 
     .. math::
-        \gamma_{1-l} := \tilde{\gamma}_{1+k_l}, \quad \text{where} \quad k_l := \left\lfloor \frac{l}{d} \right\rfloor \bmod s \quad \text{and} \quad l=0,\ldots, d(s-1)-1.
+        \gamma_{-l} := \tilde{\gamma}_{k_l}, \quad \text{where} \quad k_l := \left\lfloor \frac{l}{d} \right\rfloor \bmod s \quad \text{and} \quad l=0,\ldots, d(s-1)-1.
 
     Here, the values
 
     .. math::
-        \tilde{\gamma}_{1}, \ldots, \tilde{\gamma}_{s-1},
+        \tilde{\gamma}_{0}, \ldots, \tilde{\gamma}_{s-2},
 
     represent the initial seasonal states. The transition matrix of this model is the :math:`d(s-1) \times d(s-1)` matrix
 
@@ -1139,17 +1139,17 @@ class TimeSeasonality(Component):
     In contrast, the state vector in the second model is defined as:
 
     .. math::
-        \alpha_t=(\gamma_t, \ldots, \gamma_{t-ds+1}), \quad t \ge 1.
+        \alpha_t=(\gamma_t, \ldots, \gamma_{t-ds+1}), \quad t \ge 0.
 
-    This vector has length :math:`ds`. The components of the initial state vector :math:`\alpha_{1}` are defined similarly:
-
-    .. math::
-        \gamma_{1-l} := \tilde{\gamma}_{1+k_l}, \quad \text{where} \quad k_l := \left\lfloor \frac{l}{d} \right\rfloor \bmod s \quad \text{and} \quad l=0,\ldots, ds-1.
-
-    In this case, the initial seasonal states are required to satisfy the following condition:
+    This vector has length :math:`ds`. The components of the initial state vector :math:`\alpha_{0}` are defined similarly:
 
     .. math::
-        \sum_{i=1}^{s} \tilde{\gamma}_{i} = 0.
+        \gamma_{-l} := \tilde{\gamma}_{k_l}, \quad \text{where} \quad k_l := \left\lfloor \frac{l}{d} \right\rfloor \bmod s \quad \text{and} \quad l=0,\ldots, ds-1.
+
+    In this case, the initial seasonal states :math:`\tilde{\gamma}_{0}, \ldots, \tilde{\gamma}_{s-1}` are required to satisfy the following condition:
+
+    .. math::
+        \sum_{i=0}^{s-1} \tilde{\gamma}_{i} = 0.
 
     The transition matrix of this model is the following :math:`ds \times ds` circulant matrix:
 
@@ -1163,8 +1163,9 @@ class TimeSeasonality(Component):
         \end{bmatrix}
 
     To give interpretation to the :math:`\gamma` terms, it is helpful to work through the algebra for a simple
-    example. Let :math:`s=4`, :math:`d=1`, and omit the shock term. Define initial conditions :math:`\tilde{\gamma}_0, \tilde{\gamma}_{1},
-    \tilde{\gamma}_{2}`. The value of the seasonal component for the first 5 timesteps will be:
+    example. Let :math:`s=4`, :math:`d=1`, ``remove_first_state=True``, and omit the shock term. Then, we have
+    :math:`\gamma_{-i} = \tilde{\gamma}_{-i}`, for :math:`i=-2,\ldots, 0` and the value of the seasonal component
+    for the first 5 timesteps will be:
 
     .. math::
         \begin{align}
