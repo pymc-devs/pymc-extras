@@ -507,12 +507,14 @@ class Component:
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
 
-        self.state_names = state_names if state_names is not None else []
-        self.observed_state_names = observed_state_names if observed_state_names is not None else []
-        self.data_names = data_names if data_names is not None else []
-        self.shock_names = shock_names if shock_names is not None else []
-        self.param_names = param_names if param_names is not None else []
-        self.exog_names = exog_names if exog_names is not None else []
+        self.state_names = list(state_names) if state_names is not None else []
+        self.observed_state_names = (
+            list(observed_state_names) if observed_state_names is not None else []
+        )
+        self.data_names = list(data_names) if data_names is not None else []
+        self.shock_names = list(shock_names) if shock_names is not None else []
+        self.param_names = list(param_names) if param_names is not None else []
+        self.exog_names = list(exog_names) if exog_names is not None else []
 
         self.needs_exog_data = len(self.exog_names) > 0
         self.coords = {}
@@ -741,13 +743,15 @@ class Component:
 
     def _combine_property(self, other, name, allow_duplicates=True):
         self_prop = getattr(self, name)
+        other_prop = getattr(other, name)
+
         if isinstance(self_prop, list) and allow_duplicates:
-            return self_prop + getattr(other, name)
+            return self_prop + other_prop
         elif isinstance(self_prop, list) and not allow_duplicates:
-            return self_prop + [x for x in getattr(other, name) if x not in self_prop]
+            return self_prop + [x for x in other_prop if x not in self_prop]
         elif isinstance(self_prop, dict):
             new_prop = self_prop.copy()
-            new_prop.update(getattr(other, name))
+            new_prop.update(other_prop)
             return new_prop
 
     def _combine_component_info(self, other):

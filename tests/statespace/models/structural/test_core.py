@@ -1,3 +1,5 @@
+from functools import partial
+
 import numpy as np
 import pandas as pd
 import pymc as pm
@@ -162,3 +164,27 @@ def test_extract_multiple_observed(rng):
 
     missing = set(comp_states) - set(expected_states)
     assert len(missing) == 0, missing
+
+
+@pytest.mark.parametrize(
+    "arg_type", [tuple, list, set, np.array], ids=["tuple", "list", "set", "array"]
+)
+def test_sequence_type_component_arguments(arg_type):
+    state_names = list("ABCDEFG")
+    components = [
+        st.LevelTrendComponent,
+        partial(st.CycleComponent, cycle_length=12),
+        st.AutoregressiveComponent,
+        partial(st.FrequencySeasonality, season_length=12),
+        partial(st.TimeSeasonality, season_length=12),
+        st.MeasurementError,
+    ]
+
+    components = [
+        components[i](observed_state_names=arg_type(state_names))
+        for i in np.random.choice(len(components), size=3, replace=False)
+    ]
+    ss_mod = sum(components[1:], start=components[0]).build(verbose=False)
+
+    assert ss_mod.k_endog == len(state_names)
+    assert sorted(ss_mod.observed_states) == sorted(list(state_names))
