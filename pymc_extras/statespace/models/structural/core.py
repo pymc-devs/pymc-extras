@@ -745,6 +745,18 @@ class Component:
         self_prop = getattr(self, name)
         other_prop = getattr(other, name)
 
+        if not isinstance(self_prop, type(other_prop)):
+            raise TypeError(
+                f"Property {name} of {self} and {other} are not the same and cannot be combined. Found "
+                f"{type(self_prop)} for {self} and {type(other_prop)} for {other}'"
+            )
+
+        if not isinstance(self_prop, list | dict):
+            raise TypeError(
+                f"All component properties are expected to be lists or dicts, but found {type(self_prop)}"
+                f"for property {name} of {self} and {type(other_prop)} for {other}'"
+            )
+
         if isinstance(self_prop, list) and allow_duplicates:
             return self_prop + other_prop
         elif isinstance(self_prop, list) and not allow_duplicates:
