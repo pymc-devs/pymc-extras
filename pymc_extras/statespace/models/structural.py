@@ -1307,14 +1307,13 @@ class TimeSeasonality(Component):
         if self.remove_first_state:
             # In this case, parameters are normalized to sum to zero, so the current state is the negative sum of
             # all previous states.
-            one_d = np.ones((self.duration, self.duration))
             zero_d = np.zeros((self.duration, self.duration))
             id_d = np.eye(self.duration)
 
             blocks = []
 
             # First row: all -1_d blocks
-            first_row = [-one_d for _ in range(self.season_length - 1)]
+            first_row = [-id_d for _ in range(self.season_length - 1)]
             blocks.append(first_row)
 
             # Rows 2 to season_length-1: shifted identity blocks
