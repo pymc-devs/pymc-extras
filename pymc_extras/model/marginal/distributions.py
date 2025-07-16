@@ -132,6 +132,10 @@ class MarginalDiscreteMarkovChainRV(MarginalRV):
     """Base class for Marginalized Discrete Markov Chain RVs"""
 
 
+class MarginalLaplaceRV(MarginalRV):
+    """Base class for Marginalized Laplace-Approximated RVs"""
+
+
 def get_domain_of_finite_discrete_rv(rv: TensorVariable) -> tuple[int, ...]:
     op = rv.owner.op
     dist_params = rv.owner.op.dist_params(rv.owner)
@@ -371,3 +375,56 @@ def marginal_hmm_logp(op, values, *inputs, **kwargs):
     warn_non_separable_logp(values)
     dummy_logps = (DUMMY_ZERO,) * (len(values) - 1)
     return joint_logp, *dummy_logps
+
+
+@_logprob.register(MarginalLaplaceRV)
+def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
+    # Clone the inner RV graph of the Marginalized RV
+    x, *inner_rvs = inline_ofg_outputs(op, inputs)
+
+    # Obtain the joint_logp graph of the inner RV graph
+    inner_rv_values = dict(zip(inner_rvs, values))
+    marginalized_vv = x.clone()
+    rv_values = inner_rv_values | {x: marginalized_vv}
+    logps_dict = conditional_logp(rv_values=rv_values, **kwargs)
+
+    logp = pt.sum(
+        [pt.sum(logps_dict[k]) for k in logps_dict]
+    )  # TODO check this gives the proper p(y | x, params)
+
+    import pytensor
+
+    from pytensor.tensor.optimize import minimize
+
+    # Maximize log(p(x | y, params)) wrt x to find mode x0
+    x0, _ = minimize(
+        objective=-logp,
+        x=marginalized_vv,
+        method="BFGS",
+        # jac=use_jac,
+        # hess=use_hess,
+        optimizer_kwargs={"tol": 1e-8},
+    )
+
+    # require f''(x0) for Laplace approx
+    hess = pytensor.gradient.hessian(logp, marginalized_vv)
+    # hess = pytensor.graph.replace.graph_replace(hess, {marginalized_vv: x0})
+
+    # Could be made more efficient with adding diagonals only
+    rng = np.random.default_rng(12345)
+    d = 3
+    Q = np.diag(rng.random(d))
+    tau = Q - hess
+
+    # Currently x is passed both as the query point for f(x, args) = logp(x | y, params) AND as an initial guess for x0. This may cause issues if the query point is
+    # far from the mode x0 or in a neighbourhood which results in poor convergence.
+    _, logdetTau = pt.nlinalg.slogdet(tau)
+    log_laplace_approx = 0.5 * logdetTau - 0.5 * x0.shape[0] * np.log(2 * np.pi)
+
+    # Reduce logp dimensions corresponding to broadcasted variables
+    # marginalized_logp = logps_dict.pop(marginalized_vv)
+    joint_logp = logp - log_laplace_approx
+
+    joint_logp = pytensor.graph.replace.graph_replace(joint_logp, {marginalized_vv: x0})
+
+    return joint_logp  # TODO check if pm.sample adds on p(params). Otherwise this is p(y|params) not p(params|y)

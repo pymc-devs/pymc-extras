@@ -92,7 +92,8 @@ def get_conditional_gaussian_approximation(
 
     # Currently x is passed both as the query point for f(x, args) = logp(x | y, params) AND as an initial guess for x0. This may cause issues if the query point is
     # far from the mode x0 or in a neighbourhood which results in poor convergence.
-    return x0, pm.MvNormal(f"{x.name}_laplace_approx", mu=x0, tau=tau)
+    _, logdetTau = pt.nlinalg.slogdet(tau)
+    return x0, 0.5 * logdetTau - 0.5 * x0.shape[0] * np.log(2 * np.pi)
 
 
 def get_log_marginal_likelihood(
@@ -107,14 +108,17 @@ def get_log_marginal_likelihood(
 ) -> TensorVariable:
     model = pm.modelcontext(model)
 
-    x0, laplace_approx = get_conditional_gaussian_approximation(
+    x0, log_laplace_approx = get_conditional_gaussian_approximation(
         x, Q, mu, model, method, use_jac, use_hess, optimizer_kwargs
     )
-    log_laplace_approx = pm.logp(laplace_approx, model.rvs_to_values[x])
+    # log_laplace_approx = pm.logp(laplace_approx, x)#model.rvs_to_values[x])
 
     _, logdetQ = pt.nlinalg.slogdet(Q)
+    # log_x_likelihood = (
+    #     -0.5 * (x - mu).T @ Q @ (x - mu) + 0.5 * logdetQ - 0.5 * x.shape[0] * np.log(2 * np.pi)
+    # )
     log_x_likelihood = (
-        -0.5 * (x - mu).T @ Q @ (x - mu) + 0.5 * logdetQ - 0.5 * x.shape[0] * np.log(2 * np.pi)
+        -0.5 * (x0 - mu).T @ Q @ (x0 - mu) + 0.5 * logdetQ - 0.5 * x0.shape[0] * np.log(2 * np.pi)
     )
 
     log_likelihood = (  # logp(y | params) =
@@ -123,7 +127,7 @@ def get_log_marginal_likelihood(
         - log_laplace_approx  # / logp(x | y, params)
     )
 
-    return log_likelihood
+    return x0, log_likelihood
 
 
 def fit_INLA(
@@ -139,23 +143,25 @@ def fit_INLA(
     model = pm.modelcontext(model)
 
     # logp(y | params)
-    log_likelihood = get_log_marginal_likelihood(
+    x0, log_likelihood = get_log_marginal_likelihood(
         x, Q, mu, model, method, use_jac, use_hess, optimizer_kwargs
     )
 
     # TODO How to obtain prior? It can parametrise Q, mu, y, etc. Not sure if we could extract from model.logp somehow. Otherwise simply specify as a user input
+    # Perhaps obtain as RVs which y depends on which aren't x?
     prior = None
     params = None
     log_prior = pm.logp(prior, model.rvs_to_values[params])
 
     # logp(params | y) = logp(y | params) + logp(params) + const
     log_posterior = log_likelihood + log_prior
+    log_posterior = pytensor.graph.replace.graph_replace(log_posterior, {x: x0})
 
     # TODO log_marginal_x_likelihood is almost the same as log_likelihood, but need to do some sampling?
     log_marginal_x_likelihood = None
     log_marginal_x_posterior = log_marginal_x_likelihood + log_prior
 
-    # TODO can we sample over log likelihoods?
+    # TODO can we sample over log likelihoods?w
     # Marginalize params
     idata_params = log_posterior.sample()  # TODO something like NUTS, QMC, etc.?
     idata_x = log_marginal_x_posterior.sample()
