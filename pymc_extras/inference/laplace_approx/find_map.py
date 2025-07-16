@@ -336,7 +336,7 @@ def find_MAP(
     }
 
     idata = map_results_to_inference_data(optimized_point, frozen_model, include_transformed)
-    idata = add_fit_to_inference_data(idata, raveled_optimized, H_inv)
+    idata = add_fit_to_inference_data(idata, raveled_optimized, H_inv, model)
     idata = add_optimizer_result_to_inference_data(
         idata, optimizer_result, method, raveled_optimized, model
     )
