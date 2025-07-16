@@ -1199,10 +1199,38 @@ class TimeSeasonality(Component):
     And so on. So for interpretation, the ``season_length - 1`` initial states are, when reversed, the coefficients
     associated with ``state_names[1:]``.
 
+    In the next example, we set :math:`s=3`, :math:`d=2`, ``remove_first_state=True``, and omit the shock term.
+    By definition, the initial vector :math:`\alpha_{0}` is
+
+    .. math::
+        \alpha_0=(\tilde{\gamma}_{0}, \tilde{\gamma}_{0}, \tilde{\gamma}_{-1}, \tilde{\gamma}_{-1})
+
+    and the transition matrix is
+
+    .. math::
+        \begin{bmatrix}
+            -1 &  0 & -1 &  0 \\
+             0 & -1 &  0 & -1 \\
+             1 &  0 &  0 &  0 \\
+             0 &  1 &  0 &  0 \\
+        \end{bmatrix}
+
+    It is easy to verify that:
+
+    .. math::
+        \begin{align}
+            \gamma_1 &= -\tilde{\gamma}_0 - \tilde{\gamma}_{-1}\\
+            \gamma_2 &= -(-\tilde{\gamma}_0 - \tilde{\gamma}_{-1})-\tilde{\gamma}_0\\
+                     &= \tilde{\gamma}_{-1}\\
+            \gamma_3 &= -\tilde{\gamma}_{-1} +(\tilde{\gamma}_0 + \tilde{\gamma}_{-1})\\
+                     &= \tilde{\gamma}_{0}\\
+            \gamma_4 &= -\tilde{\gamma}_0 - \tilde{\gamma}_{-1}.\\
+        \end{align}
+
     .. warning::
-        Although the ``state_names`` argument expects a list of length ``season_length``, only ``state_names[1:]``
-        will be saved as model dimensions, since the 1st coefficient is not identified (it is defined as
-        :math:`-\sum_{i=1}^{s} \gamma_{t-i}`).
+        Although the ``state_names`` argument expects a list of length ``season_length`` times ``duration``,
+        only ``state_names[1:]`` will be saved as model dimensions, since the first coefficient is not identified
+        (it is defined as :math:`-\sum_{i=1}^{s-1} \tilde{\gamma}_{-i}`).
 
     Examples
     --------
