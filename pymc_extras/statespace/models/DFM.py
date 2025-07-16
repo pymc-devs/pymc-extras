@@ -365,81 +365,71 @@ class BayesianDynamicFactor(PyMCStateSpace):
         return coord_map
 
     def make_symbolic_graph(self):
-        # initial states
+        # Initial states
         x0 = self.make_and_register_variable("x0", shape=(self.k_states,), dtype=floatX)
 
         self.ssm["initial_state", :] = x0
 
-        # initial covariance
+        # Initial covariance
         P0 = self.make_and_register_variable(
             "P0", shape=(self.k_states, self.k_states), dtype=floatX
         )
 
         self.ssm["initial_state_cov", :, :] = P0
 
-        # TODO vectorize the design matrix
         # Design matrix
-        self.ssm["design", :, :] = 0.0
-
         factor_loadings = self.make_and_register_variable(
             "factor_loadings", shape=(self.k_endog, self.k_factors), dtype=floatX
         )
 
-        for i in range(self.k_endog):
-            for j in range(self.k_factors):
-                # Loadings for each observed variable on the latent factors
-                self.ssm["design", i, j * self.factor_order] = factor_loadings[i, j]
+        self.ssm["design", :, :] = 0.0
+
+        for j in range(self.k_factors):
+            col_idx = j * self.factor_order
+            self.ssm["design", :, col_idx] = factor_loadings[:, j]
 
         for i in range(self.k_endog):
-            # Loadings for each observed variable on the latent factors
-            self.ssm["design", i, self.k_factors * self.factor_order + i * self.error_order] = 1.0
+            col_idx = self.k_factors * self.factor_order + i * self.error_order
+            self.ssm["design", i, col_idx] = 1.0
 
-        # TODO vectorize the transition matrix or use block matrices (reordering states, check the VAR implementation)
-        if self.factor_order > 0:
-            # Transition matrix
-            factor_ar = self.make_and_register_variable(
-                "factor_ar", shape=(self.k_factors, self.factor_order), dtype=floatX
-            )
+        # Transition matrix
+        # auxiliary function to build transition matrix block
+        def build_ar_block_matrix(ar_coeffs):
+            # ar_coeffs: (p,)
+            p = ar_coeffs.shape[0]
+            top_row = pt.reshape(ar_coeffs, (1, p))
+            below = pt.eye(p - 1, p, k=0)
+            return pt.concatenate([top_row, below], axis=0)
 
-            self.ssm["transition", :, :] = 0.0
+        transition_blocks = []
 
-            for j in range(self.k_factors):
-                block_start = j * self.factor_order
-                for i in range(self.factor_order):
-                    # Assign AR coefficients to the first row of each block
-                    self.ssm["transition", block_start, block_start + i] = factor_ar[j, i]
-
-                    # Fill the subdiagonal with ones, only for rows 1 to p-1
-                    if i < self.factor_order - 1:
-                        self.ssm["transition", block_start + i + 1, block_start + i] = 1.0
+        factor_ar = self.make_and_register_variable(
+            "factor_ar", shape=(self.k_factors, self.factor_order), dtype=floatX
+        )
+        for j in range(self.k_factors):
+            transition_blocks.append(build_ar_block_matrix(factor_ar[j]))
 
         if self.error_order > 0:
             error_ar = self.make_and_register_variable(
                 "error_ar", shape=(self.k_endog, self.error_order), dtype=floatX
             )
-
             for j in range(self.k_endog):
-                block_start = self.k_factors * self.factor_order + j * self.error_order
-                for i in range(self.error_order):
-                    # Set AR coefficients for the top row of each error AR(q) block
-                    self.ssm["transition", block_start, block_start + i] = error_ar[j, i]
+                transition_blocks.append(build_ar_block_matrix(error_ar[j]))
 
-                    # Set subdiagonal 1.0s, except last row
-                    if i < self.error_order - 1:
-                        self.ssm["transition", block_start + i + 1, block_start + i] = 1.0
+        # Final block diagonal transition matrix
+        self.ssm["transition", :, :] = pt.linalg.block_diag(*transition_blocks)
 
-        # TODO vectorize/block matrices (reorder the states accordingly)
         # Selection matrix
         self.ssm["selection", :, :] = 0.0
+
         for i in range(self.k_factors):
-            self.ssm["selection", i * self.factor_order, i] = 1.0
+            row = i * self.factor_order
+            self.ssm["selection", row, i] = 1.0
 
         for i in range(self.k_endog):
-            self.ssm[
-                "selection",
-                self.k_factors * self.factor_order + i * self.error_order,
-                self.k_factors + i,
-            ] = 1.0
+            row = self.k_factors * self.factor_order + i * self.error_order
+            col = self.k_factors + i
+            self.ssm["selection", row, col] = 1.0
 
         # State covariance matrix
         factor_sigma = self.make_and_register_variable(
