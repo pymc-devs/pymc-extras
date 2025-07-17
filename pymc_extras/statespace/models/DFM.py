@@ -60,6 +60,9 @@ class BayesianDynamicFactor(PyMCStateSpace):
         The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
         and "cholesky". See the docs for kalman filters for more details.
 
+    measurement_error: bool, default True
+        If true, a measurement error term is added to the model.
+
     verbose: bool, default True
         If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
 
@@ -100,7 +103,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
     factors. Careful prior specification is typically required for good estimation.
 
     Currently, the implementation assumes same factor order for all the factors,
-    does not yet support measurement error, exogenous variables and joint (VAR) error modeling.
+    does not yet support exogenous variables and joint (VAR) error modeling.
 
     Examples
     --------
@@ -161,6 +164,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         error_var: bool = False,
         error_cov_type: str = "diagonal",
         filter_type: str = "standard",
+        measurement_error: bool = False,
         verbose: bool = True,
     ):
         if k_endog is None and endog_names is None:
@@ -174,6 +178,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             raise NotImplementedError(
                 "Joint error modeling (error_var=True) is not yet implemented."
             )
+
         if exog is not None:
             raise NotImplementedError("Exogenous variables (exog) are not yet implemented.")
 
@@ -185,7 +190,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
         self.error_var = error_var
         self.error_cov_type = error_cov_type
         self.exog = exog
-        # TODO add measurement error support
         # TODO add exogenous variables support?
 
         # Determine the dimension for the latent factor states.
@@ -213,7 +217,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             k_posdef=k_posdef,
             filter_type=filter_type,
             verbose=verbose,
-            measurement_error=False,
+            measurement_error=measurement_error,
         )
 
     @property
@@ -226,6 +230,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             "factor_sigma",
             "error_ar",
             "error_sigma",
+            "sigma_obs",
         ]
 
         # Handle cases where parameters should be excluded based on model settings
@@ -236,6 +241,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
         if self.error_cov_type == "unstructured":
             names.remove("error_sigma")
             names.append("error_cov")
+        if not self.measurement_error:
+            names.remove("sigma_obs")
 
         return names
 
@@ -272,6 +279,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
             },
             "error_cov": {
                 "shape": (self.k_endog, self.k_endog),
+                "constraints": "Positive Semi-definite",
+            },
+            "sigma_obs": {
+                "shape": (self.k_endog,),
                 "constraints": "Positive Semi-definite",
             },
         }
@@ -361,7 +372,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
             coord_map["error_sigma"] = (OBS_STATE_DIM,)
         if self.error_cov_type == "unstructured":
             coord_map["error_sigma"] = (OBS_STATE_DIM, OBS_STATE_AUX_DIM)
-
+        if self.measurement_error:
+            coord_map["sigma_obs"] = (OBS_STATE_DIM,)
         return coord_map
 
     def make_symbolic_graph(self):
@@ -456,4 +468,11 @@ class BayesianDynamicFactor(PyMCStateSpace):
         )
 
         # Observation covariance matrix
-        self.ssm["obs_cov", :, :] = 0.0
+        if self.measurement_error:
+            sigma_obs = self.make_and_register_variable(
+                "sigma_obs", shape=(self.k_endog,), dtype=floatX
+            )
+            self.ssm["obs_cov", :, :] = pt.diag(sigma_obs)
+        else:
+            # If measurement error is not used, set obs_cov to zero
+            self.ssm["obs_cov", :, :] = 0.0
