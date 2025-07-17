@@ -178,8 +178,8 @@ def pymc_mod(arima_mod):
         # x0  = pm.Normal('x0', dims=['state'])
         # P0_diag = pm.Gamma('P0_diag', alpha=2, beta=1, dims=['state'])
         # P0 = pm.Deterministic('P0', pt.diag(P0_diag), dims=['state', 'state_aux'])
-        ar_params = pm.Normal("ar_params", sigma=0.1, dims=["ar_lag"])
-        ma_params = pm.Normal("ma_params", sigma=1, dims=["ma_lag"])
+        ar_params = pm.Normal("ar_params", sigma=0.1, dims=["lag_ar"])
+        ma_params = pm.Normal("ma_params", sigma=1, dims=["lag_ma"])
         sigma_state = pm.Exponential("sigma_state", 0.5)
         arima_mod.build_statespace_graph(data=data, save_kalman_filter_outputs_in_idata=True)
 
@@ -207,8 +207,8 @@ def pymc_mod_interp(arima_mod_interp):
         P0 = pm.Deterministic(
             "P0", pt.eye(arima_mod_interp.k_states) * P0_sigma, dims=["state", "state_aux"]
         )
-        ar_params = pm.Normal("ar_params", sigma=0.1, dims=["ar_lag"])
-        ma_params = pm.Normal("ma_params", sigma=1, dims=["ma_lag"])
+        ar_params = pm.Normal("ar_params", sigma=0.1, dims=["lag_ar"])
+        ma_params = pm.Normal("ma_params", sigma=1, dims=["lag_ma"])
         sigma_state = pm.Exponential("sigma_state", 0.5)
         sigma_obs = pm.Exponential("sigma_obs", 0.1)
 
@@ -344,8 +344,8 @@ def test_interpretable_states_are_interpretable(arima_mod_interp, pymc_mod_inter
         prior = pm.sample_prior_predictive(draws=10)
 
     prior_outputs = arima_mod_interp.sample_unconditional_prior(prior)
-    ar_lags = prior.prior.coords["ar_lag"].values - 1
-    ma_lags = prior.prior.coords["ma_lag"].values - 1
+    ar_lags = prior.prior.coords["lag_ar"].values - 1
+    ma_lags = prior.prior.coords["lag_ma"].values - 1
 
     # Check the first p states are lags of the previous state
     for t, tm1 in zip(ar_lags[1:], ar_lags[:-1]):

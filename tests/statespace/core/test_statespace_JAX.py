@@ -62,7 +62,7 @@ def exog_pymc_mod(exog_ss_mod, rng):
         )
         beta_exog = pm.Normal("beta_exog", dims=["exog_state"])
 
-        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["trend_shock"])
+        sigma_trend = pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
         exog_ss_mod.build_statespace_graph(y)
 
     return m

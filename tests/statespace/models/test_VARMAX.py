@@ -57,7 +57,7 @@ def pymc_mod(varma_mod, data):
             "state_chol", n=varma_mod.k_posdef, eta=1, sd_dist=pm.Exponential.dist(1)
         )
         ar_params = pm.Normal(
-            "ar_params", mu=0, sigma=0.1, dims=["observed_state", "ar_lag", "observed_state_aux"]
+            "ar_params", mu=0, sigma=0.1, dims=["observed_state", "lag_ar", "observed_state_aux"]
         )
         state_cov = pm.Deterministic(
             "state_cov", state_chol @ state_chol.T, dims=["shock", "shock_aux"]
