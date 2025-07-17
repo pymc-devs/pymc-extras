@@ -1281,7 +1281,12 @@ class TimeSeasonality(Component):
         if name is None:
             name = f"Seasonal[s={season_length}, d={duration}]"
         if state_names is None:
-            state_names = [f"{name}_{i}_{j}" for i in range(season_length) for j in range(duration)]
+            if duration > 1:
+                state_names = [
+                    f"{name}_{i}_{j}" for i in range(season_length) for j in range(duration)
+                ]
+            else:
+                state_names = [f"{name}_{i}" for i in range(season_length)]
         else:
             if len(state_names) != season_length * duration:
                 raise ValueError(
@@ -1291,6 +1296,7 @@ class TimeSeasonality(Component):
         self.innovations = innovations
         self.duration = duration
         self.remove_first_state = remove_first_state
+        self.season_length = season_length
 
         if self.remove_first_state:
             # In traditional models, the first state isn't identified, so we can help out the user by automatically
