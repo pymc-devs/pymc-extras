@@ -38,16 +38,15 @@ from pymc.blocking import DictToArrayBijection, RaveledVars
 from pymc.initial_point import make_initial_point_fn
 from pymc.model import modelcontext
 from pymc.model.core import Point
+from pymc.progress_bar import CustomProgress, default_progress_theme
 from pymc.pytensorf import (
     compile,
     find_rng_nodes,
     reseed_rngs,
 )
 from pymc.util import (
-    CustomProgress,
     RandomSeed,
     _get_seeds_per_chain,
-    default_progress_theme,
     get_default_varnames,
 )
 from pytensor.compile.function.types import Function
