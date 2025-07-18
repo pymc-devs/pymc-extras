@@ -340,14 +340,14 @@ class TimeSeasonality(Component):
         if self.remove_first_state:
             # In this case, parameters are normalized to sum to zero, so the current state is the negative sum of
             # all previous states.
-            zero_d = np.zeros((self.duration, self.duration))
-            id_d = np.eye(self.duration)
+            zero_d = pt.zeros((self.duration, self.duration))
+            id_d = pt.eye(self.duration)
 
-            blocks = []
+            row_blocks = []
 
             # First row: all -1_d blocks
             first_row = [-id_d for _ in range(self.season_length - 1)]
-            blocks.append(first_row)
+            row_blocks.append(pt.concatenate(first_row, axis=1))
 
             # Rows 2 to season_length-1: shifted identity blocks
             for i in range(self.season_length - 2):
@@ -357,16 +357,15 @@ class TimeSeasonality(Component):
                         row.append(id_d)
                     else:
                         row.append(zero_d)
-                blocks.append(row)
+                row_blocks.append(pt.concatenate(row, axis=1))
 
             # Stack blocks
-            T = np.block(blocks)
+            T = pt.concatenate(row_blocks, axis=0)
         else:
             # In this case we assume the user to be responsible for ensuring the states sum to zero, so T is just a
             # circulant matrix that cycles between the states.
-            T = np.eye(k_states, k=1)
-            T[-1, 0] = 1
-        T = pt.as_tensor_variable(T)
+            T = pt.eye(k_states, k=1)
+            T = pt.set_subtensor(T[-1, 0], 1)
 
         self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
 
