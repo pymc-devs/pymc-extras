@@ -28,11 +28,12 @@ class TimeSeasonality(Component):
         components are included in the same model. Default is ``f"Seasonal[s={season_length}, d={duration}]"``
 
     state_names: list of str, default None
-        List of strings for seasonal effect labels. If provided, it must be of length ``season_length``. An example
-        would be ``state_names = ['Mon', 'Tue', 'Wed', 'Thur', 'Fri', 'Sat', 'Sun']`` when data is daily with a weekly
+        List of strings for seasonal effect labels. If provided, it must be of length ``season_length`` times ``duration``.
+        An example would be ``state_names = ['Mon', 'Tue', 'Wed', 'Thur', 'Fri', 'Sat', 'Sun']`` when data is daily with a weekly
         seasonal pattern (``season_length = 7``).
 
-        If None, states will be numbered ``[State_0, ..., State_s-1]``
+        If None and ``duration = 1``, states will be named as ``[State_0, ..., State_s-1]`` (here s is ``season_length``).
+        If None and ``duration > 1``, states will be named as ``[State_0_0, ..., State_s-1_d-1]`` (here d is ``duration``).
 
     remove_first_state: bool, default True
         If True, the first state will be removed from the model. This is done because there are only ``season_length-1`` degrees of
@@ -148,7 +149,7 @@ class TimeSeasonality(Component):
     And so on. So for interpretation, the ``season_length - 1`` initial states are, when reversed, the coefficients
     associated with ``state_names[1:]``.
 
-    In the next example, we set :math:`s=3`, :math:`d=2`, ``remove_first_state=True``, and omit the shock term.
+    In the next example, we set :math:`s=2`, :math:`d=2`, ``remove_first_state=True``, and omit the shock term.
     By definition, the initial vector :math:`\alpha_{0}` is
 
     .. math::
@@ -178,7 +179,7 @@ class TimeSeasonality(Component):
 
     .. warning::
         Although the ``state_names`` argument expects a list of length ``season_length`` times ``duration``,
-        only ``state_names[1:]`` will be saved as model dimensions, since the first coefficient is not identified
+        only ``state_names[duration:]`` will be saved as model dimensions, since the first coefficient is not identified
         (it is defined as :math:`-\sum_{i=1}^{s-1} \tilde{\gamma}_{-i}`).
 
     Examples
@@ -269,7 +270,7 @@ class TimeSeasonality(Component):
 
         self.provided_state_names = state_names
 
-        k_states = season_length * duration - int(self.remove_first_state) * duration
+        k_states = (season_length - int(self.remove_first_state)) * duration
         k_endog = len(observed_state_names)
         k_posdef = int(innovations)
 
