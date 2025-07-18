@@ -332,6 +332,8 @@ class TimeSeasonality(Component):
 
     def make_symbolic_graph(self) -> None:
         k_states = self.k_states // self.k_endog
+        duration = self.duration
+        k_unique_states = k_states // duration
         k_posdef = self.k_posdef // self.k_endog
         k_endog = self.k_endog
 
@@ -364,6 +366,7 @@ class TimeSeasonality(Component):
             # circulant matrix that cycles between the states.
             T = np.eye(k_states, k=1)
             T[-1, 0] = 1
+        T = pt.as_tensor_variable(T)
 
         self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
 
@@ -371,9 +374,15 @@ class TimeSeasonality(Component):
         self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
 
         initial_states = self.make_and_register_variable(
-            f"coefs_{self.name}", shape=(k_states,) if k_endog == 1 else (k_endog, k_states)
+            f"coefs_{self.name}",
+            shape=(k_unique_states,) if k_endog == 1 else (k_endog, k_unique_states),
         )
-        self.ssm["initial_state", :] = initial_states.ravel()
+        if k_endog == 1:
+            self.ssm["initial_state", :] = pt.extra_ops.repeat(initial_states, duration, axis=0)
+        else:
+            self.ssm["initial_state", :] = pt.extra_ops.repeat(
+                initial_states, duration, axis=1
+            ).ravel()
 
         if self.innovations:
             R = pt.zeros((k_states, k_posdef))[0, 0].set(1.0)
