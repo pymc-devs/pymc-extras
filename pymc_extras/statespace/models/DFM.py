@@ -29,8 +29,9 @@ class BayesianDynamicFactor(PyMCStateSpace):
     k_factors : int
         Number of latent factors.
 
-    factor_order : int
-        Order of the VAR process for the latent factors.
+    factor_order : int or Sequence[int]
+        Order of the VAR process for the latent factors. If an integer is provided, the same order is used for all factors.
+        If a sequence of integers is provided, it specifies the order for each factor individually.
 
     k_endog : int, optional
         Number of observed time series. If not provided, the number of observed series will be inferred from `endog_names`.
@@ -156,7 +157,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
     def __init__(
         self,
         k_factors: int,
-        factor_order: int,
+        factor_order: int | Sequence[int],
         k_endog: int | None = None,
         endog_names: Sequence[str] | None = None,
         exog: np.ndarray | None = None,
@@ -182,6 +183,17 @@ class BayesianDynamicFactor(PyMCStateSpace):
         if exog is not None:
             raise NotImplementedError("Exogenous variables (exog) are not yet implemented.")
 
+        # Normalize factor_order to a list of length k_factors
+        if isinstance(factor_order, int):
+            factor_order = [factor_order] * k_factors
+        elif isinstance(factor_order, Sequence):
+            if len(factor_order) != k_factors:
+                raise ValueError(
+                    f"factor_order must have length {k_factors} when given as a sequence."
+                )
+        else:
+            raise TypeError("factor_order must be either an int or a sequence of ints.")
+
         self.endog_names = endog_names
         self.k_endog = k_endog
         self.k_factors = k_factors
@@ -195,8 +207,12 @@ class BayesianDynamicFactor(PyMCStateSpace):
         # Determine the dimension for the latent factor states.
         # For static factors, one might use k_factors.
         # For dynamic factors with lags, the state might include current factors and past lags.
-        # TODO: what if we want different factor orders for different factors? (follow suggestions in GitHub)
-        k_factor_states = k_factors * factor_order
+        # If factor_order is 0, we treat the factor as static (no dynamics),
+        # but it is still included in the state vector with one state per factor.
+        # Factor_ar paramter will not exist in this case.
+        k_factor_states = sum(max(order, 1) for order in self.factor_order)
+
+        self._max_order = max(self.factor_order)
 
         # Determine the dimension for the error component.
         # If error_order > 0 then we add additional states for error dynamics, otherwise white noise error.
@@ -234,7 +250,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         ]
 
         # Handle cases where parameters should be excluded based on model settings
-        if self.factor_order == 0:
+        if all(order == 0 for order in self.factor_order):
             names.remove("factor_ar")
         if self.error_order == 0:
             names.remove("error_ar")
@@ -262,7 +278,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 "constraints": None,
             },
             "factor_ar": {
-                "shape": (self.k_factors, self.factor_order),
+                "shape": (self.k_factors, self._max_order),
                 "constraints": None,
             },
             "factor_sigma": {
@@ -283,7 +299,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             },
             "sigma_obs": {
                 "shape": (self.k_endog,),
-                "constraints": "Positive Semi-definite",
+                "constraints": "Positive",
             },
         }
 
@@ -301,9 +317,9 @@ class BayesianDynamicFactor(PyMCStateSpace):
         names = []
         # TODO adjust notation by looking at the VARMAX implementation
         # Factor states
-        for i in range(self.k_factors):
-            for lag in range(self.factor_order):
-                names.append(f"L{lag}.factor_{i+1}")
+        for i, order in enumerate(self.factor_order):
+            for j in range(max(order, 1)):
+                names.append(f"factor_{i}_{j}")
 
         # Idiosyncratic error states
         if self.error_order > 0:
@@ -327,8 +343,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
         coords[FACTOR_DIM] = [f"factor_{i+1}" for i in range(self.k_factors)]
 
         # AR parameter dimensions - add if needed
-        if self.factor_order > 0:
-            coords[AR_PARAM_DIM] = list(range(1, self.factor_order + 1))
+        if self._max_order > 0:
+            coords[AR_PARAM_DIM] = list(range(1, self._max_order + 1))
 
         # If error_order > 0
         if self.error_order > 0:
@@ -359,8 +375,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
             "factor_sigma": (FACTOR_DIM,),
         }
-
-        if self.factor_order > 0:
+        if self._max_order > 0:
             coord_map["factor_ar"] = (FACTOR_DIM, AR_PARAM_DIM)
 
         if self.error_order > 0:
@@ -368,10 +383,13 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         if self.error_cov_type in ["scalar"]:
             coord_map["error_sigma"] = ()
+
         elif self.error_cov_type in ["diagonal"]:
             coord_map["error_sigma"] = (OBS_STATE_DIM,)
+
         if self.error_cov_type == "unstructured":
             coord_map["error_sigma"] = (OBS_STATE_DIM, OBS_STATE_AUX_DIM)
+
         if self.measurement_error:
             coord_map["sigma_obs"] = (OBS_STATE_DIM,)
         return coord_map
@@ -396,12 +414,13 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         self.ssm["design", :, :] = 0.0
 
-        for j in range(self.k_factors):
-            col_idx = j * self.factor_order
-            self.ssm["design", :, col_idx] = factor_loadings[:, j]
+        factor_col = 0
+        for i, order in enumerate(self.factor_order):
+            self.ssm["design", :, factor_col] = factor_loadings[:, i]
+            factor_col += max(order, 1)
 
         for i in range(self.k_endog):
-            col_idx = self.k_factors * self.factor_order + i * self.error_order
+            col_idx = sum(max(order, 1) for order in self.factor_order) + i * self.error_order
             self.ssm["design", i, col_idx] = 1.0
 
         # Transition matrix
@@ -415,11 +434,20 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         transition_blocks = []
 
-        factor_ar = self.make_and_register_variable(
-            "factor_ar", shape=(self.k_factors, self.factor_order), dtype=floatX
-        )
-        for j in range(self.k_factors):
-            transition_blocks.append(build_ar_block_matrix(factor_ar[j]))
+        if self._max_order > 0:
+            factor_ar = self.make_and_register_variable(
+                "factor_ar", shape=(self.k_factors, self._max_order), dtype=floatX
+            )
+            for j in range(self.k_factors):
+                order = self.factor_order[j]
+                if order == 0:
+                    # For order=0, just add a 1x1 zero matrix (static factor)
+                    transition_blocks.append(pt.zeros((1, 1), dtype=floatX))
+                else:
+                    transition_blocks.append(build_ar_block_matrix(factor_ar[j][:order]))
+        else:
+            # If no factor dynamics, just add a zero matrix
+            transition_blocks.append(pt.zeros((self.k_factors, self.k_factors), dtype=floatX))
 
         if self.error_order > 0:
             error_ar = self.make_and_register_variable(
@@ -434,12 +462,13 @@ class BayesianDynamicFactor(PyMCStateSpace):
         # Selection matrix
         self.ssm["selection", :, :] = 0.0
 
-        for i in range(self.k_factors):
-            row = i * self.factor_order
-            self.ssm["selection", row, i] = 1.0
+        factor_row = 0
+        for i, order in enumerate(self.factor_order):
+            self.ssm["selection", factor_row, i] = 1.0
+            factor_row += max(order, 1)
 
         for i in range(self.k_endog):
-            row = self.k_factors * self.factor_order + i * self.error_order
+            row = sum(self.factor_order) + i * self.error_order
             col = self.k_factors + i
             self.ssm["selection", row, col] = 1.0
 
@@ -473,6 +502,3 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 "sigma_obs", shape=(self.k_endog,), dtype=floatX
             )
             self.ssm["obs_cov", :, :] = pt.diag(sigma_obs)
-        else:
-            # If measurement error is not used, set obs_cov to zero
-            self.ssm["obs_cov", :, :] = 0.0
