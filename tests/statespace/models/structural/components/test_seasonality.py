@@ -14,6 +14,7 @@ RTOL = 0 if config.floatX.endswith("64") else 1e-6
 
 
 @pytest.mark.parametrize("s", [10, 25, 50])
+@pytest.mark.parametrize("d", [1, 2, 3])
 @pytest.mark.parametrize("innovations", [True, False])
 @pytest.mark.parametrize("remove_first_state", [True, False])
 @pytest.mark.filterwarnings(
@@ -21,55 +22,61 @@ RTOL = 0 if config.floatX.endswith("64") else 1e-6
     "ignore:overflow encountered in matmul:RuntimeWarning",
     "ignore:invalid value encountered in matmul:RuntimeWarning",
 )
-def test_time_seasonality(s, innovations, remove_first_state, rng):
+def test_time_seasonality(s, d, innovations, remove_first_state, rng):
     def random_word(rng):
         return "".join(rng.choice(list("abcdefghijklmnopqrstuvwxyz")) for _ in range(5))
 
-    state_names = [random_word(rng) for _ in range(s)]
+    state_names = [random_word(rng) for _ in range(s * d)]
     mod = st.TimeSeasonality(
         season_length=s,
+        duration=d,
         innovations=innovations,
         name="season",
         state_names=state_names,
         remove_first_state=remove_first_state,
     )
-    x0 = np.zeros(mod.k_states, dtype=config.floatX)
+    x0 = np.zeros(mod.k_states // mod.duration, dtype=config.floatX)
     x0[0] = 1
 
     params = {"coefs_season": x0}
     if innovations:
         params["sigma_season"] = 0.0
 
-    x, y = simulate_from_numpy_model(mod, rng, params)
+    x, y = simulate_from_numpy_model(mod, rng, params, steps=100 * mod.duration)
     y = y.ravel()
     if not innovations:
-        assert_pattern_repeats(y, s, atol=ATOL, rtol=RTOL)
+        assert_pattern_repeats(y, s * d, atol=ATOL, rtol=RTOL)
 
     # Check coords
     mod = mod.build(verbose=False)
     _assert_basic_coords_correct(mod)
-    test_slice = slice(1, None) if remove_first_state else slice(None)
+    test_slice = slice(d, None) if remove_first_state else slice(None)
     assert mod.coords["state_season"] == state_names[test_slice]
 
 
+@pytest.mark.parametrize("d", [1, 2, 3])
 @pytest.mark.parametrize(
     "remove_first_state", [True, False], ids=["remove_first_state", "keep_first_state"]
 )
-def test_time_seasonality_multiple_observed(rng, remove_first_state):
+def test_time_seasonality_multiple_observed(rng, d, remove_first_state):
     s = 3
-    state_names = [f"state_{i}" for i in range(s)]
+    state_names = [f"state_{i}_{j}" for i in range(s) for j in range(d)]
     mod = st.TimeSeasonality(
         season_length=s,
+        duration=d,
         innovations=True,
         name="season",
         state_names=state_names,
         observed_state_names=["data_1", "data_2"],
         remove_first_state=remove_first_state,
     )
-    x0 = np.zeros((mod.k_endog, mod.k_states // mod.k_endog), dtype=config.floatX)
+    x0 = np.zeros((mod.k_endog, mod.k_states // mod.k_endog // mod.duration), dtype=config.floatX)
 
     expected_states = [
-        f"state_{i}[data_{j}]" for j in range(1, 3) for i in range(int(remove_first_state), s)
+        f"state_{i}_{j}[data_{k}]"
+        for k in range(1, 3)
+        for i in range(int(remove_first_state), s)
+        for j in range(d)
     ]
     assert mod.state_names == expected_states
     assert mod.shock_names == ["season[data_1]", "season[data_2]"]
@@ -79,9 +86,9 @@ def test_time_seasonality_multiple_observed(rng, remove_first_state):
 
     params = {"coefs_season": x0, "sigma_season": np.array([0.0, 0.0], dtype=config.floatX)}
 
-    x, y = simulate_from_numpy_model(mod, rng, params, steps=123)
-    assert_pattern_repeats(y[:, 0], s, atol=ATOL, rtol=RTOL)
-    assert_pattern_repeats(y[:, 1], s, atol=ATOL, rtol=RTOL)
+    x, y = simulate_from_numpy_model(mod, rng, params, steps=123 * d)
+    assert_pattern_repeats(y[:, 0], s * d, atol=ATOL, rtol=RTOL)
+    assert_pattern_repeats(y[:, 1], s * d, atol=ATOL, rtol=RTOL)
 
     mod = mod.build(verbose=False)
     x0, *_, T, Z, R, _, Q = mod._unpack_statespace_with_placeholders()
@@ -97,36 +104,38 @@ def test_time_seasonality_multiple_observed(rng, remove_first_state):
     params["sigma_season"] = np.array([0.1, 0.8], dtype=config.floatX)
     x0, T, Z, R, Q = fn(**params)
 
+    # Because the dimension of the observed states is 2,
+    # the expected T is the diagonal block matrix [[T0, 0], [0, T0]]
+    # where T0 is the transition matrix we would have if the
+    # seasonality were not multiple observed.
+    mod0 = st.TimeSeasonality(season_length=s, duration=d, remove_first_state=remove_first_state)
+    T0 = mod0.ssm["transition"].eval()
+
     if remove_first_state:
-        expected_x0 = np.array([1.0, 0.0, 2.0, 0.0])
-
-        expected_T = np.array(
-            [
-                [-1.0, -1.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, -1.0, -1.0],
-                [0.0, 0.0, 1.0, 0.0],
-            ]
-        )
-        expected_R = np.array([[1.0, 1.0], [0.0, 0.0], [1.0, 1.0], [0.0, 0.0]])
-        expected_Z = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
-
-    else:
-        expected_x0 = np.array([1.0, 0.0, 0.0, 2.0, 0.0, 0.0])
-        expected_T = np.array(
-            [
-                [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-                [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-            ]
+        expected_x0 = np.repeat(np.array([1.0, 0.0, 2.0, 0.0]), d)
+        expected_T = np.block(
+            [[T0, np.zeros((d * (s - 1), d * (s - 1)))], [np.zeros((d * (s - 1), d * (s - 1))), T0]]
         )
         expected_R = np.array(
-            [[1.0, 1.0], [0.0, 0.0], [0.0, 0.0], [1.0, 1.0], [0.0, 0.0], [0.0, 0.0]]
+            [[1.0, 1.0]] + [[0.0, 0.0]] * (2 * d - 1) + [[1.0, 1.0]] + [[0.0, 0.0]] * (2 * d - 1)
         )
-        expected_Z = np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]])
+        Z0 = np.zeros((2, d * (s - 1)))
+        Z0[0, 0] = 1
+        Z1 = np.zeros((2, d * (s - 1)))
+        Z1[1, 0] = 1
+        expected_Z = np.block([[Z0, Z1]])
+
+    else:
+        expected_x0 = np.repeat(np.array([1.0, 0.0, 0.0, 2.0, 0.0, 0.0]), d)
+        expected_T = np.block([[T0, np.zeros((s * d, s * d))], [np.zeros((s * d, s * d)), T0]])
+        expected_R = np.array(
+            [[1.0, 1.0]] + [[0.0, 0.0]] * (s * d - 1) + [[1.0, 1.0]] + [[0.0, 0.0]] * (s * d - 1)
+        )
+        Z0 = np.zeros((2, s * d))
+        Z0[0, 0] = 1
+        Z1 = np.zeros((2, s * d))
+        Z1[1, 0] = 1
+        expected_Z = np.block([[Z0, Z1]])
 
     expected_Q = np.array([[0.1**2, 0.0], [0.0, 0.8**2]])
 
@@ -137,20 +146,24 @@ def test_time_seasonality_multiple_observed(rng, remove_first_state):
         np.testing.assert_allclose(matrix, expected)
 
 
-def test_add_two_time_seasonality_different_observed(rng):
+@pytest.mark.parametrize("d1", [1, 2, 3])
+@pytest.mark.parametrize("d2", [1, 2, 3])
+def test_add_two_time_seasonality_different_observed(rng, d1, d2):
     mod1 = st.TimeSeasonality(
         season_length=3,
+        duration=d1,
         innovations=True,
         name="season1",
-        state_names=[f"state_{i}" for i in range(3)],
+        state_names=[f"state_{i}_{j}" for i in range(3) for j in range(d1)],
         observed_state_names=["data_1"],
         remove_first_state=False,
     )
     mod2 = st.TimeSeasonality(
         season_length=5,
+        duration=d2,
         innovations=True,
         name="season2",
-        state_names=[f"state_{i}" for i in range(5)],
+        state_names=[f"state_{i}_{j}" for i in range(5) for j in range(d2)],
         observed_state_names=["data_2"],
     )
 
@@ -164,18 +177,22 @@ def test_add_two_time_seasonality_different_observed(rng):
         "initial_state_cov": np.eye(mod.k_states, dtype=config.floatX),
     }
 
-    x, y = simulate_from_numpy_model(mod, rng, params, steps=3 * 5 * 5)
-    assert_pattern_repeats(y[:, 0], 3, atol=ATOL, rtol=RTOL)
-    assert_pattern_repeats(y[:, 1], 5, atol=ATOL, rtol=RTOL)
+    x, y = simulate_from_numpy_model(mod, rng, params, steps=3 * 5 * 5 * d1 * d2)
+    assert_pattern_repeats(y[:, 0], 3 * d1, atol=ATOL, rtol=RTOL)
+    assert_pattern_repeats(y[:, 1], 5 * d2, atol=ATOL, rtol=RTOL)
 
     assert mod.state_names == [
-        "state_0[data_1]",
-        "state_1[data_1]",
-        "state_2[data_1]",
-        "state_1[data_2]",
-        "state_2[data_2]",
-        "state_3[data_2]",
-        "state_4[data_2]",
+        item
+        for sublist in [
+            [f"state_0_{j}[data_1]" for j in range(d1)],
+            [f"state_1_{j}[data_1]" for j in range(d1)],
+            [f"state_2_{j}[data_1]" for j in range(d1)],
+            [f"state_1_{j}[data_2]" for j in range(d2)],
+            [f"state_2_{j}[data_2]" for j in range(d2)],
+            [f"state_3_{j}[data_2]" for j in range(d2)],
+            [f"state_4_{j}[data_2]" for j in range(d2)],
+        ]
+        for item in sublist
     ]
 
     assert mod.shock_names == ["season1[data_1]", "season2[data_2]"]
@@ -194,20 +211,19 @@ def test_add_two_time_seasonality_different_observed(rng):
     )
 
     np.testing.assert_allclose(
-        np.array([1.0, 0.0, 0.0, 3.0, 0.0, 0.0, 1.2]), x0, atol=ATOL, rtol=RTOL
+        np.repeat(np.array([1.0, 0.0, 0.0, 3.0, 0.0, 0.0, 1.2]), [d1, d1, d1, d2, d2, d2, d2]),
+        x0,
+        atol=ATOL,
+        rtol=RTOL,
     )
 
+    # The transition matrix T of mod is expected to be [[T1, 0], [0, T2]],
+    # where T1 and T2 are the transition matrices of mod1 and mod2, respectively.
+    T1 = mod1.ssm["transition"].eval()
+    T2 = mod2.ssm["transition"].eval()
     np.testing.assert_allclose(
-        np.array(
-            [
-                [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, -1.0, -1.0, -1.0, -1.0],
-                [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            ]
+        np.block(
+            [[T1, np.zeros((T1.shape[0], T2.shape[1]))], [np.zeros((T2.shape[0], T1.shape[1])), T2]]
         ),
         T,
         atol=ATOL,
