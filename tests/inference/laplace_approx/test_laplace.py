@@ -83,6 +83,28 @@ def test_fit_laplace_basic(mode, gradient_backend: GradientBackend):
     np.testing.assert_allclose(idata.fit["covariance_matrix"].values, bda_cov, rtol=1e-3, atol=1e-3)
 
 
+def test_fit_laplace_outside_model_context():
+    with pm.Model() as m:
+        mu = pm.Normal("mu", 0, 1)
+        sigma = pm.Exponential("sigma", 1)
+        y_hat = pm.Normal("y_hat", mu=mu, sigma=sigma, observed=np.random.normal(size=10))
+
+    idata = fit_laplace(
+        model=m,
+        optimize_method="L-BFGS-B",
+        use_grad=True,
+        progressbar=False,
+        chains=1,
+        draws=100,
+    )
+
+    assert hasattr(idata, "posterior")
+    assert hasattr(idata, "fit")
+    assert hasattr(idata, "optimizer_result")
+
+    assert idata.posterior["mu"].shape == (1, 100)
+
+
 @pytest.mark.parametrize(
     "include_transformed", [True, False], ids=["include_transformed", "no_transformed"]
 )

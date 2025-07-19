@@ -335,13 +335,20 @@ def find_MAP(
         var.name: value for var, value in zip(unobserved_vars, unobserved_vars_values)
     }
 
-    idata = map_results_to_inference_data(optimized_point, frozen_model, include_transformed)
-    idata = add_fit_to_inference_data(idata, raveled_optimized, H_inv)
-    idata = add_optimizer_result_to_inference_data(
-        idata, optimizer_result, method, raveled_optimized, model
+    idata = map_results_to_inference_data(
+        map_point=optimized_point, model=frozen_model, include_transformed=include_transformed
     )
+
+    idata = add_fit_to_inference_data(
+        idata=idata, mu=raveled_optimized, H_inv=H_inv, model=frozen_model
+    )
+
+    idata = add_optimizer_result_to_inference_data(
+        idata=idata, result=optimizer_result, method=method, mu=raveled_optimized, model=model
+    )
+
     idata = add_data_to_inference_data(
-        idata, progressbar=False, model=model, compile_kwargs=compile_kwargs
+        idata=idata, progressbar=False, model=model, compile_kwargs=compile_kwargs
     )
 
     return idata
