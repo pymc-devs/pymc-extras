@@ -384,6 +384,7 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
 
     # Obtain the joint_logp graph of the inner RV graph
     inner_rv_values = dict(zip(inner_rvs, values))
+
     marginalized_vv = x.clone()
     rv_values = inner_rv_values | {x: marginalized_vv}
     logps_dict = conditional_logp(rv_values=rv_values, **kwargs)
@@ -396,7 +397,7 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
 
     from pytensor.tensor.optimize import minimize
 
-    # Maximize log(p(x | y, params)) wrt x to find mode x0
+    # Maximize log(p(x | y, params)) wrt x to find mode x0 # TODO args need to be user-supplied
     x0, _ = minimize(
         objective=-logp,
         x=marginalized_vv,
@@ -406,14 +407,32 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
         optimizer_kwargs={"tol": 1e-8},
     )
 
+    # print(op.__dict__)
+    # marginalized_rv_input_rvs = op.kwargs['marginalized_rv_input_rvs']
+    # x0 = op.kwargs['x0']
+    # log_laplace_approx = op.kwargs['log_laplace_approx']
+    # return logp - log_laplace_approx
+
+    rng = np.random.default_rng(12345)
+    d = 10
+    # Q = np.diag(rng.random(d))
+    from pymc import MvNormal
+
+    x = op.owner.inputs[0]
+    if not isinstance(x, MvNormal):
+        raise ValueError("Latent field x must be MvNormal.")
+    Q = x.owner.inputs[1]  # TODO double check this grabs the right thing
+    x0 = rng.random(d)
+
+    # x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: rng.random(d)})
+    # for rv in marginalized_rv_input_rvs:
+    #     x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: rng.random(d)})
+
     # require f''(x0) for Laplace approx
     hess = pytensor.gradient.hessian(logp, marginalized_vv)
     # hess = pytensor.graph.replace.graph_replace(hess, {marginalized_vv: x0})
 
     # Could be made more efficient with adding diagonals only
-    rng = np.random.default_rng(12345)
-    d = 3
-    Q = np.diag(rng.random(d))
     tau = Q - hess
 
     # Currently x is passed both as the query point for f(x, args) = logp(x | y, params) AND as an initial guess for x0. This may cause issues if the query point is
@@ -425,6 +444,7 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     # marginalized_logp = logps_dict.pop(marginalized_vv)
     joint_logp = logp - log_laplace_approx
 
+    # TODO this might cause circularity issues by overwriting x as an input to the x0 minimizer
     joint_logp = pytensor.graph.replace.graph_replace(joint_logp, {marginalized_vv: x0})
 
     return joint_logp  # TODO check if pm.sample adds on p(params). Otherwise this is p(y|params) not p(params|y)
