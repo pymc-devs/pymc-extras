@@ -185,6 +185,22 @@ def test_find_MAP(
         assert not hasattr(idata, "unconstrained_posterior")
 
 
+def test_find_map_outside_model_context():
+    """
+    Test that find_MAP can be called outside of a model context.
+    """
+    with pm.Model() as m:
+        mu = pm.Normal("mu", 0, 1)
+        sigma = pm.Exponential("sigma", 1)
+        y_hat = pm.Normal("y_hat", mu=mu, sigma=sigma, observed=np.random.normal(size=10))
+
+    idata = find_MAP(model=m, method="L-BFGS-B", use_grad=True, progressbar=False)
+
+    assert hasattr(idata, "posterior")
+    assert hasattr(idata, "fit")
+    assert hasattr(idata, "optimizer_result")
+
+
 @pytest.mark.parametrize(
     "backend, gradient_backend",
     [("jax", "jax")],
