@@ -362,7 +362,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         Returns
         -------
         idata: Dataset
-            An Dataset object with hidden states transformed to represent only the "interpretable" subcomponents
+            A Dataset object with hidden states transformed to represent only the "interpretable" subcomponents
             of the structural model.
 
         Notes
