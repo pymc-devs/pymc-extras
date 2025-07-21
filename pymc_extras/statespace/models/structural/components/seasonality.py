@@ -14,24 +14,29 @@ class TimeSeasonality(Component):
     ----------
     season_length: int
         The number of periods in a single seasonal cycle, e.g. 12 for monthly data with annual seasonal pattern, 7 for
-        daily data with weekly seasonal pattern, etc.
+        daily data with weekly seasonal pattern, etc. It must be greater than one.
+
+    duration: int, default 1
+        Number of time steps for each seasonal period.
+        This determines how long each seasonal period is held constant before moving to the next.
 
     innovations: bool, default True
         Whether to include stochastic innovations in the strength of the seasonal effect
 
     name: str, default None
         A name for this seasonal component. Used to label dimensions and coordinates. Useful when multiple seasonal
-        components are included in the same model. Default is ``f"Seasonal[s={season_length}]"``
+        components are included in the same model. Default is ``f"Seasonal[s={season_length}, d={duration}]"``
 
     state_names: list of str, default None
-        List of strings for seasonal effect labels. If provided, it must be of length ``season_length``. An example
-        would be ``state_names = ['Mon', 'Tue', 'Wed', 'Thur', 'Fri', 'Sat', 'Sun']`` when data is daily with a weekly
+        List of strings for seasonal effect labels. If provided, it must be of length ``season_length`` times ``duration``.
+        An example would be ``state_names = ['Mon', 'Tue', 'Wed', 'Thur', 'Fri', 'Sat', 'Sun']`` when data is daily with a weekly
         seasonal pattern (``season_length = 7``).
 
-        If None, states will be numbered ``[State_0, ..., State_s]``
+        If None and ``duration = 1``, states will be named as ``[State_0, ..., State_s-1]`` (here s is ``season_length``).
+        If None and ``duration > 1``, states will be named as ``[State_0_0, ..., State_s-1_d-1]`` (here d is ``duration``).
 
     remove_first_state: bool, default True
-        If True, the first state will be removed from the model. This is done because there are only n-1 degrees of
+        If True, the first state will be removed from the model. This is done because there are only ``season_length-1`` degrees of
         freedom in the seasonal component, and one state is not identified. If False, the first state will be
         included in the model, but it will not be identified -- you will need to handle this in the priors (e.g. with
         ZeroSumNormal).
@@ -41,17 +46,76 @@ class TimeSeasonality(Component):
 
     Notes
     -----
-    A seasonal effect is any pattern that repeats every fixed interval. Although there are many possible ways to
-    model seasonal effects, the implementation used here is the one described by [1] as the "canonical" time domain
-    representation. The seasonal component can be expressed:
+    A seasonal effect is any pattern that repeats at fixed intervals. There are several ways to model such effects;
+    here, we present two models that are straightforward extensions of those described in [1].
+
+    **First model** (``remove_first_state=True``)
+
+    In this model, the state vector is defined as:
 
     .. math::
-        \gamma_t = -\sum_{i=1}^{s-1} \gamma_{t-i} + \omega_t, \quad \omega_t \sim N(0, \sigma_\gamma)
+        \alpha_t :=(\gamma_t, \ldots, \gamma_{t-d(s-1)+1}), \quad t \ge 0.
 
-    Where :math:`s` is the ``seasonal_length`` parameter and :math:`\omega_t` is the (optional) stochastic innovation.
-    To give interpretation to the :math:`\gamma` terms, it is helpful to work  through the algebra for a simple
-    example. Let :math:`s=4`, and omit the shock term. Define initial conditions :math:`\gamma_0, \gamma_{-1},
-    \gamma_{-2}`. The value of the seasonal component for the first 5 timesteps will be:
+    This vector has length :math:`d(s-1)`, where:
+
+    - :math:`s` is the ``seasonal_length`` parameter, and
+    - :math:`d` is the ``duration`` parameter.
+
+    The components of the initial vector :math:`\alpha_{0}` are given by
+
+    .. math::
+        \gamma_{-l} := \tilde{\gamma}_{k_l}, \quad \text{where} \quad k_l := \left\lfloor \frac{l}{d} \right\rfloor \bmod s \quad \text{and} \quad l=0,\ldots, d(s-1)-1.
+
+    Here, the values
+
+    .. math::
+        \tilde{\gamma}_{0}, \ldots, \tilde{\gamma}_{s-2},
+
+    represent the initial seasonal states. The transition matrix of this model is the :math:`d(s-1) \times d(s-1)` matrix
+
+    .. math::
+        \begin{bmatrix}
+            -\mathbf{1}_d & -\mathbf{1}_d & \cdots & -\mathbf{1}_d & -\mathbf{1}_d \\
+            \mathbf{1}_d & \mathbf{0}_d & \cdots & \mathbf{0}_d & \mathbf{0}_d \\
+            \mathbf{0}_d & \mathbf{1}_d & \cdots & \mathbf{0}_d & \mathbf{0}_d \\
+            \vdots & \vdots & \ddots & \vdots \\
+            \mathbf{0}_d & \mathbf{0}_d & \cdots & \mathbf{1}_d & \mathbf{0}_d
+        \end{bmatrix}
+
+    where :math:`\mathbf{1}_d` and  :math:`\mathbf{0}_d` denote the :math:`d \times d` identity and null matrices, respectively.
+
+    **Second model** (``remove_first_state=False``)
+
+    In contrast, the state vector in the second model is defined as:
+
+    .. math::
+        \alpha_t=(\gamma_t, \ldots, \gamma_{t-ds+1}), \quad t \ge 0.
+
+    This vector has length :math:`ds`. The components of the initial state vector :math:`\alpha_{0}` are defined similarly:
+
+    .. math::
+        \gamma_{-l} := \tilde{\gamma}_{k_l}, \quad \text{where} \quad k_l := \left\lfloor \frac{l}{d} \right\rfloor \bmod s \quad \text{and} \quad l=0,\ldots, ds-1.
+
+    In this case, the initial seasonal states :math:`\tilde{\gamma}_{0}, \ldots, \tilde{\gamma}_{s-1}` are required to satisfy the following condition:
+
+    .. math::
+        \sum_{i=0}^{s-1} \tilde{\gamma}_{i} = 0.
+
+    The transition matrix of this model is the following :math:`ds \times ds` circulant matrix:
+
+    .. math::
+        \begin{bmatrix}
+            0 & 1 & 0 & \cdots & 0 \\
+            0 & 0 & 1 & \cdots & 0 \\
+            \vdots & \vdots & \ddots & \ddots & \vdots \\
+            0 & 0 & \cdots & 0 & 1 \\
+            1 & 0 & \cdots & 0 & 0
+        \end{bmatrix}
+
+    To give interpretation to the :math:`\gamma` terms, it is helpful to work through the algebra for a simple
+    example. Let :math:`s=4`, :math:`d=1`, ``remove_first_state=True``, and omit the shock term. Then, we have
+    :math:`\gamma_{-i} = \tilde{\gamma}_{-i}`, for :math:`i=-2,\ldots, 0` and the value of the seasonal component
+    for the first 5 timesteps will be:
 
     .. math::
         \begin{align}
@@ -85,10 +149,38 @@ class TimeSeasonality(Component):
     And so on. So for interpretation, the ``season_length - 1`` initial states are, when reversed, the coefficients
     associated with ``state_names[1:]``.
 
+    In the next example, we set :math:`s=2`, :math:`d=2`, ``remove_first_state=True``, and omit the shock term.
+    By definition, the initial vector :math:`\alpha_{0}` is
+
+    .. math::
+        \alpha_0=(\tilde{\gamma}_{0}, \tilde{\gamma}_{0}, \tilde{\gamma}_{-1}, \tilde{\gamma}_{-1})
+
+    and the transition matrix is
+
+    .. math::
+        \begin{bmatrix}
+            -1 &  0 & -1 &  0 \\
+             0 & -1 &  0 & -1 \\
+             1 &  0 &  0 &  0 \\
+             0 &  1 &  0 &  0 \\
+        \end{bmatrix}
+
+    It is easy to verify that:
+
+    .. math::
+        \begin{align}
+            \gamma_1 &= -\tilde{\gamma}_0 - \tilde{\gamma}_{-1}\\
+            \gamma_2 &= -(-\tilde{\gamma}_0 - \tilde{\gamma}_{-1})-\tilde{\gamma}_0\\
+                     &= \tilde{\gamma}_{-1}\\
+            \gamma_3 &= -\tilde{\gamma}_{-1} +(\tilde{\gamma}_0 + \tilde{\gamma}_{-1})\\
+                     &= \tilde{\gamma}_{0}\\
+            \gamma_4 &= -\tilde{\gamma}_0 - \tilde{\gamma}_{-1}.\\
+        \end{align}
+
     .. warning::
-        Although the ``state_names`` argument expects a list of length ``season_length``, only ``state_names[1:]``
-        will be saved as model dimensions, since the 1st coefficient is not identified (it is defined as
-        :math:`-\sum_{i=1}^{s} \gamma_{t-i}`).
+        Although the ``state_names`` argument expects a list of length ``season_length`` times ``duration``,
+        only ``state_names[duration:]`` will be saved as model dimensions, since the first coefficient is not identified
+        (it is defined as :math:`-\sum_{i=1}^{s-1} \tilde{\gamma}_{-i}`).
 
     Examples
     --------
@@ -137,6 +229,7 @@ class TimeSeasonality(Component):
     def __init__(
         self,
         season_length: int,
+        duration: int = 1,
         innovations: bool = True,
         name: str | None = None,
         state_names: list | None = None,
@@ -146,29 +239,42 @@ class TimeSeasonality(Component):
         if observed_state_names is None:
             observed_state_names = ["data"]
 
+        if season_length <= 1 or not isinstance(season_length, int):
+            raise ValueError(
+                f"season_length must be an integer greater than 1, got {season_length}"
+            )
+        if duration <= 0 or not isinstance(duration, int):
+            raise ValueError(f"duration must be a positive integer, got {duration}")
         if name is None:
-            name = f"Seasonal[s={season_length}]"
+            name = f"Seasonal[s={season_length}, d={duration}]"
         if state_names is None:
-            state_names = [f"{name}_{i}" for i in range(season_length)]
+            if duration > 1:
+                state_names = [
+                    f"{name}_{i}_{j}" for i in range(season_length) for j in range(duration)
+                ]
+            else:
+                state_names = [f"{name}_{i}" for i in range(season_length)]
         else:
-            if len(state_names) != season_length:
+            if len(state_names) != season_length * duration:
                 raise ValueError(
-                    f"state_names must be a list of length season_length, got {len(state_names)}"
+                    f"state_names must be a list of length season_length*duration, got {len(state_names)}"
                 )
             state_names = state_names.copy()
 
         self.innovations = innovations
+        self.duration = duration
         self.remove_first_state = remove_first_state
+        self.season_length = season_length
 
         if self.remove_first_state:
             # In traditional models, the first state isn't identified, so we can help out the user by automatically
             # discarding it.
             # TODO: Can this be stashed and reconstructed automatically somehow?
-            state_names.pop(0)
+            state_names = state_names[duration:]
 
         self.provided_state_names = state_names
 
-        k_states = season_length - int(self.remove_first_state)
+        k_states = (season_length - int(self.remove_first_state)) * duration
         k_endog = len(observed_state_names)
         k_posdef = int(innovations)
 
@@ -230,19 +336,40 @@ class TimeSeasonality(Component):
 
     def make_symbolic_graph(self) -> None:
         k_states = self.k_states // self.k_endog
+        duration = self.duration
+        k_unique_states = k_states // duration
         k_posdef = self.k_posdef // self.k_endog
         k_endog = self.k_endog
 
         if self.remove_first_state:
             # In this case, parameters are normalized to sum to zero, so the current state is the negative sum of
             # all previous states.
-            T = np.eye(k_states, k=-1)
-            T[0, :] = -1
+            zero_d = pt.zeros((self.duration, self.duration))
+            id_d = pt.eye(self.duration)
+
+            row_blocks = []
+
+            # First row: all -1_d blocks
+            first_row = [-id_d for _ in range(self.season_length - 1)]
+            row_blocks.append(pt.concatenate(first_row, axis=1))
+
+            # Rows 2 to season_length-1: shifted identity blocks
+            for i in range(self.season_length - 2):
+                row = []
+                for j in range(self.season_length - 1):
+                    if j == i:
+                        row.append(id_d)
+                    else:
+                        row.append(zero_d)
+                row_blocks.append(pt.concatenate(row, axis=1))
+
+            # Stack blocks
+            T = pt.concatenate(row_blocks, axis=0)
         else:
             # In this case we assume the user to be responsible for ensuring the states sum to zero, so T is just a
             # circulant matrix that cycles between the states.
-            T = np.eye(k_states, k=1)
-            T[-1, 0] = 1
+            T = pt.eye(k_states, k=1)
+            T = pt.set_subtensor(T[-1, 0], 1)
 
         self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
 
@@ -250,9 +377,15 @@ class TimeSeasonality(Component):
         self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
 
         initial_states = self.make_and_register_variable(
-            f"coefs_{self.name}", shape=(k_states,) if k_endog == 1 else (k_endog, k_states)
+            f"coefs_{self.name}",
+            shape=(k_unique_states,) if k_endog == 1 else (k_endog, k_unique_states),
         )
-        self.ssm["initial_state", :] = initial_states.ravel()
+        if k_endog == 1:
+            self.ssm["initial_state", :] = pt.extra_ops.repeat(initial_states, duration, axis=0)
+        else:
+            self.ssm["initial_state", :] = pt.extra_ops.repeat(
+                initial_states, duration, axis=1
+            ).ravel()
 
         if self.innovations:
             R = pt.zeros((k_states, k_posdef))[0, 0].set(1.0)
