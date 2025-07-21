@@ -83,6 +83,28 @@ def test_fit_laplace_basic(mode, gradient_backend: GradientBackend):
     np.testing.assert_allclose(idata.fit["covariance_matrix"].values, bda_cov, rtol=1e-3, atol=1e-3)
 
 
+def test_fit_laplace_outside_model_context():
+    with pm.Model() as m:
+        mu = pm.Normal("mu", 0, 1)
+        sigma = pm.Exponential("sigma", 1)
+        y_hat = pm.Normal("y_hat", mu=mu, sigma=sigma, observed=np.random.normal(size=10))
+
+    idata = fit_laplace(
+        model=m,
+        optimize_method="L-BFGS-B",
+        use_grad=True,
+        progressbar=False,
+        chains=1,
+        draws=100,
+    )
+
+    assert hasattr(idata, "posterior")
+    assert hasattr(idata, "fit")
+    assert hasattr(idata, "optimizer_result")
+
+    assert idata.posterior["mu"].shape == (1, 100)
+
+
 @pytest.mark.parametrize(
     "include_transformed", [True, False], ids=["include_transformed", "no_transformed"]
 )
@@ -206,6 +228,50 @@ def test_model_with_nonstandard_dimensionality(rng):
 
     # The log transform is 1-to-1, so it should have the same dims as the original rv
     assert "class" in list(idata.unconstrained_posterior.sigma_log__.coords.keys())
+
+
+def test_laplace_nonstandard_dims_2d():
+    true_P = np.array([[0.5, 0.3, 0.2], [0.1, 0.6, 0.3], [0.2, 0.4, 0.4]])
+    y_obs = pm.draw(
+        pmx.DiscreteMarkovChain.dist(
+            P=true_P,
+            init_dist=pm.Categorical.dist(
+                logit_p=np.ones(
+                    3,
+                )
+            ),
+            shape=(100, 5),
+        )
+    )
+
+    with pm.Model(
+        coords={
+            "time": range(y_obs.shape[0]),
+            "state": list("ABC"),
+            "next_state": list("ABC"),
+            "unit": [1, 2, 3, 4, 5],
+        }
+    ) as model:
+        y = pm.Data("y", y_obs, dims=["time", "unit"])
+        init_dist = pm.Categorical.dist(
+            logit_p=np.ones(
+                3,
+            )
+        )
+        P = pm.Dirichlet("P", a=np.eye(3) * 2 + 1, dims=["state", "next_state"])
+        y_hat = pmx.DiscreteMarkovChain(
+            "y_hat", P=P, init_dist=init_dist, dims=["time", "unit"], observed=y_obs
+        )
+
+        idata = pmx.fit_laplace(progressbar=True)
+
+        # The simplex transform should drop from the right-most dimension, so the left dimension should be unmodified
+        assert "state" in list(idata.unconstrained_posterior.P_simplex__.coords.keys())
+
+        # The mutated dimension should be unknown coords
+        assert "P_simplex___dim_1" in list(idata.unconstrained_posterior.P_simplex__.coords.keys())
+
+        assert idata.unconstrained_posterior.P_simplex__.shape[-2:] == (3, 2)
 
 
 def test_laplace_nonscalar_rv_without_dims():
