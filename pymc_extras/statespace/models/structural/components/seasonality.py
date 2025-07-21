@@ -239,8 +239,12 @@ class TimeSeasonality(Component):
         if observed_state_names is None:
             observed_state_names = ["data"]
 
-        if season_length <= 1:
-            raise ValueError(f"season_length must be greater than 1, got {season_length}")
+        if season_length <= 1 or not isinstance(duration, int):
+            raise ValueError(
+                f"season_length must be an integer greater than 1, got {season_length}"
+            )
+        if duration <= 0 or not isinstance(duration, int):
+            raise ValueError(f"duration must be a positive integer, got {duration}")
         if name is None:
             name = f"Seasonal[s={season_length}, d={duration}]"
         if state_names is None:
