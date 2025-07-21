@@ -230,6 +230,50 @@ def test_model_with_nonstandard_dimensionality(rng):
     assert "class" in list(idata.unconstrained_posterior.sigma_log__.coords.keys())
 
 
+def test_laplace_nonstandard_dims_2d():
+    true_P = np.array([[0.5, 0.3, 0.2], [0.1, 0.6, 0.3], [0.2, 0.4, 0.4]])
+    y_obs = pm.draw(
+        pmx.DiscreteMarkovChain.dist(
+            P=true_P,
+            init_dist=pm.Categorical.dist(
+                logit_p=np.ones(
+                    3,
+                )
+            ),
+            shape=(100, 5),
+        )
+    )
+
+    with pm.Model(
+        coords={
+            "time": range(y_obs.shape[0]),
+            "state": list("ABC"),
+            "next_state": list("ABC"),
+            "unit": [1, 2, 3, 4, 5],
+        }
+    ) as model:
+        y = pm.Data("y", y_obs, dims=["time", "unit"])
+        init_dist = pm.Categorical.dist(
+            logit_p=np.ones(
+                3,
+            )
+        )
+        P = pm.Dirichlet("P", a=np.eye(3) * 2 + 1, dims=["state", "next_state"])
+        y_hat = pmx.DiscreteMarkovChain(
+            "y_hat", P=P, init_dist=init_dist, dims=["time", "unit"], observed=y_obs
+        )
+
+        idata = pmx.fit_laplace(progressbar=True)
+
+        # The simplex transform should drop from the right-most dimension, so the left dimension should be unmodified
+        assert "state" in list(idata.unconstrained_posterior.P_simplex__.coords.keys())
+
+        # The mutated dimension should be unknown coords
+        assert "P_simplex___dim_1" in list(idata.unconstrained_posterior.P_simplex__.coords.keys())
+
+        assert idata.unconstrained_posterior.P_simplex__.shape[-2:] == (3, 2)
+
+
 def test_laplace_nonscalar_rv_without_dims():
     with pm.Model(coords={"test": ["A", "B", "C"]}) as model:
         x_loc = pm.Normal("x_loc", mu=0, sigma=1, dims=["test"])
