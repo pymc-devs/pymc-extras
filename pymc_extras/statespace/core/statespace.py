@@ -1681,11 +1681,13 @@ class PyMCStateSpace:
     def sample_filter_outputs(
         self, idata, filter_output_names: str | list[str] | None, group: str = "posterior", **kwargs
     ):
+        if isinstance(filter_output_names, str):
+            filter_output_names = [filter_output_names]
+
         compile_kwargs = kwargs.pop("compile_kwargs", {})
         compile_kwargs.setdefault("mode", self.mode)
 
         with pm.Model(coords=self.coords) as m:
-            pm_mod = modelcontext(None)
             self._build_dummy_graph()
             self._insert_random_variables()
 
@@ -1698,7 +1700,7 @@ class PyMCStateSpace:
             x0, P0, c, d, T, Z, R, H, Q = self.unpack_statespace()
             data = self._fit_data
 
-            obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
+            obs_coords = m.coords.get(OBS_STATE_DIM, None)
 
             data, nan_mask = register_data_with_pymc(
                 data,
@@ -1724,7 +1726,16 @@ class PyMCStateSpace:
                 T, R, Q, filter_outputs[0], filter_outputs[3]
             )
 
+            # Filter output names are singular in constants.py but are returned as plural from kalman_.build_graph()
+            filter_output_dims_mapping = {}
+            for k in FILTER_OUTPUT_DIMS.keys():
+                filter_output_dims_mapping[k + "s"] = FILTER_OUTPUT_DIMS[k]
+
             all_filter_outputs = filter_outputs[:-1] + list(smoother_outputs)
+            # This excludes observed states and observed covariances from the filter outputs
+            all_filter_outputs = [
+                output for output in all_filter_outputs if output.name in filter_output_dims_mapping
+            ]
 
             if filter_output_names is None:
                 filter_output_names = all_filter_outputs
@@ -1741,16 +1752,7 @@ class PyMCStateSpace:
                 ]
 
             for output in filter_output_names:
-                match output.name:
-                    case "filtered_states" | "predicted_states" | "smoothed_states":
-                        dims = [TIME_DIM, "state"]
-                    case "filtered_covariances" | "predicted_covariances" | "smoothed_covariances":
-                        dims = [TIME_DIM, "state", "state_aux"]
-                    case "observed_states":
-                        dims = [TIME_DIM, "observed_state"]
-                    case "observed_covariances":
-                        dims = [TIME_DIM, "observed_state", "observed_state_aux"]
-
+                dims = filter_output_dims_mapping[output.name]
                 pm.Deterministic(output.name, output, dims=dims)
 
         frozen_model = freeze_dims_and_data(m)
