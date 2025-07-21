@@ -114,7 +114,7 @@ class AutoregressiveComponent(Component):
         if self.k_endog > 1:
             self.param_dims[f"params_{self.name}"] = (
                 f"endog_{self.name}",
-                AR_PARAM_DIM,
+                f"lag_{self.name}",
             )
             self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
 
