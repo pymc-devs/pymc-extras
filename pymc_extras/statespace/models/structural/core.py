@@ -310,16 +310,20 @@ class StructuralTimeSeries(PyMCStateSpace):
 
         for i, (name, s) in enumerate(zip(names, state_slices)):
             obs_idx = info[name]["obs_state_idx"]
+
             if obs_idx is None:
                 continue
 
             X = data[..., s]
+
             if info[name]["combine_hidden_states"]:
-                sum_idx = np.flatnonzero(obs_idx)
-                result.append(X[..., sum_idx].sum(axis=-1)[..., None])
+                sum_idx_joined = np.flatnonzero(obs_idx)
+                sum_idx_split = np.split(sum_idx_joined, info[name]["k_endog"])
+                for sum_idx in sum_idx_split:
+                    result.append(X[..., sum_idx].sum(axis=-1)[..., None])
             else:
-                comp_names = self.state_names[s]
-                for j, state_name in enumerate(comp_names):
+                n_components = len(self.state_names[s])
+                for j in range(n_components):
                     result.append(X[..., j, None])
 
         return np.concatenate(result, axis=-1)
@@ -332,7 +336,15 @@ class StructuralTimeSeries(PyMCStateSpace):
 
         for i, (name, s) in enumerate(zip(names, state_slices)):
             if info[name]["combine_hidden_states"]:
-                result.append(name)
+                if self.k_endog == 1:
+                    result.append(name)
+                else:
+                    # If there are multiple observed states, we will combine per hidden state, preserving the
+                    # observed state names. Note this happens even if this *component* has only 1 state for consistency,
+                    # as long as the statespace model has multiple observed states.
+                    result.extend(
+                        [f"{name}[{obs_name}]" for obs_name in info[name]["observed_state_names"]]
+                    )
             else:
                 comp_names = self.state_names[s]
                 result.extend([f"{name}[{comp_name}]" for comp_name in comp_names])
@@ -540,7 +552,7 @@ class Component:
         self._component_info = {
             self.name: {
                 "k_states": self.k_states,
-                "k_enodg": self.k_endog,
+                "k_endog": self.k_endog,
                 "k_posdef": self.k_posdef,
                 "observed_state_names": self.observed_state_names,
                 "combine_hidden_states": combine_hidden_states,

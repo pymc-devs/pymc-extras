@@ -128,8 +128,9 @@ def test_extract_multiple_observed(rng):
     reg = st.RegressionComponent(
         state_names=["a", "b"], name="exog", observed_state_names=["data_2", "data_3"]
     )
+    ar = st.AutoregressiveComponent(observed_state_names=["data_1", "data_2"], order=3)
     me = st.MeasurementError("obs", observed_state_names=["data_1", "data_3"])
-    mod = (ll + season + reg + me).build(verbose=True)
+    mod = (ll + season + reg + ar + me).build(verbose=True)
 
     with pm.Model(coords=mod.coords) as m:
         data_exog = pm.Data("data_exog", data.values)
@@ -137,6 +138,10 @@ def test_extract_multiple_observed(rng):
         x0 = pm.Normal("x0", dims=["state"])
         P0 = pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
         beta_exog = pm.Normal("beta_exog", dims=["endog_exog", "state_exog"])
+        params_auto_regressive = pm.Normal(
+            "params_auto_regressive", dims=["endog_auto_regressive", "lag_auto_regressive"]
+        )
+        sigma_auto_regressive = pm.Normal("sigma_auto_regressive", dims=["endog_auto_regressive"])
         initial_trend = pm.Normal("initial_trend", dims=["endog_trend", "state_trend"])
         sigma_trend = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "shock_trend"])
         seasonal_coefs = pm.Normal("seasonal", dims=["state_seasonal"])
@@ -155,11 +160,13 @@ def test_extract_multiple_observed(rng):
         "trend[trend[data_1]]",
         "trend[level[data_2]]",
         "trend[trend[data_2]]",
-        "seasonal",
+        "seasonal[data_1]",
         "exog[a[data_2]]",
         "exog[b[data_2]]",
         "exog[a[data_3]]",
         "exog[b[data_3]]",
+        "auto_regressive[data_1]",
+        "auto_regressive[data_2]",
     ]
 
     missing = set(comp_states) - set(expected_states)
