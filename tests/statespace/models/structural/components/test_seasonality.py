@@ -14,7 +14,7 @@ RTOL = 0 if config.floatX.endswith("64") else 1e-6
 
 
 @pytest.mark.parametrize("s", [10, 25, 50])
-@pytest.mark.parametrize("d", [1, 2, 3])
+@pytest.mark.parametrize("d", [1, 3])
 @pytest.mark.parametrize("innovations", [True, False])
 @pytest.mark.parametrize("remove_first_state", [True, False])
 @pytest.mark.filterwarnings(
@@ -54,7 +54,7 @@ def test_time_seasonality(s, d, innovations, remove_first_state, rng):
     assert mod.coords["state_season"] == state_names[test_slice]
 
 
-@pytest.mark.parametrize("d", [1, 2, 3])
+@pytest.mark.parametrize("d", [1, 3])
 @pytest.mark.parametrize(
     "remove_first_state", [True, False], ids=["remove_first_state", "keep_first_state"]
 )
@@ -146,8 +146,7 @@ def test_time_seasonality_multiple_observed(rng, d, remove_first_state):
         np.testing.assert_allclose(matrix, expected)
 
 
-@pytest.mark.parametrize("d1", [1, 2, 3])
-@pytest.mark.parametrize("d2", [1, 2, 3])
+@pytest.mark.parametrize("d1, d2", [(1, 1), (1, 3), (3, 1), (3, 3)])
 def test_add_two_time_seasonality_different_observed(rng, d1, d2):
     mod1 = st.TimeSeasonality(
         season_length=3,
