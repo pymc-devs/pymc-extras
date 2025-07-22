@@ -487,16 +487,16 @@ def test_build_statespace_graph_raises_if_data_has_missing_fill():
 
 def test_build_statespace_graph(pymc_mod):
     for name in [
-        "filtered_state",
-        "predicted_state",
-        "predicted_covariance",
-        "filtered_covariance",
+        "filtered_states",
+        "predicted_states",
+        "predicted_covariances",
+        "filtered_covariances",
     ]:
         assert name in [x.name for x in pymc_mod.deterministics]
 
 
 def test_build_smoother_graph(ss_mod, pymc_mod):
-    names = ["smoothed_state", "smoothed_covariance"]
+    names = ["smoothed_states", "smoothed_covariances"]
     for name in names:
         assert name in [x.name for x in pymc_mod.deterministics]
 
@@ -1193,11 +1193,11 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
 
     # Check that the frozen states and covariances correctly match the sliced index
     np.testing.assert_allclose(
-        idata_exog.posterior["predicted_covariance"].sel(time=t0).mean(("chain", "draw")).values,
+        idata_exog.posterior["predicted_covariances"].sel(time=t0).mean(("chain", "draw")).values,
         idata_forecast.posterior_predictive["P0_slice"].mean(("chain", "draw")).values,
     )
     np.testing.assert_allclose(
-        idata_exog.posterior["predicted_state"].sel(time=t0).mean(("chain", "draw")).values,
+        idata_exog.posterior["predicted_states"].sel(time=t0).mean(("chain", "draw")).values,
         idata_forecast.posterior_predictive["x0_slice"].mean(("chain", "draw")).values,
     )
 

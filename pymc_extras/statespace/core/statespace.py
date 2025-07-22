@@ -805,16 +805,16 @@ class PyMCStateSpace:
         states, covs = outputs[:4], outputs[4:]
 
         state_names = [
-            "filtered_state",
-            "predicted_state",
-            "predicted_observed_state",
-            "smoothed_state",
+            "filtered_states",
+            "predicted_states",
+            "predicted_observed_states",
+            "smoothed_states",
         ]
         cov_names = [
-            "filtered_covariance",
-            "predicted_covariance",
-            "predicted_observed_covariance",
-            "smoothed_covariance",
+            "filtered_covariances",
+            "predicted_covariances",
+            "predicted_observed_covariances",
+            "smoothed_covariances",
         ]
 
         with mod:
@@ -939,7 +939,7 @@ class PyMCStateSpace:
             all_kf_outputs = [*states, smooth_states, *covs, smooth_covariances]
             self._register_kalman_filter_outputs_with_pymc_model(all_kf_outputs)
 
-        obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_state"]
+        obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_states"]
         obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
 
         SequenceMvNormal(
@@ -1727,14 +1727,14 @@ class PyMCStateSpace:
             )
 
             # Filter output names are singular in constants.py but are returned as plural from kalman_.build_graph()
-            filter_output_dims_mapping = {}
-            for k in FILTER_OUTPUT_DIMS.keys():
-                filter_output_dims_mapping[k + "s"] = FILTER_OUTPUT_DIMS[k]
+            # filter_output_dims_mapping = {}
+            # for k in FILTER_OUTPUT_DIMS.keys():
+            #     filter_output_dims_mapping[k + "s"] = FILTER_OUTPUT_DIMS[k]
 
             all_filter_outputs = filter_outputs[:-1] + list(smoother_outputs)
             # This excludes observed states and observed covariances from the filter outputs
             all_filter_outputs = [
-                output for output in all_filter_outputs if output.name in filter_output_dims_mapping
+                output for output in all_filter_outputs if output.name in FILTER_OUTPUT_DIMS
             ]
 
             if filter_output_names is None:
@@ -1752,7 +1752,7 @@ class PyMCStateSpace:
                 ]
 
             for output in filter_output_names:
-                dims = filter_output_dims_mapping[output.name]
+                dims = FILTER_OUTPUT_DIMS[output.name]
                 pm.Deterministic(output.name, output, dims=dims)
 
         frozen_model = freeze_dims_and_data(m)

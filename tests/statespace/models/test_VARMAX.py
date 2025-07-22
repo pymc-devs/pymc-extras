@@ -156,7 +156,7 @@ def test_VARMAX_update_matches_statsmodels(data, order, rng):
 
 @pytest.mark.parametrize("filter_output", ["filtered", "predicted", "smoothed"])
 def test_all_prior_covariances_are_PSD(filter_output, pymc_mod, rng):
-    rv = pymc_mod[f"{filter_output}_covariance"]
+    rv = pymc_mod[f"{filter_output}_covariances"]
     cov_mats = pm.draw(rv, 100, random_seed=rng)
     w, v = np.linalg.eig(cov_mats)
     assert_array_less(0, w, err_msg=f"Smallest eigenvalue: {min(w.ravel())}")
