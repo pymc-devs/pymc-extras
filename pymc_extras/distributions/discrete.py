@@ -16,6 +16,7 @@ import numpy as np
 import pymc as pm
 
 from pymc.distributions.dist_math import betaln, check_parameters, factln, logpow
+from pymc.distributions.distribution import Discrete
 from pymc.distributions.shape_utils import rv_size_is_none
 from pytensor import tensor as pt
 from pytensor.tensor.random.op import RandomVariable
@@ -399,3 +400,188 @@ class Skellam:
             class_name="Skellam",
             **kwargs,
         )
+
+
+class GrassiaIIGeometricRV(RandomVariable):
+    name = "g2g"
+    signature = "(),(),(t)->()"
+
+    dtype = "int64"
+    _print_name = ("GrassiaIIGeometric", "\\operatorname{GrassiaIIGeometric}")
+
+    @classmethod
+    def rng_fn(cls, rng, r, alpha, time_covariate_vector, size):
+        # Determine output size
+        if size is None:
+            size = np.broadcast_shapes(r.shape, alpha.shape, time_covariate_vector.shape)
+
+        # Broadcast parameters to output size
+        r = np.broadcast_to(r, size)
+        alpha = np.broadcast_to(alpha, size)
+        time_covariate_vector = np.broadcast_to(time_covariate_vector, size)
+
+        lam = rng.gamma(shape=r, scale=1 / alpha, size=size)
+
+        # Aggregate time covariates for each sample
+        exp_time_covar = np.exp(
+            time_covariate_vector.sum(axis=0)
+        )  # TODO: try np.exp(time_covariate_vector).sum(axis=0) instead?
+        lam_covar = lam * exp_time_covar
+
+        samples = np.ceil(np.log(1 - rng.uniform(size=size)) / (-lam_covar))
+
+        return samples
+
+
+g2g = GrassiaIIGeometricRV()
+
+
+# TODO: Add covariate expressions to docstrings.
+class GrassiaIIGeometric(Discrete):
+    r"""Grassia(II)-Geometric distribution.
+
+    This distribution is a flexible alternative to the Geometric distribution for the number of trials until a
+    discrete event, and can be extended to support both static and time-varying covariates.
+
+    Hardie and Fader describe this distribution with the following PMF and survival functions in [1]_:
+
+    .. math::
+        \mathbb{P}T=t|r,\alpha,\beta;Z(t)) = (\frac{\alpha}{\alpha+C(t-1)})^{r} - (\frac{\alpha}{\alpha+C(t)})^{r}  \\
+        \begin{align}
+        \mathbb{S}(t|r,\alpha,\beta;Z(t)) = (\frac{\alpha}{\alpha+C(t)})^{r} \\
+        \end{align}
+
+    .. plot::
+        :context: close-figs
+
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import scipy.stats as st
+        import arviz as az
+        plt.style.use('arviz-darkgrid')
+        t = np.arange(1, 11)
+        alpha_vals = [1., 1., 2., 2.]
+        r_vals = [.1, .25, .5, 1.]
+        for alpha, r in zip(alpha_vals, r_vals):
+            pmf = (alpha/(alpha + t - 1))**r - (alpha/(alpha+t))**r
+            plt.plot(t, pmf, '-o', label=r'$\alpha$ = {}, $r$ = {}'.format(alpha, r))
+        plt.xlabel('t', fontsize=12)
+        plt.ylabel('p(t)', fontsize=12)
+        plt.legend(loc=1)
+        plt.show()
+
+    ========  ===============================================
+    Support   :math:`t \in \mathbb{N}_{>0}`
+    ========  ===============================================
+
+    Parameters
+    ----------
+    r : tensor_like of float
+        Shape parameter (r > 0).
+    alpha : tensor_like of float
+        Scale parameter (alpha > 0).
+    time_covariate_vector : tensor_like of float, optional
+        Optional vector containing dot products of time-varying covariates and coefficients.
+
+    References
+    ----------
+    .. [1] Fader, Peter & G. S. Hardie, Bruce (2020).
+       "Incorporating Time-Varying Covariates in a Simple Mixture Model for Discrete-Time Duration Data."
+       https://www.brucehardie.com/notes/037/time-varying_covariates_in_BG.pdf
+    """
+
+    rv_op = g2g
+
+    @classmethod
+    def dist(cls, r, alpha, time_covariate_vector=None, *args, **kwargs):
+        r = pt.as_tensor_variable(r)
+        alpha = pt.as_tensor_variable(alpha)
+        if time_covariate_vector is None:
+            time_covariate_vector = pt.constant(0.0)
+        time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
+        return super().dist([r, alpha, time_covariate_vector], *args, **kwargs)
+
+    def logp(value, r, alpha, time_covariate_vector):
+        logp = pt.log(
+            pt.pow(alpha / (alpha + C_t(value - 1, time_covariate_vector)), r)
+            - pt.pow(alpha / (alpha + C_t(value, time_covariate_vector)), r)
+        )
+
+        # Handle invalid values
+        logp = pt.switch(
+            pt.or_(
+                value < 1,  # Value must be >= 1
+                pt.isnan(logp),  # Handle NaN cases
+            ),
+            -np.inf,
+            logp,
+        )
+
+        return check_parameters(
+            logp,
+            r > 0,
+            alpha > 0,
+            msg="r > 0, alpha > 0",
+        )
+
+    def logcdf(value, r, alpha, time_covariate_vector):
+        logcdf = r * (
+            pt.log(C_t(value, time_covariate_vector))
+            - pt.log(alpha + C_t(value, time_covariate_vector))
+        )
+
+        return check_parameters(
+            logcdf,
+            r > 0,
+            alpha > 0,
+            time_covariate_vector >= 0,
+            msg="r > 0, alpha > 0",
+        )
+
+    def support_point(rv, size, r, alpha, time_covariate_vector):
+        """Calculate a reasonable starting point for sampling.
+
+        For the GrassiaIIGeometric distribution, we use a point estimate based on
+        the expected value of the mixing distribution. Since the mixing distribution
+        is Gamma(r, 1/alpha), its mean is r/alpha. We then transform this through
+        the geometric link function and round to ensure an integer value.
+
+        When time_covariate_vector is provided, it affects the expected value through
+        the exponential link function: exp(time_covariate_vector).
+        """
+
+        base_lambda = r / alpha
+
+        # Approximate expected value of geometric distribution
+        mean = pt.switch(
+            base_lambda < 0.1,
+            1.0 / base_lambda,  # Approximation for small lambda
+            1.0 / (1.0 - pt.exp(-base_lambda)),  # Full expression for larger lambda
+        )
+
+        # Apply time covariates if provided
+        mean = mean * pt.exp(time_covariate_vector)
+
+        # Round up to nearest integer and ensure >= 1
+        mean = pt.maximum(pt.ceil(mean), 1.0)
+
+        # Handle size parameter
+        if not rv_size_is_none(size):
+            mean = pt.full(size, mean)
+
+        return mean
+
+
+# TODO: can this be moved into logp? Indexing not required for logcdf
+def C_t(t: pt.TensorVariable, time_covariate_vector: pt.TensorVariable) -> pt.TensorVariable:
+    """Utility for processing time-varying covariates in GrassiaIIGeometric distribution."""
+    if time_covariate_vector.ndim == 0:
+        return t
+    else:
+        # Ensure t is a valid index
+        t_idx = pt.maximum(0, t - 1)  # Convert to 0-based indexing
+        # If t_idx exceeds length of time_covariate_vector, use last value
+        max_idx = pt.shape(time_covariate_vector)[0] - 1
+        safe_idx = pt.minimum(t_idx, max_idx)
+        covariate_value = time_covariate_vector[..., safe_idx]
+        return pt.exp(covariate_value).sum()
