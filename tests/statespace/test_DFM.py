@@ -17,7 +17,7 @@ floatX = pytensor.config.floatX
 @pytest.fixture(scope="session")
 def data():
     df = pd.read_csv(
-        "tests/statespace/test_data/statsmodels_macrodata_processed.csv",
+        "tests/statespace/_data/statsmodels_macrodata_processed.csv",
         index_col=0,
         parse_dates=True,
     ).astype(floatX)
