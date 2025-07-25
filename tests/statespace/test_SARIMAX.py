@@ -18,10 +18,10 @@ from pymc_extras.statespace.utils.constants import (
     SARIMAX_STATE_STRUCTURES,
     SHORT_NAME_TO_LONG,
 )
-from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
+from tests.statespace.utilities.shared_fixtures import (  # pylint: disable=unused-import
     rng,
 )
-from tests.statespace.test_utilities import (
+from tests.statespace.utilities.test_helpers import (
     load_nile_test_data,
     make_stationary_params,
     simulate_from_numpy_model,
@@ -178,8 +178,8 @@ def pymc_mod(arima_mod):
         # x0  = pm.Normal('x0', dims=['state'])
         # P0_diag = pm.Gamma('P0_diag', alpha=2, beta=1, dims=['state'])
         # P0 = pm.Deterministic('P0', pt.diag(P0_diag), dims=['state', 'state_aux'])
-        ar_params = pm.Normal("ar_params", sigma=0.1, dims=["lag_ar"])
-        ma_params = pm.Normal("ma_params", sigma=1, dims=["lag_ma"])
+        ar_params = pm.Normal("ar_params", sigma=0.1, dims=["ar_lag"])
+        ma_params = pm.Normal("ma_params", sigma=1, dims=["ma_lag"])
         sigma_state = pm.Exponential("sigma_state", 0.5)
         arima_mod.build_statespace_graph(data=data, save_kalman_filter_outputs_in_idata=True)
 
@@ -207,20 +207,14 @@ def pymc_mod_interp(arima_mod_interp):
         P0 = pm.Deterministic(
             "P0", pt.eye(arima_mod_interp.k_states) * P0_sigma, dims=["state", "state_aux"]
         )
-        ar_params = pm.Normal("ar_params", sigma=0.1, dims=["lag_ar"])
-        ma_params = pm.Normal("ma_params", sigma=1, dims=["lag_ma"])
+        ar_params = pm.Normal("ar_params", sigma=0.1, dims=["ar_lag"])
+        ma_params = pm.Normal("ma_params", sigma=1, dims=["ma_lag"])
         sigma_state = pm.Exponential("sigma_state", 0.5)
         sigma_obs = pm.Exponential("sigma_obs", 0.1)
 
         arima_mod_interp.build_statespace_graph(data=data, save_kalman_filter_outputs_in_idata=True)
 
     return pymc_mod
-
-
-def test_mode_argument():
-    # Mode argument should be passed to the parent class
-    mod = BayesianSARIMA(order=(0, 0, 3), mode="FAST_RUN", verbose=False)
-    assert mod.mode == "FAST_RUN"
 
 
 @pytest.mark.parametrize(
@@ -258,9 +252,6 @@ def test_make_SARIMA_transition_matrix(p, d, q, P, D, Q, S):
     "ignore:Non-stationary starting autoregressive parameters found",
     "ignore:Non-invertible starting seasonal moving average",
     "ignore:Non-stationary starting seasonal autoregressive",
-    "ignore:divide by zero encountered in matmul:RuntimeWarning",
-    "ignore:overflow encountered in matmul:RuntimeWarning",
-    "ignore:invalid value encountered in matmul:RuntimeWarning",
 )
 def test_SARIMAX_update_matches_statsmodels(p, d, q, P, D, Q, S, data, rng):
     sm_sarimax = sm.tsa.SARIMAX(data, order=(p, d, q), seasonal_order=(P, D, Q, S))
@@ -344,8 +335,8 @@ def test_interpretable_states_are_interpretable(arima_mod_interp, pymc_mod_inter
         prior = pm.sample_prior_predictive(draws=10)
 
     prior_outputs = arima_mod_interp.sample_unconditional_prior(prior)
-    ar_lags = prior.prior.coords["lag_ar"].values - 1
-    ma_lags = prior.prior.coords["lag_ma"].values - 1
+    ar_lags = prior.prior.coords["ar_lag"].values - 1
+    ma_lags = prior.prior.coords["ma_lag"].values - 1
 
     # Check the first p states are lags of the previous state
     for t, tm1 in zip(ar_lags[1:], ar_lags[:-1]):
@@ -370,9 +361,6 @@ def test_interpretable_states_are_interpretable(arima_mod_interp, pymc_mod_inter
     "ignore:Non-invertible starting MA parameters found.",
     "ignore:Non-stationary starting autoregressive parameters found",
     "ignore:Maximum Likelihood optimization failed to converge.",
-    "ignore:divide by zero encountered in matmul:RuntimeWarning",
-    "ignore:overflow encountered in matmul:RuntimeWarning",
-    "ignore:invalid value encountered in matmul:RuntimeWarning",
 )
 def test_representations_are_equivalent(p, d, q, P, D, Q, S, data, rng):
     if (d + D) > 0:

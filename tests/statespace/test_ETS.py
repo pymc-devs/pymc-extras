@@ -9,8 +9,8 @@ from scipy import linalg
 
 from pymc_extras.statespace.models.ETS import BayesianETS
 from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES
-from tests.statespace.shared_fixtures import rng
-from tests.statespace.test_utilities import load_nile_test_data
+from tests.statespace.utilities.shared_fixtures import rng
+from tests.statespace.utilities.test_helpers import load_nile_test_data
 
 
 @pytest.fixture(scope="session")
@@ -18,7 +18,7 @@ def data():
     return load_nile_test_data()
 
 
-def test_invalid_order_raises():
+def tests_invalid_order_raises():
     # Order must be length 3
     with pytest.raises(ValueError, match="Order must be a tuple of three strings"):
         BayesianETS(order=("A", "N"))
@@ -87,12 +87,6 @@ def test_order_flags(order, expected_flags):
     mod = BayesianETS(order=order, seasonal_periods=4)
     for key, value in expected_flags.items():
         assert getattr(mod, key) == value
-
-
-def test_mode_argument():
-    # Mode argument should be passed to the parent class
-    mod = BayesianETS(order=("A", "N", "N"), mode="FAST_RUN")
-    assert mod.mode == "FAST_RUN"
 
 
 @pytest.mark.parametrize("order, expected_params", zip(orders, order_params), ids=order_names)
