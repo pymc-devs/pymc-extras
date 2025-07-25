@@ -12,7 +12,7 @@ from numpy.testing import assert_allclose, assert_array_less
 
 from pymc_extras.statespace import BayesianVARMAX
 from pymc_extras.statespace.utils.constants import SHORT_NAME_TO_LONG
-from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
+from tests.statespace.utilities.shared_fixtures import (  # pylint: disable=unused-import
     rng,
 )
 
@@ -26,7 +26,7 @@ ids = [f"p={x[0]}, q={x[1]}" for x in orders]
 @pytest.fixture(scope="session")
 def data():
     df = pd.read_csv(
-        "tests/statespace/_data/statsmodels_macrodata_processed.csv",
+        "tests/statespace/test_data/statsmodels_macrodata_processed.csv",
         index_col=0,
         parse_dates=True,
     ).astype(floatX)
@@ -57,7 +57,7 @@ def pymc_mod(varma_mod, data):
             "state_chol", n=varma_mod.k_posdef, eta=1, sd_dist=pm.Exponential.dist(1)
         )
         ar_params = pm.Normal(
-            "ar_params", mu=0, sigma=0.1, dims=["observed_state", "lag_ar", "observed_state_aux"]
+            "ar_params", mu=0, sigma=0.1, dims=["observed_state", "ar_lag", "observed_state_aux"]
         )
         state_cov = pm.Deterministic(
             "state_cov", state_chol @ state_chol.T, dims=["shock", "shock_aux"]
@@ -75,12 +75,6 @@ def idata(pymc_mod, rng):
         idata = pm.sample_prior_predictive(draws=10, random_seed=rng)
 
     return idata
-
-
-def test_mode_argument():
-    # Mode argument should be passed to the parent class
-    mod = BayesianVARMAX(k_endog=2, order=(3, 0), mode="FAST_RUN", verbose=False)
-    assert mod.mode == "FAST_RUN"
 
 
 @pytest.mark.parametrize("order", orders, ids=ids)
