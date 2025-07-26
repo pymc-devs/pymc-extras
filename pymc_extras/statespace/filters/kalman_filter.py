@@ -15,10 +15,15 @@ from pymc_extras.statespace.filters.utilities import (
     split_vars_into_seq_and_nonseq,
     stabilize,
 )
-from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL
+from pymc_extras.statespace.utils.constants import (
+    FILTER_OUTPUT_NAMES,
+    JITTER_DEFAULT,
+    MATRIX_NAMES,
+    MISSING_FILL,
+)
 
 MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
-PARAM_NAMES = ["c", "d", "T", "Z", "R", "H", "Q"]
+PARAM_NAMES = MATRIX_NAMES[2:]
 
 assert_time_varying_dim_correct = Assert(
     "The first dimension of a time varying matrix (the time dimension) must be "
@@ -119,7 +124,7 @@ class BaseFilter(ABC):
         # There are always two outputs_info wedged between the seqs and non_seqs
         seqs, (a0, P0), non_seqs = args[:n_seq], args[n_seq : n_seq + 2], args[n_seq + 2 :]
         return_ordered = []
-        for name in ["c", "d", "T", "Z", "R", "H", "Q"]:
+        for name in PARAM_NAMES:
             if name in self.seq_names:
                 idx = self.seq_names.index(name)
                 return_ordered.append(seqs[idx])
@@ -253,28 +258,28 @@ class BaseFilter(ABC):
         )
 
         filtered_states = pt.specify_shape(filtered_states, (n, self.n_states))
-        filtered_states.name = "filtered_states"
+        filtered_states.name = FILTER_OUTPUT_NAMES[0]
 
         predicted_states = pt.specify_shape(predicted_states, (n, self.n_states))
-        predicted_states.name = "predicted_states"
-
-        observed_states = pt.specify_shape(observed_states, (n, self.n_endog))
-        observed_states.name = "observed_states"
+        predicted_states.name = FILTER_OUTPUT_NAMES[1]
 
         filtered_covariances = pt.specify_shape(
             filtered_covariances, (n, self.n_states, self.n_states)
         )
-        filtered_covariances.name = "filtered_covariances"
+        filtered_covariances.name = FILTER_OUTPUT_NAMES[2]
 
         predicted_covariances = pt.specify_shape(
             predicted_covariances, (n, self.n_states, self.n_states)
         )
-        predicted_covariances.name = "predicted_covariances"
+        predicted_covariances.name = FILTER_OUTPUT_NAMES[3]
+
+        observed_states = pt.specify_shape(observed_states, (n, self.n_endog))
+        observed_states.name = FILTER_OUTPUT_NAMES[4]
 
         observed_covariances = pt.specify_shape(
             observed_covariances, (n, self.n_endog, self.n_endog)
         )
-        observed_covariances.name = "observed_covariances"
+        observed_covariances.name = FILTER_OUTPUT_NAMES[5]
 
         loglike_obs = pt.specify_shape(loglike_obs.squeeze(), (n,))
         loglike_obs.name = "loglike_obs"
