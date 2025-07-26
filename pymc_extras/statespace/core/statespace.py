@@ -1684,20 +1684,15 @@ class PyMCStateSpace:
         if isinstance(filter_output_names, str):
             filter_output_names = [filter_output_names]
 
-        drop_keys = {"predicted_observed_states", "predicted_observed_covariances"}
-        all_filter_output_dims = {k: v for k, v in FILTER_OUTPUT_DIMS.items() if k not in drop_keys}
-
         if filter_output_names is None:
-            filter_output_names = list(all_filter_output_dims.keys())
+            filter_output_names = list(FILTER_OUTPUT_DIMS.keys())
         else:
             unknown_filter_output_names = np.setdiff1d(
-                filter_output_names, list(all_filter_output_dims.keys())
+                filter_output_names, list(FILTER_OUTPUT_DIMS.keys())
             )
             if unknown_filter_output_names.size > 0:
                 raise ValueError(f"{unknown_filter_output_names} not a valid filter output name!")
-            filter_output_names = [
-                x for x in all_filter_output_dims.keys() if x in filter_output_names
-            ]
+            filter_output_names = [x for x in FILTER_OUTPUT_DIMS.keys() if x in filter_output_names]
 
         compile_kwargs = kwargs.pop("compile_kwargs", {})
         compile_kwargs.setdefault("mode", self.mode)
@@ -1744,7 +1739,7 @@ class PyMCStateSpace:
             filter_outputs = filter_outputs[:-1] + list(smoother_outputs)
             for output in filter_outputs:
                 if output.name in filter_output_names:
-                    dims = all_filter_output_dims[output.name]
+                    dims = FILTER_OUTPUT_DIMS[output.name]
                     pm.Deterministic(output.name, output, dims=dims)
 
         with freeze_dims_and_data(m):

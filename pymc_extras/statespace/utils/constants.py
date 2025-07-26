@@ -42,6 +42,8 @@ FILTER_OUTPUT_NAMES = [
     "predicted_states",
     "filtered_covariances",
     "predicted_covariances",
+    "predicted_observed_states",
+    "predicted_observed_covariances",
 ]
 
 SMOOTHER_OUTPUT_NAMES = ["smoothed_states", "smoothed_covariances"]
