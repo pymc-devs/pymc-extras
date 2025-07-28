@@ -57,7 +57,7 @@ def pymc_mod(varma_mod, data):
             "state_chol", n=varma_mod.k_posdef, eta=1, sd_dist=pm.Exponential.dist(1)
         )
         ar_params = pm.Normal(
-            "ar_params", mu=0, sigma=0.1, dims=["observed_state", "ar_lag", "observed_state_aux"]
+            "ar_params", mu=0, sigma=0.1, dims=["observed_state", "lag_ar", "observed_state_aux"]
         )
         state_cov = pm.Deterministic(
             "state_cov", state_chol @ state_chol.T, dims=["shock", "shock_aux"]
@@ -156,7 +156,7 @@ def test_VARMAX_update_matches_statsmodels(data, order, rng):
 
 @pytest.mark.parametrize("filter_output", ["filtered", "predicted", "smoothed"])
 def test_all_prior_covariances_are_PSD(filter_output, pymc_mod, rng):
-    rv = pymc_mod[f"{filter_output}_covariance"]
+    rv = pymc_mod[f"{filter_output}_covariances"]
     cov_mats = pm.draw(rv, 100, random_seed=rng)
     w, v = np.linalg.eig(cov_mats)
     assert_array_less(0, w, err_msg=f"Smallest eigenvalue: {min(w.ravel())}")
