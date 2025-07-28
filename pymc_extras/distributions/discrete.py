@@ -411,24 +411,27 @@ class GrassiaIIGeometricRV(RandomVariable):
 
     @classmethod
     def rng_fn(cls, rng, r, alpha, time_covariate_vector, size):
+        # Aggregate time covariates for each sample before broadcasting
+        exp_time_covar = np.exp(
+            time_covariate_vector.sum(axis=0)
+        )  # TODO: try np.exp(time_covariate_vector).sum(axis=0) instead?
+
         # Determine output size
         if size is None:
-            size = np.broadcast_shapes(r.shape, alpha.shape, time_covariate_vector.shape)
+            size = np.broadcast_shapes(r.shape, alpha.shape, exp_time_covar.shape)
 
         # Broadcast parameters to output size
         r = np.broadcast_to(r, size)
         alpha = np.broadcast_to(alpha, size)
-        time_covariate_vector = np.broadcast_to(time_covariate_vector, size)
+        exp_time_covar = np.broadcast_to(exp_time_covar, size)
 
         lam = rng.gamma(shape=r, scale=1 / alpha, size=size)
 
-        # Aggregate time covariates for each sample
-        exp_time_covar = np.exp(
-            time_covariate_vector.sum(axis=0)
-        )  # TODO: try np.exp(time_covariate_vector).sum(axis=0) instead?
-        lam_covar = lam * exp_time_covar
+        lam_covar = lam * exp_time_covar  # TODO: test summing over this in a notebook as well?
 
-        samples = np.ceil(np.log(1 - rng.uniform(size=size)) / (-lam_covar))
+        p = 1 - np.exp(-lam_covar)
+        samples = rng.geometric(p)
+        # samples = np.ceil(np.log(1 - rng.uniform(size=size)) / (-lam_covar))
 
         return samples
 
@@ -560,7 +563,7 @@ class GrassiaIIGeometric(Discrete):
         )
 
         # Apply time covariates if provided
-        mean = mean * pt.exp(time_covariate_vector)
+        mean = mean * pt.exp(time_covariate_vector.sum(axis=0))
 
         # Round up to nearest integer and ensure >= 1
         mean = pt.maximum(pt.ceil(mean), 1.0)
