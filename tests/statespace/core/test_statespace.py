@@ -1,3 +1,5 @@
+import re
+
 from collections.abc import Sequence
 from functools import partial
 
@@ -485,16 +487,16 @@ def test_build_statespace_graph_raises_if_data_has_missing_fill():
 
 def test_build_statespace_graph(pymc_mod):
     for name in [
-        "filtered_state",
-        "predicted_state",
-        "predicted_covariance",
-        "filtered_covariance",
+        "filtered_states",
+        "predicted_states",
+        "predicted_covariances",
+        "filtered_covariances",
     ]:
         assert name in [x.name for x in pymc_mod.deterministics]
 
 
 def test_build_smoother_graph(ss_mod, pymc_mod):
-    names = ["smoothed_state", "smoothed_covariance"]
+    names = ["smoothed_states", "smoothed_covariances"]
     for name in names:
         assert name in [x.name for x in pymc_mod.deterministics]
 
@@ -1191,11 +1193,11 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
 
     # Check that the frozen states and covariances correctly match the sliced index
     np.testing.assert_allclose(
-        idata_exog.posterior["predicted_covariance"].sel(time=t0).mean(("chain", "draw")).values,
+        idata_exog.posterior["predicted_covariances"].sel(time=t0).mean(("chain", "draw")).values,
         idata_forecast.posterior_predictive["P0_slice"].mean(("chain", "draw")).values,
     )
     np.testing.assert_allclose(
-        idata_exog.posterior["predicted_state"].sel(time=t0).mean(("chain", "draw")).values,
+        idata_exog.posterior["predicted_states"].sel(time=t0).mean(("chain", "draw")).values,
         idata_forecast.posterior_predictive["x0_slice"].mean(("chain", "draw")).values,
     )
 
@@ -1244,3 +1246,30 @@ def test_param_dims_coords(ss_mod_multi_component):
             assert i == len(
                 ss_mod_multi_component.coords[s]
             ), f"Mismatch between shape {i} and dimension {s}"
+
+
+@pytest.mark.filterwarnings("ignore:Provided data contains missing values")
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+@pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
+    # Simple tests
+    idata_filter_prior = exog_ss_mod.sample_filter_outputs(
+        idata_exog, filter_output_names=None, group="prior"
+    )
+
+    specific_outputs = ["filtered_states", "filtered_covariances"]
+    idata_filter_specific = exog_ss_mod.sample_filter_outputs(
+        idata_exog, filter_output_names=specific_outputs
+    )
+    missing_outputs = np.setdiff1d(
+        specific_outputs, [x for x in idata_filter_specific.posterior_predictive.data_vars]
+    )
+
+    assert missing_outputs.size == 0
+
+    msg = "['filter_covariances' 'filter_states'] not a valid filter output name!"
+    incorrect_outputs = ["filter_states", "filter_covariances"]
+    with pytest.raises(ValueError, match=re.escape(msg)):
+        exog_ss_mod.sample_filter_outputs(idata_exog, filter_output_names=incorrect_outputs)
