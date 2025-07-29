@@ -217,8 +217,8 @@ class TestSkellam:
 class TestGrassiaIIGeometric:
     class TestRandomVariable(BaseTestDistributionRandom):
         pymc_dist = GrassiaIIGeometric
-        pymc_dist_params = {"r": 0.5, "alpha": 2.0, "time_covariate_vector": [0.0]}
-        expected_rv_op_params = {"r": 0.5, "alpha": 2.0, "time_covariate_vector": [0.0]}
+        pymc_dist_params = {"r": 0.5, "alpha": 2.0, "time_covariate_vector": [1.0, 2.0, 3.0]}
+        expected_rv_op_params = {"r": 0.5, "alpha": 2.0, "time_covariate_vector": [1.0, 2.0, 3.0]}
         tests_to_run = [
             "check_pymc_params_match_rv_op",
             "check_rv_size",
@@ -250,7 +250,7 @@ class TestGrassiaIIGeometric:
             # Test with small r and large alpha values
             r_vals = [0.1, 0.5]
             alpha_vals = [5.0, 10.0]
-            time_cov_vals = [[0.0], [1.0]]
+            time_cov_vals = [[0.0, 1.0, 2.0], [5.0, 10.0, 15.0]]
 
             for r in r_vals:
                 for alpha in alpha_vals:
@@ -266,34 +266,13 @@ class TestGrassiaIIGeometric:
                         assert np.mean(draws) > 0
                         assert np.var(draws) > 0
 
-        def test_random_none_covariates(self):
-            """Test random sampling with None time_covariate_vector"""
-            r_vals = [0.5, 1.0, 2.0]
-            alpha_vals = [0.5, 1.0, 2.0]
-
-            for r in r_vals:
-                for alpha in alpha_vals:
-                    dist = self.pymc_dist.dist(
-                        r=r,
-                        alpha=alpha,
-                        time_covariate_vector=[0.0],  # Changed from None to avoid zip issues
-                        size=1000,
-                    )
-                    draws = dist.eval()
-
-                    # Check basic properties
-                    assert np.all(draws > 0)
-                    assert np.all(draws.astype(int) == draws)
-                    assert np.mean(draws) > 0
-                    assert np.var(draws) > 0
-
         @pytest.mark.parametrize(
             "r,alpha,time_covariate_vector",
             [
-                (0.5, 1.0, None),
+                (0.5, 1.0, [[0.0], [0.0], [0.0]]),
                 (1.0, 2.0, [1.0]),
                 (2.0, 0.5, [[1.0], [2.0]]),
-                ([5.0], [1.0], None),
+                ([5.0], [1.0], [0.0, 0.0, 0.0]),
             ],
         )
         def test_random_moments(self, r, alpha, time_covariate_vector):
@@ -311,7 +290,7 @@ class TestGrassiaIIGeometric:
         # Create PyTensor variables with explicit values to ensure proper initialization
         r = pt.as_tensor_variable(1.0)
         alpha = pt.as_tensor_variable(2.0)
-        time_covariate_vector = pt.as_tensor_variable([0.5, 1.0])
+        time_covariate_vector = pt.as_tensor_variable([[0.5, 1.0, 1.5], [0.0, 0.0, 0.0]])
         value = pt.vector("value", dtype="int64")
 
         # Create the distribution with the PyTensor variables
@@ -335,16 +314,16 @@ class TestGrassiaIIGeometric:
     def test_logcdf(self):
         # test logcdf matches log sums across parameter values
         check_selfconsistency_discrete_logcdf(
-            GrassiaIIGeometric, NatBig, {"r": Rplus, "alpha": Rplus, "time_covariate_vector": Rplus}
+            GrassiaIIGeometric, NatBig, {"r": Rplus, "alpha": Rplus, "time_covariate_vector": I}
         )
 
     @pytest.mark.parametrize(
         "r, alpha, time_covariate_vector, size, expected_shape",
         [
-            (1.0, 1.0, None, None, ()),  # Scalar output with no covariates
+            (1.0, 1.0, [0.0, 0.0, 0.0], None, ()),  # Scalar output
             ([1.0, 2.0], 1.0, [0.0], None, (2,)),  # Vector output from r
             (1.0, [1.0, 2.0], [0.0], None, (2,)),  # Vector output from alpha
-            (1.0, 1.0, [1.0, 2.0], None, ()),  # Vector output from time covariates
+            (1.0, 1.0, [[1.0, 2.0], [3.0, 4.0]], None, (2,)),  # Vector output from time covariates
             (1.0, 1.0, [1.0, 2.0], (3, 2), (3, 2)),  # Explicit size with time covariates
         ],
     )

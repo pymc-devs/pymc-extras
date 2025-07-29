@@ -412,9 +412,7 @@ class GrassiaIIGeometricRV(RandomVariable):
     @classmethod
     def rng_fn(cls, rng, r, alpha, time_covariate_vector, size):
         # Aggregate time covariates for each sample before broadcasting
-        exp_time_covar = np.exp(
-            time_covariate_vector.sum(axis=0)
-        )  # TODO: try np.exp(time_covariate_vector).sum(axis=0) instead?
+        exp_time_covar = np.exp(time_covariate_vector).sum(axis=0)
 
         # Determine output size
         if size is None:
@@ -427,7 +425,7 @@ class GrassiaIIGeometricRV(RandomVariable):
 
         lam = rng.gamma(shape=r, scale=1 / alpha, size=size)
 
-        lam_covar = lam * exp_time_covar  # TODO: test summing over this in a notebook as well?
+        lam_covar = lam * exp_time_covar
 
         p = 1 - np.exp(-lam_covar)
         samples = rng.geometric(p)
@@ -483,8 +481,8 @@ class GrassiaIIGeometric(Discrete):
         Shape parameter (r > 0).
     alpha : tensor_like of float
         Scale parameter (alpha > 0).
-    time_covariate_vector : tensor_like of float, optional
-        Optional vector containing dot products of time-varying covariates and coefficients.
+    time_covariate_vector : tensor_like of float
+        Vector containing dot products of time-varying covariates and coefficients.
 
     References
     ----------
@@ -496,11 +494,9 @@ class GrassiaIIGeometric(Discrete):
     rv_op = g2g
 
     @classmethod
-    def dist(cls, r, alpha, time_covariate_vector=None, *args, **kwargs):
+    def dist(cls, r, alpha, time_covariate_vector, *args, **kwargs):
         r = pt.as_tensor_variable(r)
         alpha = pt.as_tensor_variable(alpha)
-        if time_covariate_vector is None:
-            time_covariate_vector = pt.constant(0.0)
         time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
         return super().dist([r, alpha, time_covariate_vector], *args, **kwargs)
 
@@ -537,7 +533,6 @@ class GrassiaIIGeometric(Discrete):
             logcdf,
             r > 0,
             alpha > 0,
-            time_covariate_vector >= 0,
             msg="r > 0, alpha > 0",
         )
 
@@ -575,16 +570,12 @@ class GrassiaIIGeometric(Discrete):
         return mean
 
 
-# TODO: can this be moved into logp? Indexing not required for logcdf
 def C_t(t: pt.TensorVariable, time_covariate_vector: pt.TensorVariable) -> pt.TensorVariable:
     """Utility for processing time-varying covariates in GrassiaIIGeometric distribution."""
-    if time_covariate_vector.ndim == 0:
-        return t
-    else:
-        # Ensure t is a valid index
-        t_idx = pt.maximum(0, t - 1)  # Convert to 0-based indexing
-        # If t_idx exceeds length of time_covariate_vector, use last value
-        max_idx = pt.shape(time_covariate_vector)[0] - 1
-        safe_idx = pt.minimum(t_idx, max_idx)
-        covariate_value = time_covariate_vector[..., safe_idx]
-        return pt.exp(covariate_value).sum()
+    # Ensure t is a valid index
+    t_idx = pt.maximum(0, t - 1)  # Convert to 0-based indexing
+    # If t_idx exceeds length of time_covariate_vector, use last value
+    max_idx = pt.shape(time_covariate_vector)[0] - 1
+    safe_idx = pt.minimum(t_idx, max_idx)
+    covariate_value = time_covariate_vector[..., safe_idx]
+    return pt.exp(covariate_value).sum(axis=0)
