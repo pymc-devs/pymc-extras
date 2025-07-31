@@ -18,6 +18,7 @@ from pymc_extras.statespace.models.utilities import (
     join_tensors_by_dim_labels,
     make_default_coords,
 )
+from pymc_extras.statespace.utils.component_parsing import restructure_components_idata
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
@@ -208,7 +209,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         self._component_info = component_info.copy()
 
         self._name_to_variable = name_to_variable.copy()
-        self._name_to_data = name_to_data.copy()
+        self._name_to_data = name_to_data.copy() if name_to_data is not None else {}
 
         self._exog_names = exog_names.copy()
         self._needs_exog_data = len(exog_names) > 0
@@ -350,20 +351,27 @@ class StructuralTimeSeries(PyMCStateSpace):
                 result.extend([f"{name}[{comp_name}]" for comp_name in comp_names])
         return result
 
-    def extract_components_from_idata(self, idata: xr.Dataset) -> xr.Dataset:
+    def extract_components_from_idata(
+        self, idata: xr.Dataset, restructure: bool = False
+    ) -> xr.Dataset:
         r"""
         Extract interpretable hidden states from an InferenceData returned by a PyMCStateSpace sampling method
 
         Parameters
         ----------
-        idata: Dataset
+        idata : Dataset
             A Dataset object, returned by a PyMCStateSpace sampling method
+        restructure : bool, default True
+            Whether to restructure the state coordinates as a multi-index for easier component selection.
+            When True, enables selections like `idata.sel(component='level')` and `idata.sel(observed='gdp')`.
+            Particularly useful for multivariate models with multiple observed states.
 
         Returns
         -------
-        idata: Dataset
+        idata : Dataset
             A Dataset object with hidden states transformed to represent only the "interpretable" subcomponents
-            of the structural model.
+            of the structural model. If `restructure=True`, the state coordinate will be a multi-index with
+            levels ['component', 'observed'] for easier selection.
 
         Notes
         -----
@@ -383,9 +391,12 @@ class StructuralTimeSeries(PyMCStateSpace):
             - :math:`\varepsilon_t` is the measurement error at time t
 
         In state space form, some or all of these components are represented as linear combinations of other
-        subcomponents, making interpretation of the outputs of the outputs difficult. The purpose of this function is
+        subcomponents, making interpretation of the outputs difficult. The purpose of this function is
         to take the expended statespace representation and return a "reduced form" of only the components shown in
         equation (1).
+
+        When `restructure=True`, the returned dataset allows for easy component selection, especially for
+        multivariate models with multiple observed states.
         """
 
         def _extract_and_transform_variable(idata, new_state_names):
@@ -423,6 +434,17 @@ class StructuralTimeSeries(PyMCStateSpace):
                 for name in latent_names
             }
         )
+
+        if restructure:
+            try:
+                idata_new = restructure_components_idata(idata_new)
+            except Exception as e:
+                _log.warning(
+                    f"Failed to restructure components with multi-index: {e}. "
+                    "Returning dataset with original string-based state names. "
+                    "You can call restructure_components_idata() manually if needed."
+                )
+
         return idata_new
 
 
