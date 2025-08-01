@@ -22,6 +22,7 @@ from pymc_extras.distributions.discrete import (
     BetaNegativeBinomial,
     GeneralizedPoisson,
     Skellam,
+    GrassiaIIGeometric,
 )
 from pymc_extras.distributions.histogram_utils import histogram_approximation
 from pymc_extras.distributions.multivariate import R2D2M2CP
@@ -38,5 +39,6 @@ __all__ = [
     "R2D2M2CP",
     "Skellam",
     "histogram_approximation",
+    "GrassiaIIGeometric",
     "PartialOrder",
 ]
