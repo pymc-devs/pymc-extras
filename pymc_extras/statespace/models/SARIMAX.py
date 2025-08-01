@@ -293,11 +293,11 @@ class BayesianSARIMA(PyMCStateSpace):
                 "constraints": "Positive Semi-definite",
             },
             "sigma_obs": {
-                "shape": None if self.k_endog == 1 else (self.k_endog,),
+                "shape": () if self.k_endog == 1 else (self.k_endog,),
                 "constraints": "Positive",
             },
             "sigma_state": {
-                "shape": None if self.k_posdef == 1 else (self.k_posdef,),
+                "shape": () if self.k_posdef == 1 else (self.k_posdef,),
                 "constraints": "Positive",
             },
             "ar_params": {
