@@ -328,10 +328,11 @@ class TimeSeasonality(Component):
         if self.innovations:
             self.param_names += [f"sigma_{self.name}"]
             self.param_info[f"sigma_{self.name}"] = {
-                "shape": (),
+                "shape": () if k_endog == 1 else (k_endog,),
                 "constraints": "Positive",
-                "dims": None,
+                "dims": None if k_endog == 1 else (f"endog_{self.name}",),
             }
+            self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
             self.shock_names = [f"{self.name}[{name}]" for name in self.observed_state_names]
 
     def make_symbolic_graph(self) -> None:
