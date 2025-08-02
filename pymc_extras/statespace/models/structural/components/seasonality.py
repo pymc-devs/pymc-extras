@@ -212,7 +212,7 @@ class TimeSeasonality(Component):
             sigma_level_trend = pm.HalfNormal(
                 "sigma_level_trend", sigma=1e-6, dims=ss_mod.param_dims["sigma_level_trend"]
             )
-            coefs_annual = pm.Normal("coefs_annual", sigma=1e-2, dims=ss_mod.param_dims["coefs_annual"])
+            params_annual = pm.Normal("params_annual", sigma=1e-2, dims=ss_mod.param_dims["params_annual"])
 
             ss_mod.build_statespace_graph(data)
             idata = pm.sample(
@@ -298,10 +298,10 @@ class TimeSeasonality(Component):
             for endog_name in self.observed_state_names
             for state_name in self.provided_state_names
         ]
-        self.param_names = [f"coefs_{self.name}"]
+        self.param_names = [f"params_{self.name}"]
 
         self.param_info = {
-            f"coefs_{self.name}": {
+            f"params_{self.name}": {
                 "shape": (k_states,) if k_endog == 1 else (k_endog, k_states),
                 "constraints": None,
                 "dims": (f"state_{self.name}",)
@@ -311,7 +311,7 @@ class TimeSeasonality(Component):
         }
 
         self.param_dims = {
-            f"coefs_{self.name}": (f"state_{self.name}",)
+            f"params_{self.name}": (f"state_{self.name}",)
             if k_endog == 1
             else (f"endog_{self.name}", f"state_{self.name}")
         }
@@ -378,7 +378,7 @@ class TimeSeasonality(Component):
         self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
 
         initial_states = self.make_and_register_variable(
-            f"coefs_{self.name}",
+            f"params_{self.name}",
             shape=(k_unique_states,) if k_endog == 1 else (k_endog, k_unique_states),
         )
         if k_endog == 1:
