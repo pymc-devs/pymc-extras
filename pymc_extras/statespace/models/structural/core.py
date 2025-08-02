@@ -361,7 +361,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         ----------
         idata : Dataset
             A Dataset object, returned by a PyMCStateSpace sampling method
-        restructure : bool, default True
+        restructure : bool, default False
             Whether to restructure the state coordinates as a multi-index for easier component selection.
             When True, enables selections like `idata.sel(component='level')` and `idata.sel(observed='gdp')`.
             Particularly useful for multivariate models with multiple observed states.
