@@ -6,6 +6,7 @@ from pytensor import config
 from pytensor.graph.basic import explicit_graph_inputs
 
 from pymc_extras.statespace.models import structural as st
+from pymc_extras.statespace.models.structural.components.seasonality import FrequencySeasonality
 from tests.statespace.models.structural.conftest import _assert_basic_coords_correct
 from tests.statespace.test_utilities import assert_pattern_repeats, simulate_from_numpy_model
 
@@ -38,7 +39,7 @@ def test_time_seasonality(s, d, innovations, remove_first_state, rng):
     x0 = np.zeros(mod.k_states // mod.duration, dtype=config.floatX)
     x0[0] = 1
 
-    params = {"coefs_season": x0}
+    params = {"params_season": x0}
     if innovations:
         params["sigma_season"] = 0.0
 
@@ -84,7 +85,7 @@ def test_time_seasonality_multiple_observed(rng, d, remove_first_state):
     x0[0, 0] = 1
     x0[1, 0] = 2.0
 
-    params = {"coefs_season": x0, "sigma_season": np.array([0.0, 0.0], dtype=config.floatX)}
+    params = {"params_season": x0, "sigma_season": np.array([0.0, 0.0], dtype=config.floatX)}
 
     x, y = simulate_from_numpy_model(mod, rng, params, steps=123 * d)
     assert_pattern_repeats(y[:, 0], s * d, atol=ATOL, rtol=RTOL)
@@ -169,8 +170,8 @@ def test_add_two_time_seasonality_different_observed(rng, d1, d2):
     mod = (mod1 + mod2).build(verbose=False)
 
     params = {
-        "coefs_season1": np.array([1.0, 0.0, 0.0], dtype=config.floatX),
-        "coefs_season2": np.array([3.0, 0.0, 0.0, 0.0], dtype=config.floatX),
+        "params_season1": np.array([1.0, 0.0, 0.0], dtype=config.floatX),
+        "params_season2": np.array([3.0, 0.0, 0.0, 0.0], dtype=config.floatX),
         "sigma_season1": np.array(0.0, dtype=config.floatX),
         "sigma_season2": np.array(0.0, dtype=config.floatX),
         "initial_state_cov": np.eye(mod.k_states, dtype=config.floatX),
@@ -205,8 +206,8 @@ def test_add_two_time_seasonality_different_observed(rng, d1, d2):
     )
 
     x0, T = fn(
-        coefs_season1=np.array([1.0, 0.0, 0.0], dtype=config.floatX),
-        coefs_season2=np.array([3.0, 0.0, 0.0, 1.2], dtype=config.floatX),
+        params_season1=np.array([1.0, 0.0, 0.0], dtype=config.floatX),
+        params_season2=np.array([3.0, 0.0, 0.0, 1.2], dtype=config.floatX),
     )
 
     np.testing.assert_allclose(
@@ -242,22 +243,26 @@ def get_shift_factor(s):
 @pytest.mark.parametrize("s", [5, 10, 25, 25.2])
 def test_frequency_seasonality(n, s, rng):
     mod = st.FrequencySeasonality(season_length=s, n=n, name="season")
+    assert mod.param_info["sigma_season"]["shape"] == ()  # scalar for univariate
+    assert mod.param_info["sigma_season"]["dims"] is None
+    assert len(mod.coords["state_season"]) == mod.n_coefs
+
     x0 = rng.normal(size=mod.n_coefs).astype(config.floatX)
-    params = {"season": x0, "sigma_season": 0.0}
+    params = {"params_season": x0, "sigma_season": 0.0}
     k = get_shift_factor(s)
     T = int(s * k)
 
     x, y = simulate_from_numpy_model(mod, rng, params, steps=2 * T)
     assert_pattern_repeats(y, T, atol=ATOL, rtol=RTOL)
 
-    # Check coords
+    # check coords
     mod = mod.build(verbose=False)
     _assert_basic_coords_correct(mod)
     if n is None:
         n = int(s // 2)
-    states = [f"{f}_season_{i}" for i in range(n) for f in ["Cos", "Sin"]]
+    states = [f"{f}_{i}_season" for i in range(n) for f in ["Cos", "Sin"]]
 
-    # Remove the last state when the model is completely saturated
+    # remove last state when model is completely saturated
     if s / n == 2.0:
         states.pop()
     assert mod.coords["state_season"] == states
@@ -273,47 +278,47 @@ def test_frequency_seasonality_multiple_observed(rng):
         innovations=True,
         observed_state_names=observed_state_names,
     )
+    assert mod.param_info["params_season"]["shape"] == (mod.k_endog, mod.n_coefs)
+    assert mod.param_info["params_season"]["dims"] == ("endog_season", "state_season")
+    assert mod.param_dims["sigma_season"] == ("endog_season",)
+
     expected_state_names = [
-        "Cos_season_0[data_1]",
-        "Sin_season_0[data_1]",
-        "Cos_season_1[data_1]",
-        "Sin_season_1[data_1]",
-        "Cos_season_0[data_2]",
-        "Sin_season_0[data_2]",
-        "Cos_season_1[data_2]",
-        "Sin_season_1[data_2]",
+        "Cos_0_season[data_1]",
+        "Sin_0_season[data_1]",
+        "Cos_1_season[data_1]",
+        "Sin_1_season[data_1]",
+        "Cos_0_season[data_2]",
+        "Sin_0_season[data_2]",
+        "Cos_1_season[data_2]",
+        "Sin_1_season[data_2]",
     ]
     assert mod.state_names == expected_state_names
     assert mod.shock_names == [
-        "Cos_season_0[data_1]",
-        "Sin_season_0[data_1]",
-        "Cos_season_1[data_1]",
-        "Sin_season_1[data_1]",
-        "Cos_season_0[data_2]",
-        "Sin_season_0[data_2]",
-        "Cos_season_1[data_2]",
-        "Sin_season_1[data_2]",
+        "Cos_0_season[data_1]",
+        "Sin_0_season[data_1]",
+        "Cos_1_season[data_1]",
+        "Sin_1_season[data_1]",
+        "Cos_0_season[data_2]",
+        "Sin_0_season[data_2]",
+        "Cos_1_season[data_2]",
+        "Sin_1_season[data_2]",
     ]
 
-    # Simulate
     x0 = np.zeros((2, 3), dtype=config.floatX)
     x0[0, 0] = 1.0
     x0[1, 0] = 2.0
-    params = {"season": x0, "sigma_season": np.zeros(2, dtype=config.floatX)}
+    params = {"params_season": x0, "sigma_season": np.zeros(2, dtype=config.floatX)}
     x, y = simulate_from_numpy_model(mod, rng, params, steps=12)
 
-    # Check periodicity for each observed series
+    # check periodicity for each observed series
     assert_pattern_repeats(y[:, 0], 4, atol=ATOL, rtol=RTOL)
     assert_pattern_repeats(y[:, 1], 4, atol=ATOL, rtol=RTOL)
 
     mod = mod.build(verbose=False)
     assert list(mod.coords["state_season"]) == [
-        "Cos_season_0[data_1]",
-        "Sin_season_0[data_1]",
-        "Cos_season_1[data_1]",
-        "Cos_season_0[data_2]",
-        "Sin_season_0[data_2]",
-        "Cos_season_1[data_2]",
+        "Cos_0_season",
+        "Sin_0_season",
+        "Cos_1_season",
     ]
 
     x0_sym, *_, T_sym, Z_sym, R_sym, _, Q_sym = mod._unpack_statespace_with_placeholders()
@@ -386,8 +391,8 @@ def test_add_two_frequency_seasonality_different_observed(rng):
     mod = (mod1 + mod2).build(verbose=False)
 
     params = {
-        "freq1": np.array([1.0, 0.0, 0.0], dtype=config.floatX),
-        "freq2": np.array([3.0, 0.0], dtype=config.floatX),
+        "params_freq1": np.array([1.0, 0.0, 0.0], dtype=config.floatX),
+        "params_freq2": np.array([3.0, 0.0], dtype=config.floatX),
         "sigma_freq1": np.array(0.0, dtype=config.floatX),
         "sigma_freq2": np.array(0.0, dtype=config.floatX),
         "initial_state_cov": np.eye(mod.k_states, dtype=config.floatX),
@@ -399,21 +404,21 @@ def test_add_two_frequency_seasonality_different_observed(rng):
     assert_pattern_repeats(y[:, 1], 6, atol=ATOL, rtol=RTOL)
 
     assert mod.state_names == [
-        "Cos_freq1_0[data_1]",
-        "Sin_freq1_0[data_1]",
-        "Cos_freq1_1[data_1]",
-        "Sin_freq1_1[data_1]",
-        "Cos_freq2_0[data_2]",
-        "Sin_freq2_0[data_2]",
+        "Cos_0_freq1[data_1]",
+        "Sin_0_freq1[data_1]",
+        "Cos_1_freq1[data_1]",
+        "Sin_1_freq1[data_1]",
+        "Cos_0_freq2[data_2]",
+        "Sin_0_freq2[data_2]",
     ]
 
     assert mod.shock_names == [
-        "Cos_freq1_0[data_1]",
-        "Sin_freq1_0[data_1]",
-        "Cos_freq1_1[data_1]",
-        "Sin_freq1_1[data_1]",
-        "Cos_freq2_0[data_2]",
-        "Sin_freq2_0[data_2]",
+        "Cos_0_freq1[data_1]",
+        "Sin_0_freq1[data_1]",
+        "Cos_1_freq1[data_1]",
+        "Sin_1_freq1[data_1]",
+        "Cos_0_freq2[data_2]",
+        "Sin_0_freq2[data_2]",
     ]
 
     x0, *_, T = mod._unpack_statespace_with_placeholders()[:5]
@@ -425,8 +430,8 @@ def test_add_two_frequency_seasonality_different_observed(rng):
     )
 
     x0_v, T_v = fn(
-        freq1=np.array([1.0, 0.0, 1.2], dtype=config.floatX),
-        freq2=np.array([3.0, 0.0], dtype=config.floatX),
+        params_freq1=np.array([1.0, 0.0, 1.2], dtype=config.floatX),
+        params_freq2=np.array([3.0, 0.0], dtype=config.floatX),
     )
 
     # Make sure the extra 0 in from the first component (the saturated state) is there!
@@ -452,3 +457,89 @@ def test_add_two_frequency_seasonality_different_observed(rng):
     expected_T[4:6, 4:6] = freq2_T
 
     np.testing.assert_allclose(expected_T, T_v, atol=ATOL, rtol=RTOL)
+
+
+@pytest.mark.parametrize(
+    "test_case",
+    [
+        {
+            "name": "single_endog_non_saturated",
+            "season_length": 12,
+            "n": 2,
+            "observed_state_names": ["data1"],
+            "expected_shape": (4,),
+        },
+        {
+            "name": "single_endog_saturated",
+            "season_length": 12,
+            "n": 6,
+            "observed_state_names": ["data1"],
+            "expected_shape": (11,),
+        },
+        {
+            "name": "multiple_endog_non_saturated",
+            "season_length": 12,
+            "n": 2,
+            "observed_state_names": ["data1", "data2"],
+            "expected_shape": (2, 4),
+        },
+        {
+            "name": "multiple_endog_saturated",
+            "season_length": 12,
+            "n": 6,
+            "observed_state_names": ["data1", "data2"],
+            "expected_shape": (2, 11),
+        },
+        {
+            "name": "small_n",
+            "season_length": 12,
+            "n": 1,
+            "observed_state_names": ["data1"],
+            "expected_shape": (2,),
+        },
+        {
+            "name": "many_endog",
+            "season_length": 12,
+            "n": 2,
+            "observed_state_names": ["data1", "data2", "data3", "data4"],
+            "expected_shape": (4, 4),
+        },
+    ],
+    ids=lambda x: x["name"],
+)
+def test_frequency_seasonality_coordinates(test_case):
+    model_name = f"season_{test_case['name'].split('_')[0]}"
+
+    season = FrequencySeasonality(
+        season_length=test_case["season_length"],
+        n=test_case["n"],
+        name=model_name,
+        observed_state_names=test_case["observed_state_names"],
+    )
+    season.populate_component_properties()
+
+    # assert parameter shape
+    assert season.param_info[f"params_{model_name}"]["shape"] == test_case["expected_shape"]
+
+    # generate expected state names based on actual model name
+    expected_state_names = [
+        f"{f}_{i}_{model_name}" for i in range(test_case["n"]) for f in ["Cos", "Sin"]
+    ][: test_case["expected_shape"][-1]]
+
+    # assert coordinate structure
+    if len(test_case["observed_state_names"]) == 1:
+        assert len(season.coords[f"state_{model_name}"]) == test_case["expected_shape"][0]
+        assert season.coords[f"state_{model_name}"] == expected_state_names
+    else:
+        assert len(season.coords[f"endog_{model_name}"]) == test_case["expected_shape"][0]
+        assert len(season.coords[f"state_{model_name}"]) == test_case["expected_shape"][1]
+        assert season.coords[f"state_{model_name}"] == expected_state_names
+
+    # Check coords match the expected shape
+    param_shape = season.param_info[f"params_{model_name}"]["shape"]
+    state_coords = season.coords[f"state_{model_name}"]
+    endog_coords = season.coords.get(f"endog_{model_name}")
+
+    assert len(state_coords) == param_shape[-1]
+    if endog_coords:
+        assert len(endog_coords) == param_shape[0]
