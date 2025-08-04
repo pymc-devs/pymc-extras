@@ -326,7 +326,7 @@ def test_frequency_seasonality(n, s, rng):
     _assert_basic_coords_correct(mod)
     if n is None:
         n = int(s // 2)
-    states = [f"{f}_season_{i}" for i in range(n) for f in ["Cos", "Sin"]]
+    states = [f"{f}_{i}_season" for i in range(n) for f in ["Cos", "Sin"]]
 
     # remove last state when model is completely saturated
     if s / n == 2.0:
@@ -345,19 +345,25 @@ def test_frequency_seasonality_multiple_observed(rng):
         observed_state_names=observed_state_names,
     )
     expected_state_names = [
-        "Cos_season_0[data_1]",
-        "Sin_season_0[data_1]",
-        "Cos_season_1[data_1]",
-        "Sin_season_1[data_1]",
-        "Cos_season_0[data_2]",
-        "Sin_season_0[data_2]",
-        "Cos_season_1[data_2]",
-        "Sin_season_1[data_2]",
+        "Cos_0_season[data_1]",
+        "Sin_0_season[data_1]",
+        "Cos_1_season[data_1]",
+        "Sin_1_season[data_1]",
+        "Cos_0_season[data_2]",
+        "Sin_0_season[data_2]",
+        "Cos_1_season[data_2]",
+        "Sin_1_season[data_2]",
     ]
     assert mod.state_names == expected_state_names
     assert mod.shock_names == [
-        "season[data_1]",
-        "season[data_2]",
+        "Cos_0_season[data_1]",
+        "Sin_0_season[data_1]",
+        "Cos_1_season[data_1]",
+        "Sin_1_season[data_1]",
+        "Cos_0_season[data_2]",
+        "Sin_0_season[data_2]",
+        "Cos_1_season[data_2]",
+        "Sin_1_season[data_2]",
     ]
 
     x0 = np.zeros((2, 3), dtype=config.floatX)
@@ -372,9 +378,9 @@ def test_frequency_seasonality_multiple_observed(rng):
 
     mod = mod.build(verbose=False)
     assert list(mod.coords["state_season"]) == [
-        "Cos_season_0",
-        "Sin_season_0",
-        "Cos_season_1",
+        "Cos_0_season",
+        "Sin_0_season",
+        "Cos_1_season",
     ]
 
     x0_sym, *_, T_sym, Z_sym, R_sym, _, Q_sym = mod._unpack_statespace_with_placeholders()
@@ -460,17 +466,21 @@ def test_add_two_frequency_seasonality_different_observed(rng):
     assert_pattern_repeats(y[:, 1], 6, atol=ATOL, rtol=RTOL)
 
     assert mod.state_names == [
-        "Cos_freq1_0[data_1]",
-        "Sin_freq1_0[data_1]",
-        "Cos_freq1_1[data_1]",
-        "Sin_freq1_1[data_1]",
-        "Cos_freq2_0[data_2]",
-        "Sin_freq2_0[data_2]",
+        "Cos_0_freq1[data_1]",
+        "Sin_0_freq1[data_1]",
+        "Cos_1_freq1[data_1]",
+        "Sin_1_freq1[data_1]",
+        "Cos_0_freq2[data_2]",
+        "Sin_0_freq2[data_2]",
     ]
 
     assert mod.shock_names == [
-        "freq1[data_1]",
-        "freq2[data_2]",
+        "Cos_0_freq1[data_1]",
+        "Sin_0_freq1[data_1]",
+        "Cos_1_freq1[data_1]",
+        "Sin_1_freq1[data_1]",
+        "Cos_0_freq2[data_2]",
+        "Sin_0_freq2[data_2]",
     ]
 
     x0, *_, T = mod._unpack_statespace_with_placeholders()[:5]
@@ -627,7 +637,7 @@ def test_frequency_seasonality_coordinates(test_case):
 
     # generate expected state names based on actual model name
     expected_state_names = [
-        f"{f}_{model_name}_{i}" for i in range(test_case["n"]) for f in ["Cos", "Sin"]
+        f"{f}_{i}_{model_name}" for i in range(test_case["n"]) for f in ["Cos", "Sin"]
     ][: test_case["expected_shape"][-1]]
 
     # assert coordinate structure
@@ -677,7 +687,7 @@ def test_frequency_seasonality_edge_cases(test_case):
 
     # generate expected state names based on actual model name
     expected_state_names = [
-        f"{f}_{model_name}_{i}" for i in range(test_case["n"]) for f in ["Cos", "Sin"]
+        f"{f}_{i}_{model_name}" for i in range(test_case["n"]) for f in ["Cos", "Sin"]
     ][: test_case["expected_shape"][-1]]
 
     # assert coordinate structure

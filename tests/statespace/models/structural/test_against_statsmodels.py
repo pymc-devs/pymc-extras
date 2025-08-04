@@ -67,11 +67,6 @@ def _assert_coord_shapes_match_matrices(mod, params):
     n_shocks = max(1, len(mod.coords[SHOCK_DIM]))
     n_obs = len(mod.coords[OBS_STATE_DIM])
 
-    print(f"{mod.coords[ALL_STATE_DIM] = }")
-    print(f"{mod.coords[SHOCK_DIM] = }")
-    print(f"{mod.coords[OBS_STATE_DIM] = }")
-    print(f"{R = }")
-
     assert x0.shape[-1:] == (
         n_states,
     ), f"x0 expected to have shape (n_states, ), found {x0.shape[-1:]}"
@@ -336,7 +331,7 @@ def create_structural_model_and_equivalent_statsmodel(
             s = d["period"]
             last_state_not_identified = (s / n) == 2.0
             n_states = 2 * n - int(last_state_not_identified)
-            state_names = [f"{f}_seasonal_{s}_{i}" for i in range(n) for f in ["Cos", "Sin"]]
+            state_names = [f"{f}_{i}_seasonal_{s}" for i in range(n) for f in ["Cos", "Sin"]]
 
             seasonal_params = rng.normal(size=n_states).astype(floatX)
 
