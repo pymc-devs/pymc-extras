@@ -319,9 +319,18 @@ class StructuralTimeSeries(PyMCStateSpace):
 
             if info[name]["combine_hidden_states"]:
                 sum_idx_joined = np.flatnonzero(obs_idx)
-                sum_idx_split = np.split(sum_idx_joined, info[name]["k_endog"])
-                for sum_idx in sum_idx_split:
-                    result.append(X[..., sum_idx].sum(axis=-1)[..., None])
+                k_endog = info[name]["k_endog"]
+
+                if info[name]["share_states"]:
+                    # sum once and replicate for each endogenous variable
+                    shared_sum = X[..., sum_idx_joined].sum(axis=-1)[..., None]
+                    for _ in range(k_endog):
+                        result.append(shared_sum)
+                else:
+                    # states are separate
+                    sum_idx_split = np.split(sum_idx_joined, k_endog)
+                    for sum_idx in sum_idx_split:
+                        result.append(X[..., sum_idx].sum(axis=-1)[..., None])
             else:
                 n_components = len(self.state_names[s])
                 for j in range(n_components):
@@ -493,6 +502,10 @@ class Component:
     obs_state_idxs : np.ndarray | None, optional
         Indices indicating which states contribute to observed variables. If None,
         defaults to None.
+    share_states : bool, optional
+        Whether states are shared across multiple endogenous variables in multivariate
+        models. When True, the same latent states affect all observed variables.
+        Default is False.
 
     Examples
     --------
@@ -534,10 +547,12 @@ class Component:
         combine_hidden_states=True,
         component_from_sum=False,
         obs_state_idxs=None,
+        share_states: bool = False,
     ):
         self.name = name
         self.k_endog = k_endog
         self.k_states = k_states
+        self.share_states = share_states
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
 
@@ -579,6 +594,7 @@ class Component:
                 "observed_state_names": self.observed_state_names,
                 "combine_hidden_states": combine_hidden_states,
                 "obs_state_idx": obs_state_idxs,
+                "share_states": self.share_states,
             }
         }
 

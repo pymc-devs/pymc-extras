@@ -235,6 +235,7 @@ class TimeSeasonality(Component):
         state_names: list | None = None,
         remove_first_state: bool = True,
         observed_state_names: list[str] | None = None,
+        share_states: bool = False,
     ):
         if observed_state_names is None:
             observed_state_names = ["data"]
@@ -261,6 +262,7 @@ class TimeSeasonality(Component):
                 )
             state_names = state_names.copy()
 
+        self.share_states = share_states
         self.innovations = innovations
         self.duration = duration
         self.remove_first_state = remove_first_state
@@ -281,44 +283,53 @@ class TimeSeasonality(Component):
         super().__init__(
             name=name,
             k_endog=k_endog,
-            k_states=k_states * k_endog,
-            k_posdef=k_posdef * k_endog,
+            k_states=k_states if share_states else k_states * k_endog,
+            k_posdef=k_posdef if share_states else k_posdef * k_endog,
             observed_state_names=observed_state_names,
             measurement_error=False,
             combine_hidden_states=True,
-            obs_state_idxs=np.tile(np.array([1.0] + [0.0] * (k_states - 1)), k_endog),
+            obs_state_idxs=np.tile(
+                np.array([1.0] + [0.0] * (k_states - 1)), 1 if share_states else k_endog
+            ),
+            share_states=share_states,
         )
 
     def populate_component_properties(self):
-        k_states = self.k_states // self.k_endog
         k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+        k_states = self.k_states // k_endog_effective
 
-        self.state_names = [
-            f"{state_name}[{endog_name}]"
-            for endog_name in self.observed_state_names
-            for state_name in self.provided_state_names
-        ]
+        if self.share_states:
+            self.state_names = [
+                f"{state_name}[{self.name}_shared]" for state_name in self.provided_state_names
+            ]
+        else:
+            self.state_names = [
+                f"{state_name}[{endog_name}]"
+                for endog_name in self.observed_state_names
+                for state_name in self.provided_state_names
+            ]
         self.param_names = [f"params_{self.name}"]
 
         self.param_info = {
             f"params_{self.name}": {
-                "shape": (k_states,) if k_endog == 1 else (k_endog, k_states),
+                "shape": (k_states,) if k_endog_effective == 1 else (k_endog_effective, k_states),
                 "constraints": None,
                 "dims": (f"state_{self.name}",)
-                if k_endog == 1
+                if k_endog_effective == 1
                 else (f"endog_{self.name}", f"state_{self.name}"),
             }
         }
 
         self.param_dims = {
             f"params_{self.name}": (f"state_{self.name}",)
-            if k_endog == 1
+            if k_endog_effective == 1
             else (f"endog_{self.name}", f"state_{self.name}")
         }
 
         self.coords = (
             {f"state_{self.name}": self.provided_state_names}
-            if k_endog == 1
+            if k_endog_effective == 1
             else {
                 f"endog_{self.name}": self.observed_state_names,
                 f"state_{self.name}": self.provided_state_names,
@@ -327,21 +338,26 @@ class TimeSeasonality(Component):
 
         if self.innovations:
             self.param_names += [f"sigma_{self.name}"]
-            self.shock_names = [f"{self.name}[{name}]" for name in self.observed_state_names]
             self.param_info[f"sigma_{self.name}"] = {
-                "shape": () if k_endog == 1 else (k_endog,),
+                "shape": () if k_endog_effective == 1 else (k_endog_effective,),
                 "constraints": "Positive",
-                "dims": None if k_endog == 1 else (f"endog_{self.name}",),
+                "dims": None if k_endog_effective == 1 else (f"endog_{self.name}",),
             }
-            if k_endog > 1:
+            if k_endog_effective > 1:
                 self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
 
+            if self.share_states:
+                self.shock_names = [f"{self.name}[shared]"]
+            else:
+                self.shock_names = [f"{self.name}[{name}]" for name in self.observed_state_names]
+
     def make_symbolic_graph(self) -> None:
-        k_states = self.k_states // self.k_endog
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+        k_states = self.k_states // k_endog_effective
         duration = self.duration
         k_unique_states = k_states // duration
-        k_posdef = self.k_posdef // self.k_endog
-        k_endog = self.k_endog
+        k_posdef = self.k_posdef // k_endog_effective
 
         if self.remove_first_state:
             # In this case, parameters are normalized to sum to zero, so the current state is the negative sum of
@@ -373,16 +389,18 @@ class TimeSeasonality(Component):
             T = pt.eye(k_states, k=1)
             T = pt.set_subtensor(T[-1, 0], 1)
 
-        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
+        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
 
         Z = pt.zeros((1, k_states))[0, 0].set(1)
-        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
+        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
 
         initial_states = self.make_and_register_variable(
             f"params_{self.name}",
-            shape=(k_unique_states,) if k_endog == 1 else (k_endog, k_unique_states),
+            shape=(k_unique_states,)
+            if k_endog_effective == 1
+            else (k_endog_effective, k_unique_states),
         )
-        if k_endog == 1:
+        if k_endog_effective == 1:
             self.ssm["initial_state", :] = pt.extra_ops.repeat(initial_states, duration, axis=0)
         else:
             self.ssm["initial_state", :] = pt.extra_ops.repeat(
@@ -391,11 +409,11 @@ class TimeSeasonality(Component):
 
         if self.innovations:
             R = pt.zeros((k_states, k_posdef))[0, 0].set(1.0)
-            self.ssm["selection", :, :] = pt.join(0, *[R for _ in range(k_endog)])
+            self.ssm["selection", :, :] = pt.join(0, *[R for _ in range(k_endog_effective)])
             season_sigma = self.make_and_register_variable(
-                f"sigma_{self.name}", shape=() if k_endog == 1 else (k_endog,)
+                f"sigma_{self.name}", shape=() if k_endog_effective == 1 else (k_endog_effective,)
             )
-            cov_idx = ("state_cov", *np.diag_indices(k_posdef * k_endog))
+            cov_idx = ("state_cov", *np.diag_indices(k_posdef * k_endog_effective))
             self.ssm[cov_idx] = season_sigma**2
 
 
