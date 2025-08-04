@@ -539,7 +539,7 @@ class FrequencySeasonality(Component):
         n_coefs = self.n_coefs
 
         self.state_names = [
-            f"{f}_{self.name}_{i}[{obs_state_name}]"
+            f"{f}_{i}_{self.name}[{obs_state_name}]"
             for obs_state_name in self.observed_state_names
             for i in range(self.n)
             for f in ["Cos", "Sin"]
@@ -547,7 +547,7 @@ class FrequencySeasonality(Component):
         # determine which state names correspond to parameters
         # all endog variables use same state structure, so we just need
         # the first n_coefs state names (which may be less than total if saturated)
-        param_state_names = [f"{f}_{self.name}_{i}" for i in range(self.n) for f in ["Cos", "Sin"]][
+        param_state_names = [f"{f}_{i}_{self.name}" for i in range(self.n) for f in ["Cos", "Sin"]][
             :n_coefs
         ]
 
@@ -580,7 +580,7 @@ class FrequencySeasonality(Component):
 
         if self.innovations:
             self.param_names += [f"sigma_{self.name}"]
-            self.shock_names = [f"{self.name}[{name}]" for name in self.observed_state_names]
+            self.shock_names = self.state_names.copy()
             self.param_info[f"sigma_{self.name}"] = {
                 "shape": () if k_endog == 1 else (k_endog,),
                 "constraints": "Positive",
