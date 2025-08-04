@@ -104,12 +104,12 @@ def _assert_keys_match(test_dict, expected_dict):
     expected_keys = list(expected_dict.keys())
     param_keys = list(test_dict.keys())
     key_diff = set(expected_keys) - set(param_keys)
-    assert len(key_diff) == 0, f'{", ".join(key_diff)} were not found in the test_dict keys.'
+    assert len(key_diff) == 0, f"{', '.join(key_diff)} were not found in the test_dict keys."
 
     key_diff = set(param_keys) - set(expected_keys)
     assert (
         len(key_diff) == 0
-    ), f'{", ".join(key_diff)} were keys of the tests_dict not in expected_dict.'
+    ), f"{', '.join(key_diff)} were keys of the tests_dict not in expected_dict."
 
 
 def _assert_param_dims_correct(param_dims, expected_dims):
@@ -296,8 +296,8 @@ def create_structural_model_and_equivalent_statsmodel(
     if seasonal is not None:
         state_names = [f"seasonal_{i}" for i in range(seasonal)][1:]
         seasonal_coefs = rng.normal(size=(seasonal - 1,)).astype(floatX)
-        params["coefs_seasonal"] = seasonal_coefs
-        expected_param_dims["coefs_seasonal"] += ("state_seasonal",)
+        params["params_seasonal"] = seasonal_coefs
+        expected_param_dims["params_seasonal"] += ("state_seasonal",)
 
         expected_coords["state_seasonal"] += tuple(state_names)
         expected_coords[ALL_STATE_DIM] += state_names
@@ -331,12 +331,12 @@ def create_structural_model_and_equivalent_statsmodel(
             s = d["period"]
             last_state_not_identified = (s / n) == 2.0
             n_states = 2 * n - int(last_state_not_identified)
-            state_names = [f"{f}_seasonal_{s}_{i}" for i in range(n) for f in ["Cos", "Sin"]]
+            state_names = [f"{f}_{i}_seasonal_{s}" for i in range(n) for f in ["Cos", "Sin"]]
 
             seasonal_params = rng.normal(size=n_states).astype(floatX)
 
-            params[f"seasonal_{s}"] = seasonal_params
-            expected_param_dims[f"seasonal_{s}"] += (f"state_seasonal_{s}",)
+            params[f"params_seasonal_{s}"] = seasonal_params
+            expected_param_dims[f"params_seasonal_{s}"] += (f"state_seasonal_{s}",)
             expected_coords[ALL_STATE_DIM] += state_names
             expected_coords[ALL_STATE_AUX_DIM] += state_names
             expected_coords[f"state_seasonal_{s}"] += (
@@ -404,7 +404,7 @@ def create_structural_model_and_equivalent_statsmodel(
         components.append(comp)
 
     if autoregressive is not None:
-        ar_names = [f"L{i+1}" for i in range(autoregressive)]
+        ar_names = [f"L{i + 1}" for i in range(autoregressive)]
         params_ar = rng.normal(size=(autoregressive,)).astype(floatX)
         if autoregressive == 1:
             params_ar = params_ar.item()
@@ -421,8 +421,8 @@ def create_structural_model_and_equivalent_statsmodel(
 
         sm_params["sigma2.ar"] = sigma2
         for i, rho in enumerate(params_ar):
-            sm_init[f"ar.L{i+1}"] = 0
-            sm_params[f"ar.L{i+1}"] = rho
+            sm_init[f"ar.L{i + 1}"] = 0
+            sm_params[f"ar.L{i + 1}"] = rho
 
         comp = st.AutoregressiveComponent(name="ar", order=autoregressive)
         components.append(comp)
@@ -439,7 +439,7 @@ def create_structural_model_and_equivalent_statsmodel(
 
         for i, beta in enumerate(betas):
             sm_params[f"beta.x{i + 1}"] = beta
-            sm_init[f"beta.x{i+1}"] = beta
+            sm_init[f"beta.x{i + 1}"] = beta
         comp = st.RegressionComponent(name="exog", state_names=names)
         components.append(comp)
 

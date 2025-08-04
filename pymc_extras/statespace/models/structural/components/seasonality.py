@@ -212,7 +212,7 @@ class TimeSeasonality(Component):
             sigma_level_trend = pm.HalfNormal(
                 "sigma_level_trend", sigma=1e-6, dims=ss_mod.param_dims["sigma_level_trend"]
             )
-            coefs_annual = pm.Normal("coefs_annual", sigma=1e-2, dims=ss_mod.param_dims["coefs_annual"])
+            params_annual = pm.Normal("params_annual", sigma=1e-2, dims=ss_mod.param_dims["params_annual"])
 
             ss_mod.build_statespace_graph(data)
             idata = pm.sample(
@@ -298,10 +298,10 @@ class TimeSeasonality(Component):
             for endog_name in self.observed_state_names
             for state_name in self.provided_state_names
         ]
-        self.param_names = [f"coefs_{self.name}"]
+        self.param_names = [f"params_{self.name}"]
 
         self.param_info = {
-            f"coefs_{self.name}": {
+            f"params_{self.name}": {
                 "shape": (k_states,) if k_endog == 1 else (k_endog, k_states),
                 "constraints": None,
                 "dims": (f"state_{self.name}",)
@@ -311,7 +311,7 @@ class TimeSeasonality(Component):
         }
 
         self.param_dims = {
-            f"coefs_{self.name}": (f"state_{self.name}",)
+            f"params_{self.name}": (f"state_{self.name}",)
             if k_endog == 1
             else (f"endog_{self.name}", f"state_{self.name}")
         }
@@ -327,12 +327,14 @@ class TimeSeasonality(Component):
 
         if self.innovations:
             self.param_names += [f"sigma_{self.name}"]
-            self.param_info[f"sigma_{self.name}"] = {
-                "shape": (),
-                "constraints": "Positive",
-                "dims": None,
-            }
             self.shock_names = [f"{self.name}[{name}]" for name in self.observed_state_names]
+            self.param_info[f"sigma_{self.name}"] = {
+                "shape": () if k_endog == 1 else (k_endog,),
+                "constraints": "Positive",
+                "dims": None if k_endog == 1 else (f"endog_{self.name}",),
+            }
+            if k_endog > 1:
+                self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
 
     def make_symbolic_graph(self) -> None:
         k_states = self.k_states // self.k_endog
@@ -377,7 +379,7 @@ class TimeSeasonality(Component):
         self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
 
         initial_states = self.make_and_register_variable(
-            f"coefs_{self.name}",
+            f"params_{self.name}",
             shape=(k_unique_states,) if k_endog == 1 else (k_endog, k_unique_states),
         )
         if k_endog == 1:
@@ -506,7 +508,7 @@ class FrequencySeasonality(Component):
         self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
 
         init_state = self.make_and_register_variable(
-            f"{self.name}", shape=(n_coefs,) if k_endog == 1 else (k_endog, n_coefs)
+            f"params_{self.name}", shape=(n_coefs,) if k_endog == 1 else (k_endog, n_coefs)
         )
 
         init_state_idx = np.concatenate(
@@ -535,19 +537,30 @@ class FrequencySeasonality(Component):
     def populate_component_properties(self):
         k_endog = self.k_endog
         n_coefs = self.n_coefs
-        k_states = self.k_states // k_endog
 
         self.state_names = [
-            f"{f}_{self.name}_{i}[{obs_state_name}]"
+            f"{f}_{i}_{self.name}[{obs_state_name}]"
             for obs_state_name in self.observed_state_names
             for i in range(self.n)
             for f in ["Cos", "Sin"]
         ]
-        self.param_names = [f"{self.name}"]
+        # determine which state names correspond to parameters
+        # all endog variables use same state structure, so we just need
+        # the first n_coefs state names (which may be less than total if saturated)
+        param_state_names = [f"{f}_{i}_{self.name}" for i in range(self.n) for f in ["Cos", "Sin"]][
+            :n_coefs
+        ]
 
-        self.param_dims = {self.name: (f"state_{self.name}",)}
+        self.param_names = [f"params_{self.name}"]
+
+        self.param_dims = {
+            f"params_{self.name}": (f"state_{self.name}",)
+            if k_endog == 1
+            else (f"endog_{self.name}", f"state_{self.name}")
+        }
+
         self.param_info = {
-            f"{self.name}": {
+            f"params_{self.name}": {
                 "shape": (n_coefs,) if k_endog == 1 else (k_endog, n_coefs),
                 "constraints": None,
                 "dims": (f"state_{self.name}",)
@@ -556,23 +569,22 @@ class FrequencySeasonality(Component):
             }
         }
 
-        # Regardless of whether the fourier basis are saturated, there will always be one symbolic state per basis.
-        # That's why the self.states is just a simple loop over everything. But when saturated, one of those states
-        # doesn't have an associated **parameter**, so the coords need to be adjusted to reflect this.
-        init_state_idx = np.concatenate(
-            [
-                np.arange(k_states * i, (i + 1) * k_states, dtype=int)[:n_coefs]
-                for i in range(k_endog)
-            ],
-            axis=0,
+        self.coords = (
+            {f"state_{self.name}": param_state_names}
+            if k_endog == 1
+            else {
+                f"endog_{self.name}": self.observed_state_names,
+                f"state_{self.name}": param_state_names,
+            }
         )
-        self.coords = {f"state_{self.name}": [self.state_names[i] for i in init_state_idx]}
 
         if self.innovations:
-            self.shock_names = self.state_names.copy()
             self.param_names += [f"sigma_{self.name}"]
+            self.shock_names = self.state_names.copy()
             self.param_info[f"sigma_{self.name}"] = {
-                "shape": () if k_endog == 1 else (k_endog, n_coefs),
+                "shape": () if k_endog == 1 else (k_endog,),
                 "constraints": "Positive",
                 "dims": None if k_endog == 1 else (f"endog_{self.name}",),
             }
+            if k_endog > 1:
+                self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
