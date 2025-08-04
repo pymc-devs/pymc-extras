@@ -449,6 +449,11 @@ class FrequencySeasonality(Component):
     observed_state_names: list[str] | None, default None
         List of strings for observed state labels. If None, defaults to ["data"].
 
+    share_states: bool, default False
+        Whether latent states are shared across the observed states. If True, there will be only one set of latent
+        states, which are observed by all observed states. If False, each observed state has its own set of
+        latent states. This argument has no effect if `k_endog` is 1.
+
     Notes
     -----
     A seasonal effect is any pattern that repeats every fixed interval. Although there are many possible ways to
@@ -480,15 +485,17 @@ class FrequencySeasonality(Component):
 
     def __init__(
         self,
-        season_length,
-        n=None,
-        name=None,
-        innovations=True,
+        season_length: int,
+        n: int | None = None,
+        name: str | None = None,
+        innovations: bool = True,
         observed_state_names: list[str] | None = None,
+        share_states: bool = False,
     ):
         if observed_state_names is None:
             observed_state_names = ["data"]
 
+        self.share_states = share_states
         k_endog = len(observed_state_names)
 
         if n is None:
@@ -504,18 +511,20 @@ class FrequencySeasonality(Component):
         # If the model is completely saturated (n = s // 2), the last state will not be identified, so it shouldn't
         # get a parameter assigned to it and should just be fixed to zero.
         # Test this way (rather than n == s // 2) to catch cases when n is non-integer.
-        self.last_state_not_identified = self.season_length / self.n == 2.0
+        self.last_state_not_identified = (self.season_length / self.n) == 2.0
         self.n_coefs = k_states - int(self.last_state_not_identified)
 
         obs_state_idx = np.zeros(k_states)
         obs_state_idx[slice(0, k_states, 2)] = 1
-        obs_state_idx = np.tile(obs_state_idx, k_endog)
+        obs_state_idx = np.tile(obs_state_idx, 1 if share_states else k_endog)
 
         super().__init__(
             name=name,
             k_endog=k_endog,
-            k_states=k_states * k_endog,
-            k_posdef=k_states * int(self.innovations) * k_endog,
+            k_states=k_states if share_states else k_states * k_endog,
+            k_posdef=k_states * int(self.innovations)
+            if share_states
+            else k_states * int(self.innovations) * k_endog,
             observed_state_names=observed_state_names,
             measurement_error=False,
             combine_hidden_states=True,
@@ -524,13 +533,15 @@ class FrequencySeasonality(Component):
 
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog
-        k_states = self.k_states // k_endog
-        k_posdef = self.k_posdef // k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+
+        k_states = self.k_states // k_endog_effective
+        k_posdef = self.k_posdef // k_endog_effective
         n_coefs = self.n_coefs
 
         Z = pt.zeros((1, k_states))[0, slice(0, k_states, 2)].set(1.0)
 
-        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
+        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
 
         init_state = self.make_and_register_variable(
             f"params_{self.name}", shape=(n_coefs,) if k_endog == 1 else (k_endog, n_coefs)
@@ -539,7 +550,7 @@ class FrequencySeasonality(Component):
         init_state_idx = np.concatenate(
             [
                 np.arange(k_states * i, (i + 1) * k_states, dtype=int)[:n_coefs]
-                for i in range(k_endog)
+                for i in range(k_endog_effective)
             ],
             axis=0,
         )
@@ -548,11 +559,11 @@ class FrequencySeasonality(Component):
 
         T_mats = [_frequency_transition_block(self.season_length, j + 1) for j in range(self.n)]
         T = pt.linalg.block_diag(*T_mats)
-        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
+        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
 
         if self.innovations:
             sigma_season = self.make_and_register_variable(
-                f"sigma_{self.name}", shape=() if k_endog == 1 else (k_endog,)
+                f"sigma_{self.name}", shape=() if k_endog_effective == 1 else (k_endog_effective,)
             )
             self.ssm["selection", :, :] = pt.eye(self.k_states)
             self.ssm["state_cov", :, :] = pt.eye(self.k_posdef) * pt.repeat(
@@ -561,35 +572,35 @@ class FrequencySeasonality(Component):
 
     def populate_component_properties(self):
         k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
         n_coefs = self.n_coefs
 
-        self.state_names = [
-            f"{f}_{i}_{self.name}[{obs_state_name}]"
-            for obs_state_name in self.observed_state_names
-            for i in range(self.n)
-            for f in ["Cos", "Sin"]
-        ]
-        # determine which state names correspond to parameters
-        # all endog variables use same state structure, so we just need
-        # the first n_coefs state names (which may be less than total if saturated)
-        param_state_names = [f"{f}_{i}_{self.name}" for i in range(self.n) for f in ["Cos", "Sin"]][
-            :n_coefs
-        ]
+        base_names = [f"{f}_{i}_{self.name}" for i in range(self.n) for f in ["Cos", "Sin"]]
+
+        if self.share_states:
+            self.state_names = [f"{name}[shared]" for name in base_names]
+        else:
+            self.state_names = [
+                f"{name}[{obs_state_name}]"
+                for obs_state_name in self.observed_state_names
+                for name in base_names
+            ]
+
+        # Trim state names if the model is saturated
+        param_state_names = base_names[:n_coefs]
 
         self.param_names = [f"params_{self.name}"]
-
         self.param_dims = {
             f"params_{self.name}": (f"state_{self.name}",)
-            if k_endog == 1
+            if k_endog_effective == 1
             else (f"endog_{self.name}", f"state_{self.name}")
         }
-
         self.param_info = {
             f"params_{self.name}": {
-                "shape": (n_coefs,) if k_endog == 1 else (k_endog, n_coefs),
+                "shape": (n_coefs,) if k_endog_effective == 1 else (k_endog_effective, n_coefs),
                 "constraints": None,
                 "dims": (f"state_{self.name}",)
-                if k_endog == 1
+                if k_endog_effective == 1
                 else (f"endog_{self.name}", f"state_{self.name}"),
             }
         }
@@ -607,9 +618,9 @@ class FrequencySeasonality(Component):
             self.param_names += [f"sigma_{self.name}"]
             self.shock_names = self.state_names.copy()
             self.param_info[f"sigma_{self.name}"] = {
-                "shape": () if k_endog == 1 else (k_endog,),
+                "shape": () if k_endog_effective == 1 else (k_endog_effective, n_coefs),
                 "constraints": "Positive",
-                "dims": None if k_endog == 1 else (f"endog_{self.name}",),
+                "dims": None if k_endog_effective == 1 else (f"endog_{self.name}",),
             }
-            if k_endog > 1:
+            if k_endog_effective > 1:
                 self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)

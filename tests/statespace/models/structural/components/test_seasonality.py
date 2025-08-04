@@ -474,6 +474,39 @@ def test_frequency_seasonality_multiple_observed(rng):
     np.testing.assert_allclose(Q_diag, expected_Q_diag, atol=ATOL, rtol=RTOL)
 
 
+def test_frequency_seasonality_multivariate_shared_states():
+    mod = st.FrequencySeasonality(
+        season_length=4,
+        n=1,
+        name="season",
+        innovations=True,
+        observed_state_names=["data_1", "data_2"],
+        share_states=True,
+    )
+
+    assert mod.k_endog == 2
+    assert mod.k_states == 2
+    assert mod.k_posdef == 2
+
+    assert mod.state_names == ["Cos_0_season[shared]", "Sin_0_season[shared]"]
+    assert mod.shock_names == ["Cos_0_season[shared]", "Sin_0_season[shared]"]
+
+    assert mod.coords["state_season"] == ["Cos_0_season", "Sin_0_season"]
+
+    Z, T, R = pytensor.function(
+        [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
+    )()
+
+    np.testing.assert_allclose(np.array([[1.0, 0.0], [1.0, 0.0]]), Z)
+
+    np.testing.assert_allclose(np.array([[1.0, 0.0], [0.0, 1.0]]), R)
+
+    lam = 2 * np.pi * 1 / 4
+    np.testing.assert_allclose(
+        np.array([[np.cos(lam), np.sin(lam)], [-np.sin(lam), np.cos(lam)]]), T
+    )
+
+
 def test_add_two_frequency_seasonality_different_observed(rng):
     mod1 = st.FrequencySeasonality(
         season_length=4,
@@ -559,6 +592,42 @@ def test_add_two_frequency_seasonality_different_observed(rng):
     expected_T[4:6, 4:6] = freq2_T
 
     np.testing.assert_allclose(expected_T, T_v, atol=ATOL, rtol=RTOL)
+
+
+def test_add_frequency_seasonality_shared_and_not_shared():
+    shared_season = st.FrequencySeasonality(
+        season_length=4,
+        n=1,
+        name="shared_season",
+        innovations=True,
+        observed_state_names=["data_1", "data_2"],
+        share_states=True,
+    )
+
+    individual_season = st.FrequencySeasonality(
+        season_length=4,
+        n=2,
+        name="individual_season",
+        innovations=True,
+        observed_state_names=["data_1", "data_2"],
+        share_states=False,
+    )
+
+    mod = (shared_season + individual_season).build(verbose=False)
+
+    assert mod.k_endog == 2
+    assert mod.k_states == 10
+    assert mod.k_posdef == 10
+
+    assert mod.coords["state_shared_season"] == [
+        "Cos_0_shared_season",
+        "Sin_0_shared_season",
+    ]
+    assert mod.coords["state_individual_season"] == [
+        "Cos_0_individual_season",
+        "Sin_0_individual_season",
+        "Cos_1_individual_season",
+    ]
 
 
 @pytest.mark.parametrize(
