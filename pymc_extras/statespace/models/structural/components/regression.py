@@ -132,6 +132,7 @@ class RegressionComponent(Component):
             k_states=k_states * k_endog if not share_states else k_states,
             k_posdef=k_posdef * k_endog if not share_states else k_posdef,
             state_names=self.state_names,
+            share_states=share_states,
             observed_state_names=observed_state_names,
             measurement_error=False,
             combine_hidden_states=False,

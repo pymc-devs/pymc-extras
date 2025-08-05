@@ -170,6 +170,7 @@ class LevelTrendComponent(Component):
             obs_state_idxs=np.tile(
                 np.array([1.0] + [0.0] * (k_states - 1)), k_endog if not share_states else 1
             ),
+            share_states=share_states,
         )
 
     def populate_component_properties(self):

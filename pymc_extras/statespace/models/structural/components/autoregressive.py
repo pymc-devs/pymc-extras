@@ -103,6 +103,7 @@ class AutoregressiveComponent(Component):
             combine_hidden_states=True,
             observed_state_names=observed_state_names,
             obs_state_idxs=np.tile(np.r_[[1.0], np.zeros(k_states - 1)], k_endog_effective),
+            share_states=share_states,
         )
 
     def populate_component_properties(self):

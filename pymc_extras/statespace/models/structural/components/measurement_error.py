@@ -119,6 +119,7 @@ class MeasurementError(Component):
             measurement_error=True,
             combine_hidden_states=False,
             observed_state_names=observed_state_names,
+            share_states=share_states,
         )
 
     def populate_component_properties(self):

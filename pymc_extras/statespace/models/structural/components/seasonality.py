@@ -296,6 +296,7 @@ class TimeSeasonality(Component):
             obs_state_idxs=np.tile(
                 np.array([1.0] + [0.0] * (k_states - 1)), 1 if share_states else k_endog
             ),
+            share_states=share_states,
         )
 
     def populate_component_properties(self):
@@ -525,6 +526,7 @@ class FrequencySeasonality(Component):
             k_posdef=k_states * int(self.innovations)
             if share_states
             else k_states * int(self.innovations) * k_endog,
+            share_states=share_states,
             observed_state_names=observed_state_names,
             measurement_error=False,
             combine_hidden_states=True,

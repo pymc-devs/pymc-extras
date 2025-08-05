@@ -197,6 +197,7 @@ class CycleComponent(Component):
             combine_hidden_states=True,
             obs_state_idxs=obs_state_idx,
             observed_state_names=observed_state_names,
+            share_states=share_states,
         )
 
     def make_symbolic_graph(self) -> None:
