@@ -43,6 +43,11 @@ class CycleComponent(Component):
         Names of the observed state variables. For univariate time series, defaults to ``["data"]``.
         For multivariate time series, specify a list of names for each endogenous variable.
 
+    share_states: bool, default False
+        Whether latent states are shared across the observed states. If True, there will be only one set of latent
+        states, which are observed by all observed states. If False, each observed state has its own set of
+        latent states. This argument has no effect if `k_endog` is 1.
+
     Notes
     -----
     The cycle component is very similar in implementation to the frequency domain seasonal component, expect that it
@@ -155,6 +160,7 @@ class CycleComponent(Component):
         dampen: bool = False,
         innovations: bool = True,
         observed_state_names: list[str] | None = None,
+        share_states: bool = False,
     ):
         if observed_state_names is None:
             observed_state_names = ["data"]
@@ -167,6 +173,7 @@ class CycleComponent(Component):
             cycle = int(cycle_length) if cycle_length is not None else "Estimate"
             name = f"Cycle[s={cycle}, dampen={dampen}, innovations={innovations}]"
 
+        self.share_states = share_states
         self.estimate_cycle_length = estimate_cycle_length
         self.cycle_length = cycle_length
         self.innovations = innovations
@@ -175,8 +182,8 @@ class CycleComponent(Component):
 
         k_endog = len(observed_state_names)
 
-        k_states = 2 * k_endog
-        k_posdef = 2 * k_endog
+        k_states = 2 if share_states else 2 * k_endog
+        k_posdef = 2 if share_states else 2 * k_endog
 
         obs_state_idx = np.zeros(k_states)
         obs_state_idx[slice(0, k_states, 2)] = 1
@@ -190,21 +197,26 @@ class CycleComponent(Component):
             combine_hidden_states=True,
             obs_state_idxs=obs_state_idx,
             observed_state_names=observed_state_names,
+            share_states=share_states,
         )
 
     def make_symbolic_graph(self) -> None:
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+
         Z = np.array([1.0, 0.0]).reshape((1, -1))
-        design_matrix = block_diag(*[Z for _ in range(self.k_endog)])
+        design_matrix = block_diag(*[Z for _ in range(k_endog_effective)])
         self.ssm["design", :, :] = pt.as_tensor_variable(design_matrix)
 
         # selection matrix R defines structure of innovations (always identity for cycle components)
         # when innovations=False, state cov Q=0, hence R @ Q @ R.T = 0
         R = np.eye(2)  # 2x2 identity for each cycle component
-        selection_matrix = block_diag(*[R for _ in range(self.k_endog)])
+        selection_matrix = block_diag(*[R for _ in range(k_endog_effective)])
         self.ssm["selection", :, :] = pt.as_tensor_variable(selection_matrix)
 
         init_state = self.make_and_register_variable(
-            f"params_{self.name}", shape=(self.k_endog, 2) if self.k_endog > 1 else (self.k_states,)
+            f"params_{self.name}",
+            shape=(k_endog_effective, 2) if k_endog_effective > 1 else (self.k_states,),
         )
         self.ssm["initial_state", :] = init_state.ravel()
 
@@ -219,19 +231,19 @@ class CycleComponent(Component):
             rho = 1
 
         T = rho * _frequency_transition_block(lamb, j=1)
-        transition = block_diag(*[T for _ in range(self.k_endog)])
+        transition = block_diag(*[T for _ in range(k_endog_effective)])
         self.ssm["transition"] = pt.specify_shape(transition, (self.k_states, self.k_states))
 
         if self.innovations:
-            if self.k_endog == 1:
+            if k_endog_effective == 1:
                 sigma_cycle = self.make_and_register_variable(f"sigma_{self.name}", shape=())
                 self.ssm["state_cov", :, :] = pt.eye(self.k_posdef) * sigma_cycle**2
             else:
                 sigma_cycle = self.make_and_register_variable(
-                    f"sigma_{self.name}", shape=(self.k_endog,)
+                    f"sigma_{self.name}", shape=(k_endog_effective,)
                 )
                 state_cov = block_diag(
-                    *[pt.eye(2) * sigma_cycle[i] ** 2 for i in range(self.k_endog)]
+                    *[pt.eye(2) * sigma_cycle[i] ** 2 for i in range(k_endog_effective)]
                 )
                 self.ssm["state_cov"] = pt.specify_shape(state_cov, (self.k_states, self.k_states))
         else:
@@ -239,17 +251,25 @@ class CycleComponent(Component):
             self.ssm["state_cov", :, :] = pt.zeros((self.k_posdef, self.k_posdef))
 
     def populate_component_properties(self):
-        self.state_names = [
-            f"{f}_{self.name}[{var_name}]" if self.k_endog > 1 else f"{f}_{self.name}"
-            for var_name in self.observed_state_names
-            for f in ["Cos", "Sin"]
-        ]
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+
+        base_names = [f"{f}_{self.name}" for f in ["Cos", "Sin"]]
+
+        if self.share_states:
+            self.state_names = [f"{name}[shared]" for name in base_names]
+        else:
+            self.state_names = [
+                f"{name}[{var_name}]" if k_endog_effective > 1 else name
+                for var_name in self.observed_state_names
+                for name in base_names
+            ]
 
         self.param_names = [f"params_{self.name}"]
 
-        if self.k_endog == 1:
+        if k_endog_effective == 1:
             self.param_dims = {f"params_{self.name}": (f"state_{self.name}",)}
-            self.coords = {f"state_{self.name}": self.state_names}
+            self.coords = {f"state_{self.name}": base_names}
             self.param_info = {
                 f"params_{self.name}": {
                     "shape": (2,),
@@ -265,7 +285,7 @@ class CycleComponent(Component):
             }
             self.param_info = {
                 f"params_{self.name}": {
-                    "shape": (self.k_endog, 2),
+                    "shape": (k_endog_effective, 2),
                     "constraints": None,
                     "dims": (f"endog_{self.name}", f"state_{self.name}"),
                 }
@@ -274,22 +294,22 @@ class CycleComponent(Component):
         if self.estimate_cycle_length:
             self.param_names += [f"length_{self.name}"]
             self.param_info[f"length_{self.name}"] = {
-                "shape": () if self.k_endog == 1 else (self.k_endog,),
+                "shape": () if k_endog_effective == 1 else (k_endog_effective,),
                 "constraints": "Positive, non-zero",
-                "dims": None if self.k_endog == 1 else (f"endog_{self.name}",),
+                "dims": None if k_endog_effective == 1 else (f"endog_{self.name}",),
             }
 
         if self.dampen:
             self.param_names += [f"dampening_factor_{self.name}"]
             self.param_info[f"dampening_factor_{self.name}"] = {
-                "shape": () if self.k_endog == 1 else (self.k_endog,),
+                "shape": () if k_endog_effective == 1 else (k_endog_effective,),
                 "constraints": "0 < x ≤ 1",
-                "dims": None if self.k_endog == 1 else (f"endog_{self.name}",),
+                "dims": None if k_endog_effective == 1 else (f"endog_{self.name}",),
             }
 
         if self.innovations:
             self.param_names += [f"sigma_{self.name}"]
-            if self.k_endog == 1:
+            if k_endog_effective == 1:
                 self.param_info[f"sigma_{self.name}"] = {
                     "shape": (),
                     "constraints": "Positive",
@@ -298,7 +318,7 @@ class CycleComponent(Component):
             else:
                 self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
                 self.param_info[f"sigma_{self.name}"] = {
-                    "shape": (self.k_endog,),
+                    "shape": (k_endog_effective,),
                     "constraints": "Positive",
                     "dims": (f"endog_{self.name}",),
                 }
