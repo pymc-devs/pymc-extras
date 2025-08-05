@@ -22,7 +22,7 @@ def test_cycle_component_deterministic(rng):
     cycle = st.CycleComponent(
         name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False
     )
-    params = {"cycle": np.array([1.0, 1.0], dtype=config.floatX)}
+    params = {"params_cycle": np.array([1.0, 1.0], dtype=config.floatX)}
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=12 * 12)
 
     assert_pattern_repeats(y, 12, atol=ATOL, rtol=RTOL)
@@ -32,7 +32,10 @@ def test_cycle_component_with_dampening(rng):
     cycle = st.CycleComponent(
         name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False, dampen=True
     )
-    params = {"cycle": np.array([10.0, 10.0], dtype=config.floatX), "dampening_factor_cycle": 0.75}
+    params = {
+        "params_cycle": np.array([10.0, 10.0], dtype=config.floatX),
+        "dampening_factor_cycle": 0.75,
+    }
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=100)
 
     # check that cycle dampens to zero over time
@@ -44,7 +47,7 @@ def test_cycle_component_with_innovations_and_cycle_length(rng):
         name="cycle", estimate_cycle_length=True, innovations=True, dampen=True
     )
     params = {
-        "cycle": np.array([1.0, 1.0], dtype=config.floatX),
+        "params_cycle": np.array([1.0, 1.0], dtype=config.floatX),
         "length_cycle": 12.0,
         "dampening_factor_cycle": 0.95,
         "sigma_cycle": 1.0,
@@ -64,7 +67,7 @@ def test_cycle_multivariate_deterministic(rng):
         innovations=False,
         observed_state_names=["data_1", "data_2", "data_3"],
     )
-    params = {"cycle": np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=config.floatX)}
+    params = {"params_cycle": np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=config.floatX)}
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=12 * 12)
 
     # Check that each variable has a cyclical pattern with the expected period
@@ -139,7 +142,7 @@ def test_cycle_multivariate_with_dampening(rng):
         observed_state_names=["data_1", "data_2", "data_3"],
     )
     params = {
-        "cycle": np.array([[10.0, 10.0], [20.0, 20.0], [30.0, 30.0]], dtype=config.floatX),
+        "params_cycle": np.array([[10.0, 10.0], [20.0, 20.0], [30.0, 30.0]], dtype=config.floatX),
         "dampening_factor_cycle": 0.75,
     }
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=100)
@@ -167,7 +170,7 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
         observed_state_names=["data_1", "data_2", "data_3"],
     )
     params = {
-        "cycle": np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=config.floatX),
+        "params_cycle": np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=config.floatX),
         "length_cycle": 12.0,
         "dampening_factor_cycle": 0.95,
         "sigma_cycle": np.array([0.5, 1.0, 1.5]),  # different innov variances per var
