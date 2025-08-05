@@ -258,7 +258,7 @@ class CycleComponent(Component):
                 }
             }
         else:
-            self.param_dims = {self.name: (f"endog_{self.name}", f"state_{self.name}")}
+            self.param_dims = {f"params_{self.name}": (f"endog_{self.name}", f"state_{self.name}")}
             self.coords = {
                 f"state_{self.name}": [f"Cos_{self.name}", f"Sin_{self.name}"],
                 f"endog_{self.name}": self.observed_state_names,
