@@ -3,6 +3,8 @@ import pytensor
 
 from numpy.testing import assert_allclose
 from pytensor import config
+from pytensor.graph.basic import explicit_graph_inputs
+from scipy import linalg
 
 from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
@@ -103,6 +105,27 @@ def test_cycle_multivariate_deterministic(rng):
     for i in range(3):
         expected_R[2 * i : 2 * i + 2, 2 * i : 2 * i + 2] = np.eye(2)
     np.testing.assert_allclose(R, expected_R)
+
+
+def test_multivariate_cycle_with_shared(rng):
+    cycle = st.CycleComponent(
+        name="cycle",
+        cycle_length=12,
+        estimate_cycle_length=False,
+        innovations=False,
+        observed_state_names=["data_1", "data_2", "data_3"],
+        share_states=True,
+    )
+
+    assert cycle.state_names == ["Cos_cycle[shared]", "Sin_cycle[shared]"]
+    assert cycle.shock_names == []
+    assert cycle.param_names == ["cycle"]
+
+    params = {"cycle": np.array([1.0, 2.0], dtype=config.floatX)}
+    x, y = simulate_from_numpy_model(cycle, rng, params, steps=12 * 12)
+
+    np.testing.assert_allclose(y[:, 0], y[:, 1], atol=ATOL, rtol=RTOL)
+    np.testing.assert_allclose(y[:, 0], y[:, 2], atol=ATOL, rtol=RTOL)
 
 
 def test_cycle_multivariate_with_dampening(rng):
@@ -286,3 +309,90 @@ def test_add_multivariate_cycle_components_with_different_observed():
     for i in range(4):
         expected_R[2 * i : 2 * i + 2, 2 * i : 2 * i + 2] = np.eye(2)
     assert_allclose(R, expected_R)
+
+
+def test_add_multivariate_shared_and_not_shared():
+    cycle_shared = st.CycleComponent(
+        name="shared_cycle",
+        cycle_length=12,
+        estimate_cycle_length=False,
+        innovations=True,
+        observed_state_names=["gdp", "inflation", "unemployment"],
+        share_states=True,
+    )
+    cycle_individual = st.CycleComponent(
+        name="individual_cycle",
+        estimate_cycle_length=True,
+        innovations=False,
+        observed_state_names=["gdp", "inflation", "unemployment"],
+        dampen=True,
+    )
+    mod = (cycle_shared + cycle_individual).build(verbose=False)
+
+    assert mod.k_endog == 3
+    assert mod.k_states == 2 + 3 * 2
+    assert mod.k_posdef == 2 + 3 * 2
+
+    expected_states = [
+        "Cos_shared_cycle[shared]",
+        "Sin_shared_cycle[shared]",
+        "Cos_individual_cycle[gdp]",
+        "Sin_individual_cycle[gdp]",
+        "Cos_individual_cycle[inflation]",
+        "Sin_individual_cycle[inflation]",
+        "Cos_individual_cycle[unemployment]",
+        "Sin_individual_cycle[unemployment]",
+    ]
+
+    assert mod.state_names == expected_states
+    assert mod.shock_names == expected_states[:2]
+
+    assert mod.param_names == [
+        "shared_cycle",
+        "sigma_shared_cycle",
+        "individual_cycle",
+        "length_individual_cycle",
+        "dampening_factor_individual_cycle",
+        "P0",
+    ]
+
+    assert "endog_shared_cycle" not in mod.coords
+    assert mod.coords["state_shared_cycle"] == ["Cos_shared_cycle", "Sin_shared_cycle"]
+    assert mod.coords["state_individual_cycle"] == ["Cos_individual_cycle", "Sin_individual_cycle"]
+    assert mod.coords["endog_individual_cycle"] == ["gdp", "inflation", "unemployment"]
+
+    assert mod.param_info["shared_cycle"]["dims"] == ("state_shared_cycle",)
+    assert mod.param_info["shared_cycle"]["shape"] == (2,)
+
+    assert mod.param_info["sigma_shared_cycle"]["dims"] is None
+    assert mod.param_info["sigma_shared_cycle"]["shape"] == ()
+
+    assert mod.param_info["individual_cycle"]["dims"] == (
+        "endog_individual_cycle",
+        "state_individual_cycle",
+    )
+    assert mod.param_info["individual_cycle"]["shape"] == (3, 2)
+
+    params = {
+        "length_individual_cycle": 12.0,
+        "dampening_factor_individual_cycle": 0.95,
+    }
+    outputs = [mod.ssm["transition"], mod.ssm["design"], mod.ssm["selection"]]
+    T, Z, R = pytensor.function(
+        list(explicit_graph_inputs(outputs)),
+        outputs,
+        mode="FAST_COMPILE",
+    )(**params)
+
+    lamb = 2 * np.pi / 12  # dampening factor for individual cycle
+    transition_block = np.array(
+        [[np.cos(lamb), np.sin(lamb)], [-np.sin(lamb), np.cos(lamb)]], dtype=config.floatX
+    )
+    T_expected = linalg.block_diag(transition_block, *[0.95 * transition_block] * 3)
+    np.testing.assert_allclose(T, T_expected)
+
+    np.testing.assert_allclose(
+        Z, np.array([[1, 0, 1, 0, 0, 0, 0, 0], [1, 0, 0, 0, 1, 0, 0, 0], [1, 0, 0, 0, 0, 0, 1, 0]])
+    )
+
+    np.testing.assert_allclose(R, np.eye(8, dtype=config.floatX))
