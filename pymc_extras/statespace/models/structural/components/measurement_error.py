@@ -17,6 +17,10 @@ class MeasurementError(Component):
         Name of the measurement error component. Default is "MeasurementError".
     observed_state_names : list[str] | None, optional
         Names of the observed variables. If None, defaults to ["data"].
+    share_states: bool, default False
+        Whether latent states are shared across the observed states. If True, there will be only one set of latent
+        states, which are observed by all observed states. If False, each observed state has its own set of
+        latent states. This argument has no effect if `k_endog` is 1.
 
     Notes
     -----
@@ -93,10 +97,15 @@ class MeasurementError(Component):
     """
 
     def __init__(
-        self, name: str = "MeasurementError", observed_state_names: list[str] | None = None
+        self,
+        name: str = "MeasurementError",
+        observed_state_names: list[str] | None = None,
+        share_states: bool = False,
     ):
         if observed_state_names is None:
             observed_state_names = ["data"]
+
+        self.share_states = share_states
 
         k_endog = len(observed_state_names)
         k_states = 0
@@ -113,25 +122,32 @@ class MeasurementError(Component):
         )
 
     def populate_component_properties(self):
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+
         self.param_names = [f"sigma_{self.name}"]
         self.param_dims = {}
         self.coords = {}
 
-        if self.k_endog > 1:
+        if k_endog_effective > 1:
             self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
             self.coords[f"endog_{self.name}"] = self.observed_state_names
 
         self.param_info = {
             f"sigma_{self.name}": {
-                "shape": (self.k_endog,) if self.k_endog > 1 else (),
+                "shape": (k_endog_effective,) if k_endog_effective > 1 else (),
                 "constraints": "Positive",
-                "dims": (f"endog_{self.name}",) if self.k_endog > 1 else None,
+                "dims": (f"endog_{self.name}",) if k_endog_effective > 1 else None,
             }
         }
 
     def make_symbolic_graph(self) -> None:
-        sigma_shape = () if self.k_endog == 1 else (self.k_endog,)
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+
+        sigma_shape = () if k_endog_effective == 1 else (k_endog_effective,)
         error_sigma = self.make_and_register_variable(f"sigma_{self.name}", shape=sigma_shape)
+
         diag_idx = np.diag_indices(self.k_endog)
         idx = np.s_["obs_cov", diag_idx[0], diag_idx[1]]
         self.ssm[idx] = error_sigma**2
