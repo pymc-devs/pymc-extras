@@ -404,7 +404,7 @@ def create_structural_model_and_equivalent_statsmodel(
         components.append(comp)
 
     if autoregressive is not None:
-        ar_names = [f"L{i + 1}" for i in range(autoregressive)]
+        ar_names = [f"L{i + 1}_ar" for i in range(autoregressive)]
         params_ar = rng.normal(size=(autoregressive,)).astype(floatX)
         if autoregressive == 1:
             params_ar = params_ar.item()
