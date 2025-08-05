@@ -18,6 +18,7 @@ from pymc_extras.statespace.models.utilities import (
     join_tensors_by_dim_labels,
     make_default_coords,
 )
+from pymc_extras.statespace.utils.component_parsing import restructure_components_idata
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
@@ -208,7 +209,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         self._component_info = component_info.copy()
 
         self._name_to_variable = name_to_variable.copy()
-        self._name_to_data = name_to_data.copy()
+        self._name_to_data = name_to_data.copy() if name_to_data is not None else {}
 
         self._exog_names = exog_names.copy()
         self._needs_exog_data = len(exog_names) > 0
@@ -318,9 +319,18 @@ class StructuralTimeSeries(PyMCStateSpace):
 
             if info[name]["combine_hidden_states"]:
                 sum_idx_joined = np.flatnonzero(obs_idx)
-                sum_idx_split = np.split(sum_idx_joined, info[name]["k_endog"])
-                for sum_idx in sum_idx_split:
-                    result.append(X[..., sum_idx].sum(axis=-1)[..., None])
+                k_endog = info[name]["k_endog"]
+
+                if info[name]["share_states"]:
+                    # sum once and replicate for each endogenous variable
+                    shared_sum = X[..., sum_idx_joined].sum(axis=-1)[..., None]
+                    for _ in range(k_endog):
+                        result.append(shared_sum)
+                else:
+                    # states are separate
+                    sum_idx_split = np.split(sum_idx_joined, k_endog)
+                    for sum_idx in sum_idx_split:
+                        result.append(X[..., sum_idx].sum(axis=-1)[..., None])
             else:
                 n_components = len(self.state_names[s])
                 for j in range(n_components):
@@ -350,20 +360,27 @@ class StructuralTimeSeries(PyMCStateSpace):
                 result.extend([f"{name}[{comp_name}]" for comp_name in comp_names])
         return result
 
-    def extract_components_from_idata(self, idata: xr.Dataset) -> xr.Dataset:
+    def extract_components_from_idata(
+        self, idata: xr.Dataset, restructure: bool = False
+    ) -> xr.Dataset:
         r"""
         Extract interpretable hidden states from an InferenceData returned by a PyMCStateSpace sampling method
 
         Parameters
         ----------
-        idata: Dataset
+        idata : Dataset
             A Dataset object, returned by a PyMCStateSpace sampling method
+        restructure : bool, default False
+            Whether to restructure the state coordinates as a multi-index for easier component selection.
+            When True, enables selections like `idata.sel(component='level')` and `idata.sel(observed='gdp')`.
+            Particularly useful for multivariate models with multiple observed states.
 
         Returns
         -------
-        idata: Dataset
+        idata : Dataset
             A Dataset object with hidden states transformed to represent only the "interpretable" subcomponents
-            of the structural model.
+            of the structural model. If `restructure=True`, the state coordinate will be a multi-index with
+            levels ['component', 'observed'] for easier selection.
 
         Notes
         -----
@@ -383,9 +400,12 @@ class StructuralTimeSeries(PyMCStateSpace):
             - :math:`\varepsilon_t` is the measurement error at time t
 
         In state space form, some or all of these components are represented as linear combinations of other
-        subcomponents, making interpretation of the outputs of the outputs difficult. The purpose of this function is
+        subcomponents, making interpretation of the outputs difficult. The purpose of this function is
         to take the expended statespace representation and return a "reduced form" of only the components shown in
         equation (1).
+
+        When `restructure=True`, the returned dataset allows for easy component selection, especially for
+        multivariate models with multiple observed states.
         """
 
         def _extract_and_transform_variable(idata, new_state_names):
@@ -423,6 +443,17 @@ class StructuralTimeSeries(PyMCStateSpace):
                 for name in latent_names
             }
         )
+
+        if restructure:
+            try:
+                idata_new = restructure_components_idata(idata_new)
+            except Exception as e:
+                _log.warning(
+                    f"Failed to restructure components with multi-index: {e}. "
+                    "Returning dataset with original string-based state names. "
+                    "You can call restructure_components_idata() manually if needed."
+                )
+
         return idata_new
 
 
@@ -471,6 +502,10 @@ class Component:
     obs_state_idxs : np.ndarray | None, optional
         Indices indicating which states contribute to observed variables. If None,
         defaults to None.
+    share_states : bool, optional
+        Whether states are shared across multiple endogenous variables in multivariate
+        models. When True, the same latent states affect all observed variables.
+        Default is False.
 
     Examples
     --------
@@ -512,10 +547,12 @@ class Component:
         combine_hidden_states=True,
         component_from_sum=False,
         obs_state_idxs=None,
+        share_states: bool = False,
     ):
         self.name = name
         self.k_endog = k_endog
         self.k_states = k_states
+        self.share_states = share_states
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
 
@@ -557,6 +594,7 @@ class Component:
                 "observed_state_names": self.observed_state_names,
                 "combine_hidden_states": combine_hidden_states,
                 "obs_state_idx": obs_state_idxs,
+                "share_states": self.share_states,
             }
         }
 
