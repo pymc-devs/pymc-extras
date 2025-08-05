@@ -7,6 +7,7 @@ from numpy.testing import assert_allclose
 from pytensor import config
 from pytensor import tensor as pt
 from pytensor.graph.basic import explicit_graph_inputs
+from scipy.linalg import block_diag
 
 from pymc_extras.statespace.models import structural as st
 from tests.statespace.models.structural.conftest import _assert_basic_coords_correct
@@ -235,3 +236,104 @@ class TestPyMCIntegration:
         if innovations:
             # Check that sigma_beta parameter is included in the prior
             assert "sigma_beta_exog" in prior.prior.data_vars
+
+
+def test_regression_multiple_shared_construction():
+    rc = st.RegressionComponent(
+        state_names=["A"],
+        observed_state_names=["data_1", "data_2"],
+        innovations=True,
+        share_states=True,
+    )
+    mod = rc.build(verbose=False)
+
+    assert mod.k_endog == 2
+    assert mod.k_states == 1
+    assert mod.k_posdef == 1
+
+    assert mod.coords["state_regression"] == ["A"]
+    assert mod.coords["endog_regression"] == ["data_1", "data_2"]
+
+    assert mod.state_names == [
+        "A[regression_shared]",
+    ]
+
+    assert mod.shock_names == ["A_shared"]
+
+    data = np.random.standard_normal(size=(10, 1))
+    Z = mod.ssm["design"].eval({"data_regression": data})
+    T = mod.ssm["transition"].eval()
+    R = mod.ssm["selection"].eval()
+
+    np.testing.assert_allclose(
+        Z,
+        np.hstack(
+            [
+                data,
+                data,
+            ]
+        )[:, :, np.newaxis],
+    )
+
+    np.testing.assert_allclose(T, np.array([[1.0]]))
+    np.testing.assert_allclose(R, np.array([[1.0]]))
+
+
+def test_regression_multiple_shared_observed(rng):
+    mod = st.RegressionComponent(
+        state_names=["A"],
+        observed_state_names=["data_1", "data_2", "data_3"],
+        innovations=False,
+        share_states=True,
+    )
+    data = np.random.standard_normal(size=(10, 1))
+
+    params = {"beta_regression": np.array([1.0])}
+    data_dict = {"data_regression": data}
+    x, y = simulate_from_numpy_model(mod, rng, params, data_dict, steps=data.shape[0])
+    np.testing.assert_allclose(y[:, 0], y[:, 1])
+    np.testing.assert_allclose(y[:, 0], y[:, 2])
+
+
+def test_regression_mixed_shared_and_not_shared():
+    mod_1 = st.RegressionComponent(
+        name="individual",
+        state_names=["A"],
+        observed_state_names=["data_1", "data_2"],
+    )
+    mod_2 = st.RegressionComponent(
+        name="joint",
+        state_names=["B", "C"],
+        observed_state_names=["data_1", "data_2"],
+        share_states=True,
+    )
+
+    mod = (mod_1 + mod_2).build(verbose=False)
+
+    assert mod.k_endog == 2
+    assert mod.k_states == 4
+    assert mod.k_posdef == 4
+
+    assert mod.state_names == ["A[data_1]", "A[data_2]", "B[joint_shared]", "C[joint_shared]"]
+    assert mod.shock_names == ["A", "B_shared", "C_shared"]
+
+    data_joint = np.random.standard_normal(size=(10, 2))
+    data_individual = np.random.standard_normal(size=(10, 1))
+    Z = mod.ssm["design"].eval({"data_joint": data_joint, "data_individual": data_individual})
+    T = mod.ssm["transition"].eval()
+    R = mod.ssm["selection"].eval()
+
+    np.testing.assert_allclose(
+        Z,
+        np.concat(
+            (
+                block_diag(*[data_individual[:, np.newaxis] for _ in range(mod.k_endog)]),
+                np.concat((data_joint[:, np.newaxis], data_joint[:, np.newaxis]), axis=1),
+            ),
+            axis=2,
+        ),
+    )
+
+    np.testing.assert_allclose(T, np.eye(mod.k_states))
+
+    np.testing.assert_allclose(R, np.eye(mod.k_states))

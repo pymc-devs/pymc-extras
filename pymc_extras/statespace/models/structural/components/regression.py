@@ -31,6 +31,11 @@ class RegressionComponent(Component):
         Whether to include stochastic innovations in the regression coefficients,
         allowing them to vary over time. If True, coefficients follow a random walk.
 
+    share_states: bool, default False
+        Whether latent states are shared across the observed states. If True, there will be only one set of latent
+        states, which are observed by all observed states. If False, each observed state has its own set of
+        latent states.
+
     Notes
     -----
     This component implements regression with exogenous variables in a structural time series
@@ -107,7 +112,10 @@ class RegressionComponent(Component):
         state_names: list[str] | None = None,
         observed_state_names: list[str] | None = None,
         innovations=False,
+        share_states: bool = False,
     ):
+        self.share_states = share_states
+
         if observed_state_names is None:
             observed_state_names = ["data"]
 
@@ -121,8 +129,8 @@ class RegressionComponent(Component):
         super().__init__(
             name=name,
             k_endog=k_endog,
-            k_states=k_states * k_endog,
-            k_posdef=k_posdef * k_endog,
+            k_states=k_states * k_endog if not share_states else k_states,
+            k_posdef=k_posdef * k_endog if not share_states else k_posdef,
             state_names=self.state_names,
             observed_state_names=observed_state_names,
             measurement_error=False,
@@ -153,10 +161,12 @@ class RegressionComponent(Component):
 
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog
-        k_states = self.k_states // k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+
+        k_states = self.k_states // k_endog_effective
 
         betas = self.make_and_register_variable(
-            f"beta_{self.name}", shape=(k_endog, k_states) if k_endog > 1 else (k_states,)
+            f"beta_{self.name}", shape=(k_endog, k_states) if k_endog_effective > 1 else (k_states,)
         )
         regression_data = self.make_and_register_data(f"data_{self.name}", shape=(None, k_states))
 
@@ -164,43 +174,61 @@ class RegressionComponent(Component):
         self.ssm["transition", :, :] = pt.eye(self.k_states)
         self.ssm["selection", :, :] = pt.eye(self.k_states)
 
-        Z = pt.linalg.block_diag(*[pt.expand_dims(regression_data, 1) for _ in range(k_endog)])
-        self.ssm["design"] = pt.specify_shape(
-            Z, (None, k_endog, regression_data.type.shape[1] * k_endog)
-        )
+        if self.share_states:
+            self.ssm["design"] = pt.specify_shape(
+                pt.join(1, *[pt.expand_dims(regression_data, 1) for _ in range(k_endog)]),
+                (None, k_endog, self.k_states),
+            )
+        else:
+            Z = pt.linalg.block_diag(*[pt.expand_dims(regression_data, 1) for _ in range(k_endog)])
+            self.ssm["design"] = pt.specify_shape(
+                Z, (None, k_endog, regression_data.type.shape[1] * k_endog)
+            )
 
         if self.innovations:
             sigma_beta = self.make_and_register_variable(
-                f"sigma_beta_{self.name}", (k_states,) if k_endog == 1 else (k_endog, k_states)
+                f"sigma_beta_{self.name}",
+                (k_states,) if k_endog_effective == 1 else (k_endog, k_states),
             )
             row_idx, col_idx = np.diag_indices(self.k_states)
             self.ssm["state_cov", row_idx, col_idx] = sigma_beta.ravel() ** 2
 
     def populate_component_properties(self) -> None:
         k_endog = self.k_endog
-        k_states = self.k_states // k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
 
-        self.shock_names = self.state_names
+        k_states = self.k_states // k_endog_effective
+
+        if self.share_states:
+            self.shock_names = [f"{state_name}_shared" for state_name in self.state_names]
+        else:
+            self.shock_names = self.state_names
 
         self.param_names = [f"beta_{self.name}"]
         self.data_names = [f"data_{self.name}"]
         self.param_dims = {
             f"beta_{self.name}": (f"endog_{self.name}", f"state_{self.name}")
-            if k_endog > 1
+            if k_endog_effective > 1
             else (f"state_{self.name}",)
         }
 
         base_names = self.state_names
-        self.state_names = [
-            f"{name}[{obs_name}]" for obs_name in self.observed_state_names for name in base_names
-        ]
+
+        if self.share_states:
+            self.state_names = [f"{name}[{self.name}_shared]" for name in base_names]
+        else:
+            self.state_names = [
+                f"{name}[{obs_name}]"
+                for obs_name in self.observed_state_names
+                for name in base_names
+            ]
 
         self.param_info = {
             f"beta_{self.name}": {
-                "shape": (k_endog, k_states) if k_endog > 1 else (k_states,),
+                "shape": (k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,),
                 "constraints": None,
                 "dims": (f"endog_{self.name}", f"state_{self.name}")
-                if k_endog > 1
+                if k_endog_effective > 1
                 else (f"state_{self.name}",),
             },
         }
@@ -223,6 +251,6 @@ class RegressionComponent(Component):
                 "shape": (k_states,),
                 "constraints": "Positive",
                 "dims": (f"state_{self.name}",)
-                if k_endog == 1
+                if k_endog_effective == 1
                 else (f"endog_{self.name}", f"state_{self.name}"),
             }
