@@ -276,7 +276,7 @@ class CycleComponent(Component):
             self.param_info[f"length_{self.name}"] = {
                 "shape": () if self.k_endog == 1 else (self.k_endog,),
                 "constraints": "Positive, non-zero",
-                "dims": None if self.k_endog == 1 else f"endog_{self.name}",
+                "dims": None if self.k_endog == 1 else (f"endog_{self.name}",),
             }
 
         if self.dampen:
