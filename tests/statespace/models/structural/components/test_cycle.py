@@ -122,9 +122,9 @@ def test_multivariate_cycle_with_shared(rng):
 
     assert cycle.state_names == ["Cos_cycle[shared]", "Sin_cycle[shared]"]
     assert cycle.shock_names == []
-    assert cycle.param_names == ["cycle"]
+    assert cycle.param_names == ["params_cycle"]
 
-    params = {"cycle": np.array([1.0, 2.0], dtype=config.floatX)}
+    params = {"params_cycle": np.array([1.0, 2.0], dtype=config.floatX)}
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=12 * 12)
 
     np.testing.assert_allclose(y[:, 0], y[:, 1], atol=ATOL, rtol=RTOL)
@@ -351,9 +351,9 @@ def test_add_multivariate_shared_and_not_shared():
     assert mod.shock_names == expected_states[:2]
 
     assert mod.param_names == [
-        "shared_cycle",
+        "params_shared_cycle",
         "sigma_shared_cycle",
-        "individual_cycle",
+        "params_individual_cycle",
         "length_individual_cycle",
         "dampening_factor_individual_cycle",
         "P0",
@@ -364,17 +364,17 @@ def test_add_multivariate_shared_and_not_shared():
     assert mod.coords["state_individual_cycle"] == ["Cos_individual_cycle", "Sin_individual_cycle"]
     assert mod.coords["endog_individual_cycle"] == ["gdp", "inflation", "unemployment"]
 
-    assert mod.param_info["shared_cycle"]["dims"] == ("state_shared_cycle",)
-    assert mod.param_info["shared_cycle"]["shape"] == (2,)
+    assert mod.param_info["params_shared_cycle"]["dims"] == ("state_shared_cycle",)
+    assert mod.param_info["params_shared_cycle"]["shape"] == (2,)
 
     assert mod.param_info["sigma_shared_cycle"]["dims"] is None
     assert mod.param_info["sigma_shared_cycle"]["shape"] == ()
 
-    assert mod.param_info["individual_cycle"]["dims"] == (
+    assert mod.param_info["params_individual_cycle"]["dims"] == (
         "endog_individual_cycle",
         "state_individual_cycle",
     )
-    assert mod.param_info["individual_cycle"]["shape"] == (3, 2)
+    assert mod.param_info["params_individual_cycle"]["shape"] == (3, 2)
 
     params = {
         "length_individual_cycle": 12.0,
