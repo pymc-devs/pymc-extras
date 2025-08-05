@@ -370,8 +370,8 @@ def create_structural_model_and_equivalent_statsmodel(
         params["length_cycle"] = cycle_length
 
         init_cycle = rng.normal(size=(2,)).astype(floatX)
-        params["cycle"] = init_cycle
-        expected_param_dims["cycle"] += ("state_cycle",)
+        params["params_cycle"] = init_cycle
+        expected_param_dims["params_cycle"] += ("state_cycle",)
 
         state_names = ["Cos_cycle", "Sin_cycle"]
         expected_coords["state_cycle"] += state_names

@@ -204,7 +204,7 @@ class CycleComponent(Component):
         self.ssm["selection", :, :] = pt.as_tensor_variable(selection_matrix)
 
         init_state = self.make_and_register_variable(
-            f"{self.name}", shape=(self.k_endog, 2) if self.k_endog > 1 else (self.k_states,)
+            f"params_{self.name}", shape=(self.k_endog, 2) if self.k_endog > 1 else (self.k_states,)
         )
         self.ssm["initial_state", :] = init_state.ravel()
 
@@ -245,26 +245,26 @@ class CycleComponent(Component):
             for f in ["Cos", "Sin"]
         ]
 
-        self.param_names = [f"{self.name}"]
+        self.param_names = [f"params_{self.name}"]
 
         if self.k_endog == 1:
-            self.param_dims = {self.name: (f"state_{self.name}",)}
+            self.param_dims = {f"params_{self.name}": (f"state_{self.name}",)}
             self.coords = {f"state_{self.name}": self.state_names}
             self.param_info = {
-                f"{self.name}": {
+                f"params_{self.name}": {
                     "shape": (2,),
                     "constraints": None,
                     "dims": (f"state_{self.name}",),
                 }
             }
         else:
-            self.param_dims = {self.name: (f"endog_{self.name}", f"state_{self.name}")}
+            self.param_dims = {f"params_{self.name}": (f"endog_{self.name}", f"state_{self.name}")}
             self.coords = {
                 f"state_{self.name}": [f"Cos_{self.name}", f"Sin_{self.name}"],
                 f"endog_{self.name}": self.observed_state_names,
             }
             self.param_info = {
-                f"{self.name}": {
+                f"params_{self.name}": {
                     "shape": (self.k_endog, 2),
                     "constraints": None,
                     "dims": (f"endog_{self.name}", f"state_{self.name}"),
@@ -276,7 +276,7 @@ class CycleComponent(Component):
             self.param_info[f"length_{self.name}"] = {
                 "shape": () if self.k_endog == 1 else (self.k_endog,),
                 "constraints": "Positive, non-zero",
-                "dims": None if self.k_endog == 1 else f"endog_{self.name}",
+                "dims": None if self.k_endog == 1 else (f"endog_{self.name}",),
             }
 
         if self.dampen:
