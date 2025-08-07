@@ -11,6 +11,7 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
+
 import numpy as np
 import pymc as pm
 import pytensor
@@ -23,9 +24,11 @@ from pymc.testing import (
     BaseTestDistributionRandom,
     Domain,
     I,
+    NatBig,
     Rplus,
     assert_support_point_is_expected,
     check_logp,
+    check_selfconsistency_discrete_logcdf,
     discrete_random_tester,
 )
 from pytensor import config
@@ -33,6 +36,7 @@ from pytensor import config
 from pymc_extras.distributions import (
     BetaNegativeBinomial,
     GeneralizedPoisson,
+    GrassiaIIGeometric,
     Skellam,
 )
 
@@ -208,3 +212,140 @@ class TestSkellam:
                 {"mu1": Rplus_small, "mu2": Rplus_small},
                 lambda value, mu1, mu2: scipy.stats.skellam.logpmf(value, mu1, mu2),
             )
+
+
+class TestGrassiaIIGeometric:
+    class TestRandomVariable(BaseTestDistributionRandom):
+        pymc_dist = GrassiaIIGeometric
+        pymc_dist_params = {"r": 0.5, "alpha": 2.0, "time_covariate_vector": [1.0, 2.0, 3.0]}
+        expected_rv_op_params = {"r": 0.5, "alpha": 2.0, "time_covariate_vector": [1.0, 2.0, 3.0]}
+        tests_to_run = [
+            "check_pymc_params_match_rv_op",
+            "check_rv_size",
+        ]
+
+        def test_random_basic_properties(self):
+            """Test basic random sampling properties"""
+            # Test with standard parameter values
+            r_vals = [0.5, 1.0, 2.0]
+            alpha_vals = [0.5, 1.0, 2.0]
+            time_cov_vals = [[0.0], [1.0], [2.0]]
+
+            for r in r_vals:
+                for alpha in alpha_vals:
+                    for time_cov in time_cov_vals:
+                        dist = self.pymc_dist.dist(
+                            r=r, alpha=alpha, time_covariate_vector=time_cov, size=1000
+                        )
+                        draws = dist.eval()
+
+                        # Check basic properties
+                        assert np.all(draws > 0)
+                        assert np.all(draws.astype(int) == draws)
+                        assert np.mean(draws) > 0
+                        assert np.var(draws) > 0
+
+        def test_random_edge_cases(self):
+            """Test edge cases with more reasonable parameter values"""
+            # Test with small r and large alpha values
+            r_vals = [0.1, 0.5]
+            alpha_vals = [5.0, 10.0]
+            time_cov_vals = [[0.0, 1.0, 2.0], [5.0, 10.0, 15.0]]
+
+            for r in r_vals:
+                for alpha in alpha_vals:
+                    for time_cov in time_cov_vals:
+                        dist = self.pymc_dist.dist(
+                            r=r, alpha=alpha, time_covariate_vector=time_cov, size=1000
+                        )
+                        draws = dist.eval()
+
+                        # Check basic properties
+                        assert np.all(draws > 0)
+                        assert np.all(draws.astype(int) == draws)
+                        assert np.mean(draws) > 0
+                        assert np.var(draws) > 0
+
+        @pytest.mark.parametrize(
+            "r,alpha,time_covariate_vector",
+            [
+                (0.5, 1.0, [[0.0], [0.0], [0.0]]),
+                (1.0, 2.0, [1.0]),
+                (2.0, 0.5, [[1.0], [2.0]]),
+                ([5.0], [1.0], [0.0, 0.0, 0.0]),
+            ],
+        )
+        def test_random_moments(self, r, alpha, time_covariate_vector):
+            dist = self.pymc_dist.dist(
+                r=r, alpha=alpha, time_covariate_vector=time_covariate_vector, size=10_000
+            )
+            draws = dist.eval()
+
+            assert np.all(draws > 0)
+            assert np.all(draws.astype(int) == draws)
+            assert np.mean(draws) > 0
+            assert np.var(draws) > 0
+
+    def test_logp(self):
+        # Create PyTensor variables with explicit values to ensure proper initialization
+        r = pt.as_tensor_variable(1.0)
+        alpha = pt.as_tensor_variable(2.0)
+        time_covariate_vector = pt.as_tensor_variable([[0.5, 1.0, 1.5], [0.0, 0.0, 0.0]])
+        value = pt.vector("value", dtype="int64")
+
+        # Create the distribution with the PyTensor variables
+        dist = GrassiaIIGeometric.dist(r, alpha, time_covariate_vector)
+        logp = pm.logp(dist, value)
+        logp_fn = pytensor.function([value], logp)
+
+        # Test basic properties of logp
+        test_value = np.array([1, 2, 3, 4, 5])
+
+        logp_vals = logp_fn(test_value)
+        assert not np.any(np.isnan(logp_vals))
+        assert np.all(np.isfinite(logp_vals))
+
+        # Test invalid values
+        assert logp_fn(np.array([0])) == -np.inf  # Value must be > 0
+
+        with pytest.raises(TypeError):
+            logp_fn(np.array([1.5]))  # Value must be integer
+
+    def test_logcdf(self):
+        # test logcdf matches log sums across parameter values
+        check_selfconsistency_discrete_logcdf(
+            GrassiaIIGeometric, NatBig, {"r": Rplus, "alpha": Rplus, "time_covariate_vector": I}
+        )
+
+    @pytest.mark.parametrize(
+        "r, alpha, time_covariate_vector, size, expected_shape",
+        [
+            (1.0, 1.0, [0.0, 0.0, 0.0], None, ()),  # Scalar output
+            ([1.0, 2.0], 1.0, [0.0], None, (2,)),  # Vector output from r
+            (1.0, [1.0, 2.0], [0.0], None, (2,)),  # Vector output from alpha
+            (1.0, 1.0, [[1.0, 2.0], [3.0, 4.0]], None, (2,)),  # Vector output from time covariates
+            (1.0, 1.0, [1.0, 2.0], (3, 2), (3, 2)),  # Explicit size with time covariates
+        ],
+    )
+    def test_support_point(self, r, alpha, time_covariate_vector, size, expected_shape):
+        """Test that support_point returns reasonable values with correct shapes"""
+        with pm.Model() as model:
+            GrassiaIIGeometric(
+                "x", r=r, alpha=alpha, time_covariate_vector=time_covariate_vector, size=size
+            )
+
+        init_point = model.initial_point()["x"]
+
+        # Check shape
+        assert init_point.shape == expected_shape
+
+        # Check values are positive integers
+        assert np.all(init_point > 0)
+        assert np.all(init_point.astype(int) == init_point)
+
+        # Check values are finite and reasonable
+        assert np.all(np.isfinite(init_point))
+        assert np.all(init_point < 1e6)  # Should not be extremely large
+
+        # TODO: expected values must be provided
+        # assert_support_point_is_expected(model, init_point)
