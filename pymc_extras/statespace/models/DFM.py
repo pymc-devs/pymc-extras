@@ -241,7 +241,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             factor_ar = pm.Normal("factor_ar", sigma=1, dims=["k_factors", "factor_order"])
 
             # Innovation std dev of factors: shape (k_factors,)
-            factor_sigma = pm.Deterministic("factor_sigma", pt.constant([1.0], dtype=float))
+            # factor_sigma = pm.Deterministic("factor_sigma", pt.constant([1.0], dtype=float)) TODO could be removed
 
             # AR coefficients for observation noise: shape (k_endog, error_order)
             error_ar = pm.Normal("error_ar", sigma=1, dims=["k_endog", "error_order"])
@@ -302,6 +302,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
         self.error_cov_type = error_cov_type
         self.exog = exog
         # TODO add exogenous variables support
+        # TODO add error_var support
+        # TODO understanding if the factor_sigma matrix is the identity?
 
         # Determine the dimension for the latent factor states.
         # For static factors, one use k_factors.
@@ -533,13 +535,9 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
             # Sub-diagonal identity blocks (shift structure)
             if p > 1:
-                for i in range(1, p):
-                    row_start = i * k_factors
-                    col_start = (i - 1) * k_factors
-                    block = pt.set_subtensor(
-                        block[row_start : row_start + k_factors, col_start : col_start + k_factors],
-                        pt.eye(k_factors, dtype=floatX),
-                    )
+                # Create the identity pattern for all sub-diagonal blocks
+                identity_pattern = pt.eye(k_factors * (p - 1), dtype=floatX)
+                block = pt.set_subtensor(block[k_factors:, : k_factors * (p - 1)], identity_pattern)
 
             return block
 
@@ -559,25 +557,14 @@ class BayesianDynamicFactor(PyMCStateSpace):
             # First block row: AR coefficients per series (block diagonal)
             for j in range(k_series):
                 for lag in range(p):
-                    col_idx = lag * k_series + j  # interleaved layout
+                    col_idx = lag * k_series + j
                     block = pt.set_subtensor(block[j, col_idx], ar_coeffs[j, lag])
 
             # Sub-diagonal identity blocks (shift)
             if p > 1:
-                for lag in range(1, p):
-                    row_start = lag * k_series
-                    col_start = (lag - 1) * k_series
-                    block = pt.set_subtensor(
-                        block[row_start : row_start + k_series, col_start : col_start + k_series],
-                        pt.eye(k_series, dtype=floatX),
-                    )
-
+                identity_pattern = pt.eye(k_series * (p - 1), dtype=floatX)
+                block = pt.set_subtensor(block[k_series:, : k_series * (p - 1)], identity_pattern)
             return block
-
-        # def build_ar_block_matrix(ar_coeffs):
-        #     # ar_coeffs: (p,)
-        #     p = ar_coeffs.shape[0]
-        #     return pt.eye(p, k=-1)[0].set(ar_coeffs)
 
         transition_blocks = []
 
