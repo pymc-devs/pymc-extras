@@ -12,6 +12,8 @@ MA_PARAM_DIM = "lag_ma"
 SEASONAL_AR_PARAM_DIM = "seasonal_lag_ar"
 SEASONAL_MA_PARAM_DIM = "seasonal_lag_ma"
 ETS_SEASONAL_DIM = "seasonal_lag"
+FACTOR_DIM = "factor"
+ERROR_AR_PARAM_DIM = "error_lag_ar"
 EXOGENOUS_DIM = "exogenous"
 
 NEVER_TIME_VARYING = ["initial_state", "initial_state_cov", "a0", "P0"]
