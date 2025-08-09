@@ -3,6 +3,7 @@ import warnings
 from collections.abc import Sequence
 
 import numpy as np
+import pytensor
 import pytensor.tensor as pt
 
 from pymc.distributions import Bernoulli, Categorical, DiscreteUniform
@@ -19,6 +20,7 @@ from pytensor.graph.replace import clone_replace, graph_replace
 from pytensor.scan import map as scan_map
 from pytensor.scan import scan
 from pytensor.tensor import TensorVariable
+from pytensor.tensor.optimize import minimize
 from pytensor.tensor.random.type import RandomType
 
 from pymc_extras.distributions import DiscreteMarkovChain
@@ -134,6 +136,19 @@ class MarginalDiscreteMarkovChainRV(MarginalRV):
 
 class MarginalLaplaceRV(MarginalRV):
     """Base class for Marginalized Laplace-Approximated RVs"""
+
+    def __init__(
+        self,
+        *args,
+        Q: TensorVariable,
+        temp_kwargs: list,
+        minimizer_kwargs: dict | None = None,
+        **kwargs,
+    ) -> None:
+        self.temp_kwargs = temp_kwargs  # TODO REMOVE
+        self.Q = Q
+        self.minimizer_kwargs = minimizer_kwargs
+        super().__init__(*args, **kwargs)
 
 
 def get_domain_of_finite_discrete_rv(rv: TensorVariable) -> tuple[int, ...]:
@@ -389,62 +404,43 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     rv_values = inner_rv_values | {x: marginalized_vv}
     logps_dict = conditional_logp(rv_values=rv_values, **kwargs)
 
-    logp = pt.sum(
-        [pt.sum(logps_dict[k]) for k in logps_dict]
-    )  # TODO check this gives the proper p(y | x, params)
+    # logp(y | x, params)
+    log_likelihood = pt.sum([pt.sum(logps_dict[k]) for k in logps_dict if k != marginalized_vv])
 
-    import pytensor
+    # logp = logp(y | x, params) + logp(x | params)
+    logp = pt.sum([pt.sum(logps_dict[k]) for k in logps_dict])
 
-    from pytensor.tensor.optimize import minimize
-
-    # Maximize log(p(x | y, params)) wrt x to find mode x0 # TODO args need to be user-supplied
+    # Maximize log(p(x | y, params)) wrt x to find mode x0
+    minimizer_kwargs = (
+        op.minimizer_kwargs
+        if op.minimizer_kwargs is not None
+        else {"method": "BFGS", "optimizer_kwargs": {"tol": 1e-8}}
+    )
+    # minimizer_kwargs = {'method': 'BFGS', 'optimizer_kwargs': {"tol": 1e-8}}
     x0, _ = minimize(
-        objective=-logp,
+        objective=-logp,  # logp(x | y, params) = logp(y | x, params) + logp(x | params) + const (const omitted during minimization)
         x=marginalized_vv,
-        method="BFGS",
-        # jac=use_jac,
-        # hess=use_hess,
-        optimizer_kwargs={"tol": 1e-8},
+        **minimizer_kwargs,
     )
 
-    # print(op.__dict__)
-    # marginalized_rv_input_rvs = op.kwargs['marginalized_rv_input_rvs']
-    # x0 = op.kwargs['x0']
-    # log_laplace_approx = op.kwargs['log_laplace_approx']
-    # return logp - log_laplace_approx
-
+    # # Set minimizer initialisation to be random
+    d = 3  # 10000 # TODO pull this from x.shape (or similar) somehow
     rng = np.random.default_rng(12345)
-    d = 10
-    # Q = np.diag(rng.random(d))
-    from pymc import MvNormal
+    x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: rng.random(d)})
 
-    x = op.owner.inputs[0]
-    if not isinstance(x, MvNormal):
-        raise ValueError("Latent field x must be MvNormal.")
-    Q = x.owner.inputs[1]  # TODO double check this grabs the right thing
-    x0 = rng.random(d)
+    # TODO USE CLOSED FORM SOLUTION FOR NOW
+    n, y_obs = op.temp_kwargs
+    mu_param = pytensor.graph.basic.get_var_by_name(x, "mu_param")[0]
+    x0 = (y_obs.sum(axis=0) - mu_param) / (n - 1)
 
-    # x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: rng.random(d)})
-    # for rv in marginalized_rv_input_rvs:
-    #     x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: rng.random(d)})
-
-    # require f''(x0) for Laplace approx
-    hess = pytensor.gradient.hessian(logp, marginalized_vv)
-    # hess = pytensor.graph.replace.graph_replace(hess, {marginalized_vv: x0})
-
-    # Could be made more efficient with adding diagonals only
-    tau = Q - hess
-
-    # Currently x is passed both as the query point for f(x, args) = logp(x | y, params) AND as an initial guess for x0. This may cause issues if the query point is
-    # far from the mode x0 or in a neighbourhood which results in poor convergence.
+    # logp(x | y, params) using laplace approx evaluated at x0
+    hess = pytensor.gradient.hessian(log_likelihood, marginalized_vv)
+    tau = op.Q - hess
     _, logdetTau = pt.nlinalg.slogdet(tau)
-    log_laplace_approx = 0.5 * logdetTau - 0.5 * x0.shape[0] * np.log(2 * np.pi)
+    log_laplace_approx = 0.5 * logdetTau - 0.5 * marginalized_vv.shape[0] * np.log(
+        2 * np.pi
+    )  # At x = x0, the quadratic term becomes 0
 
-    # Reduce logp dimensions corresponding to broadcasted variables
-    # marginalized_logp = logps_dict.pop(marginalized_vv)
+    # logp(y | params) = logp(y | x, params) + logp(x | params) - logp(x | y, params)
     joint_logp = logp - log_laplace_approx
-
-    # TODO this might cause circularity issues by overwriting x as an input to the x0 minimizer
-    joint_logp = pytensor.graph.replace.graph_replace(joint_logp, {marginalized_vv: x0})
-
-    return joint_logp  # TODO check if pm.sample adds on p(params). Otherwise this is p(y|params) not p(params|y)
+    return pytensor.graph.replace.graph_replace(joint_logp, {marginalized_vv: x0})
