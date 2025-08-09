@@ -47,10 +47,11 @@ class BayesianDynamicFactor(PyMCStateSpace):
     endog_names : Sequence[str], optional
         Names of the observed time series. If not provided, default names will be generated as `endog_1`, `endog_2`, ..., `endog_k`.
 
-    exog : array_like, optional
-        Array of exogenous variables for the observation equation (nobs x k_exog).
-        Default is None, meaning no exogenous variables.
-        Not implemented yet.
+    k_exog : int
+        Number of exogenous variables, optional. If not provided, model will not have exogenous variables.
+
+    exog_names : Sequence[str], optional
+        Names of the exogenous variables. If not provided, but `k_exog` is specified, default names will be generated as `exog_1`, `exog_2`, ..., `exog_k`.
 
     error_order : int, optional
         Order of the AR process for the observation error component.
@@ -240,9 +241,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
             # AR coefficients for factor dynamics: shape (k_factors, factor_order)
             factor_ar = pm.Normal("factor_ar", sigma=1, dims=["k_factors", "factor_order"])
 
-            # Innovation std dev of factors: shape (k_factors,)
-            # factor_sigma = pm.Deterministic("factor_sigma", pt.constant([1.0], dtype=float)) TODO could be removed
-
             # AR coefficients for observation noise: shape (k_endog, error_order)
             error_ar = pm.Normal("error_ar", sigma=1, dims=["k_endog", "error_order"])
 
@@ -271,7 +269,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
         factor_order: int,
         k_endog: int | None = None,
         endog_names: Sequence[str] | None = None,
-        exog: np.ndarray | None = None,
+        k_exog: int | None = None,
+        exog_names: Sequence[str] | None = None,
         error_order: int = 0,
         error_var: bool = False,
         error_cov_type: str = "diagonal",
@@ -290,7 +289,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 "Joint error modeling (error_var=True) is not yet implemented."
             )
 
-        if exog is not None:
+        if k_exog is not None or exog_names is not None:
             raise NotImplementedError("Exogenous variables (exog) are not yet implemented.")
 
         self.endog_names = endog_names
@@ -300,10 +299,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
         self.error_order = error_order
         self.error_var = error_var
         self.error_cov_type = error_cov_type
-        self.exog = exog
         # TODO add exogenous variables support
         # TODO add error_var support
-        # TODO understanding if the factor_sigma matrix is the identity?
 
         # Determine the dimension for the latent factor states.
         # For static factors, one use k_factors.
@@ -341,7 +338,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
             "P0",
             "factor_loadings",
             "factor_ar",
-            # "factor_sigma",
             "error_ar",
             "error_sigma",
             "sigma_obs",
@@ -379,10 +375,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 "shape": (self.k_factors, self.factor_order * self.k_factors),
                 "constraints": None,
             },
-            # "factor_sigma": {
-            #     "shape": (self.k_factors,),
-            #     "constraints": "Positive",
-            # },
             "error_ar": {
                 "shape": (self.k_endog, self.error_order),
                 "constraints": None,
@@ -470,7 +462,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
             "x0": (ALL_STATE_DIM,),
             "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
             "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
-            # "factor_sigma": (FACTOR_DIM,),
         }
         if self.factor_order > 0:
             coord_map["factor_ar"] = (FACTOR_DIM, AR_PARAM_DIM)
@@ -601,11 +592,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 col = self.k_factors + i
                 self.ssm["selection", row, col] = 1.0
 
-        # # State covariance matrix
-        # factor_sigma = self.make_and_register_variable(
-        #     "factor_sigma", shape=(self.k_factors,), dtype=floatX
-        # )
-        # factor_cov = pt.diag(factor_sigma)
         factor_cov = pt.eye(self.k_factors, dtype=floatX)
 
         # Handle error_sigma and error_cov depending on error_cov_type
