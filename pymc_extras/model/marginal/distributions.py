@@ -442,5 +442,5 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     )  # At x = x0, the quadratic term becomes 0
 
     # logp(y | params) = logp(y | x, params) + logp(x | params) - logp(x | y, params)
-    joint_logp = logp - log_laplace_approx
-    return pytensor.graph.replace.graph_replace(joint_logp, {marginalized_vv: x0})
+    marginal_likelihood = logp - log_laplace_approx
+    return pytensor.graph.replace.graph_replace(marginal_likelihood, {marginalized_vv: x0})
