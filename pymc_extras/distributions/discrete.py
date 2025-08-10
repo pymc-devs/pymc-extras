@@ -572,10 +572,14 @@ class GrassiaIIGeometric(Discrete):
 
 def C_t(t: pt.TensorVariable, time_covariate_vector: pt.TensorVariable) -> pt.TensorVariable:
     """Utility for processing time-varying covariates in GrassiaIIGeometric distribution."""
-    # Ensure t is a valid index
-    t_idx = pt.maximum(0, t - 1)  # Convert to 0-based indexing
-    # If t_idx exceeds length of time_covariate_vector, use last value
-    max_idx = pt.shape(time_covariate_vector)[0] - 1
-    safe_idx = pt.minimum(t_idx, max_idx)
-    covariate_value = time_covariate_vector[..., safe_idx]
-    return pt.exp(covariate_value).sum(axis=0)
+    if time_covariate_vector.ndim == 0:
+        # Reshape time_covariate_vector to length t
+        return pt.full((t,), time_covariate_vector)
+    else:
+        # Ensure t is a valid index
+        t_idx = pt.maximum(0, t - 1)  # Convert to 0-based indexing
+        # If t_idx exceeds length of time_covariate_vector, use last value
+        max_idx = pt.shape(time_covariate_vector)[0] - 1
+        safe_idx = pt.minimum(t_idx, max_idx)
+        covariate_value = time_covariate_vector[..., safe_idx]
+        return pt.exp(covariate_value).sum()
