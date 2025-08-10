@@ -201,8 +201,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         These models are only identified up to a sign flip in the factor loadings. Proper prior specification is crucial
         for good estimation and inference.
 
-    Currently, the implementation assumes same factor order for all the factors,
-    does not yet support exogenous variables and joint (VAR) error modeling.
+    Currently, the implementation does not yet support exogenous variables
 
     Examples
     --------
@@ -284,11 +283,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
         if endog_names is None:
             endog_names = [f"endog_{i}" for i in range(k_endog)]
 
-        if error_var:
-            raise NotImplementedError(
-                "Joint error modeling (error_var=True) is not yet implemented."
-            )
-
         if k_exog is not None or exog_names is not None:
             raise NotImplementedError("Exogenous variables (exog) are not yet implemented.")
 
@@ -300,7 +294,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
         self.error_var = error_var
         self.error_cov_type = error_cov_type
         # TODO add exogenous variables support
-        # TODO add error_var support
 
         # Determine the dimension for the latent factor states.
         # For static factors, one use k_factors.
@@ -376,7 +369,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 "constraints": None,
             },
             "error_ar": {
-                "shape": (self.k_endog, self.error_order),
+                "shape": (
+                    self.k_endog,
+                    self.error_order * self.k_endog if self.error_var else self.error_order,
+                ),
                 "constraints": None,
             },
             "error_sigma": {
@@ -437,7 +433,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         # If error_order > 0
         if self.error_order > 0:
-            coords[ERROR_AR_PARAM_DIM] = list(range(1, self.error_order + 1))
+            if self.error_var:
+                coords[ERROR_AR_PARAM_DIM] = list(range(1, (self.error_order * self.k_endog) + 1))
+            else:
+                coords[ERROR_AR_PARAM_DIM] = list(range(1, self.error_order + 1))
 
         return coords
 
@@ -509,26 +508,26 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         # Transition matrix
         # auxiliary function to build transition matrix block
-        def build_var_block_matrix(ar_coeffs, k_factors, p):
+        def build_var_block_matrix(ar_coeffs, k_series, p):
             """
             Build the VAR(p) companion matrix for the factors.
 
-            ar_coeffs: PyTensor matrix of shape (k_factors, p * k_factors)
+            ar_coeffs: PyTensor matrix of shape (k_series, p * k_series)
                     [A1 | A2 | ... | Ap] horizontally concatenated.
-            k_factors: number of factors
+            k_series: number of series
             p: lag order
             """
-            size = k_factors * p
+            size = k_series * p
             block = pt.zeros((size, size), dtype=floatX)
 
             # First block row: the AR coefficient matrices for each lag
-            block = pt.set_subtensor(block[0:k_factors, 0 : k_factors * p], ar_coeffs)
+            block = pt.set_subtensor(block[0:k_series, 0 : k_series * p], ar_coeffs)
 
             # Sub-diagonal identity blocks (shift structure)
             if p > 1:
                 # Create the identity pattern for all sub-diagonal blocks
-                identity_pattern = pt.eye(k_factors * (p - 1), dtype=floatX)
-                block = pt.set_subtensor(block[k_factors:, : k_factors * (p - 1)], identity_pattern)
+                identity_pattern = pt.eye(k_series * (p - 1), dtype=floatX)
+                block = pt.set_subtensor(block[k_series:, : k_series * (p - 1)], identity_pattern)
 
             return block
 
@@ -571,7 +570,14 @@ class BayesianDynamicFactor(PyMCStateSpace):
         else:
             transition_blocks.append(pt.zeros((self.k_factors, self.k_factors), dtype=floatX))
 
-        if self.error_order > 0:
+        if self.error_order > 0 and self.error_var:
+            error_ar = self.make_and_register_variable(
+                "error_ar", shape=(self.k_endog, self.error_order * self.k_endog), dtype=floatX
+            )
+            transition_blocks.append(
+                build_var_block_matrix(error_ar, self.k_endog, self.error_order)
+            )
+        elif self.error_order > 0 and not self.error_var:
             error_ar = self.make_and_register_variable(
                 "error_ar", shape=(self.k_endog, self.error_order), dtype=floatX
             )
