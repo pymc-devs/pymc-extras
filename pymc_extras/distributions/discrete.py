@@ -494,10 +494,13 @@ class GrassiaIIGeometric(Discrete):
     rv_op = g2g
 
     @classmethod
-    def dist(cls, r, alpha, time_covariate_vector, *args, **kwargs):
+    def dist(cls, r, alpha, time_covariate_vector=None, *args, **kwargs):
         r = pt.as_tensor_variable(r)
         alpha = pt.as_tensor_variable(alpha)
-        time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
+
+        if time_covariate_vector is None:
+            time_covariate_vector = pt.constant(0.0)
+
         return super().dist([r, alpha, time_covariate_vector], *args, **kwargs)
 
     def logp(value, r, alpha, time_covariate_vector):
