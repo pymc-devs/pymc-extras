@@ -9,6 +9,8 @@ from numpy.typing import ArrayLike
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.optimize import minimize
 
+from pymc_extras.model.marginal.marginal_model import marginalize
+
 
 def get_conditional_gaussian_approximation(
     x: TensorVariable,
@@ -133,38 +135,42 @@ def get_log_marginal_likelihood(
 def fit_INLA(
     x: TensorVariable,
     Q: TensorVariable | ArrayLike,
-    mu: TensorVariable | ArrayLike,
+    # mu: TensorVariable | ArrayLike,
     model: pm.Model | None = None,
-    method: minimize_method = "BFGS",
-    use_jac: bool = True,
-    use_hess: bool = False,
-    optimizer_kwargs: dict | None = None,
+    minimizer_kwargs: dict | None = None,
+    **sampler_kwargs,
 ) -> az.InferenceData:
     model = pm.modelcontext(model)
 
-    # logp(y | params)
-    x0, log_likelihood = get_log_marginal_likelihood(
-        x, Q, mu, model, method, use_jac, use_hess, optimizer_kwargs
-    )
+    # Marginalize out the latent field
+    marginalize(model, [x], Q, minimizer_kwargs, method="INLA")
 
-    # TODO How to obtain prior? It can parametrise Q, mu, y, etc. Not sure if we could extract from model.logp somehow. Otherwise simply specify as a user input
-    # Perhaps obtain as RVs which y depends on which aren't x?
-    prior = None
-    params = None
-    log_prior = pm.logp(prior, model.rvs_to_values[params])
+    # Sample over the hyperparameters
+    pm.sample(model=model, **sampler_kwargs)
 
-    # logp(params | y) = logp(y | params) + logp(params) + const
-    log_posterior = log_likelihood + log_prior
-    log_posterior = pytensor.graph.replace.graph_replace(log_posterior, {x: x0})
+    # # logp(y | params)
+    # x0, log_likelihood = get_log_marginal_likelihood(
+    #     x, Q, mu, model, method, use_jac, use_hess, optimizer_kwargs
+    # )
 
-    # TODO log_marginal_x_likelihood is almost the same as log_likelihood, but need to do some sampling?
-    log_marginal_x_likelihood = None
-    log_marginal_x_posterior = log_marginal_x_likelihood + log_prior
+    # # TODO How to obtain prior? It can parametrise Q, mu, y, etc. Not sure if we could extract from model.logp somehow. Otherwise simply specify as a user input
+    # # Perhaps obtain as RVs which y depends on which aren't x?
+    # prior = None
+    # params = None
+    # log_prior = pm.logp(prior, model.rvs_to_values[params])
 
-    # TODO can we sample over log likelihoods?w
-    # Marginalize params
-    idata_params = log_posterior.sample()  # TODO something like NUTS, QMC, etc.?
-    idata_x = log_marginal_x_posterior.sample()
+    # # logp(params | y) = logp(y | params) + logp(params) + const
+    # log_posterior = log_likelihood + log_prior
+    # log_posterior = pytensor.graph.replace.graph_replace(log_posterior, {x: x0})
+
+    # # TODO log_marginal_x_likelihood is almost the same as log_likelihood, but need to do some sampling?
+    # log_marginal_x_likelihood = None
+    # log_marginal_x_posterior = log_marginal_x_likelihood + log_prior
+
+    # # TODO can we sample over log likelihoods?
+    # # Marginalize params
+    # idata_params = log_posterior.sample()  # TODO something like NUTS, QMC, etc.?
+    # idata_x = log_marginal_x_posterior.sample()
 
     # Bundle up idatas somehow
-    return idata_params, idata_x
+    # return idata_params, idata_x

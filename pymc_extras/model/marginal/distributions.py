@@ -416,7 +416,7 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
         if op.minimizer_kwargs is not None
         else {"method": "BFGS", "optimizer_kwargs": {"tol": 1e-8}}
     )
-    # minimizer_kwargs = {'method': 'BFGS', 'optimizer_kwargs': {"tol": 1e-8}}
+
     x0, _ = minimize(
         objective=-logp,  # logp(x | y, params) = logp(y | x, params) + logp(x | params) + const (const omitted during minimization)
         x=marginalized_vv,
@@ -429,9 +429,9 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: rng.random(d)})
 
     # TODO USE CLOSED FORM SOLUTION FOR NOW
-    n, y_obs = op.temp_kwargs
-    mu_param = pytensor.graph.basic.get_var_by_name(x, "mu_param")[0]
-    x0 = (y_obs.sum(axis=0) - mu_param) / (n - 1)
+    # n, y_obs = op.temp_kwargs
+    # mu_param = pytensor.graph.basic.get_var_by_name(x, "mu_param")[0]
+    # x0 = (y_obs.sum(axis=0) - mu_param) / (n - 1)
 
     # logp(x | y, params) using laplace approx evaluated at x0
     hess = pytensor.gradient.hessian(log_likelihood, marginalized_vv)
