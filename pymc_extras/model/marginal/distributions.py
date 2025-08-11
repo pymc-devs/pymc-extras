@@ -8,6 +8,7 @@ import pytensor.tensor as pt
 
 from pymc.distributions import Bernoulli, Categorical, DiscreteUniform
 from pymc.distributions.distribution import _support_point, support_point
+from pymc.distributions.multivariate import _precision_mv_normal_logp
 from pymc.logprob.abstract import MeasurableOp, _logprob
 from pymc.logprob.basic import conditional_logp, logp
 from pymc.pytensorf import constant_fold
@@ -414,7 +415,7 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     minimizer_kwargs = (
         op.minimizer_kwargs
         if op.minimizer_kwargs is not None
-        else {"method": "BFGS", "optimizer_kwargs": {"tol": 1e-8}}
+        else {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}}
     )
 
     x0, _ = minimize(
@@ -423,23 +424,23 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
         **minimizer_kwargs,
     )
 
-    # # Set minimizer initialisation to be random
+    # Set minimizer initialisation to be random
     d = 3  # 10000 # TODO pull this from x.shape (or similar) somehow
     rng = np.random.default_rng(12345)
     x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: rng.random(d)})
 
     # TODO USE CLOSED FORM SOLUTION FOR NOW
-    # n, y_obs = op.temp_kwargs
-    # mu_param = pytensor.graph.basic.get_var_by_name(x, "mu_param")[0]
-    # x0 = (y_obs.sum(axis=0) - mu_param) / (n - 1)
+    n, y_obs = op.temp_kwargs
+    mu_param = pytensor.graph.basic.get_var_by_name(x, "mu")[0]
+    x0 = (y_obs.sum(axis=0) - mu_param) / (n - 1)
 
     # logp(x | y, params) using laplace approx evaluated at x0
-    hess = pytensor.gradient.hessian(log_likelihood, marginalized_vv)
+    hess = pytensor.gradient.hessian(
+        log_likelihood, marginalized_vv
+    )  # TODO check how stan makes this quicker
     tau = op.Q - hess
-    _, logdetTau = pt.nlinalg.slogdet(tau)
-    log_laplace_approx = 0.5 * logdetTau - 0.5 * marginalized_vv.shape[0] * np.log(
-        2 * np.pi
-    )  # At x = x0, the quadratic term becomes 0
+    mu = x0  # TODO double check with Theo
+    log_laplace_approx, _ = _precision_mv_normal_logp(x0, mu, tau)
 
     # logp(y | params) = logp(y | x, params) + logp(x | params) - logp(x | y, params)
     marginal_likelihood = logp - log_laplace_approx

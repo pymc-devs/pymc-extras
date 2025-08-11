@@ -6,7 +6,9 @@ import pytensor.tensor as pt
 
 from better_optimize.constants import minimize_method
 from numpy.typing import ArrayLike
+from pymc.distributions.multivariate import MvNormal
 from pytensor.tensor import TensorVariable
+from pytensor.tensor.linalg import inv as matrix_inverse
 from pytensor.tensor.optimize import minimize
 
 from pymc_extras.model.marginal.marginal_model import marginalize
@@ -67,6 +69,8 @@ def get_conditional_gaussian_approximation(
     x0, p(x | y, params): list[TensorVariable]
         Mode and Laplace approximation for posterior.
     """
+    raise DeprecationWarning("Legacy code. Please use fit_INLA instead.")
+
     model = pm.modelcontext(model)
 
     # f = log(p(y | x, params))
@@ -108,6 +112,8 @@ def get_log_marginal_likelihood(
     use_hess: bool = False,
     optimizer_kwargs: dict | None = None,
 ) -> TensorVariable:
+    raise DeprecationWarning("Legacy code. Please use fit_INLA instead.")
+
     model = pm.modelcontext(model)
 
     x0, log_laplace_approx = get_conditional_gaussian_approximation(
@@ -134,43 +140,40 @@ def get_log_marginal_likelihood(
 
 def fit_INLA(
     x: TensorVariable,
-    Q: TensorVariable | ArrayLike,
-    # mu: TensorVariable | ArrayLike,
+    temp_kwargs=None,  # TODO REMOVE. DEBUGGING TOOL
     model: pm.Model | None = None,
     minimizer_kwargs: dict | None = None,
+    return_latent_posteriors: bool = True,
     **sampler_kwargs,
 ) -> az.InferenceData:
     model = pm.modelcontext(model)
 
+    # Check if latent field is Gaussian
+    if not isinstance(x.owner.op, MvNormal):
+        raise ValueError(
+            f"Latent field {x} is not instance of MvNormal. Has distribution {x.owner.op}."
+        )
+
+    _, _, _, tau = x.owner.inputs
+
+    # Latent field should use precison rather than covariance
+    if not tau.owner or tau.owner.op != matrix_inverse:
+        raise ValueError(
+            f"Latent field {x} is not in precision matrix form. Use MvNormal(tau=Q) instead."
+        )
+
+    Q = tau.owner.inputs[0]
+
     # Marginalize out the latent field
-    marginalize(model, [x], Q, minimizer_kwargs, method="INLA")
+    minimizer_kwargs = {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}}
+    marginalize_kwargs = {"Q": Q, "temp_kwargs": temp_kwargs, "minimizer_kwargs": minimizer_kwargs}
+    marginal_model = marginalize(model, x, use_laplace=True, **marginalize_kwargs)
 
     # Sample over the hyperparameters
-    pm.sample(model=model, **sampler_kwargs)
+    idata = pm.sample(model=marginal_model, **sampler_kwargs)
 
-    # # logp(y | params)
-    # x0, log_likelihood = get_log_marginal_likelihood(
-    #     x, Q, mu, model, method, use_jac, use_hess, optimizer_kwargs
-    # )
+    if not return_latent_posteriors:
+        return idata
 
-    # # TODO How to obtain prior? It can parametrise Q, mu, y, etc. Not sure if we could extract from model.logp somehow. Otherwise simply specify as a user input
-    # # Perhaps obtain as RVs which y depends on which aren't x?
-    # prior = None
-    # params = None
-    # log_prior = pm.logp(prior, model.rvs_to_values[params])
-
-    # # logp(params | y) = logp(y | params) + logp(params) + const
-    # log_posterior = log_likelihood + log_prior
-    # log_posterior = pytensor.graph.replace.graph_replace(log_posterior, {x: x0})
-
-    # # TODO log_marginal_x_likelihood is almost the same as log_likelihood, but need to do some sampling?
-    # log_marginal_x_likelihood = None
-    # log_marginal_x_posterior = log_marginal_x_likelihood + log_prior
-
-    # # TODO can we sample over log likelihoods?
-    # # Marginalize params
-    # idata_params = log_posterior.sample()  # TODO something like NUTS, QMC, etc.?
-    # idata_x = log_marginal_x_posterior.sample()
-
-    # Bundle up idatas somehow
-    # return idata_params, idata_x
+    # TODO Unmarginalize stuff
+    raise NotImplementedError("Latent posteriors not supported yet, WIP.")
