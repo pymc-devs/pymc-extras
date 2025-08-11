@@ -157,7 +157,7 @@ def fit_INLA(
     _, _, _, tau = x.owner.inputs
 
     # Latent field should use precison rather than covariance
-    if not tau.owner or tau.owner.op != matrix_inverse:
+    if not (tau.owner and tau.owner.op == matrix_inverse):
         raise ValueError(
             f"Latent field {x} is not in precision matrix form. Use MvNormal(tau=Q) instead."
         )
