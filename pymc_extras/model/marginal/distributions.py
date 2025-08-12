@@ -406,7 +406,9 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     logps_dict = conditional_logp(rv_values=rv_values, **kwargs)
 
     # logp(y | x, params)
-    log_likelihood = pt.sum([pt.sum(logps_dict[k]) for k in logps_dict if k != marginalized_vv])
+    log_likelihood = pt.sum(
+        [logp_term.sum() for value, logp_term in logps_dict.items() if value is not marginalized_vv]
+    )
 
     # logp = logp(y | x, params) + logp(x | params)
     logp = pt.sum([pt.sum(logps_dict[k]) for k in logps_dict])
