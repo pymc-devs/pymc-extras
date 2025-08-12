@@ -32,14 +32,13 @@ def test_non_gaussian_latent(rng):
     """
     n = 10000
 
-    mu_mu = 0
     mu_true = rng.random()
     tau = 1
     y_obs = rng.normal(loc=mu_true, scale=1 / tau, size=n)
 
     with pm.Model() as model:
-        mu = pm.Normal("mu", mu=mu_mu, tau=tau)
-        x = pm.Normal("x", mu=mu, tau=tau)
+        lam = pm.HalfNormal("lam", tau=tau)
+        x = pm.Exponential("x", lam=lam)
         y = pm.Normal("y", mu=x, tau=tau, observed=y_obs)
 
         with pytest.raises(ValueError):
