@@ -26,6 +26,7 @@ def rng():
     return np.random.default_rng(seed)
 
 
+@pytest.mark.filterwarnings("ignore:Currently only valid for a nested normal model. WIP.")
 def test_non_gaussian_latent(rng):
     """
     INLA should raise an error if trying to use a non-Gaussian latent
@@ -45,6 +46,7 @@ def test_non_gaussian_latent(rng):
             pmx.fit(method="INLA", x=x)
 
 
+@pytest.mark.filterwarnings("ignore:Currently only valid for a nested normal model. WIP.")
 def test_non_precision_MvNormal(rng):
     """
     INLA should raise an error if trying to use a latent not in precision form
@@ -67,6 +69,7 @@ def test_non_precision_MvNormal(rng):
             pmx.fit(method="INLA", x=x)
 
 
+@pytest.mark.filterwarnings("ignore:Currently only valid for a nested normal model. WIP.")
 def test_3_layer_normal(rng):
     """
     Test INLA against a simple toy problem:

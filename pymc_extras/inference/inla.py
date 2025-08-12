@@ -1,3 +1,5 @@
+import warnings
+
 import arviz as az
 import numpy as np
 import pymc as pm
@@ -146,6 +148,8 @@ def fit_INLA(
     return_latent_posteriors: bool = True,
     **sampler_kwargs,
 ) -> az.InferenceData:
+    warnings.warn("Currently only valid for a nested normal model. WIP.", UserWarning)
+
     model = pm.modelcontext(model)
 
     # Check if latent field is Gaussian
