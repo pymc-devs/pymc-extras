@@ -149,6 +149,7 @@ def fit_INLA(
     **sampler_kwargs,
 ) -> az.InferenceData:
     warnings.warn("Currently only valid for a nested normal model. WIP.", UserWarning)
+    # TODO ADD CHECK FOR NESTED NORMAL
 
     model = pm.modelcontext(model)
 
