@@ -69,7 +69,10 @@ class DADVIResult:
         if transform_draws:
 
             dadvi_draws = transform_dadvi_draws(
-                self.pymc_model, dadvi_draws_flat, self.unflattening_fun
+                self.pymc_model,
+                dadvi_draws_flat,
+                self.unflattening_fun,
+                add_chain_dim=True,
             )
 
         else:
@@ -89,10 +92,13 @@ class DADVIResult:
         return vmap(function_to_run)(dadvi_dict)
 
 
-def fit_pymc_dadvi_with_jax(pymc_model, num_fixed_draws=30, seed=2):
+def fit_deterministic_advi(model=None, num_fixed_draws=30, seed=2):
+
+    model = pymc.modelcontext(model) if model is None else model
+
     np.random.seed(seed)
 
-    jax_funs = get_jax_functions_from_pymc(pymc_model)
+    jax_funs = get_jax_functions_from_pymc(model)
     dadvi_funs = build_dadvi_funs(jax_funs["log_posterior_fun"])
 
     opt_callback_fun.opt_sequence = []
@@ -114,12 +120,11 @@ def fit_pymc_dadvi_with_jax(pymc_model, num_fixed_draws=30, seed=2):
         var_params=opt["opt_result"].x,
         unflattening_fun=jax_funs["unflatten_fun"],
         dadvi_funs=dadvi_funs,
-        pymc_model=pymc_model,
+        pymc_model=model,
     )
 
     # Get draws and turn into arviz format expected
     draws = dadvi_result.get_posterior_draws_mean_field(transform_draws=True)
-
     az_draws = az.convert_to_inference_data(draws)
 
     return az_draws

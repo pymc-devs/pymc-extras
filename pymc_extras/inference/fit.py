@@ -40,3 +40,5 @@ def fit(method: str, **kwargs) -> az.InferenceData:
         from pymc_extras.inference import fit_laplace
 
         return fit_laplace(**kwargs)
+
+    # TODO Add determinstic ADVI
