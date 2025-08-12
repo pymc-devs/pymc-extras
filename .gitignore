@@ -16,6 +16,9 @@ _version.py
 .idea
 *.iml
 
+pixi.lock
+pixi.toml
+
 # Sphinx
 _build
 docs/jupyter_execute
