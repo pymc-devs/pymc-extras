@@ -316,4 +316,8 @@ def test_laplace_scalar_basinhopping(optimizer_method):
     assert idata_laplace.fit.mean_vector.shape == (1,)
     assert idata_laplace.fit.covariance_matrix.shape == (1, 1)
 
+    np.testing.assert_allclose(
+        idata_laplace.posterior.p.mean(dim=["chain", "draw"]), data.mean(), atol=0.1
+    )
+
     np.testing.assert_allclose(idata_laplace.fit.mean_vector.values.item(), data.mean(), atol=0.1)
