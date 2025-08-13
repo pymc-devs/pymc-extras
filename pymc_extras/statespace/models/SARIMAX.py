@@ -224,7 +224,7 @@ class BayesianSARIMA(PyMCStateSpace):
         if state_structure not in SARIMAX_STATE_STRUCTURES:
             raise ValueError(
                 f"Got invalid argument {state_structure} for state structure, expected one of "
-                f'{", ".join(SARIMAX_STATE_STRUCTURES)}'
+                f"{', '.join(SARIMAX_STATE_STRUCTURES)}"
             )
 
         if state_structure == "interpretable" and (self.d + self.D) > 0:
