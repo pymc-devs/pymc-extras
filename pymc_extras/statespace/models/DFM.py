@@ -12,9 +12,11 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     AR_PARAM_DIM,
     ERROR_AR_PARAM_DIM,
+    EXOG_STATE_DIM,
     FACTOR_DIM,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
+    TIME_DIM,
 )
 
 floatX = pytensor.config.floatX
@@ -283,8 +285,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
         if endog_names is None:
             endog_names = [f"endog_{i}" for i in range(k_endog)]
 
-        if k_exog is not None or exog_names is not None:
-            raise NotImplementedError("Exogenous variables (exog) are not yet implemented.")
+        # if k_exog is not None or exog_names is not None:
+        #     raise NotImplementedError("Exogenous variables (exog) are not yet implemented.")
 
         self.endog_names = endog_names
         self.k_endog = k_endog
@@ -293,7 +295,23 @@ class BayesianDynamicFactor(PyMCStateSpace):
         self.error_order = error_order
         self.error_var = error_var
         self.error_cov_type = error_cov_type
-        # TODO add exogenous variables support
+
+        if k_exog is None and exog_names is None:
+            self._exog = False
+            self.k_exog = 0
+        else:
+            self._exog = True
+            if k_exog is None:
+                k_exog = len(exog_names) if exog_names is not None else 0
+            elif exog_names is None:
+                exog_names = [f"exog_{i}" for i in range(k_exog)] if k_exog > 0 else None
+
+        self.exog_names = exog_names
+        self.k_exog = k_exog
+
+        # TODO add exogenous variables support (statsmodel dealt with exog without touching state vector,but just working on the measurement equation)
+        # I start implementing a version of exog support, with shared_states=False based on pymc_extras/statespace/models/structural/components/regression.py
+        # currently the beta coefficients are time invariant, so the innovation on beta are not supported
 
         # Determine the dimension for the latent factor states.
         # For static factors, one use k_factors.
@@ -308,11 +326,12 @@ class BayesianDynamicFactor(PyMCStateSpace):
         k_error_states = k_endog * error_order if error_order > 0 else 0
 
         # Total state dimension
-        k_states = k_factor_states + k_error_states
+        k_states = k_factor_states + k_error_states + (k_exog * k_endog if self._exog else 0)
 
         # Number of independent shocks.
         # Typically, the latent factors introduce k_factors shocks.
         # If error_order > 0 and errors are modeled jointly or separately, add appropriate count.
+        # TODO currently the implementation does not support for innovation on betas coefficient
         k_posdef = k_factors + (k_endog if error_order > 0 else 0)
 
         # Initialize the PyMCStateSpace base class.
@@ -346,6 +365,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
             names.append("error_cov")
         if not self.measurement_error:
             names.remove("sigma_obs")
+        if self._exog:
+            names.append("beta")
 
         return names
 
@@ -387,6 +408,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 "shape": (self.k_endog,),
                 "constraints": "Positive",
             },
+            "beta": {
+                "shape": (self.k_exog * self.k_endog if self.k_exog is not None else 0,),
+                "constraints": None,
+            },
         }
 
         for name in self.param_names:
@@ -398,7 +423,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
     def state_names(self) -> list[str]:
         """
         Returns the names of the hidden states: first factor states (with lags),
-        then idiosyncratic error states (with lags).
+        idiosyncratic error states (with lags), then exogenous states.
         """
         names = []
         # Factor states
@@ -411,6 +436,12 @@ class BayesianDynamicFactor(PyMCStateSpace):
             for i in range(self.k_endog):
                 for lag in range(self.error_order):
                     names.append(f"L{lag}.error_{i}")
+
+        if self._exog:
+            # Exogenous states
+            for i in range(self.k_exog):
+                for j in range(self.k_endog):
+                    names.append(f"exog_{i}.endog_{j}")
 
         return names
 
@@ -437,6 +468,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 coords[ERROR_AR_PARAM_DIM] = list(range(1, (self.error_order * self.k_endog) + 1))
             else:
                 coords[ERROR_AR_PARAM_DIM] = list(range(1, self.error_order + 1))
+
+        if self._exog:
+            # Exogenous states
+            coords[EXOG_STATE_DIM] = list(range(1, (self.k_exog * self.k_endog) + 1))
 
         return coords
 
@@ -479,7 +514,29 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         if self.measurement_error:
             coord_map["sigma_obs"] = (OBS_STATE_DIM,)
+
+        if self._exog:
+            coord_map["beta"] = (EXOG_STATE_DIM,)
+            # coord_map["exog_data"]
+
         return coord_map
+
+    @property
+    def data_info(self):
+        if self._exog:
+            return {
+                "exog_data": {
+                    "shape": (None, self.k_exog),
+                    "dims": (TIME_DIM, EXOG_STATE_DIM),
+                },
+            }
+        return {}
+
+    @property
+    def data_names(self):
+        if self._exog:
+            return ["exog_data"]
+        return []
 
     def make_symbolic_graph(self):
         # Initial states
@@ -498,13 +555,41 @@ class BayesianDynamicFactor(PyMCStateSpace):
             "factor_loadings", shape=(self.k_endog, self.k_factors), dtype=floatX
         )
 
-        for i in range(self.k_factors):
-            self.ssm["design", :, i] = factor_loadings[:, i]
+        # Start with factor loadings
+        matrix_parts = [factor_loadings]
+
+        if self.factor_order > 1:
+            matrix_parts.append(
+                pt.zeros((self.k_endog, self.k_factors * (self.factor_order - 1)), dtype=floatX)
+            )
 
         if self.error_order > 0:
-            for i in range(self.k_endog):
-                col_idx = max(self.factor_order, 1) * self.k_factors + i
-                self.ssm["design", i, col_idx] = 1.0
+            # Create identity matrix for error terms
+            error_matrix = pt.eye(self.k_endog, dtype=floatX)
+            matrix_parts.append(error_matrix)
+            matrix_parts.append(
+                pt.zeros((self.k_endog, self.k_endog * (self.error_order - 1)), dtype=floatX)
+            )
+
+        # Concatenate all parts
+        design_matrix = pt.concatenate(matrix_parts, axis=1)
+
+        if self._exog:
+            exog_data = self.make_and_register_data("exog_data", shape=(None, self.k_exog))
+            Z_exog = pt.linalg.block_diag(
+                *[pt.expand_dims(exog_data, 1) for _ in range(self.k_endog)]
+            )  # (time, k_endog, k_exog)
+            Z_exog = pt.specify_shape(Z_exog, (None, self.k_endog, self.k_exog * self.k_endog))
+            # Repeat design_matrix over time dimension
+            n_timepoints = Z_exog.shape[0]
+            design_matrix_time = pt.tile(
+                design_matrix, (n_timepoints, 1, 1)
+            )  # (time, k_endog, states_before_exog)
+
+            # Concatenate along states dimension
+            design_matrix = pt.concatenate([design_matrix_time, Z_exog], axis=2)
+
+        self.ssm["design"] = design_matrix
 
         # Transition matrix
         # auxiliary function to build transition matrix block
@@ -584,6 +669,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
             transition_blocks.append(
                 build_independent_var_block_matrix(error_ar, self.k_endog, self.error_order)
             )
+        if self._exog:
+            transition_blocks.append(pt.eye(self.k_exog * self.k_endog, dtype=floatX))
 
         # Final block diagonal transition matrix
         self.ssm["transition", :, :] = pt.linalg.block_diag(*transition_blocks)
@@ -597,6 +684,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 row = max(self.factor_order, 1) * self.k_factors + i
                 col = self.k_factors + i
                 self.ssm["selection", row, col] = 1.0
+
+        # No changes in selection matrix since there are not innovations related to the betas parameters
 
         factor_cov = pt.eye(self.k_factors, dtype=floatX)
 
