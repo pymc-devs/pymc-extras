@@ -93,6 +93,39 @@ class DADVIResult:
 
 
 def fit_deterministic_advi(model=None, num_fixed_draws=30, seed=2):
+    """
+    Does inference using deterministic ADVI (automatic differentiation
+    variational inference).
+
+    For full details see the paper cited in the references:
+    https://www.jmlr.org/papers/v25/23-1015.html
+
+    Parameters
+    ----------
+    model : pm.Model
+        The PyMC model to be fit. If None, the current model context is used.
+
+    num_fixed_draws : int
+        The number of fixed draws to use for the optimisation. More
+        draws will result in more accurate estimates, but also
+        increase inference time. Usually, the default of 30 is a good
+        tradeoff.between speed and accuracy.
+
+    seed: int
+        The random seed to use for the fixed draws. Running the optimisation
+        twice with the same seed should arrive at the same result.
+
+    Returns
+    -------
+    :class:`~arviz.InferenceData`
+        The inference data containing the results of the DADVI algorithm.
+
+    References
+    ----------
+    Giordano, R., Ingram, M., & Broderick, T. (2024). Black Box Variational Inference with a Deterministic Objective: Faster, More Accurate, and Even More Black Box. Journal of Machine Learning Research, 25(18), 1–39.
+
+
+    """
 
     model = pymc.modelcontext(model) if model is None else model
 
