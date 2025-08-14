@@ -120,7 +120,7 @@ class StructuralTimeSeries(PyMCStateSpace):
             initial_trend = pm.Normal('initial_trend', sigma=10, dims=ss_mod.param_dims['initial_trend'])
             sigma_trend = pm.HalfNormal('sigma_trend', sigma=1, dims=ss_mod.param_dims['sigma_trend'])
 
-            seasonal_coefs = pm.Normal('seasonal_coefs', sigma=1, dims=ss_mod.param_dims['seasonal_coefs'])
+            seasonal_coefs = pm.Normal('params_seasonal', sigma=1, dims=ss_mod.param_dims['params_seasonal'])
             sigma_seasonal = pm.HalfNormal('sigma_seasonal', sigma=1)
 
             sigma_obs = pm.Exponential('sigma_obs', 1, dims=ss_mod.param_dims['sigma_obs'])
@@ -471,6 +471,10 @@ class Component:
     obs_state_idxs : np.ndarray | None, optional
         Indices indicating which states contribute to observed variables. If None,
         defaults to None.
+    share_states : bool, optional
+        Whether states are shared across multiple endogenous variables in multivariate
+        models. When True, the same latent states affect all observed variables.
+        Default is False.
 
     Examples
     --------
@@ -512,10 +516,12 @@ class Component:
         combine_hidden_states=True,
         component_from_sum=False,
         obs_state_idxs=None,
+        share_states: bool = False,
     ):
         self.name = name
         self.k_endog = k_endog
         self.k_states = k_states
+        self.share_states = share_states
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
 
@@ -557,6 +563,7 @@ class Component:
                 "observed_state_names": self.observed_state_names,
                 "combine_hidden_states": combine_hidden_states,
                 "obs_state_idx": obs_state_idxs,
+                "share_states": self.share_states,
             }
         }
 
