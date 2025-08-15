@@ -67,16 +67,16 @@ def _assert_coord_shapes_match_matrices(mod, params):
     n_shocks = max(1, len(mod.coords[SHOCK_DIM]))
     n_obs = len(mod.coords[OBS_STATE_DIM])
 
-    assert x0.shape[-1:] == (n_states,), (
-        f"x0 expected to have shape (n_states, ), found {x0.shape[-1:]}"
-    )
+    assert x0.shape[-1:] == (
+        n_states,
+    ), f"x0 expected to have shape (n_states, ), found {x0.shape[-1:]}"
     assert P0.shape[-2:] == (
         n_states,
         n_states,
     ), f"P0 expected to have shape (n_states, n_states), found {P0.shape[-2:]}"
-    assert c.shape[-1:] == (n_states,), (
-        f"c expected to have shape (n_states, ), found {c.shape[-1:]}"
-    )
+    assert c.shape[-1:] == (
+        n_states,
+    ), f"c expected to have shape (n_states, ), found {c.shape[-1:]}"
     assert d.shape[-1:] == (n_obs,), f"d expected to have shape (n_obs, ), found {d.shape[-1:]}"
     assert T.shape[-2:] == (
         n_states,
@@ -107,9 +107,9 @@ def _assert_keys_match(test_dict, expected_dict):
     assert len(key_diff) == 0, f"{', '.join(key_diff)} were not found in the test_dict keys."
 
     key_diff = set(param_keys) - set(expected_keys)
-    assert len(key_diff) == 0, (
-        f"{', '.join(key_diff)} were keys of the tests_dict not in expected_dict."
-    )
+    assert (
+        len(key_diff) == 0
+    ), f"{', '.join(key_diff)} were keys of the tests_dict not in expected_dict."
 
 
 def _assert_param_dims_correct(param_dims, expected_dims):

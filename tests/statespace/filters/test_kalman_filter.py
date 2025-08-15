@@ -73,9 +73,9 @@ def test_output_shapes_one_state_one_observed(filter_func, rng):
 
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert outputs[output_idx].shape == expected_output, (
-            f"Shape of {name} does not match expected"
-        )
+        assert (
+            outputs[output_idx].shape == expected_output
+        ), f"Shape of {name} does not match expected"
 
 
 @pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)
@@ -86,9 +86,9 @@ def test_output_shapes_when_all_states_are_stochastic(filter_func, rng):
     outputs = filter_func(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert outputs[output_idx].shape == expected_output, (
-            f"Shape of {name} does not match expected"
-        )
+        assert (
+            outputs[output_idx].shape == expected_output
+        ), f"Shape of {name} does not match expected"
 
 
 @pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)
@@ -99,9 +99,9 @@ def test_output_shapes_when_some_states_are_deterministic(filter_func, rng):
     outputs = filter_func(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert outputs[output_idx].shape == expected_output, (
-            f"Shape of {name} does not match expected"
-        )
+        assert (
+            outputs[output_idx].shape == expected_output
+        ), f"Shape of {name} does not match expected"
 
 
 @pytest.fixture
@@ -161,9 +161,9 @@ def test_output_shapes_with_time_varying_matrices(f_standard_nd, rng):
 
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert outputs[output_idx].shape == expected_output, (
-            f"Shape of {name} does not match expected"
-        )
+        assert (
+            outputs[output_idx].shape == expected_output
+        ), f"Shape of {name} does not match expected"
 
 
 @pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)
@@ -175,9 +175,9 @@ def test_output_with_deterministic_observation_equation(filter_func, rng):
 
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert outputs[output_idx].shape == expected_output, (
-            f"Shape of {name} does not match expected"
-        )
+        assert (
+            outputs[output_idx].shape == expected_output
+        ), f"Shape of {name} does not match expected"
 
 
 @pytest.mark.parametrize(
@@ -190,9 +190,9 @@ def test_output_with_multiple_observed(filter_func, filter_name, rng):
     outputs = filter_func(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert outputs[output_idx].shape == expected_output, (
-            f"Shape of {name} does not match expected"
-        )
+        assert (
+            outputs[output_idx].shape == expected_output
+        ), f"Shape of {name} does not match expected"
 
 
 @pytest.mark.parametrize(
@@ -206,9 +206,9 @@ def test_missing_data(filter_func, filter_name, p, rng):
     outputs = filter_func(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert outputs[output_idx].shape == expected_output, (
-            f"Shape of {name} does not match expected"
-        )
+        assert (
+            outputs[output_idx].shape == expected_output
+        ), f"Shape of {name} does not match expected"
 
 
 @pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)

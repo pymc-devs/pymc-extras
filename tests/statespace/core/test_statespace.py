@@ -1241,9 +1241,9 @@ def test_param_dims_coords(ss_mod_multi_component):
             assert dims is None
             continue
         for i, s in zip(shape, dims):
-            assert i == len(ss_mod_multi_component.coords[s]), (
-                f"Mismatch between shape {i} and dimension {s}"
-            )
+            assert i == len(
+                ss_mod_multi_component.coords[s]
+            ), f"Mismatch between shape {i} and dimension {s}"
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
