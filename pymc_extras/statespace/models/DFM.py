@@ -367,7 +367,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             "sigma_obs",
         ]
 
-        # Handle cases where parameters should be excluded based on model settings
+        # Handle cases where parameters should be excluded  or included based on model settings
         if self.factor_order == 0:
             names.remove("factor_ar")
         if self.error_order == 0:
