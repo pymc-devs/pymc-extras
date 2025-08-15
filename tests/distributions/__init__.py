@@ -16,4 +16,4 @@
 from pymc_extras.distributions import histogram_utils
 from pymc_extras.distributions.histogram_utils import histogram_approximation
 
-__all__ = ["histogram_utils", "histogram_approximation"]
+__all__ = ["histogram_approximation", "histogram_utils"]
