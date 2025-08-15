@@ -43,14 +43,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
         Names of the observed time series. If not provided, default names will be generated as `endog_1`, `endog_2`, ..., `endog_k` based on `k_endog`.
         At least one of `k_endog` or `endog_names` must be provided.
 
-    k_endog : int
-        Number of observed time series.
-
-    endog_names : Sequence[str], optional
-        Names of the observed time series. If not provided, default names will be generated as `endog_1`, `endog_2`, ..., `endog_k`.
-
-    k_exog : int
-        Number of exogenous variables, optional. If not provided, model will not have exogenous variables.
+    k_exog : int, optional
+        Number of exogenous variables. If not provided, the model will not have exogenous variables.
 
     exog_names : Sequence[str], optional
         Names of the exogenous variables. If not provided, but `k_exog` is specified, default names will be generated as `exog_1`, `exog_2`, ..., `exog_k`.
@@ -82,6 +76,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
     Notes
     -----
+    TODO: adding to notes, how exog variables are handled and add them in the example?
     The Dynamic Factor Model (DFM) is a multivariate state-space model used to represent high-dimensional time series
     as being driven by a smaller set of unobserved dynamic factors.
 
@@ -304,7 +299,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         self.error_cov_type = error_cov_type
 
         if k_exog is None and exog_names is None:
-            self._exog = False
+            self._exog = False  # flag for presence of exogeneous variables
             self.k_exog = 0
         else:
             self._exog = True
@@ -325,7 +320,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         # I start implementing a version of exog support based on pymc_extras/statespace/models/structural/components/regression.py
         # exog_innovations control if the beta coefficient follows a random walk
         # shared_exog_states control if the exogenous states are shared across equations
-        # I tested the case of shared_exog_states=True and exog_innovations=False vs the stats case by looking at trajectory and it works well
+        # I tested the case of shared_exog_states=True and exog_innovations=False vs the stats case by looking at trajectory and everything works well
 
         # Determine the dimension for the latent factor states.
         # For static factors, one use k_factors.
@@ -345,7 +340,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
         # Number of independent shocks.
         # Typically, the latent factors introduce k_factors shocks.
         # If error_order > 0 and errors are modeled jointly or separately, add appropriate count.
-        # TODO currently the implementation does not support for innovation on betas coefficient
         k_posdef = (
             k_factors
             + (k_endog if error_order > 0 else 0)
@@ -465,12 +459,16 @@ class BayesianDynamicFactor(PyMCStateSpace):
             if self.shared_exog_states:
                 # Shared exogenous states
                 for i in range(self.k_exog):
-                    names.append(f"exog_{i}.shared")
+                    names.append(
+                        f"exog_{i}.shared"
+                    )  # better to call beta? But could make confusion between parameter of the model and name of the state
             else:
                 # Exogenous states
                 for i in range(self.k_exog):
                     for j in range(self.k_endog):
-                        names.append(f"exog_{i}.endog_{j}")
+                        names.append(
+                            f"exog_{i}.endog_{j}"
+                        )  # better to call beta? But could make confusion between parameter of the model and name of the state
 
         return names
 
@@ -516,6 +514,15 @@ class BayesianDynamicFactor(PyMCStateSpace):
         if self.error_order > 0:
             for i in range(self.k_endog):
                 shock_names.append(f"error_shock_{i}")
+
+        if self._exog:
+            if self.shared_exog_states:
+                for i in range(self.k_exog):
+                    shock_names.append(f"exog_shock_{i}.shared")
+            else:
+                for i in range(self.k_exog):
+                    for j in range(self.k_endog):
+                        shock_names.append(f"exog_shock_{i}.endog_{j}")
 
         return shock_names
 
@@ -580,12 +587,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
             x0_2 = self.make_and_register_variable(
                 "beta", shape=(self.k_exog_states,), dtype=floatX
             )
-            # if self.shared_exog_states:
-            #     x0_1 = self.make_and_register_variable("x0", shape=(self.k_states-self.k_exog,), dtype=floatX)
-            #     x0_2 = self.make_and_register_variable("beta", shape=(self.k_exog,), dtype=floatX)
-            # else:
-            #     x0_1 = self.make_and_register_variable("x0", shape=(self.k_states-self.k_endog*self.k_exog,), dtype=floatX)
-            #     x0_2 = self.make_and_register_variable("beta", shape=(self.k_endog*self.k_exog,), dtype=floatX)
             x0 = pt.concatenate([x0_1, x0_2], axis=0)
 
         self.ssm["initial_state", :] = x0
@@ -604,6 +605,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         # Start with factor loadings
         matrix_parts = [factor_loadings]
 
+        # Leave space for higher-order factors
         if self.factor_order > 1:
             matrix_parts.append(
                 pt.zeros((self.k_endog, self.k_factors * (self.factor_order - 1)), dtype=floatX)
@@ -722,8 +724,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
             transition_blocks.append(
                 build_independent_var_block_matrix(error_ar, self.k_endog, self.error_order)
             )
+        # Exogenous variables are either constant or follow a random walk
         if self._exog:
             transition_blocks.append(pt.eye(self.k_exog_states, dtype=floatX))
+
         # Final block diagonal transition matrix
         self.ssm["transition", :, :] = pt.linalg.block_diag(*transition_blocks)
 
@@ -738,17 +742,21 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 self.ssm["selection", row, col] = 1.0
 
         if self._exog and self.exog_innovations:
-            for i in range(self.k_exog_states):
-                if self.error_order > 0:
-                    self.ssm[
-                        "selection",
-                        self.k_states - self.k_exog_states + i,
-                        self.k_factors + self.k_endog + i,
-                    ] = 1.0
-                else:
-                    self.ssm[
-                        "selection", self.k_states - self.k_exog_states + i, self.k_factors + i
-                    ] = 1.0
+            # Calculate row and column indices for the identity block
+            row_start = self.k_states - self.k_exog_states
+            row_end = self.k_states
+
+            if self.error_order > 0:
+                col_start = self.k_factors + self.k_endog
+                col_end = self.k_factors + self.k_endog + self.k_exog_states
+            else:
+                col_start = self.k_factors
+                col_end = self.k_factors + self.k_exog_states
+
+            # Set the identity block directly
+            self.ssm["selection", row_start:row_end, col_start:col_end] = pt.eye(
+                self.k_exog_states, dtype=floatX
+            )
 
         factor_cov = pt.eye(self.k_factors, dtype=floatX)
 
@@ -804,9 +812,11 @@ class BayesianDynamicFactor(PyMCStateSpace):
                     "sigma_obs", shape=(self.k_endog,), dtype=floatX
                 )
                 self.ssm["obs_cov", :, :] = pt.diag(sigma_obs)
-            # else: obs_cov remains zero (no measurement noise and idiosyncratic noise captured in state)
+        # else: obs_cov remains zero (no measurement noise and idiosyncratic noise captured in state)
         else:
             if self.measurement_error:
+                # TODO: check this decision
+                # in this case error_order = 0, so there is no error term in the state, so the sigma error could not be added there
                 # Idiosyncratic + measurement error
                 sigma_obs = self.make_and_register_variable(
                     "sigma_obs", shape=(self.k_endog,), dtype=floatX
