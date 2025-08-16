@@ -9,6 +9,7 @@ import pytensor.tensor as pt
 from arviz import InferenceData, dict_to_dataset
 from pymc.backends.arviz import coords_and_dims_for_inferencedata, dataset_to_point_list
 from pymc.distributions.discrete import Bernoulli, Categorical, DiscreteUniform
+from pymc.distributions.multivariate import MvNormal
 from pymc.distributions.transforms import Chain
 from pymc.logprob.transforms import IntervalTransform
 from pymc.model import Model
@@ -45,6 +46,7 @@ from pymc_extras.distributions import DiscreteMarkovChain
 from pymc_extras.model.marginal.distributions import (
     MarginalDiscreteMarkovChainRV,
     MarginalFiniteDiscreteRV,
+    MarginalLaplaceRV,
     MarginalRV,
     NonSeparableLogpWarning,
     get_domain_of_finite_discrete_rv,
@@ -144,7 +146,9 @@ def _unique(seq: Sequence) -> list:
     return [x for x in seq if not (x in seen or seen_add(x))]
 
 
-def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
+def marginalize(
+    model: Model, rvs_to_marginalize: ModelRVs, use_laplace: bool = False, **marginalize_kwargs
+) -> MarginalModel:
     """Marginalize a subset of variables in a PyMC model.
 
     This creates a class of `MarginalModel` from an existing `Model`, with the specified
@@ -158,6 +162,8 @@ def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
         PyMC model to marginalize. Original variables well be cloned.
     rvs_to_marginalize : Sequence[TensorVariable]
         Variables to marginalize in the returned model.
+    use_laplace : bool
+        Whether to use Laplace appoximations to marginalize out rvs_to_marginalize.
 
     Returns
     -------
@@ -186,7 +192,12 @@ def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
                 raise NotImplementedError(
                     "Marginalization for DiscreteMarkovChain with non-matrix transition probability is not supported"
                 )
-        elif not isinstance(rv_op, Bernoulli | Categorical | DiscreteUniform):
+        elif use_laplace and not isinstance(rv_op, MvNormal):
+            raise ValueError(
+                f"Marginalisation method set to Laplace but RV {rv_to_marginalize} is not instance of MvNormal. Has distribution {rv_to_marginalize.owner.op}"
+            )
+
+        elif not use_laplace and not isinstance(rv_op, Bernoulli | Categorical | DiscreteUniform):
             raise NotImplementedError(
                 f"Marginalization of RV with distribution {rv_to_marginalize.owner.op} is not supported"
             )
@@ -241,7 +252,9 @@ def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
         ]
         input_rvs = _unique((*marginalized_rv_input_rvs, *other_direct_rv_ancestors))
 
-        replace_finite_discrete_marginal_subgraph(fg, rv_to_marginalize, dependent_rvs, input_rvs)
+        replace_marginal_subgraph(
+            fg, rv_to_marginalize, dependent_rvs, input_rvs, use_laplace, **marginalize_kwargs
+        )
 
     return model_from_fgraph(fg, mutate_fgraph=True)
 
@@ -551,22 +564,32 @@ def remove_model_vars(vars):
     return fgraph.outputs
 
 
-def replace_finite_discrete_marginal_subgraph(
-    fgraph, rv_to_marginalize, dependent_rvs, input_rvs
+def replace_marginal_subgraph(
+    fgraph,
+    rv_to_marginalize,
+    dependent_rvs,
+    input_rvs,
+    use_laplace=False,
+    **marginalize_kwargs,
 ) -> None:
     # If the marginalized RV has multiple dimensions, check that graph between
     # marginalized RV and dependent RVs does not mix information from batch dimensions
     # (otherwise logp would require enumerating over all combinations of batch dimension values)
-    try:
-        dependent_rvs_dim_connections = subgraph_batch_dim_connection(
-            rv_to_marginalize, dependent_rvs
-        )
-    except (ValueError, NotImplementedError) as e:
-        # For the perspective of the user this is a NotImplementedError
-        raise NotImplementedError(
-            "The graph between the marginalized and dependent RVs cannot be marginalized efficiently. "
-            "You can try splitting the marginalized RV into separate components and marginalizing them separately."
-        ) from e
+    if not use_laplace:
+        try:
+            dependent_rvs_dim_connections = subgraph_batch_dim_connection(
+                rv_to_marginalize, dependent_rvs
+            )
+        except (ValueError, NotImplementedError) as e:
+            # For the perspective of the user this is a NotImplementedError
+            raise NotImplementedError(
+                "The graph between the marginalized and dependent RVs cannot be marginalized efficiently. "
+                "You can try splitting the marginalized RV into separate components and marginalizing them separately."
+            ) from e
+    else:
+        dependent_rvs_dim_connections = [
+            (None,),
+        ]
 
     output_rvs = [rv_to_marginalize, *dependent_rvs]
     rng_updates = collect_default_updates(output_rvs, inputs=input_rvs, must_be_shared=False)
@@ -581,6 +604,8 @@ def replace_finite_discrete_marginal_subgraph(
 
     if isinstance(inner_outputs[0].owner.op, DiscreteMarkovChain):
         marginalize_constructor = MarginalDiscreteMarkovChainRV
+    elif use_laplace:
+        marginalize_constructor = MarginalLaplaceRV
     else:
         marginalize_constructor = MarginalFiniteDiscreteRV
 
@@ -590,6 +615,7 @@ def replace_finite_discrete_marginal_subgraph(
         outputs=inner_outputs,
         dims_connections=dependent_rvs_dim_connections,
         dims=dims,
+        **marginalize_kwargs,
     )
 
     new_outputs = marginalization_op(*inputs)
