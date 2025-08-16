@@ -8,7 +8,7 @@ import pytensor.tensor as pt
 
 from pymc.distributions import Bernoulli, Categorical, DiscreteUniform
 from pymc.distributions.distribution import _support_point, support_point
-from pymc.distributions.multivariate import _precision_mv_normal_logp
+from pymc.distributions.multivariate import _logdet_from_cholesky, nan_lower_cholesky
 from pymc.logprob.abstract import MeasurableOp, _logprob
 from pymc.logprob.basic import conditional_logp, logp
 from pymc.pytensorf import constant_fold
@@ -391,6 +391,17 @@ def marginal_hmm_logp(op, values, *inputs, **kwargs):
     warn_non_separable_logp(values)
     dummy_logps = (DUMMY_ZERO,) * (len(values) - 1)
     return joint_logp, *dummy_logps
+
+
+def _precision_mv_normal_logp(value, mean, tau):
+    k = value.shape[-1].astype("floatX")
+
+    delta = value - mean
+    quadratic_form = delta.T @ tau @ delta
+    logdet, posdef = _logdet_from_cholesky(nan_lower_cholesky(tau))
+    logp = -0.5 * (k * pt.log(2 * np.pi) + quadratic_form) + logdet
+
+    return logp, posdef
 
 
 @_logprob.register(MarginalLaplaceRV)
