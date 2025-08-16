@@ -85,7 +85,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
     The transition equation is given by:
 
     .. math::
-        s_{t+1} = T s_t + R \eta_t
+        s_{t+1} = T s_t + R \epsilon_t
 
     Where:
     - :math:`T` is the state transition matrix, composed of:
@@ -106,11 +106,11 @@ class BayesianDynamicFactor(PyMCStateSpace):
             \end{bmatrix}
             \in \mathbb{R}^{k_{\text{states}} \times k_{\text{states}}}
 
-    - :math:`\eta_t` contains the independent shocks (innovations) and has dimension :math:`k + k_{\text{endog}}` if AR errors are included.
+    - :math:`\epsilon_t` contains the independent shocks (innovations) and has dimension :math:`k + k_{\text{endog}}` if AR errors are included.
         .. math::
-            \eta_t = \begin{bmatrix}
-            \eta_{f,t} \\
-            \eta_{u,t}
+            \epsilon_t = \begin{bmatrix}
+            \epsilon_{f,t} \\
+            \epsilon_{u,t}
             \end{bmatrix}
             \in \mathbb{R}^{k +  k_{\text{endog}}}
 
@@ -131,7 +131,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
     .. math::
 
-        y_t = Z s_t + B x_t + \eta_t
+        y_t = Z s_t + \eta_t
 
     where
 
@@ -147,17 +147,20 @@ class BayesianDynamicFactor(PyMCStateSpace):
             \end{bmatrix}
             \in \mathbb{R}^{k_{\text{endog}} \times k_{\text{states}}}
 
-    - :math:`\x_t` is the vector of exogenous variables at time :math:`t`
-
     - :math:`\eta_t` is the vector of observation errors at time :math:`t`
+
+    When exogenous variables :math:`x_t` are present, the implementation follows `pymc_extras/statespace/models/structural/components/regression.py`.
+    In this case, the state vector is extended to include the beta parameters, and the design matrix is modified accordingly,
+    becoming 3-dimensional to handle time-varying exogenous regressors.
+    This approach provides greater flexibility, controlled by the boolean flags `shared_exog_state` and `exog_innovations`.
+    Unlike Statsmodels, where exogenous variables are included only in the observation equation, here they are fully integrated into the state-space
+    representation.
 
     .. warning::
 
         Identification can be an issue, particularly when many observed series load onto only a few latent factors.
         These models are only identified up to a sign flip in the factor loadings. Proper prior specification is crucial
         for good estimation and inference.
-
-    Currently, the implementation does not yet support exogenous variables
 
     Examples
     --------
@@ -188,13 +191,13 @@ class BayesianDynamicFactor(PyMCStateSpace):
         with pm.Model(coords=coords) as pymc_mod:
             # Priors for the initial state mean and covariance
             x0 = pm.Normal("x0", dims=["state_dim"])
-            P0 = pm.Normal("P0", dims=["state_dim", "state_dim"])
+            P0 = pm.HalfNormal("P0", dims=["state_dim", "state_dim"])
 
             # Factor loadings: shape (k_endog, k_factors)
             factor_loadings = pm.Normal("factor_loadings", sigma=1, dims=["k_endog", "k_factors"])
 
             # AR coefficients for factor dynamics: shape (k_factors, factor_order)
-            factor_ar = pm.Normal("factor_ar", sigma=1, dims=["k_factors", "factor_order"])
+            factor_ar = pm.Normal("factor_ar", sigma=1, dims=["k_factors", "k_factors" * "factor_order"])
 
             # AR coefficients for observation noise: shape (k_endog, error_order)
             error_ar = pm.Normal("error_ar", sigma=1, dims=["k_endog", "error_order"])
@@ -241,7 +244,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
             Number of latent factors.
 
         factor_order : int
-            Order of the VAR process for the latent factors. If 0, the factors are treated as static (no dynamics).
+            Order of the VAR process for the latent factors. If set to 0, the factors have no autoregressive dynamics
+            and are modeled as a white noise process, i.e., :math:`f_t = \varepsilon_{f,t}`.
             Therefore, the state vector will include one state per factor and "factor_ar" will not exist.
 
         k_endog : int, optional
@@ -438,7 +442,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         """
         names = []
 
-        for i in range(self.factor_order):
+        for i in range(self.k_factors):
             for lag in range(max(self.factor_order, 1)):
                 names.append(f"L{lag}.factor_{i}")
 
