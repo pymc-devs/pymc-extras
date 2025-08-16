@@ -13,7 +13,11 @@ from pytensor.graph.basic import explicit_graph_inputs
 from statsmodels.tsa.statespace.dynamic_factor import DynamicFactor
 
 from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
-from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES
+from pymc_extras.statespace.utils.constants import (
+    LONG_MATRIX_NAMES,
+    MATRIX_NAMES,
+    SHORT_NAME_TO_LONG,
+)
 from tests.statespace.shared_fixtures import rng
 
 floatX = pytensor.config.floatX
@@ -133,7 +137,7 @@ def test_DFM_update_matches_statsmodels(data, k_factors, factor_order, error_ord
     # Generate test values for PyMC model
     test_values = {}
     test_values["x0"] = rng.normal(size=mod.k_states)
-    test_values["P0"] = np.eye(mod.k_states)  # Use identity for stability
+    test_values["P0"] = np.eye(mod.k_states)
     test_values["factor_loadings"] = rng.normal(size=(data.shape[1], k_factors))
 
     if factor_order > 0:
@@ -164,7 +168,7 @@ def test_DFM_update_matches_statsmodels(data, k_factors, factor_order, error_ord
     input_names = [x.name for x in inputs]
 
     f_matrices = pytensor.function(inputs, matrices)
-    test_values_subset = {name: test_values[name] for name in input_names}
+    test_values_subset = {name: test_values[name] for name in input_names if name in test_values}
 
     pymc_matrices = f_matrices(**test_values_subset)
 
@@ -173,3 +177,170 @@ def test_DFM_update_matches_statsmodels(data, k_factors, factor_order, error_ord
     # Compare matrices (skip x0 and P0)
     for matrix, sm_matrix, name in zip(pymc_matrices[2:], sm_matrices, LONG_MATRIX_NAMES[2:]):
         assert_allclose(matrix, sm_matrix, err_msg=f"{name} does not match")
+
+
+def unpack_statespace(ssm):
+    return [ssm[SHORT_NAME_TO_LONG[x]] for x in MATRIX_NAMES]
+
+
+def unpack_symbolic_matrices_with_params(mod, param_dict, data_dict=None, mode="FAST_COMPILE"):
+    inputs = list(mod._name_to_variable.values())
+    if data_dict is not None:
+        inputs += list(mod._name_to_data.values())
+    else:
+        data_dict = {}
+
+    f_matrices = pytensor.function(
+        inputs,
+        unpack_statespace(mod.ssm),
+        on_unused_input="raise",
+        mode=mode,
+    )
+
+    return f_matrices(**param_dict, **data_dict)
+
+
+def simulate_from_numpy_model(
+    mod, rng, param_dict, data_dict=None, steps=100, state_shocks=None, measurement_shocks=None
+):
+    x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(mod, param_dict, data_dict)
+    k_endog = mod.k_endog
+    k_states = mod.k_states
+    k_posdef = mod.k_posdef
+
+    x = np.zeros((steps, k_states))
+    y = np.zeros((steps, k_endog))
+
+    x[0] = x0
+    y[0] = (Z @ x0).squeeze() if Z.ndim == 2 else (Z[0] @ x0).squeeze()
+
+    if not np.allclose(H, 0):
+        y[0] += rng.multivariate_normal(mean=np.zeros(1), cov=H).squeeze()
+
+    for t in range(1, steps):
+        if k_posdef > 0:
+            innov = R @ rng.multivariate_normal(mean=np.zeros(k_posdef), cov=Q)
+        else:
+            innov = 0
+
+        if not np.allclose(H, 0):
+            error = measurement_shocks[t - 1]
+        else:
+            error = 0
+
+        x[t] = c + T @ x[t - 1] + innov
+        if Z.ndim == 2:
+            y[t] = (d + Z @ x[t] + error).squeeze()
+        else:
+            y[t] = (d + Z[t] @ x[t] + error).squeeze()
+
+    return x, y.squeeze()
+
+
+@pytest.mark.parametrize("n_obs,n_runs", [(100, 200)])
+def test_exog_betas_random_walk(n_obs, n_runs):
+    rng = np.random.default_rng(123)
+
+    # Example model
+    dfm_mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        k_endog=2,
+        error_order=1,
+        error_var=False,
+        k_exog=2,
+        shared_exog_states=False,
+        exog_innovations=True,
+        error_cov_type="diagonal",
+        measurement_error=False,
+    )
+
+    # Parameters
+    param_dict = {
+        "factor_loadings": np.array([[0.9], [0.8]]),
+        "factor_ar": np.array([[0.5]]),
+        "error_ar": np.array([[0.4], [0.3]]),
+        "error_sigma": np.array([0.1, 0.2]),
+        "P0": np.eye(dfm_mod.k_states),
+        "x0": np.zeros(dfm_mod.k_states - dfm_mod.k_exog * dfm_mod.k_endog),
+        "beta": np.array([0.3, 0.5, 1, 2]),
+        "beta_sigma": np.array([1, 2, 3, 4]) ** 0.5,
+    }
+    data_dict = {"exog_data": np.random.normal(size=(n_obs, 2))}
+
+    # Run multiple sims
+    betas_t1, betas_t100 = [], []
+    k_exog_states = dfm_mod.k_exog * dfm_mod.k_endog
+
+    for _ in range(n_runs):
+        x_traj, _ = simulate_from_numpy_model(dfm_mod, rng, param_dict, data_dict, steps=n_obs)
+        beta_traj = x_traj[:, -k_exog_states:]
+        betas_t1.append(beta_traj[1, :])
+        betas_t100.append(beta_traj[-1, :])
+
+    betas_t1 = np.array(betas_t1)
+    betas_t100 = np.array(betas_t100)
+
+    var_t1 = betas_t1.var(axis=0)
+    var_t100 = betas_t100.var(axis=0)
+
+    # ---- Assertion ----
+    assert np.all(
+        var_t100 > var_t1
+    ), f"Expected variance at T=100 > T=1, got {var_t1} vs {var_t100}"
+
+
+@pytest.mark.parametrize("shared", [True, False])
+def test_exog_shared_vs_not(shared):
+    rng = np.random.default_rng(123)
+
+    n_obs = 50
+    k_exog = 2
+    k_endog = 2
+
+    # Dummy exogenous data
+    exog = rng.normal(size=(n_obs, k_exog))
+
+    # Create the model
+    dfm_mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        k_endog=k_endog,
+        error_order=1,
+        k_exog=k_exog,
+        shared_exog_states=shared,
+        exog_innovations=False,
+        error_cov_type="diagonal",
+        measurement_error=False,
+    )
+    k_exog_states = dfm_mod.k_exog * dfm_mod.k_endog if not shared else dfm_mod.k_exog
+
+    # Dummy parameters (small values so simulation is stable)
+    param_dict = {
+        "factor_loadings": np.array([[0.9], [0.8]]),
+        "factor_ar": np.array([[0.5]]),
+        "error_ar": np.array([[0.4], [0.3]]),
+        "error_sigma": np.array([0.1, 0.2]),
+        "P0": np.eye(dfm_mod.k_states),
+        "x0": np.zeros(dfm_mod.k_states - k_exog_states),
+        "beta": np.array([0.3, 0.5, 1, 2]) if not shared else np.array([0.3, 0.5]),
+    }
+
+    data_dict = {"exog_data": exog}
+
+    # Simulate trajectory
+    x_traj, y_traj = simulate_from_numpy_model(dfm_mod, rng, param_dict, data_dict, steps=n_obs)
+
+    # Extract contribution from exogenous variables at time t
+    beta = param_dict["beta"].reshape(-1, k_exog)  # shape depends on shared flag
+    exog_t = exog[10]  # pick a random time point
+
+    if shared:
+        # all endogs get the same contribution
+        contributions = [beta @ exog_t for _ in range(k_endog)]
+        assert np.allclose(contributions[0], contributions[1:])
+    else:
+        # each endog gets a different contribution
+        contributions = [beta[i] @ exog_t for i in range(k_endog)]
+        # check that at least one differs
+        assert not np.allclose(contributions[0], contributions[1:])
