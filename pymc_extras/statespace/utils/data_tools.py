@@ -53,7 +53,7 @@ def _validate_data_shape(data_shape, n_obs, obs_coords=None, check_col_names=Fal
         if len(missing_cols) > 0:
             raise ValueError(
                 "Columns of DataFrame provided as data do not match state names. The following states were"
-                f'not found: {", ".join(missing_cols)}. This may result in unexpected results in complex'
+                f"not found: {', '.join(missing_cols)}. This may result in unexpected results in complex"
                 f"statespace models"
             )
 

@@ -137,7 +137,7 @@ test_state_names = [
         "state_star_3",
         "state_star_4",
     ],
-    ["data", "data_star"] + [f"state_star_{i+1}" for i in range(26)],
+    ["data", "data_star"] + [f"state_star_{i + 1}" for i in range(26)],
 ]
 
 test_orders = [
