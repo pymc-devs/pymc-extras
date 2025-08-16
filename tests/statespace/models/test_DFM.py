@@ -22,9 +22,6 @@ from tests.statespace.shared_fixtures import rng
 
 floatX = pytensor.config.floatX
 
-# TODO: check test for error_var=True, since there are problems with statsmodels, the matrices looks the same by some experiments done in notebooks
-# (FAILED tests/statespace/models/test_DFM.py::test_DFM_update_matches_statsmodels[True-2-2-2] - numpy.linalg.LinAlgError: 1-th leading minor of the array is not positive definite)
-
 
 @pytest.fixture(scope="session")
 def data():
@@ -43,7 +40,7 @@ def create_sm_test_values_mapping(
     """Convert PyMC test values to statsmodels parameter format"""
     sm_test_values = {}
 
-    # 1. Factor loadings: PyMC shape (n_endog, k_factors) -> statsmodels individual params
+    # Factor loadings: PyMC shape (n_endog, k_factors) -> statsmodels individual params
     factor_loadings = test_values["factor_loadings"]
     all_pairs = product(data.columns, range(1, k_factors + 1))
     sm_test_values.update(
@@ -53,7 +50,7 @@ def create_sm_test_values_mapping(
         }
     )
 
-    # 2. Factor AR coefficients: PyMC shape (k_factors, factor_order*k_factors) -> L{lag}.f{to}.f{from}
+    # Factor AR coefficients: PyMC shape (k_factors, factor_order*k_factors) -> L{lag}.f{to}.f{from}
     if factor_order > 0 and "factor_ar" in test_values:
         factor_ar = test_values["factor_ar"]
         triplets = product(
@@ -68,7 +65,7 @@ def create_sm_test_values_mapping(
             }
         )
 
-    # 3a. Error AR coefficients: PyMC shape (n_endog, error_order) -> L{lag}.e(var).e(var)
+    # Error AR coefficients: PyMC shape (n_endog, error_order) -> L{lag}.e(var).e(var)
     if error_order > 0 and not error_var and "error_ar" in test_values:
         error_ar = test_values["error_ar"]
         pairs = product(enumerate(data.columns), range(1, error_order + 1))
@@ -79,7 +76,7 @@ def create_sm_test_values_mapping(
             }
         )
 
-    # 3b. Error AR coefficients: PyMC shape (n_endog, error_order * n_endog) -> L{lag}.e(var).e(var)
+    # Error AR coefficients: PyMC shape (n_endog, error_order * n_endog) -> L{lag}.e(var).e(var)
     elif error_order > 0 and error_var and "error_ar" in test_values:
         error_ar = test_values["error_ar"]
         triplets = product(
@@ -97,7 +94,7 @@ def create_sm_test_values_mapping(
             }
         )
 
-    # 4. Observation error variances:
+    # Observation error variances:
     if "error_sigma" in test_values:
         error_sigma = test_values["error_sigma"]
         sm_test_values.update(
@@ -113,10 +110,15 @@ def create_sm_test_values_mapping(
 @pytest.mark.parametrize("k_factors", [1, 2])
 @pytest.mark.parametrize("factor_order", [0, 1, 2])
 @pytest.mark.parametrize("error_order", [0, 1, 2])
-@pytest.mark.parametrize("error_var", [False])
+@pytest.mark.parametrize("error_var", [True, False])
 @pytest.mark.filterwarnings("ignore::statsmodels.tools.sm_exceptions.EstimationWarning")
 @pytest.mark.filterwarnings("ignore::FutureWarning")
 def test_DFM_update_matches_statsmodels(data, k_factors, factor_order, error_order, error_var, rng):
+    if error_var and (factor_order > 0 or error_order > 0):
+        pytest.xfail(
+            "Statsmodels may be doing something wrong with error_var=True and (factor_order > 0 or error_order > 0) [numpy.linalg.LinAlgError: 1-th leading minor of the array is not positive definite]"
+        )
+
     mod = BayesianDynamicFactor(
         k_factors=k_factors,
         factor_order=factor_order,
@@ -155,14 +157,13 @@ def test_DFM_update_matches_statsmodels(data, k_factors, factor_order, error_ord
         test_values, data, k_factors, factor_order, error_order, error_var
     )
 
-    # Initialize and constrain statsmodels model
     x0 = test_values["x0"]
     P0 = test_values["P0"]
 
     sm_dfm.initialize_known(initial_state=x0, initial_state_cov=P0)
     sm_dfm.fit_constrained({name: sm_test_values[name] for name in sm_dfm.param_names})
 
-    # Get PyMC matrices using the same pattern as ETS test
+    # Get PyMC matrices
     matrices = mod._unpack_statespace_with_placeholders()
     inputs = list(explicit_graph_inputs(matrices))
     input_names = [x.name for x in inputs]
@@ -238,10 +239,8 @@ def simulate_from_numpy_model(
 
 
 @pytest.mark.parametrize("n_obs,n_runs", [(100, 200)])
-def test_exog_betas_random_walk(n_obs, n_runs):
+def test_DFM_exog_betas_random_walk(n_obs, n_runs):
     rng = np.random.default_rng(123)
-
-    # Example model
     dfm_mod = BayesianDynamicFactor(
         k_factors=1,
         factor_order=1,
@@ -255,7 +254,7 @@ def test_exog_betas_random_walk(n_obs, n_runs):
         measurement_error=False,
     )
 
-    # Parameters
+    # Arbitrary Parameters
     param_dict = {
         "factor_loadings": np.array([[0.9], [0.8]]),
         "factor_ar": np.array([[0.5]]),
@@ -284,14 +283,13 @@ def test_exog_betas_random_walk(n_obs, n_runs):
     var_t1 = betas_t1.var(axis=0)
     var_t100 = betas_t100.var(axis=0)
 
-    # ---- Assertion ----
     assert np.all(
         var_t100 > var_t1
     ), f"Expected variance at T=100 > T=1, got {var_t1} vs {var_t100}"
 
 
 @pytest.mark.parametrize("shared", [True, False])
-def test_exog_shared_vs_not(shared):
+def test_DFM_exog_shared_vs_not(shared):
     rng = np.random.default_rng(123)
 
     n_obs = 50
@@ -301,7 +299,6 @@ def test_exog_shared_vs_not(shared):
     # Dummy exogenous data
     exog = rng.normal(size=(n_obs, k_exog))
 
-    # Create the model
     dfm_mod = BayesianDynamicFactor(
         k_factors=1,
         factor_order=1,
@@ -313,9 +310,14 @@ def test_exog_shared_vs_not(shared):
         error_cov_type="diagonal",
         measurement_error=False,
     )
+
     k_exog_states = dfm_mod.k_exog * dfm_mod.k_endog if not shared else dfm_mod.k_exog
 
-    # Dummy parameters (small values so simulation is stable)
+    if shared:
+        beta = np.array([0.3, 0.5])
+    else:
+        beta = np.array([0.3, 0.5, 1.0, 2.0])
+
     param_dict = {
         "factor_loadings": np.array([[0.9], [0.8]]),
         "factor_ar": np.array([[0.5]]),
@@ -323,7 +325,7 @@ def test_exog_shared_vs_not(shared):
         "error_sigma": np.array([0.1, 0.2]),
         "P0": np.eye(dfm_mod.k_states),
         "x0": np.zeros(dfm_mod.k_states - k_exog_states),
-        "beta": np.array([0.3, 0.5, 1, 2]) if not shared else np.array([0.3, 0.5]),
+        "beta": beta,
     }
 
     data_dict = {"exog_data": exog}
@@ -331,16 +333,37 @@ def test_exog_shared_vs_not(shared):
     # Simulate trajectory
     x_traj, y_traj = simulate_from_numpy_model(dfm_mod, rng, param_dict, data_dict, steps=n_obs)
 
-    # Extract contribution from exogenous variables at time t
-    beta = param_dict["beta"].reshape(-1, k_exog)  # shape depends on shared flag
-    exog_t = exog[10]  # pick a random time point
+    # Test 1: Check hidden states
+    # Extract exogenous hidden states at time t=10
+    t = 10
+    exog_states_start = dfm_mod.k_states - k_exog_states
+    exog_states_end = dfm_mod.k_states
+    exog_hidden_states = x_traj[t, exog_states_start:exog_states_end]
 
     if shared:
-        # all endogs get the same contribution
-        contributions = [beta @ exog_t for _ in range(k_endog)]
-        assert np.allclose(contributions[0], contributions[1:])
+        # When shared=True, there should be k_exog states total
+        assert len(exog_hidden_states) == k_exog
     else:
-        # each endog gets a different contribution
-        contributions = [beta[i] @ exog_t for i in range(k_endog)]
-        # check that at least one differs
-        assert not np.allclose(contributions[0], contributions[1:])
+        # When shared=False, there should be k_exog * k_endog states
+        assert len(exog_hidden_states) == k_exog * k_endog
+        # Each endogenous variable has its own set of exogenous states
+        exog_states_reshaped = exog_hidden_states.reshape(k_endog, k_exog)
+        assert not np.allclose(exog_states_reshaped[0], exog_states_reshaped[1])
+
+    # Test 2: Check observed contributions
+    exog_t = exog[t]
+
+    if shared:
+        # All endogenous variables get the same beta * data contribution
+        contributions = [beta @ exog_t for _ in range(k_endog)]
+        assert np.allclose(
+            contributions[0], contributions[1]
+        ), "Expected same contribution for all endog when shared=True"
+    else:
+        # Each endogenous variable gets different beta * data
+        beta_reshaped = beta.reshape(k_endog, k_exog)
+        contributions = [beta_reshaped[i] @ exog_t for i in range(k_endog)]
+        # Check that contributions are different
+        assert not np.allclose(
+            contributions[0], contributions[1]
+        ), f"Expected different contributions, got {contributions}"
