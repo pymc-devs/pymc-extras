@@ -1,3 +1,4 @@
+import pymc
 import numpy as np
 from scipy.optimize import minimize
 
@@ -52,14 +53,16 @@ def create_dadvi_graph(
 
 
 def fit_deterministic_advi(
-    pymc_model, n_fixed_draws: int = 30, random_seed: int = 2, n_draws: int = 1000
+    model=None, n_fixed_draws: int = 30, random_seed: int = 2, n_draws: int = 1000
 ):
 
-    initial_point_dict = pymc_model.initial_point()
+    model = pymc.modelcontext(model) if model is None else model
+
+    initial_point_dict = model.initial_point()
     n_params = DictToArrayBijection.map(initial_point_dict).data.shape[0]
 
     var_params, objective, n_params = create_dadvi_graph(
-        pymc_model,
+        model,
         n_fixed_draws=n_fixed_draws,
         random_seed=random_seed,
         n_params=n_params,
@@ -84,7 +87,7 @@ def fit_deterministic_advi(
     draws_raw = np.random.randn(n_draws, n_params)
     draws = opt_means + draws_raw * np.exp(opt_log_sds)
 
-    draws_arviz = unstack_laplace_draws(draws, pymc_model, chains=1, draws=n_draws)
+    draws_arviz = unstack_laplace_draws(draws, model, chains=1, draws=n_draws)
 
     # TODO Constrain
 
