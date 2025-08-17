@@ -438,9 +438,11 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     )
 
     # Set minimizer initialisation to be random
-    d = 3  # 10000 # TODO pull this from x.shape (or similar) somehow
+    # TODO Assumes that the observed variable y is the first/only element of values, and that d is shape[-1]
+    d = values[0].data.shape[-1]
     rng = np.random.default_rng(12345)
-    x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: rng.random(d)})
+    x0_init = rng.random(d)
+    x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: x0_init})
 
     # TODO USE CLOSED FORM SOLUTION FOR NOW
     n, y_obs = op.temp_kwargs
