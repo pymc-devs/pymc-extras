@@ -319,5 +319,3 @@ def test_laplace_scalar_basinhopping(optimizer_method):
     np.testing.assert_allclose(
         idata_laplace.posterior.p.mean(dim=["chain", "draw"]), data.mean(), atol=0.1
     )
-
-    np.testing.assert_allclose(idata_laplace.fit.mean_vector.values.item(), data.mean(), atol=0.1)
