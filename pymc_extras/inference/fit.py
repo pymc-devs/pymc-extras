@@ -42,7 +42,7 @@ def fit(method: str, **kwargs) -> az.InferenceData:
         return fit_laplace(**kwargs)
 
     elif method == "INLA":
-        from pymc_extras.inference.inla import fit_INLA
+        from pymc_extras.inference.INLA import fit_INLA
 
         return fit_INLA(**kwargs)
 
