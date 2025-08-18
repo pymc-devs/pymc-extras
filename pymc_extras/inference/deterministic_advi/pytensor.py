@@ -1,10 +1,14 @@
+from collections import defaultdict
+
 import pymc
+import arviz as az
 import numpy as np
 from scipy.optimize import minimize
-
 import pytensor
 import pytensor.tensor as pt
 from pymc import join_nonshared_inputs, DictToArrayBijection
+from pymc.util import get_default_varnames
+
 from pymc_extras.inference.laplace_approx.scipy_interface import (
     _compile_functions_for_scipy_optimize,
 )
@@ -52,8 +56,50 @@ def create_dadvi_graph(
     return var_params, objective, n_params
 
 
+def transform_draws(unstacked_draws, model, n_draws, keep_untransformed=False):
+
+    filtered_var_names = model.unobserved_value_vars
+
+    vars_to_sample = list(
+        get_default_varnames(filtered_var_names, include_transformed=keep_untransformed)
+    )
+
+    fn = pytensor.function(model.value_vars, vars_to_sample)
+
+    d = {name: data.values for name, data in unstacked_draws.data_vars.items()}
+
+    transformed_draws = defaultdict(list)
+    vars_to_sample_names = [x.name for x in vars_to_sample]
+    raw_var_names = [x.name for x in model.value_vars]
+
+    for i in range(n_draws):
+
+        cur_draw = {x: y[0, i] for x, y in d.items()}
+        to_pass_in = [
+            cur_draw[cur_variable_name] for cur_variable_name in raw_var_names
+        ]
+        transformed = fn(*to_pass_in)
+
+        for cur_name, cur_value in zip(vars_to_sample_names, transformed):
+            transformed_draws[cur_name].append(cur_value)
+
+    final_dict = {
+        # Add a draw dimension
+        x: np.expand_dims(np.stack(y), axis=0)
+        for x, y in transformed_draws.items()
+    }
+
+    transformed_result = az.from_dict(posterior=final_dict)
+
+    return transformed_result
+
+
 def fit_deterministic_advi(
-    model=None, n_fixed_draws: int = 30, random_seed: int = 2, n_draws: int = 1000
+    model=None,
+    n_fixed_draws: int = 30,
+    random_seed: int = 2,
+    n_draws: int = 1000,
+    keep_untransformed=False,
 ):
 
     model = pymc.modelcontext(model) if model is None else model
@@ -86,9 +132,10 @@ def fit_deterministic_advi(
     # Make the draws:
     draws_raw = np.random.randn(n_draws, n_params)
     draws = opt_means + draws_raw * np.exp(opt_log_sds)
-
     draws_arviz = unstack_laplace_draws(draws, model, chains=1, draws=n_draws)
 
-    # TODO Constrain
+    transformed_draws = transform_draws(
+        draws_arviz, model, n_draws=n_draws, keep_untransformed=keep_untransformed
+    )
 
-    return draws_arviz
+    return transformed_draws
