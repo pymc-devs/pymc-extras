@@ -6,9 +6,14 @@ import numpy as np
 from scipy.optimize import minimize
 import pytensor
 import pytensor.tensor as pt
+
 from pymc import join_nonshared_inputs, DictToArrayBijection
 from pymc.util import get_default_varnames
-
+from pymc.backends.arviz import (
+    apply_function_over_dataset,
+    PointFunc,
+    coords_and_dims_for_inferencedata,
+)
 from pymc_extras.inference.laplace_approx.scipy_interface import (
     _compile_functions_for_scipy_optimize,
 )
@@ -59,37 +64,21 @@ def create_dadvi_graph(
 def transform_draws(unstacked_draws, model, n_draws, keep_untransformed=False):
 
     filtered_var_names = model.unobserved_value_vars
-
     vars_to_sample = list(
         get_default_varnames(filtered_var_names, include_transformed=keep_untransformed)
     )
-
     fn = pytensor.function(model.value_vars, vars_to_sample)
+    point_func = PointFunc(fn)
 
-    d = {name: data.values for name, data in unstacked_draws.data_vars.items()}
+    coords, dims = coords_and_dims_for_inferencedata(pymc_model)
 
-    transformed_draws = defaultdict(list)
-    vars_to_sample_names = [x.name for x in vars_to_sample]
-    raw_var_names = [x.name for x in model.value_vars]
-
-    for i in range(n_draws):
-
-        cur_draw = {x: y[0, i] for x, y in d.items()}
-        to_pass_in = [
-            cur_draw[cur_variable_name] for cur_variable_name in raw_var_names
-        ]
-        transformed = fn(*to_pass_in)
-
-        for cur_name, cur_value in zip(vars_to_sample_names, transformed):
-            transformed_draws[cur_name].append(cur_value)
-
-    final_dict = {
-        # Add a draw dimension
-        x: np.expand_dims(np.stack(y), axis=0)
-        for x, y in transformed_draws.items()
-    }
-
-    transformed_result = az.from_dict(posterior=final_dict)
+    transformed_result = apply_function_over_dataset(
+        point_func,
+        unstacked_draws,
+        output_var_names=[x.name for x in vars_to_sample],
+        coords=coords,
+        dims=dims,
+    )
 
     return transformed_result
 
