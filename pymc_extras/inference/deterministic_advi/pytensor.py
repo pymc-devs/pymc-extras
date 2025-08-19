@@ -70,7 +70,7 @@ def transform_draws(unstacked_draws, model, n_draws, keep_untransformed=False):
     fn = pytensor.function(model.value_vars, vars_to_sample)
     point_func = PointFunc(fn)
 
-    coords, dims = coords_and_dims_for_inferencedata(pymc_model)
+    coords, dims = coords_and_dims_for_inferencedata(model)
 
     transformed_result = apply_function_over_dataset(
         point_func,
