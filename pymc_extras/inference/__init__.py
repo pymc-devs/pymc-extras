@@ -16,9 +16,6 @@ from pymc_extras.inference.fit import fit
 from pymc_extras.inference.laplace_approx.find_map import find_MAP
 from pymc_extras.inference.laplace_approx.laplace import fit_laplace
 from pymc_extras.inference.pathfinder.pathfinder import fit_pathfinder
-from pymc_extras.inference.deterministic_advi.api import (
-    fit_deterministic_advi as fit_deterministic_advi_jax,
-)
 from pymc_extras.inference.deterministic_advi.pytensor import fit_deterministic_advi
 
 __all__ = [
@@ -27,5 +24,4 @@ __all__ = [
     "fit_laplace",
     "find_MAP",
     "fit_deterministic_advi",
-    "fit_deterministic_advi_jax",
 ]

@@ -45,8 +45,3 @@ def fit(method: str, **kwargs) -> az.InferenceData:
         from pymc_extras.inference import fit_deterministic_advi
 
         return fit_deterministic_advi(**kwargs)
-
-    if method == "deterministic_advi_jax":
-        from pymc_extras.inference import fit_deterministic_advi_jax
-
-        return fit_deterministic_advi_jax(**kwargs)
