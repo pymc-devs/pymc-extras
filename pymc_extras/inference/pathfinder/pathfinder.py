@@ -156,7 +156,7 @@ def convert_flat_trace_to_idata(
     samples: NDArray,
     include_transformed: bool = False,
     postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
-    inference_backend: Literal["pymc", "blackjax"] = "pymc",
+    inference_backend: Literal["pymc", "jax", "numba", "blackjax"] = "pymc",
     model: Model | None = None,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
 ) -> az.InferenceData:
@@ -204,7 +204,8 @@ def convert_flat_trace_to_idata(
     vars_to_sample = list(get_default_varnames(var_names, include_transformed=include_transformed))
     logger.info("Transforming variables...")
 
-    if inference_backend == "pymc":
+    if inference_backend in ["pymc", "jax", "numba"]:
+        # PyTensor-based backends (PyMC, JAX, Numba) use the same postprocessing logic
         new_shapes = [v.ndim * (None,) for v in trace.values()]
         replace = {
             var: pt.tensor(dtype="float64", shape=new_shapes[i])
@@ -213,10 +214,17 @@ def convert_flat_trace_to_idata(
 
         outputs = vectorize_graph(vars_to_sample, replace=replace)
 
+        # Select appropriate compilation mode
+        compile_mode = FAST_COMPILE  # Default for PyMC
+        if inference_backend == "jax":
+            compile_mode = "JAX"
+        elif inference_backend == "numba":
+            compile_mode = "NUMBA"
+
         fn = pytensor.function(
             inputs=[*list(replace.values())],
             outputs=outputs,
-            mode=FAST_COMPILE,
+            mode=compile_mode,
             on_unused_input="ignore",
         )
         fn.trust_input = True
@@ -444,43 +452,95 @@ def inverse_hessian_factors(
 
     L, N = alpha.shape
 
-    # Import JAX dispatch to ensure ChiMatrixOp is registered
+    # Detect compilation mode for backend selection
+    compile_mode = None
+
+    # Method 1: Check if we're in a function compilation context
     try:
-        from . import jax_dispatch
+        import pytensor
 
-        # Use custom ChiMatrixOp for JAX compatibility
-        # Extract J value more robustly for different tensor types and compilation contexts
-        J_val = None
+        if hasattr(pytensor.config, "mode"):
+            compile_mode = str(pytensor.config.mode)
+    except Exception:
+        pass
 
-        # Try multiple extraction methods in order of preference
-        if hasattr(J, "data") and J.data is not None:
-            # TensorConstant with data attribute (most reliable)
-            J_val = int(J.data)
-        elif hasattr(J, "eval"):
-            try:
-                # Try evaluation (works in most cases)
-                J_val = int(J.eval())
-            except Exception:
-                # eval() can fail during JAX compilation or if graph is incomplete
-                pass
+    # Check for Numba backend first (highest priority for CPU optimization)
+    if compile_mode == "NUMBA":
+        # Import Numba dispatch to ensure NumbaChiMatrixOp is registered
+        try:
+            from . import numba_dispatch
 
-        # Final fallback for simple cases
-        if J_val is None:
-            try:
-                J_val = int(J)
-            except (TypeError, ValueError) as int_error:
-                # This will fail during JAX compilation with "TensorVariable cannot be converted to Python integer"
-                raise TypeError(f"Cannot extract J value for JAX compilation: {int_error}")
+            # Extract J value for Numba Op (same pattern as JAX)
+            J_val = None
+            if hasattr(J, "data") and J.data is not None:
+                J_val = int(J.data)
+            elif hasattr(J, "eval"):
+                try:
+                    J_val = int(J.eval())
+                except Exception:
+                    pass
 
-        chi_matrix_op = jax_dispatch.ChiMatrixOp(J_val)
-        S = chi_matrix_op(s)
-        Z = chi_matrix_op(z)
-    except (ImportError, AttributeError, TypeError) as e:
-        # Fallback to get_chi_matrix_1 if JAX dispatch not available or J extraction fails
-        import logging
+            if J_val is None:
+                try:
+                    J_val = int(J)
+                except (TypeError, ValueError) as int_error:
+                    raise TypeError(f"Cannot extract J value for Numba compilation: {int_error}")
 
-        logger = logging.getLogger(__name__)
-        logger.debug(f"Using get_chi_matrix_1 fallback: {e}")
+            chi_matrix_op = numba_dispatch.NumbaChiMatrixOp(J_val)
+            S = chi_matrix_op(s)
+            Z = chi_matrix_op(z)
+
+        except (ImportError, AttributeError, TypeError) as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Using get_chi_matrix_1 fallback for Numba: {e}")
+            S = get_chi_matrix_1(s, J)
+            Z = get_chi_matrix_1(z, J)
+
+    elif compile_mode == "JAX":
+        # Import JAX dispatch to ensure ChiMatrixOp is registered
+        try:
+            from . import jax_dispatch
+
+            # Use custom ChiMatrixOp for JAX compatibility
+            # Extract J value more robustly for different tensor types and compilation contexts
+            J_val = None
+
+            # Try multiple extraction methods in order of preference
+            if hasattr(J, "data") and J.data is not None:
+                # TensorConstant with data attribute (most reliable)
+                J_val = int(J.data)
+            elif hasattr(J, "eval"):
+                try:
+                    # Try evaluation (works in most cases)
+                    J_val = int(J.eval())
+                except Exception:
+                    # eval() can fail during JAX compilation or if graph is incomplete
+                    pass
+
+            # Final fallback for simple cases
+            if J_val is None:
+                try:
+                    J_val = int(J)
+                except (TypeError, ValueError) as int_error:
+                    # This will fail during JAX compilation with "TensorVariable cannot be converted to Python integer"
+                    raise TypeError(f"Cannot extract J value for JAX compilation: {int_error}")
+
+            chi_matrix_op = jax_dispatch.ChiMatrixOp(J_val)
+            S = chi_matrix_op(s)
+            Z = chi_matrix_op(z)
+        except (ImportError, AttributeError, TypeError) as e:
+            # Fallback to get_chi_matrix_1 if JAX dispatch not available or J extraction fails
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Using get_chi_matrix_1 fallback for JAX: {e}")
+            S = get_chi_matrix_1(s, J)
+            Z = get_chi_matrix_1(z, J)
+
+    else:
+        # Use fallback PyTensor implementation for standard compilation
         S = get_chi_matrix_1(s, J)
         Z = get_chi_matrix_1(z, J)
 
@@ -773,7 +833,39 @@ def bfgs_sample(
 
     compile_mode = compile_kwargs.get("mode") if compile_kwargs else None
 
-    if compile_mode == "JAX":
+    if compile_mode == "NUMBA":
+        # Numba backend: Use PyTensor random generation (Numba-compatible)
+        # Numba can compile PyTensor's random operations efficiently
+        from pytensor.tensor.random.utils import RandomStream
+
+        srng = RandomStream()
+
+        # For Numba, num_samples must be static (similar to JAX requirement)
+        if hasattr(num_samples, "data"):
+            num_samples_value = int(num_samples.data)
+        elif isinstance(num_samples, int):
+            num_samples_value = num_samples
+        else:
+            raise ValueError(
+                f"Numba backend requires static num_samples. "
+                f"Got {type(num_samples)}. Use integer value for num_samples when using Numba backend."
+            )
+
+        # Use the same approach as PyTensor backend for simplicity and compatibility
+        # Numba can optimize these operations during JIT compilation
+        MAX_SAMPLES = 1000
+
+        alpha_template = pt.zeros_like(alpha)
+        large_random_base = srng.normal(size=(MAX_SAMPLES,), dtype=alpha.dtype)
+
+        alpha_broadcast = alpha_template[None, :, :]
+        random_broadcast = large_random_base[:, None, None]
+
+        large_random = random_broadcast + pt.zeros_like(alpha_broadcast)
+        u_full = large_random[:num_samples_value]  # Use static value for Numba
+        u = u_full.dimshuffle(1, 0, 2)
+
+    elif compile_mode == "JAX":
         # JAX backend: Use static random generation to avoid dynamic slicing
         from .jax_random import create_jax_random_samples
 
@@ -877,12 +969,53 @@ def bfgs_sample(
         u,
     )
 
-    # JAX compatibility: use custom BfgsSampleOp to handle conditional logic
-    # This replaces the problematic pt.switch that caused dynamic indexing issues
-    from .jax_dispatch import BfgsSampleOp
+    # Backend-specific BFGS sampling dispatch
+    if compile_mode == "NUMBA":
+        # Numba backend: Use Numba-optimized BFGS sampling
+        try:
+            from .numba_dispatch import NumbaBfgsSampleOp
 
-    bfgs_op = BfgsSampleOp()
-    phi, logdet = bfgs_op(*sample_inputs)
+            # For Numba, num_samples must be static (similar to JAX requirement)
+            if hasattr(num_samples, "data"):
+                num_samples_value = int(num_samples.data)
+            elif isinstance(num_samples, int):
+                num_samples_value = num_samples
+            else:
+                raise ValueError(
+                    f"Numba backend requires static num_samples. "
+                    f"Got {type(num_samples)}. Use integer value for num_samples when using Numba backend."
+                )
+
+            # Use Numba-optimized BfgsSample Op
+            bfgs_op = NumbaBfgsSampleOp()
+            phi, logdet = bfgs_op(*sample_inputs)
+
+        except (ImportError, AttributeError) as e:
+            # Fallback to JAX dispatch if Numba not available
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Numba backend unavailable, falling back to JAX dispatch: {e}")
+
+            from .jax_dispatch import BfgsSampleOp
+
+            bfgs_op = BfgsSampleOp()
+            phi, logdet = bfgs_op(*sample_inputs)
+
+    elif compile_mode == "JAX":
+        # JAX compatibility: use custom BfgsSampleOp to handle conditional logic
+        # This replaces the problematic pt.switch that caused dynamic indexing issues
+        from .jax_dispatch import BfgsSampleOp
+
+        bfgs_op = BfgsSampleOp()
+        phi, logdet = bfgs_op(*sample_inputs)
+
+    else:
+        # Default PyTensor backend: Use JAX dispatch as fallback (most compatible)
+        from .jax_dispatch import BfgsSampleOp
+
+        bfgs_op = BfgsSampleOp()
+        phi, logdet = bfgs_op(*sample_inputs)
 
     # JAX compatibility: get N (number of parameters) from alpha shape without extraction
     N_tensor = alpha.shape[1]  # Get N as tensor, not concrete value
@@ -986,6 +1119,7 @@ def make_pathfinder_body(
     num_draws: int,
     maxcor: int,
     num_elbo_draws: int,
+    model=None,
     **compile_kwargs: dict,
 ) -> Function:
     """
@@ -1001,6 +1135,8 @@ def make_pathfinder_body(
         The maximum number of iterations for the L-BFGS algorithm.
     num_elbo_draws : int
         The number of draws for the Evidence Lower Bound (ELBO) estimation.
+    model : pymc.Model, optional
+        The PyMC model object. Required for Numba backend to use OpFromGraph approach.
     compile_kwargs : dict
         Additional keyword arguments for the PyTensor compiler.
 
@@ -1051,12 +1187,25 @@ def make_pathfinder_body(
     # PyTensor First: Use native vectorize_graph approach (expert-recommended)
     # Direct symbolic implementation to avoid compiled function interface mismatch
 
-    # Use the provided compiled logp_func (temporary fallback to original approach)
-    # This maintains the current interface while we implement the symbolic fix
+    # Use the provided compiled logp_func (with special handling for Numba mode)
+    # For Numba mode, use OpFromGraph approach with model object
     from .vectorized_logp import create_vectorized_logp_graph
 
     # Create vectorized logp computation using existing PyTensor atomic operations
-    vectorized_logp = create_vectorized_logp_graph(logp_func)
+    # Extract mode name from compile_kwargs to handle Numba mode specially
+    mode_name = None
+    if "mode" in compile_kwargs:
+        mode = compile_kwargs["mode"]
+        if hasattr(mode, "name"):
+            mode_name = mode.name
+        elif isinstance(mode, str):
+            mode_name = mode
+
+    # For Numba mode, pass the model object instead of compiled function
+    if mode_name == "NUMBA" and model is not None:
+        vectorized_logp = create_vectorized_logp_graph(model, mode_name=mode_name)
+    else:
+        vectorized_logp = create_vectorized_logp_graph(logp_func, mode_name=mode_name)
     logP_phi = vectorized_logp(phi)
 
     # Handle nan/inf values using native PyTensor operations
@@ -1170,7 +1319,7 @@ def make_single_pathfinder_fn(
 
     # pathfinder body
     pathfinder_body_fn = make_pathfinder_body(
-        logp_func, num_draws, maxcor, num_elbo_draws, **compile_kwargs
+        logp_func, num_draws, maxcor, num_elbo_draws, model=model, **compile_kwargs
     )
     rngs = find_rng_nodes(pathfinder_body_fn.maker.fgraph.outputs)
 
@@ -1708,9 +1857,10 @@ def multipath_pathfinder(
     postprocessing_backend : str, optional
         Backend for postprocessing transformations, either "cpu" or "gpu" (default is "cpu"). This is only relevant if inference_backend is "blackjax".
     inference_backend : str, optional
-        Backend for inference: "pymc" (default), "jax", or "blackjax".
+        Backend for inference: "pymc" (default), "jax", "numba", or "blackjax".
         - "pymc": Uses PyTensor compilation (fastest compilation, good performance)
         - "jax": Uses JAX compilation via PyTensor (slower compilation, faster execution, GPU support)
+        - "numba": Uses Numba compilation via PyTensor (fast compilation, best CPU performance)
         - "blackjax": Uses BlackJAX implementation (alternative JAX backend)
     concurrent : str, optional
         Whether to run paths concurrently, either "thread" or "process" or None (default is None). Setting concurrent to None runs paths serially and is generally faster with smaller models because of the overhead that comes with concurrency.
@@ -1881,7 +2031,7 @@ def fit_pathfinder(
     concurrent: Literal["thread", "process"] | None = None,
     random_seed: RandomSeed | None = None,
     postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
-    inference_backend: Literal["pymc", "jax", "blackjax"] = "pymc",
+    inference_backend: Literal["pymc", "jax", "numba", "blackjax"] = "pymc",
     pathfinder_kwargs: dict = {},
     compile_kwargs: dict = {},
     initvals: dict | None = None,
@@ -1933,9 +2083,10 @@ def fit_pathfinder(
     postprocessing_backend : str, optional
         Backend for postprocessing transformations, either "cpu" or "gpu" (default is "cpu"). This is only relevant if inference_backend is "blackjax".
     inference_backend : str, optional
-        Backend for inference: "pymc" (default), "jax", or "blackjax".
+        Backend for inference: "pymc" (default), "jax", "numba", or "blackjax".
         - "pymc": Uses PyTensor compilation (fastest compilation, good performance)
         - "jax": Uses JAX compilation via PyTensor (slower compilation, faster execution, GPU support)
+        - "numba": Uses Numba compilation via PyTensor (fast compilation, best CPU performance)
         - "blackjax": Uses BlackJAX implementation (alternative JAX backend)
     concurrent : str, optional
         Whether to run paths concurrently, either "thread" or "process" or None (default is None). Setting concurrent to None runs paths serially and is generally faster with smaller models because of the overhead that comes with concurrency.
@@ -2000,6 +2151,38 @@ def fit_pathfinder(
                 "Use an integer value for num_draws_per_path when using JAX backend."
             )
 
+    # Numba backend validation: ensure static requirements are met
+    if inference_backend == "numba":
+        # Check Numba availability
+        import importlib.util
+
+        if importlib.util.find_spec("numba") is None:
+            raise ImportError(
+                "Numba backend requires numba package. " "Install it with: pip install numba"
+            )
+
+        try:
+            from . import (
+                numba_dispatch,  # noqa: F401 - needed for registering Numba dispatch functions
+            )
+        except ImportError:
+            raise ImportError("Numba dispatch module not available. Check numba_dispatch.py")
+
+        # Numba requires static num_draws for compilation (similar to JAX)
+        if not isinstance(num_draws, int):
+            raise ValueError(
+                f"Numba backend requires static num_draws (integer). "
+                f"Got {type(num_draws).__name__}: {num_draws}. "
+                "Use an integer value for num_draws when using Numba backend."
+            )
+
+        if not isinstance(num_draws_per_path, int):
+            raise ValueError(
+                f"Numba backend requires static num_draws_per_path (integer). "
+                f"Got {type(num_draws_per_path).__name__}: {num_draws_per_path}. "
+                "Use an integer value for num_draws_per_path when using Numba backend."
+            )
+
     if inference_backend == "pymc":
         mp_result = multipath_pathfinder(
             model,
@@ -2056,6 +2239,32 @@ def fit_pathfinder(
             compile_kwargs=jax_compile_kwargs,
         )
         pathfinder_samples = mp_result.samples
+    elif inference_backend == "numba":
+        # Numba backend: Use PyTensor compilation with Numba mode
+        # Import Numba dispatch to register custom Op conversions
+
+        numba_compile_kwargs = {"mode": "NUMBA", **compile_kwargs}
+        mp_result = multipath_pathfinder(
+            model,
+            num_paths=num_paths,
+            num_draws=num_draws,
+            num_draws_per_path=num_draws_per_path,
+            maxcor=maxcor,
+            maxiter=maxiter,
+            ftol=ftol,
+            gtol=gtol,
+            maxls=maxls,
+            num_elbo_draws=num_elbo_draws,
+            jitter=jitter,
+            epsilon=epsilon,
+            importance_sampling=importance_sampling,
+            progressbar=progressbar,
+            concurrent=concurrent,
+            random_seed=random_seed,
+            pathfinder_kwargs=pathfinder_kwargs,
+            compile_kwargs=numba_compile_kwargs,
+        )
+        pathfinder_samples = mp_result.samples
     elif inference_backend == "blackjax":
         import blackjax
         import jax
@@ -2087,7 +2296,7 @@ def fit_pathfinder(
         )
     else:
         raise ValueError(
-            f"Invalid inference_backend: {inference_backend}. Must be one of: 'pymc', 'jax', 'blackjax'"
+            f"Invalid inference_backend: {inference_backend}. Must be one of: 'pymc', 'jax', 'numba', 'blackjax'"
         )
 
     logger.info("Transforming variables...")

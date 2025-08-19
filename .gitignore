@@ -1,4 +1,5 @@
 *.pyc
+__pycache__/
 *.sw[op]
 examples/*.png
 nb_examples/

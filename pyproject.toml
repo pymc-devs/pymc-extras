@@ -65,6 +65,9 @@ dask_histogram = [
 histogram = [
   "xhistogram",
 ]
+pathfinder-numba = [
+  "numba>=0.56.0",
+]
 
 [project.urls]
 Documentation = "https://pymc-extras.readthedocs.io/"

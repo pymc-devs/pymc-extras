@@ -13,6 +13,8 @@ python = ">=3.11"
 jax = ">=0.7.0,<0.8"
 jaxlib = ">=0.7.0,<0.8"
 blackjax = ">=1.2.4,<2"
+numba = ">=0.56.0"
+pre-commit = ">=4.3.0,<5"
 
 # Test environment with additional testing dependencies
 [feature.test.dependencies]
