@@ -17,7 +17,7 @@ Native PyTensor vectorized logp implementation.
 
 This module provides a PyTensor First approach to vectorizing log-probability
 computations, eliminating the need for custom LogLike Op and ensuring automatic
-JAX compatibility through native PyTensor operations.
+backend compatibility through native PyTensor operations.
 
 Expert Guidance Applied:
 - Uses vectorize_graph instead of custom Ops (Jesse Grabowski's recommendation)
@@ -50,7 +50,7 @@ def create_vectorized_logp_graph(
         Log-probability function that takes a single parameter vector and returns scalar logp
         Can be either a compiled PyTensor function or a callable that works with symbolic inputs
     mode_name : str, optional
-        Compilation mode name (e.g., 'NUMBA', 'JAX'). If 'NUMBA', uses scan-based approach
+        Compilation mode name (e.g., 'NUMBA'). If 'NUMBA', uses scan-based approach
         to avoid LogLike Op compilation issues.
 
     Returns
@@ -64,7 +64,7 @@ def create_vectorized_logp_graph(
     - "Can the perform method of that `Loglike` op be directly written in pytensor?" - Jesse Grabowski
     - "PyTensor vectorize / vectorize_graph directly" - Ricardo
     - Fixed interface mismatch between compiled functions and symbolic variables
-    - Automatic JAX support through PyTensor's existing infrastructure
+    - Automatic backend support through PyTensor's existing infrastructure
     - Numba compatibility through scan-based approach
     """
 

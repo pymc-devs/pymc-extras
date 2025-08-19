@@ -8,9 +8,9 @@ used in the Pathfinder algorithm, enabling compilation with PyTensor's
 Numba backend (mode="NUMBA").
 
 Architecture follows PyTensor patterns from:
-- doc/extending/creating_a_numba_jax_op.rst
+- doc/extending/creating_a_numba_op.rst
 - pytensor/link/numba/dispatch/
-- Existing JAX dispatch in jax_dispatch.py
+- Reference implementation ensures mathematical consistency
 """
 
 import numpy as np
@@ -86,7 +86,7 @@ class NumbaChiMatrixOp(Op):
     def perform(self, node, inputs, outputs):
         """NumPy fallback implementation for compatibility.
 
-        This matches the JAX implementation exactly to ensure
+        This matches the reference implementation exactly to ensure
         mathematical correctness as fallback.
 
         Parameters
@@ -136,7 +136,7 @@ def numba_funcify_ChiMatrixOp(op, node, **kwargs):
 
     Uses Numba's optimized loop fusion and memory locality improvements
     for efficient sliding window operations. This avoids the dynamic
-    indexing issues that block JAX compilation while providing better
+    indexing issues while providing better
     CPU performance through cache-friendly access patterns.
 
     Parameters
@@ -194,10 +194,10 @@ class NumbaBfgsSampleOp(Op):
     Handles conditional selection between dense and sparse BFGS sampling
     modes based on condition JJ >= N, using Numba's efficient conditional
     compilation instead of PyTensor's pt.switch. This avoids the dynamic
-    indexing issues that block JAX compilation while providing superior
+    indexing issues while providing superior
     CPU performance through Numba's optimizations.
 
-    The Op implements the same mathematical operations as the JAX version
+    The Op implements the same mathematical operations as the reference version
     but uses Numba-specific optimizations for CPU workloads:
     - Parallel processing with numba.prange
     - Optimized matrix operations and memory layouts
@@ -257,10 +257,10 @@ class NumbaBfgsSampleOp(Op):
         return Apply(self, inputs, [phi_out, logdet_out])
 
     def perform(self, node, inputs, outputs):
-        """NumPy fallback implementation using JAX logic.
+        """NumPy fallback implementation using reference logic.
 
         This provides the reference implementation for mathematical correctness,
-        copied directly from the JAX version to ensure identical behavior.
+        copied directly from the reference version to ensure identical behavior.
         The Numba-optimized version will be registered separately.
         """
         import numpy as np
@@ -348,7 +348,7 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
     """Numba implementation with optimized conditional matrix operations.
 
     Uses Numba's efficient conditional compilation for optimal performance,
-    avoiding the dynamic indexing issues that prevent JAX compilation while
+    avoiding the dynamic indexing issues while
     providing superior CPU performance through parallel processing and
     optimized memory access patterns.
 
@@ -512,7 +512,7 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
 
         Uses efficient conditional compilation to select between dense and sparse
         algorithms based on problem dimensions. This avoids the dynamic indexing
-        issues that prevent JAX compilation while providing optimal performance
+        issues while providing optimal performance
         for both cases.
 
         Parameters

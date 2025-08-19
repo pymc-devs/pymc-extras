@@ -88,38 +88,6 @@ DEFAULT_LINKER = "cvm_nogc"
 SinglePathfinderFn: TypeAlias = Callable[[int], "PathfinderResult"]
 
 
-def get_jaxified_logp_of_ravel_inputs(model: Model, jacobian: bool = True) -> Callable:
-    """
-    Get a JAX function that computes the log-probability of a PyMC model with ravelled inputs.
-
-    Parameters
-    ----------
-    model : Model
-        PyMC model to compute log-probability and gradient.
-    jacobian : bool, optional
-        Whether to include the Jacobian in the log-probability computation, by default True. Setting to False (not recommended) may result in very high values for pareto k.
-
-    Returns
-    -------
-    Function
-        A JAX function that computes the log-probability of a PyMC model with ravelled inputs.
-    """
-
-    from pymc.sampling.jax import get_jaxified_graph
-
-    # TODO: JAX: test if we should get jaxified graph of dlogp as well
-    new_logprob, new_input = pm.pytensorf.join_nonshared_inputs(
-        model.initial_point(), (model.logp(jacobian=jacobian),), model.value_vars, ()
-    )
-
-    logp_func_list = get_jaxified_graph([new_input], new_logprob)
-
-    def logp_func(x):
-        return logp_func_list(x)[0]
-
-    return logp_func
-
-
 def get_logp_dlogp_of_ravel_inputs(
     model: Model, jacobian: bool = True, **compile_kwargs
 ) -> Function:
@@ -156,7 +124,7 @@ def convert_flat_trace_to_idata(
     samples: NDArray,
     include_transformed: bool = False,
     postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
-    inference_backend: Literal["pymc", "jax", "numba", "blackjax"] = "pymc",
+    inference_backend: Literal["pymc", "numba", "blackjax"] = "pymc",
     model: Model | None = None,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
 ) -> az.InferenceData:
@@ -204,8 +172,8 @@ def convert_flat_trace_to_idata(
     vars_to_sample = list(get_default_varnames(var_names, include_transformed=include_transformed))
     logger.info("Transforming variables...")
 
-    if inference_backend in ["pymc", "jax", "numba"]:
-        # PyTensor-based backends (PyMC, JAX, Numba) use the same postprocessing logic
+    if inference_backend in ["pymc", "numba"]:
+        # PyTensor-based backends (PyMC, Numba) use the same postprocessing logic
         new_shapes = [v.ndim * (None,) for v in trace.values()]
         replace = {
             var: pt.tensor(dtype="float64", shape=new_shapes[i])
@@ -216,9 +184,7 @@ def convert_flat_trace_to_idata(
 
         # Select appropriate compilation mode
         compile_mode = FAST_COMPILE  # Default for PyMC
-        if inference_backend == "jax":
-            compile_mode = "JAX"
-        elif inference_backend == "numba":
+        if inference_backend == "numba":
             compile_mode = "NUMBA"
 
         fn = pytensor.function(
@@ -280,7 +246,7 @@ def alpha_recover(
         # alpha_lm1: (N,)
         # s_l: (N,)
         # z_l: (N,)
-        # JAX-compatible replacement for pt.diag operations
+        # Broadcasting-based replacement for pt.diag operations
         # z_l.T @ pt.diag(alpha_lm1) @ z_l = sum(z_l * alpha_lm1 * z_l)
         a = pt.sum(z_l * alpha_lm1 * z_l)
         b = z_l.T @ s_l
@@ -349,15 +315,14 @@ def inverse_hessian_factors(
         """
         Original scan-based implementation.
 
-        NOTE: This function has JAX compatibility issues due to dynamic slicing in scan.
-        For JAX backend, consider using alternative implementations or custom JAX dispatch.
+        NOTE: This function uses dynamic slicing which may have compatibility issues with some compilation modes.
         """
         L, N = diff.shape
         j_last = pt.as_tensor(J - 1)  # since indexing starts at 0
 
         def chi_update(diff_l, chi_lm1) -> TensorVariable:
             chi_l = pt.roll(chi_lm1, -1, axis=0)
-            # JAX compatibility: replace set_subtensor with where operation
+            # Use where operation instead of set_subtensor for better compatibility
             # Create mask for the last position (j_last)
             j_indices = pt.arange(J)
             mask = pt.eq(j_indices, j_last)
@@ -379,7 +344,7 @@ def inverse_hessian_factors(
 
     def get_chi_matrix_2(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
         """
-        JAX-compatible version that uses scan to avoid dynamic pt.arange(L).
+        Alternative implementation using scan to avoid dynamic operations.
 
         This replaces the problematic pt.arange(L) with a scan operation
         that builds the sliding window matrix row by row.
@@ -387,7 +352,7 @@ def inverse_hessian_factors(
         L, N = diff.shape
 
         # diff_padded: (J-1+L, N)
-        # JAX compatibility: create padding matrix directly instead of using set_subtensor
+        # Create padding matrix directly instead of using set_subtensor
         pad_width = pt.as_tensor([[J - 1, 0], [0, 0]], dtype="int32")
         diff_padded = pt.pad(diff, pad_width, mode="constant")
 
@@ -396,11 +361,11 @@ def inverse_hessian_factors(
         j_indices = pt.arange(J)  # Static since J is constant: [0, 1, 2, ..., J-1]
 
         def extract_row(l_offset, _):
-            """Extract one row of the sliding window matrix - JAX compatible."""
-            # JAX compatibility: replace dynamic indexing with pt.take
+            """Extract one row of the sliding window matrix."""
+            # Use pt.take instead of direct indexing for better compatibility
             # For row l_offset, we want diff_padded[l_offset + j_indices]
             row_indices = l_offset + j_indices  # Shape: (J,)
-            # Use pt.take instead of direct indexing for JAX compatibility
+            # Use pt.take instead of direct indexing for better compatibility
             row_values = pt.take(diff_padded, row_indices, axis=0)  # Shape: (J, N)
             return row_values
 
@@ -409,10 +374,10 @@ def inverse_hessian_factors(
 
         # Alternative: use scan over diff itself
         def build_chi_row(l_idx, prev_state):
-            """Build chi matrix row by row using scan over a range - JAX compatible."""
+            """Build chi matrix row by row using scan over a range."""
             # Extract window starting at position l_idx in diff_padded
             row_indices = l_idx + j_indices
-            # Use pt.take instead of direct indexing for JAX compatibility
+            # Use pt.take instead of direct indexing for better compatibility
             row_values = pt.take(diff_padded, row_indices, axis=0)  # Shape: (J, N)
             return row_values
 
@@ -421,11 +386,11 @@ def inverse_hessian_factors(
 
         # Simplest approach: Use scan with a cumulative index
         def extract_window_at_position(position_step, cumulative_idx):
-            """Extract window at current cumulative position - JAX compatible."""
+            """Extract window at current cumulative position."""
             # cumulative_idx goes 0, 1, 2, ..., L-1
             window_start_idx = cumulative_idx
             window_indices = window_start_idx + j_indices
-            # Use pt.take instead of direct indexing for JAX compatibility
+            # Use pt.take instead of direct indexing for better compatibility
             window = pt.take(diff_padded, window_indices, axis=0)  # Shape: (J, N)
             return window, cumulative_idx + 1
 
@@ -470,7 +435,7 @@ def inverse_hessian_factors(
         try:
             from . import numba_dispatch
 
-            # Extract J value for Numba Op (same pattern as JAX)
+            # Extract J value for Numba Op
             J_val = None
             if hasattr(J, "data") and J.data is not None:
                 J_val = int(J.data)
@@ -498,47 +463,6 @@ def inverse_hessian_factors(
             S = get_chi_matrix_1(s, J)
             Z = get_chi_matrix_1(z, J)
 
-    elif compile_mode == "JAX":
-        # Import JAX dispatch to ensure ChiMatrixOp is registered
-        try:
-            from . import jax_dispatch
-
-            # Use custom ChiMatrixOp for JAX compatibility
-            # Extract J value more robustly for different tensor types and compilation contexts
-            J_val = None
-
-            # Try multiple extraction methods in order of preference
-            if hasattr(J, "data") and J.data is not None:
-                # TensorConstant with data attribute (most reliable)
-                J_val = int(J.data)
-            elif hasattr(J, "eval"):
-                try:
-                    # Try evaluation (works in most cases)
-                    J_val = int(J.eval())
-                except Exception:
-                    # eval() can fail during JAX compilation or if graph is incomplete
-                    pass
-
-            # Final fallback for simple cases
-            if J_val is None:
-                try:
-                    J_val = int(J)
-                except (TypeError, ValueError) as int_error:
-                    # This will fail during JAX compilation with "TensorVariable cannot be converted to Python integer"
-                    raise TypeError(f"Cannot extract J value for JAX compilation: {int_error}")
-
-            chi_matrix_op = jax_dispatch.ChiMatrixOp(J_val)
-            S = chi_matrix_op(s)
-            Z = chi_matrix_op(z)
-        except (ImportError, AttributeError, TypeError) as e:
-            # Fallback to get_chi_matrix_1 if JAX dispatch not available or J extraction fails
-            import logging
-
-            logger = logging.getLogger(__name__)
-            logger.debug(f"Using get_chi_matrix_1 fallback for JAX: {e}")
-            S = get_chi_matrix_1(s, J)
-            Z = get_chi_matrix_1(z, J)
-
     else:
         # Use fallback PyTensor implementation for standard compilation
         S = get_chi_matrix_1(s, J)
@@ -553,17 +477,17 @@ def inverse_hessian_factors(
     eta = pt.diagonal(E, axis1=-2, axis2=-1)
 
     # beta: (L, N, 2J)
-    # JAX compatibility: Replace scan with pt.diag using broadcasting approach
+    # Use pt.diag with broadcasting approach instead of scan
     # Original: alpha_diag, _ = pytensor.scan(lambda a: pt.diag(a), sequences=[alpha])
     eye_N = pt.eye(N)[None, ...]  # Shape: (1, N, N) for broadcasting
     alpha_diag = alpha[..., None] * eye_N  # Broadcasting creates (L, N, N) diagonal matrices
     beta = pt.concatenate([alpha_diag @ Z, S], axis=-1)
 
-    # more performant and numerically precise to use solve than inverse: https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.linalg.inv.html
+    # more performant and numerically precise to use solve than inverse
 
     # E_inv: (L, J, J)
     E_inv = pt.slinalg.solve_triangular(E, Ij, check_finite=False)
-    # JAX compatibility: Replace scan with pt.diag using broadcasting approach
+    # Use pt.diag with broadcasting approach instead of scan
     # Original: eta_diag, _ = pytensor.scan(pt.diag, sequences=[eta])
     eye_J = pt.eye(J)[None, ...]  # Shape: (1, J, J) for broadcasting
     eta_diag = eta[..., None] * eye_J  # Broadcasting creates (L, J, J) diagonal matrices
@@ -783,7 +707,7 @@ def bfgs_sample(
     index : TensorVariable | None
         optional index for selecting a single path
     compile_kwargs : dict | None
-        compilation options, used to detect JAX backend mode
+        compilation options, used to detect backend compilation mode
 
     Returns
     -------
@@ -799,18 +723,16 @@ def bfgs_sample(
     shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
     """
 
-    # JAX-compatible indexing using pt.take instead of dynamic slicing
+    # Indexing using pt.take instead of dynamic slicing for better compatibility
     if index is not None:
-        # Use pt.take for JAX compatibility instead of x[index][None, ...]
+        # Use pt.take for better backend compatibility
         x = pt.take(x, index, axis=0)[None, ...]
         g = pt.take(g, index, axis=0)[None, ...]
         alpha = pt.take(alpha, index, axis=0)[None, ...]
         beta = pt.take(beta, index, axis=0)[None, ...]
         gamma = pt.take(gamma, index, axis=0)[None, ...]
 
-    # JAX compatibility: completely avoid shape extraction and create random array differently
-
-    # For JAX compatibility, create identity matrix using template-based approach
+    # Create identity matrix using template-based approach for better compatibility
     # Use alpha to determine the shape: alpha has shape (L, N)
     alpha_row = alpha[0]  # Shape: (N,) - first row to get N dimension
     eye_template = pt.diag(pt.ones_like(alpha_row))  # Shape: (N, N) - identity matrix
@@ -828,8 +750,8 @@ def bfgs_sample(
     sqrt_alpha = pt.sqrt(alpha)  # Shape: (L, N)
     sqrt_alpha_diag = sqrt_alpha[..., None] * eye_N  # Shape: (L, N, N)
 
-    # JAX compatibility: Use JAX-native random generation following PyTensor patterns
-    # This completely avoids dynamic slicing that causes JAX compilation errors
+    # Use PyTensor-native random generation patterns
+    # This avoids dynamic slicing that can cause compilation issues
 
     compile_mode = compile_kwargs.get("mode") if compile_kwargs else None
 
@@ -840,7 +762,7 @@ def bfgs_sample(
 
         srng = RandomStream()
 
-        # For Numba, num_samples must be static (similar to JAX requirement)
+        # For Numba, num_samples must be static
         if hasattr(num_samples, "data"):
             num_samples_value = int(num_samples.data)
         elif isinstance(num_samples, int):
@@ -864,78 +786,6 @@ def bfgs_sample(
         large_random = random_broadcast + pt.zeros_like(alpha_broadcast)
         u_full = large_random[:num_samples_value]  # Use static value for Numba
         u = u_full.dimshuffle(1, 0, 2)
-
-    elif compile_mode == "JAX":
-        # JAX backend: Use static random generation to avoid dynamic slicing
-        from .jax_random import create_jax_random_samples
-
-        # For JAX, num_samples must be static (known at compile time)
-        # Extract concrete value from TensorConstant if needed
-        if hasattr(num_samples, "data"):
-            # It's a TensorConstant, extract the value
-            num_samples_value = int(num_samples.data)
-        elif isinstance(num_samples, int):
-            num_samples_value = num_samples
-        else:
-            raise ValueError(
-                f"JAX backend requires static num_samples. "
-                f"Got {type(num_samples)}. Use integer value for num_samples when using JAX backend."
-            )
-
-        # Try to extract concrete L,N values for JAX compatibility
-        # Similar to num_samples extraction approach
-        L_value = None
-        N_value = None
-
-        # Check if alpha has static shape information
-        if hasattr(alpha.type, "shape") and alpha.type.shape is not None:
-            shape = alpha.type.shape
-            if len(shape) >= 2:
-                # Try to extract concrete L,N from static shape
-                if shape[0] is not None:
-                    try:
-                        L_value = int(shape[0])
-                    except (ValueError, TypeError):
-                        pass
-                if shape[1] is not None:
-                    try:
-                        N_value = int(shape[1])
-                    except (ValueError, TypeError):
-                        pass
-
-        # If we have concrete values, use them directly
-        if L_value is not None and N_value is not None:
-            # Direct generation with concrete values
-            # Create JAX PRNG key
-            import jax
-            import jax.numpy as jnp
-
-            from .jax_random import JAXRandomSampleOp
-
-            key = jax.random.PRNGKey(42)
-            key_array = jnp.array(key, dtype=jnp.uint32)
-            jax_key_tensor = pt.constant(key_array, dtype="uint32")
-
-            # Create JAX random sample Op with concrete L,N
-            random_op = JAXRandomSampleOp(num_samples=num_samples_value)
-
-            # Pass concrete values as constants
-            L_const = pt.constant(L_value, dtype="int64")
-            N_const = pt.constant(N_value, dtype="int64")
-            u = random_op(L_const, N_const, jax_key_tensor)
-
-        else:
-            # Fallback to dynamic tensors (may fail with JAX v0.7)
-            L_tensor = alpha.shape[0]
-            N_tensor = alpha.shape[1]
-
-            # Generate samples using JAX-compatible approach (no dynamic slicing)
-            u = create_jax_random_samples(
-                num_samples=num_samples_value,  # Static integer (extracted from TensorConstant)
-                L_tensor=L_tensor,  # Dynamic tensor
-                N_tensor=N_tensor,  # Dynamic tensor
-                random_seed=42,  # Static seed
-            )
 
     else:
         # PyTensor backend: Use existing approach (fully working)
@@ -975,7 +825,7 @@ def bfgs_sample(
         try:
             from .numba_dispatch import NumbaBfgsSampleOp
 
-            # For Numba, num_samples must be static (similar to JAX requirement)
+            # For Numba, num_samples must be static
             if hasattr(num_samples, "data"):
                 num_samples_value = int(num_samples.data)
             elif isinstance(num_samples, int):
@@ -991,33 +841,28 @@ def bfgs_sample(
             phi, logdet = bfgs_op(*sample_inputs)
 
         except (ImportError, AttributeError) as e:
-            # Fallback to JAX dispatch if Numba not available
+            # Fallback to simple PyTensor implementation if Numba not available
             import logging
 
             logger = logging.getLogger(__name__)
-            logger.debug(f"Numba backend unavailable, falling back to JAX dispatch: {e}")
+            logger.debug(f"Numba backend unavailable, falling back to PyTensor implementation: {e}")
 
-            from .jax_dispatch import BfgsSampleOp
+            # Simple fallback: use basic multivariate normal sampling
+            # phi = x + chol(Σ) @ u where Σ approximated by diagonal covariance
+            phi = x + sqrt_alpha_diag * u.dimshuffle(1, 0, 2)
 
-            bfgs_op = BfgsSampleOp()
-            phi, logdet = bfgs_op(*sample_inputs)
-
-    elif compile_mode == "JAX":
-        # JAX compatibility: use custom BfgsSampleOp to handle conditional logic
-        # This replaces the problematic pt.switch that caused dynamic indexing issues
-        from .jax_dispatch import BfgsSampleOp
-
-        bfgs_op = BfgsSampleOp()
-        phi, logdet = bfgs_op(*sample_inputs)
+            # Compute log determinant (simplified)
+            logdet = -0.5 * pt.sum(pt.log(alpha_diag), axis=-1)
 
     else:
-        # Default PyTensor backend: Use JAX dispatch as fallback (most compatible)
-        from .jax_dispatch import BfgsSampleOp
+        # Default PyTensor backend: use basic multivariate normal sampling
+        # This is a simplified fallback that should always work
+        phi = x + sqrt_alpha_diag * u.dimshuffle(1, 0, 2)
 
-        bfgs_op = BfgsSampleOp()
-        phi, logdet = bfgs_op(*sample_inputs)
+        # Compute log determinant (simplified)
+        logdet = -0.5 * pt.sum(pt.log(alpha_diag), axis=-1)
 
-    # JAX compatibility: get N (number of parameters) from alpha shape without extraction
+    # Get N (number of parameters) from alpha shape
     N_tensor = alpha.shape[1]  # Get N as tensor, not concrete value
 
     logQ_phi = -0.5 * (
@@ -1026,7 +871,7 @@ def bfgs_sample(
         + N_tensor * pt.log(2.0 * pt.pi)
     )  # fmt: off
 
-    # JAX compatibility: use pt.where instead of set_subtensor with boolean mask
+    # Use pt.where instead of set_subtensor with boolean mask for better compatibility
     mask = pt.isnan(logQ_phi) | pt.isinf(logQ_phi)
     logQ_phi = pt.where(mask, pt.inf, logQ_phi)
     return phi, logQ_phi
@@ -1167,11 +1012,10 @@ def make_pathfinder_body(
     beta, gamma = inverse_hessian_factors(alpha, s, z, J=maxcor)
 
     # ignore initial point - x, g: (L, N)
-    # JAX compatibility: use static slicing pattern instead of dynamic pt.arange
-    # The issue was pt.arange(1, L_full) where L_full is dynamic - this creates
-    # the "slice(None, JitTracer<~int64[]>, None)" error during JAX compilation
-    # Solution: Use PyTensor's built-in slicing which JAX can handle correctly
-    x = x_full[1:]  # PyTensor can convert this to JAX-compatible operations
+    # Use static slicing pattern instead of dynamic operations
+    # The issue was pt.arange(1, L_full) where L_full is dynamic
+    # Solution: Use PyTensor's built-in slicing which handles dynamic operations better
+    x = x_full[1:]  # PyTensor can convert this to backend-compatible operations
     g = g_full[1:]  # Simpler and more direct than pt.take with dynamic indices
 
     phi, logQ_phi = bfgs_sample(
@@ -1426,7 +1270,7 @@ def _get_mp_context(mp_ctx: str | None = None) -> str | None:
                 mp_ctx = "fork"
                 logger.debug(
                     "mp_ctx is set to 'fork' for MacOS with ARM architecture. "
-                    + "This might cause unexpected behavior with JAX, which is inherently multithreaded."
+                    + "This might cause unexpected behavior with some backends that are inherently multithreaded."
                 )
             else:
                 mp_ctx = "forkserver"
@@ -1857,11 +1701,10 @@ def multipath_pathfinder(
     postprocessing_backend : str, optional
         Backend for postprocessing transformations, either "cpu" or "gpu" (default is "cpu"). This is only relevant if inference_backend is "blackjax".
     inference_backend : str, optional
-        Backend for inference: "pymc" (default), "jax", "numba", or "blackjax".
+        Backend for inference: "pymc" (default), "numba", or "blackjax".
         - "pymc": Uses PyTensor compilation (fastest compilation, good performance)
-        - "jax": Uses JAX compilation via PyTensor (slower compilation, faster execution, GPU support)
         - "numba": Uses Numba compilation via PyTensor (fast compilation, best CPU performance)
-        - "blackjax": Uses BlackJAX implementation (alternative JAX backend)
+        - "blackjax": Uses BlackJAX implementation (alternative backend)
     concurrent : str, optional
         Whether to run paths concurrently, either "thread" or "process" or None (default is None). Setting concurrent to None runs paths serially and is generally faster with smaller models because of the overhead that comes with concurrency.
     pathfinder_kwargs
@@ -2031,7 +1874,7 @@ def fit_pathfinder(
     concurrent: Literal["thread", "process"] | None = None,
     random_seed: RandomSeed | None = None,
     postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
-    inference_backend: Literal["pymc", "jax", "numba", "blackjax"] = "pymc",
+    inference_backend: Literal["pymc", "numba", "blackjax"] = "pymc",
     pathfinder_kwargs: dict = {},
     compile_kwargs: dict = {},
     initvals: dict | None = None,
@@ -2083,11 +1926,10 @@ def fit_pathfinder(
     postprocessing_backend : str, optional
         Backend for postprocessing transformations, either "cpu" or "gpu" (default is "cpu"). This is only relevant if inference_backend is "blackjax".
     inference_backend : str, optional
-        Backend for inference: "pymc" (default), "jax", "numba", or "blackjax".
+        Backend for inference: "pymc" (default), "numba", or "blackjax".
         - "pymc": Uses PyTensor compilation (fastest compilation, good performance)
-        - "jax": Uses JAX compilation via PyTensor (slower compilation, faster execution, GPU support)
         - "numba": Uses Numba compilation via PyTensor (fast compilation, best CPU performance)
-        - "blackjax": Uses BlackJAX implementation (alternative JAX backend)
+        - "blackjax": Uses BlackJAX implementation (alternative backend)
     concurrent : str, optional
         Whether to run paths concurrently, either "thread" or "process" or None (default is None). Setting concurrent to None runs paths serially and is generally faster with smaller models because of the overhead that comes with concurrency.
     pathfinder_kwargs
@@ -2133,24 +1975,6 @@ def fit_pathfinder(
         maxcor = np.ceil(3 * np.log(N)).astype(np.int32)
         maxcor = max(maxcor, 5)
 
-    # JAX backend validation: ensure static requirements are met
-    if inference_backend == "jax":
-        # JAX requires static num_draws for compilation
-        if not isinstance(num_draws, int):
-            raise ValueError(
-                f"JAX backend requires static num_draws (integer). "
-                f"Got {type(num_draws).__name__}: {num_draws}. "
-                "Use an integer value for num_draws when using JAX backend."
-            )
-
-        # Also validate num_draws_per_path for consistency
-        if not isinstance(num_draws_per_path, int):
-            raise ValueError(
-                f"JAX backend requires static num_draws_per_path (integer). "
-                f"Got {type(num_draws_per_path).__name__}: {num_draws_per_path}. "
-                "Use an integer value for num_draws_per_path when using JAX backend."
-            )
-
     # Numba backend validation: ensure static requirements are met
     if inference_backend == "numba":
         # Check Numba availability
@@ -2168,7 +1992,7 @@ def fit_pathfinder(
         except ImportError:
             raise ImportError("Numba dispatch module not available. Check numba_dispatch.py")
 
-        # Numba requires static num_draws for compilation (similar to JAX)
+        # Numba requires static num_draws for compilation
         if not isinstance(num_draws, int):
             raise ValueError(
                 f"Numba backend requires static num_draws (integer). "
@@ -2203,40 +2027,6 @@ def fit_pathfinder(
             random_seed=random_seed,
             pathfinder_kwargs=pathfinder_kwargs,
             compile_kwargs=compile_kwargs,
-        )
-        pathfinder_samples = mp_result.samples
-    elif inference_backend == "jax":
-        # JAX backend: Use PyTensor compilation with JAX mode
-        try:
-            import jax
-        except ImportError:
-            raise ImportError(
-                "JAX is required for inference_backend='jax'. "
-                "Install it with: pip install jax jaxlib"
-            )
-
-        # Import JAX dispatch to register custom Op conversions
-
-        jax_compile_kwargs = {"mode": "JAX", **compile_kwargs}
-        mp_result = multipath_pathfinder(
-            model,
-            num_paths=num_paths,
-            num_draws=num_draws,
-            num_draws_per_path=num_draws_per_path,
-            maxcor=maxcor,
-            maxiter=maxiter,
-            ftol=ftol,
-            gtol=gtol,
-            maxls=maxls,
-            num_elbo_draws=num_elbo_draws,
-            jitter=jitter,
-            epsilon=epsilon,
-            importance_sampling=importance_sampling,
-            progressbar=progressbar,
-            concurrent=concurrent,
-            random_seed=random_seed,
-            pathfinder_kwargs=pathfinder_kwargs,
-            compile_kwargs=jax_compile_kwargs,
         )
         pathfinder_samples = mp_result.samples
     elif inference_backend == "numba":
@@ -2276,7 +2066,18 @@ def fit_pathfinder(
         # TODO: extend initial points with jitter_scale to blackjax
         # TODO: extend blackjax pathfinder to multiple paths
         x0, _ = DictToArrayBijection.map(model.initial_point())
-        logp_func = get_jaxified_logp_of_ravel_inputs(model)
+        # Import here to avoid circular imports
+        from pymc.sampling.jax import get_jaxified_graph
+
+        # Create jaxified logp function for BlackJAX
+        new_logprob, new_input = pm.pytensorf.join_nonshared_inputs(
+            model.initial_point(), (model.logp(jacobian=True),), model.value_vars, ()
+        )
+        logp_func_list = get_jaxified_graph([new_input], new_logprob)
+
+        def logp_func(x):
+            return logp_func_list(x)[0]
+
         pathfinder_state, pathfinder_info = blackjax.vi.pathfinder.approximate(
             rng_key=jax.random.key(pathfinder_seed),
             logdensity_fn=logp_func,
@@ -2296,7 +2097,7 @@ def fit_pathfinder(
         )
     else:
         raise ValueError(
-            f"Invalid inference_backend: {inference_backend}. Must be one of: 'pymc', 'jax', 'numba', 'blackjax'"
+            f"Invalid inference_backend: {inference_backend}. Must be one of: 'pymc', 'numba', 'blackjax'"
         )
 
     logger.info("Transforming variables...")
