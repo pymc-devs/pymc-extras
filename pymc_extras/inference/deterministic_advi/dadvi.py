@@ -160,16 +160,11 @@ def create_dadvi_graph(
     means = var_params[:n_params]
     log_sds = var_params[n_params:]
 
-    draw = pt.vector(name="draw", shape=(n_params,))
-    sample = means + pt.exp(log_sds) * draw
-
-    # Graph in terms of a single sample
-    logp_draw = pytensor.clone_replace(logp, replace={flat_input: sample})
     draw_matrix = pt.constant(draws)
-
-    # Vectorise
+    samples = means + pt.exp(log_sds) * draw_matrix
+    
     logp_vectorized_draws = pytensor.graph.vectorize_graph(
-        logp_draw, replace={draw: draw_matrix}
+        logp, replace={flat_input: samples}
     )
 
     mean_log_density = pt.mean(logp_vectorized_draws)
