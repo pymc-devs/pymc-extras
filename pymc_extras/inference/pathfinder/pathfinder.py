@@ -1776,7 +1776,7 @@ def multipath_pathfinder(
                 TimeRemainingColumn(),
                 TextColumn("/"),
                 TimeElapsedColumn(),
-                console=Console(),  # Use default theme if default_progress_theme is None
+                console=Console(),
                 disable=not progressbar,
             )
         with progress:
@@ -2031,7 +2031,6 @@ def fit_pathfinder(
         pathfinder_samples = mp_result.samples
     elif inference_backend == "numba":
         # Numba backend: Use PyTensor compilation with Numba mode
-        # Import Numba dispatch to register custom Op conversions
 
         numba_compile_kwargs = {"mode": "NUMBA", **compile_kwargs}
         mp_result = multipath_pathfinder(

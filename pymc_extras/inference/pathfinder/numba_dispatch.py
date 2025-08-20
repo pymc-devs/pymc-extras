@@ -20,25 +20,6 @@ from pytensor.link.numba.dispatch import basic as numba_basic
 from pytensor.link.numba.dispatch import numba_funcify
 
 
-# @numba_funcify.register(LogLike)  # DISABLED
-def _disabled_numba_funcify_LogLike(op, node, **kwargs):
-    """DISABLED: LogLike Op registration for Numba.
-
-    This registration is intentionally disabled because LogLike Op
-    cannot be compiled with Numba due to function closure limitations.
-
-    The error would be:
-    numba.core.errors.TypingError: Untyped global name 'actual_logp_func':
-    Cannot determine Numba type of <class 'function'>
-
-    Instead, use the scan-based approach in vectorized_logp module.
-    """
-    raise NotImplementedError(
-        "LogLike Op cannot be compiled with Numba due to function closure limitations. "
-        "Use scan-based vectorization instead."
-    )
-
-
 class NumbaChiMatrixOp(Op):
     """Numba-optimized Chi matrix computation.
 
@@ -78,7 +59,7 @@ class NumbaChiMatrixOp(Op):
 
         output = pt.tensor(
             dtype=diff.dtype,
-            shape=(None, None, self.J),  # Only J is static
+            shape=(None, None, self.J),
         )
         return Apply(self, [diff], [output])
 
@@ -122,7 +103,6 @@ class NumbaChiMatrixOp(Op):
 def numba_funcify_ChiMatrixOp(op, node, **kwargs):
     """Numba implementation for ChiMatrix sliding window computation with smart parallelization.
 
-    Phase 6: Uses intelligent parallelization and optimized memory access patterns.
     Automatically selects between parallel and sequential versions based on problem size.
 
     Parameters
@@ -392,7 +372,7 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
     """
 
     REGULARISATION_TERM = 1e-8
-    USE_CUSTOM_THRESHOLD = 100  # Use custom linear algebra for N < 100
+    CUSTOM_THRESHOLD = 100
 
     @numba_basic.numba_njit(
         fastmath=True, cache=True, error_model="numpy", boundscheck=False, inline="never"
@@ -899,7 +879,7 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
             matmul_inplace(sqrt_alpha_diag_l, temp_matrix_NN3, temp_matrix_NN)
             matmul_inplace(temp_matrix_NN, sqrt_alpha_diag_l, H_inv_buffer)
 
-            if N <= USE_CUSTOM_THRESHOLD:
+            if N <= CUSTOM_THRESHOLD:
                 Lchol_l = cholesky_small(H_inv_buffer, upper=True)
             else:
                 Lchol_l = np.linalg.cholesky(H_inv_buffer).T
@@ -968,7 +948,7 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
         for l in range(L):  # noqa: E741
             matmul_inplace(inv_sqrt_alpha_diag[l], beta[l], qr_input_buffer)
 
-            if N <= USE_CUSTOM_THRESHOLD:
+            if N <= CUSTOM_THRESHOLD:
                 Q_l, R_l = qr_small(qr_input_buffer)
                 copy_matrix_inplace(Q_l, Q_buffer)
                 copy_matrix_inplace(R_l, R_buffer)
@@ -986,7 +966,7 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
                     temp_matrix_JJ2[i, j] = sum_val
             add_inplace(Id_JJ_reg, temp_matrix_JJ2, temp_matrix_JJ)
 
-            if JJ <= USE_CUSTOM_THRESHOLD:
+            if JJ <= CUSTOM_THRESHOLD:
                 Lchol_l = cholesky_small(temp_matrix_JJ, upper=True)
             else:
                 Lchol_l = np.linalg.cholesky(temp_matrix_JJ).T
@@ -1101,7 +1081,7 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
                 sqrt_alpha_diag_l, matmul_contiguous(temp_matrix, sqrt_alpha_diag_l)
             )
 
-            if N <= USE_CUSTOM_THRESHOLD:
+            if N <= CUSTOM_THRESHOLD:
                 # 3-5x speedup over BLAS
                 Lchol_l = cholesky_small(H_inv_l, upper=True)
             else:
@@ -1188,8 +1168,7 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
         for l in range(L):  # noqa: E741
             qr_input_l = inv_sqrt_alpha_diag[l] @ beta[l]
 
-            if N <= USE_CUSTOM_THRESHOLD:
-                # 3-5x speedup over BLAS
+            if N <= CUSTOM_THRESHOLD:
                 Q_l, R_l = qr_small(qr_input_l)
             else:
                 Q_l, R_l = np.linalg.qr(qr_input_l)
@@ -1203,10 +1182,9 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
 
             Lchol_input_l = temp_RgammaRT.copy()
             for i in range(JJ):
-                Lchol_input_l[i, i] += IdJJ[i, i]  # Add identity efficiently
+                Lchol_input_l[i, i] += IdJJ[i, i]
 
-            if JJ <= USE_CUSTOM_THRESHOLD:
-                # 3-5x speedup over BLAS
+            if JJ <= CUSTOM_THRESHOLD:
                 Lchol_l = cholesky_small(Lchol_input_l, upper=True)
             else:
                 Lchol_l = np.linalg.cholesky(Lchol_input_l).T
@@ -1346,10 +1324,6 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
                 x, g, alpha, beta, gamma, alpha_diag, inv_sqrt_alpha_diag, sqrt_alpha_diag, u
             )
 
-    # ===============================================================================
-    # Phase 6: Smart Parallelization
-    # ===============================================================================
-
     @numba_basic.numba_njit(
         dense_bfgs_signature,
         fastmath=True,
@@ -1426,7 +1400,7 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
                 sqrt_alpha_diag_l, matmul_contiguous(temp_matrix, sqrt_alpha_diag_l)
             )
 
-            if N <= USE_CUSTOM_THRESHOLD:
+            if N <= CUSTOM_THRESHOLD:
                 Lchol_l = cholesky_small(H_inv_l, upper=True)
             else:
                 Lchol_l = np.linalg.cholesky(H_inv_l).T
@@ -1504,7 +1478,7 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
             beta_l = ensure_contiguous_2d(beta[l])
             qr_input_l = matmul_contiguous(inv_sqrt_alpha_diag_l, beta_l)
 
-            if N <= USE_CUSTOM_THRESHOLD:
+            if N <= CUSTOM_THRESHOLD:
                 Q_l, R_l = qr_small(qr_input_l)
             else:
                 Q_l, R_l = np.linalg.qr(qr_input_l)
@@ -1520,7 +1494,7 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
             for i in range(JJ):
                 Lchol_input_l[i, i] += IdJJ[i, i]
 
-            if JJ <= USE_CUSTOM_THRESHOLD:
+            if JJ <= CUSTOM_THRESHOLD:
                 Lchol_l = cholesky_small(Lchol_input_l, upper=True)
             else:
                 Lchol_l = np.linalg.cholesky(Lchol_input_l).T
@@ -1643,7 +1617,6 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
             """
             L, M, N = u.shape
 
-            # This avoids thread overhead for small problems
             if L >= 4:
                 return bfgs_sample_parallel(
                     x, g, alpha, beta, gamma, alpha_diag, inv_sqrt_alpha_diag, sqrt_alpha_diag, u
@@ -1655,5 +1628,4 @@ def numba_funcify_BfgsSampleOp(op, node, **kwargs):
 
         return smart_dispatcher
 
-    # Phase 6: Return intelligent parallel dispatcher
     return create_parallel_dispatcher()

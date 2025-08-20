@@ -1,28 +1,9 @@
-#   Copyright 2022 The PyMC Developers
-#
-#   Licensed under the Apache License, Version 2.0 (the "License");
-#   you may not use this file except in compliance with the License.
-#   You may obtain a copy of the License at
-#
-#       http://www.apache.org/licenses/LICENSE-2.0
-#
-#   Unless required by applicable law or agreed to in writing, software
-#   distributed under the License is distributed on an "AS IS" BASIS,
-#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#   See the License for the specific language governing permissions and
-#   limitations under the License.
-
 """
 Native PyTensor vectorized logp implementation.
 
-This module provides a PyTensor First approach to vectorizing log-probability
+This module provides a PyTensor-based approach to vectorizing log-probability
 computations, eliminating the need for custom LogLike Op and ensuring automatic
 backend compatibility through native PyTensor operations.
-
-Expert Guidance Applied:
-- Uses vectorize_graph instead of custom Ops (Jesse Grabowski's recommendation)
-- Eliminates numpy.apply_along_axis dependency
-- Leverages existing PyTensor functionality per "PyTensor First" principle
 """
 
 from collections.abc import Callable as CallableType
@@ -40,9 +21,8 @@ def create_vectorized_logp_graph(
     """
     Create a vectorized log-probability computation graph using native PyTensor operations.
 
-    IMPORTANT: This function now detects the interface type and compilation mode to handle
-    both compiled functions and symbolic expressions properly, with special handling for
-    Numba mode to avoid LogLike Op compilation issues.
+    This function determines the appropriate vectorization strategy based on the input type
+    and compilation mode.
 
     Parameters
     ----------
@@ -57,21 +37,13 @@ def create_vectorized_logp_graph(
     -------
     Callable
         Function that takes a batch of parameter vectors and returns vectorized logp values
-
-    Notes
-    -----
-    This implementation follows PyTensor expert recommendations:
-    - "Can the perform method of that `Loglike` op be directly written in pytensor?" - Jesse Grabowski
-    - "PyTensor vectorize / vectorize_graph directly" - Ricardo
-    - Fixed interface mismatch between compiled functions and symbolic variables
-    - Automatic backend support through PyTensor's existing infrastructure
-    - Numba compatibility through scan-based approach
     """
+    from pytensor.compile.function.types import Function
 
     # For Numba mode, use OpFromGraph approach to avoid function closure issues
     if mode_name == "NUMBA":
         # Special handling for Numba: logp_func should be a PyMC model, not a compiled function
-        if hasattr(logp_func, "value_vars"):  # It's a PyMC model
+        if hasattr(logp_func, "value_vars"):
             return create_opfromgraph_logp(logp_func)
         else:
             raise ValueError(
@@ -79,23 +51,21 @@ def create_vectorized_logp_graph(
                 "Pass the model directly when using inference_backend='numba'."
             )
 
-    # Check if logp_func is a compiled function by testing its interface
-    phi_test = pt.vector("phi_test", dtype="float64")
+    # Use proper type checking to determine if logp_func is a compiled function
+    if isinstance(logp_func, Function):
+        # Compiled PyTensor function - use LogLike Op approach
+        from .pathfinder import LogLike  # Import the existing LogLike Op
 
-    try:
-        # Try to call logp_func with symbolic input
-        logP_scalar = logp_func(phi_test)
-        if hasattr(logP_scalar, "type"):  # It's a symbolic variable
-            use_symbolic_interface = True
-        else:
-            use_symbolic_interface = False
-    except (TypeError, AttributeError):
-        # logp_func is a compiled function that expects numeric input
-        # Fall back to LogLike Op approach for non-Numba modes
-        use_symbolic_interface = False
+        def vectorized_logp(phi: TensorVariable) -> TensorVariable:
+            """Vectorized logp using LogLike Op for compiled functions."""
+            loglike_op = LogLike(logp_func)
+            result = loglike_op(phi)
+            return result
 
-    if use_symbolic_interface:
-        # Direct symbolic approach (ideal case)
+        return vectorized_logp
+
+    else:
+        # Assume symbolic interface - use direct symbolic approach
         phi_scalar = pt.vector("phi_scalar", dtype="float64")
         logP_scalar = logp_func(phi_scalar)
 
@@ -113,19 +83,6 @@ def create_vectorized_logp_graph(
             # Handle nan/inf values
             mask = pt.isnan(result) | pt.isinf(result)
             return pt.where(mask, -pt.inf, result)
-
-        return vectorized_logp
-
-    else:
-        # Fallback to LogLike Op for compiled functions (non-Numba modes only)
-        # This maintains compatibility while we transition to symbolic approach
-        from .pathfinder import LogLike  # Import the existing LogLike Op
-
-        def vectorized_logp(phi: TensorVariable) -> TensorVariable:
-            """Vectorized logp using LogLike Op fallback."""
-            loglike_op = LogLike(logp_func)
-            result = loglike_op(phi)
-            return result
 
         return vectorized_logp
 
