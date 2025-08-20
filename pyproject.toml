@@ -40,7 +40,6 @@ dependencies = [
   "better-optimize>=0.1.5",
   "pydantic>=2.0.0",
   "preliz>=0.20.0",
-  "jax>=0.7.0"
 ]
 
 [project.optional-dependencies]

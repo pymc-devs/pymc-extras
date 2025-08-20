@@ -12,7 +12,7 @@ from pytensor.tensor.variable import TensorVariable
 import xarray
 
 from pymc import join_nonshared_inputs, DictToArrayBijection
-from pymc.util import get_default_varnames
+from pymc.util import get_default_varnames, RandomSeed
 from pymc.backends.arviz import (
     apply_function_over_dataset,
     PointFunc,
@@ -27,10 +27,10 @@ from pymc_extras.inference.laplace_approx.laplace import unstack_laplace_draws
 def fit_deterministic_advi(
     model: Optional[Model] = None,
     n_fixed_draws: int = 30,
-    random_seed: int = 2,
+    random_seed: RandomSeed = None,
     n_draws: int = 1000,
     keep_untransformed: bool = False,
-):
+) -> az.InferenceData:
     """
     Does inference using deterministic ADVI (automatic differentiation
     variational inference).
@@ -101,7 +101,9 @@ def fit_deterministic_advi(
     opt_means, opt_log_sds = np.split(opt_var_params, 2)
 
     # Make the draws:
-    draws_raw = np.random.randn(n_draws, n_params)
+    generator = np.random.default_rng(seed=random_seed)
+    draws_raw = generator.standard_normal(size=(n_draws, n_params))
+
     draws = opt_means + draws_raw * np.exp(opt_log_sds)
     draws_arviz = unstack_laplace_draws(draws, model, chains=1, draws=n_draws)
 
@@ -116,7 +118,7 @@ def create_dadvi_graph(
     model: Model,
     n_params: int,
     n_fixed_draws: int = 30,
-    random_seed: int = 2,
+    random_seed: RandomSeed = None,
 ) -> Tuple[TensorVariable, TensorVariable]:
     """
     Sets up the DADVI graph in pytensor and returns it.
@@ -143,8 +145,8 @@ def create_dadvi_graph(
     """
 
     # Make the fixed draws
-    state = np.random.RandomState(random_seed)
-    draws = state.randn(n_fixed_draws, n_params)
+    generator = np.random.default_rng(seed=random_seed)
+    draws = generator.standard_normal(size=(n_fixed_draws, n_params))
 
     inputs = model.continuous_value_vars + model.discrete_value_vars
     initial_point_dict = model.initial_point()
@@ -162,7 +164,7 @@ def create_dadvi_graph(
 
     draw_matrix = pt.constant(draws)
     samples = means + pt.exp(log_sds) * draw_matrix
-    
+
     logp_vectorized_draws = pytensor.graph.vectorize_graph(
         logp, replace={flat_input: samples}
     )
