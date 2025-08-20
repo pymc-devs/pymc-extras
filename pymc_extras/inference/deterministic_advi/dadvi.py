@@ -1,31 +1,28 @@
-from collections import defaultdict
-from typing import Tuple, Optional
-
-import pymc
-from pymc import Model
 import arviz as az
 import numpy as np
-from scipy.optimize import minimize
+import pymc
 import pytensor
 import pytensor.tensor as pt
-from pytensor.tensor.variable import TensorVariable
 import xarray
 
-from pymc import join_nonshared_inputs, DictToArrayBijection
-from pymc.util import get_default_varnames, RandomSeed
+from pymc import DictToArrayBijection, Model, join_nonshared_inputs
 from pymc.backends.arviz import (
-    apply_function_over_dataset,
     PointFunc,
+    apply_function_over_dataset,
     coords_and_dims_for_inferencedata,
 )
+from pymc.util import RandomSeed, get_default_varnames
+from pytensor.tensor.variable import TensorVariable
+from scipy.optimize import minimize
+
+from pymc_extras.inference.laplace_approx.laplace import unstack_laplace_draws
 from pymc_extras.inference.laplace_approx.scipy_interface import (
     _compile_functions_for_scipy_optimize,
 )
-from pymc_extras.inference.laplace_approx.laplace import unstack_laplace_draws
 
 
 def fit_deterministic_advi(
-    model: Optional[Model] = None,
+    model: Model | None = None,
     n_fixed_draws: int = 30,
     random_seed: RandomSeed = None,
     n_draws: int = 1000,
@@ -93,9 +90,7 @@ def fit_deterministic_advi(
         compute_hess=False,
     )
 
-    result = minimize(
-        f_fused, np.zeros(2 * n_params), method="trust-ncg", jac=True, hessp=f_hessp
-    )
+    result = minimize(f_fused, np.zeros(2 * n_params), method="trust-ncg", jac=True, hessp=f_hessp)
 
     opt_var_params = result.x
     opt_means, opt_log_sds = np.split(opt_var_params, 2)
@@ -107,9 +102,7 @@ def fit_deterministic_advi(
     draws = opt_means + draws_raw * np.exp(opt_log_sds)
     draws_arviz = unstack_laplace_draws(draws, model, chains=1, draws=n_draws)
 
-    transformed_draws = transform_draws(
-        draws_arviz, model, keep_untransformed=keep_untransformed
-    )
+    transformed_draws = transform_draws(draws_arviz, model, keep_untransformed=keep_untransformed)
 
     return transformed_draws
 
@@ -119,7 +112,7 @@ def create_dadvi_graph(
     n_params: int,
     n_fixed_draws: int = 30,
     random_seed: RandomSeed = None,
-) -> Tuple[TensorVariable, TensorVariable]:
+) -> tuple[TensorVariable, TensorVariable]:
     """
     Sets up the DADVI graph in pytensor and returns it.
 
@@ -165,9 +158,7 @@ def create_dadvi_graph(
     draw_matrix = pt.constant(draws)
     samples = means + pt.exp(log_sds) * draw_matrix
 
-    logp_vectorized_draws = pytensor.graph.vectorize_graph(
-        logp, replace={flat_input: samples}
-    )
+    logp_vectorized_draws = pytensor.graph.vectorize_graph(logp, replace={flat_input: samples})
 
     mean_log_density = pt.mean(logp_vectorized_draws)
     entropy = pt.sum(log_sds)

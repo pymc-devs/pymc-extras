@@ -12,11 +12,11 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+from pymc_extras.inference.deterministic_advi.dadvi import fit_deterministic_advi
 from pymc_extras.inference.fit import fit
 from pymc_extras.inference.laplace_approx.find_map import find_MAP
 from pymc_extras.inference.laplace_approx.laplace import fit_laplace
 from pymc_extras.inference.pathfinder.pathfinder import fit_pathfinder
-from pymc_extras.inference.deterministic_advi.dadvi import fit_deterministic_advi
 
 __all__ = [
     "find_MAP",
