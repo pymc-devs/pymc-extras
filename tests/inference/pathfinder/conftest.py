@@ -94,9 +94,6 @@ def get_available_backends():
 
     available = ["pymc"]  # PyMC should always be available
 
-    if importlib.util.find_spec("jax") is not None:
-        available.append("jax")
-
     if importlib.util.find_spec("numba") is not None:
         available.append("numba")
 

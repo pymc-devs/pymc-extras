@@ -40,9 +40,7 @@ def create_vectorized_logp_graph(
     """
     from pytensor.compile.function.types import Function
 
-    # For Numba mode, use OpFromGraph approach to avoid function closure issues
     if mode_name == "NUMBA":
-        # Special handling for Numba: logp_func should be a PyMC model, not a compiled function
         if hasattr(logp_func, "value_vars"):
             return create_opfromgraph_logp(logp_func)
         else:
@@ -51,10 +49,8 @@ def create_vectorized_logp_graph(
                 "Pass the model directly when using inference_backend='numba'."
             )
 
-    # Use proper type checking to determine if logp_func is a compiled function
     if isinstance(logp_func, Function):
-        # Compiled PyTensor function - use LogLike Op approach
-        from .pathfinder import LogLike  # Import the existing LogLike Op
+        from .pathfinder import LogLike
 
         def vectorized_logp(phi: TensorVariable) -> TensorVariable:
             """Vectorized logp using LogLike Op for compiled functions."""
@@ -65,22 +61,18 @@ def create_vectorized_logp_graph(
         return vectorized_logp
 
     else:
-        # Assume symbolic interface - use direct symbolic approach
         phi_scalar = pt.vector("phi_scalar", dtype="float64")
         logP_scalar = logp_func(phi_scalar)
 
         def vectorized_logp(phi: TensorVariable) -> TensorVariable:
             """Vectorized logp using symbolic interface."""
-            # Use vectorize_graph to handle batch processing
             if phi.ndim == 2:
                 result = vectorize_graph(logP_scalar, replace={phi_scalar: phi})
             else:
-                # Multi-path case: (L, batch_size, num_params)
                 phi_reshaped = phi.reshape((-1, phi.shape[-1]))
                 result_flat = vectorize_graph(logP_scalar, replace={phi_scalar: phi_reshaped})
                 result = result_flat.reshape(phi.shape[:-1])
 
-            # Handle nan/inf values
             mask = pt.isnan(result) | pt.isinf(result)
             return pt.where(mask, -pt.inf, result)
 
@@ -115,16 +107,12 @@ def create_scan_based_logp_graph(logp_func: CallableType) -> CallableType:
 
         def scan_fn(phi_row):
             """Single row log-probability computation."""
-            # Call the compiled logp_func on individual parameter vectors
-            # This works with Numba because pt.scan handles the iteration
             return logp_func(phi_row)
 
-        # Handle different input shapes
         if phi.ndim == 2:
-            # Single path: (M, N) -> (M,)
             logP_result, _ = scan(fn=scan_fn, sequences=[phi], outputs_info=None, strict=True)
         elif phi.ndim == 3:
-            # Multiple paths: (L, M, N) -> (L, M)
+
             def scan_paths(phi_path):
                 logP_path, _ = scan(
                     fn=scan_fn, sequences=[phi_path], outputs_info=None, strict=True
@@ -135,7 +123,6 @@ def create_scan_based_logp_graph(logp_func: CallableType) -> CallableType:
         else:
             raise ValueError(f"Expected 2D or 3D input, got {phi.ndim}D")
 
-        # Handle nan/inf values (same as LogLike Op)
         mask = pt.isnan(logP_result) | pt.isinf(logP_result)
         result = pt.where(mask, -pt.inf, logP_result)
 
@@ -160,14 +147,12 @@ def create_direct_vectorized_logp(logp_func: CallableType) -> CallableType:
     Callable
         Function that takes a batch of parameter vectors and returns vectorized logp values
     """
-    # Use PyTensor's built-in vectorize
     vectorized_logp_func = pt.vectorize(logp_func, signature="(n)->()")
 
     def direct_logp(phi: TensorVariable) -> TensorVariable:
         """Compute log-probability using pt.vectorize."""
         logP_result = vectorized_logp_func(phi)
 
-        # Handle nan/inf values
         mask = pt.isnan(logP_result) | pt.isinf(logP_result)
         return pt.where(mask, -pt.inf, logP_result)
 
@@ -191,37 +176,28 @@ def extract_model_symbolic_graph(model):
         (param_vector, model_vars, model_logp, param_sizes, total_params)
     """
     with model:
-        # Get the model's symbolic computation graph
         model_vars = list(model.value_vars)
         model_logp = model.logp()
 
-        # Extract parameter dimensions and create flattened parameter vector
         param_sizes = []
         for var in model_vars:
             if hasattr(var.type, "shape") and var.type.shape is not None:
-                # Handle shaped variables
                 if len(var.type.shape) == 0:
-                    # Scalar
                     param_sizes.append(1)
                 else:
-                    # Get product of shape dimensions
                     size = 1
                     for dim in var.type.shape:
-                        # For PyTensor, shape dimensions are often just integers
                         if isinstance(dim, int):
                             size *= dim
                         elif hasattr(dim, "value") and dim.value is not None:
                             size *= dim.value
                         else:
-                            # Try to evaluate if it's a symbolic expression
                             try:
                                 size *= int(dim.eval())
                             except (AttributeError, ValueError, Exception):
-                                # Default to 1 for unknown dimensions
                                 size *= 1
                     param_sizes.append(size)
             else:
-                # Default to scalar
                 param_sizes.append(1)
 
         total_params = sum(param_sizes)
@@ -254,7 +230,6 @@ def create_symbolic_parameter_mapping(param_vector, model_vars, param_sizes):
     start_idx = 0
 
     for var, size in zip(model_vars, param_sizes):
-        # Extract slice from parameter vector
         if size == 1:
             # Scalar case
             var_slice = param_vector[start_idx]
@@ -309,19 +284,14 @@ def create_opfromgraph_logp(model) -> CallableType:
 
     from pytensor.compile.builders import OpFromGraph
 
-    # Extract symbolic components - this is the critical step
     param_vector, model_vars, model_logp, param_sizes, total_params = extract_model_symbolic_graph(
         model
     )
 
-    # Create parameter mapping - replaces function closure with pure symbols
     substitutions = create_symbolic_parameter_mapping(param_vector, model_vars, param_sizes)
 
-    # Apply substitutions to create parameter-vector-based logp
-    # This uses PyTensor's symbolic graph manipulation instead of function calls
     symbolic_logp = graph.clone_replace(model_logp, substitutions)
 
-    # Create OpFromGraph - this is Numba-compatible because it's pure symbolic
     logp_op = OpFromGraph([param_vector], [symbolic_logp])
 
     def opfromgraph_logp(phi: TensorVariable) -> TensorVariable:
@@ -346,7 +316,6 @@ def create_opfromgraph_logp(model) -> CallableType:
         else:
             raise ValueError(f"Expected 2D or 3D input, got {phi.ndim}D")
 
-        # Handle nan/inf values using PyTensor operations
         mask = pt.isnan(logP_result) | pt.isinf(logP_result)
         return pt.where(mask, -pt.inf, logP_result)
 
@@ -396,33 +365,19 @@ def create_symbolic_reconstruction_logp(model) -> CallableType:
     def symbolic_logp(phi: TensorVariable) -> TensorVariable:
         """Reconstruct logp computation symbolically for Numba compatibility."""
 
-        # Strategy: Replace the compiled function approach with direct symbolic computation
-        # This requires mapping parameter vectors back to model variables symbolically
-
-        # For simple models, we can reconstruct the logp directly
-        # This is a template - specific implementation depends on model structure
-
         if phi.ndim == 2:
             # Single path case: (M, N) -> (M,)
 
-            # Use PyTensor's built-in vectorization primitives instead of scan
-            # This avoids the function closure issue
             def compute_single_logp(param_vec):
                 # Map parameter vector to model variables symbolically
-                # This is where we'd implement the symbolic equivalent of logp_func
-
-                # For demonstration - this needs to be model-specific
-                # In practice, this would use the model's symbolic graph
                 return pt.sum(param_vec**2) * -0.5  # Simple quadratic form
 
-            # Use pt.vectorize for native PyTensor vectorization
             vectorized_fn = pt.vectorize(compute_single_logp, signature="(n)->()")
             logP_result = vectorized_fn(phi)
 
         elif phi.ndim == 3:
             # Multiple paths case: (L, M, N) -> (L, M)
 
-            # Reshape and vectorize, then reshape back
             L, M, N = phi.shape
             phi_reshaped = phi.reshape((-1, N))
 
@@ -436,7 +391,6 @@ def create_symbolic_reconstruction_logp(model) -> CallableType:
         else:
             raise ValueError(f"Expected 2D or 3D input, got {phi.ndim}D")
 
-        # Handle nan/inf values
         mask = pt.isnan(logP_result) | pt.isinf(logP_result)
         return pt.where(mask, -pt.inf, logP_result)
 
