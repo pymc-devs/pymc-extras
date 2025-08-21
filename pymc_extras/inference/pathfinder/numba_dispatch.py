@@ -239,8 +239,6 @@ def numba_funcify_LogLike(op, node=None, **kwargs):
     """
     logp_func = op.logp_func
 
-    # Strategy: Use objmode for calling the Python function while keeping
-    # the vectorization and error handling in nopython mode for performance
     @numba_basic.numba_njit(parallel=True, fastmath=True, cache=True)
     def loglike_vectorized_hybrid(phi):
         """Vectorized log-likelihood with hybrid Python/Numba approach.
@@ -251,25 +249,17 @@ def numba_funcify_LogLike(op, node=None, **kwargs):
         L, N = phi.shape
         logP = np.empty(L, dtype=phi.dtype)
 
-        # Parallel computation using objmode for each row
         for i in numba.prange(L):
-            row = phi[i].copy()  # Ensure contiguous memory for objmode
+            row = phi[i].copy()
             with numba.objmode(val="float64"):
-                # Call the Python function in objmode
                 val = logp_func(row)
             logP[i] = val
 
-        # Handle NaN/Inf values exactly like the original implementation
-        # Original: mask = np.isnan(logP) | np.isinf(logP)
-        # Original: outputs[0][0] = np.where(mask, -np.inf, logP)
         mask = np.isnan(logP) | np.isinf(logP)
 
-        # Check if ALL values are invalid (would trigger PathInvalidLogP in original)
         if np.all(mask):
-            # All values are invalid - signal this by returning all -inf
             logP[:] = -np.inf
         else:
-            # Replace invalid values with -inf, preserve valid ones
             logP = np.where(mask, -np.inf, logP)
 
         return logP
