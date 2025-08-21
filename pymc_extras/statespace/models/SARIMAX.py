@@ -22,6 +22,7 @@ from pymc_extras.statespace.utils.constants import (
     SARIMAX_STATE_STRUCTURES,
     SEASONAL_AR_PARAM_DIM,
     SEASONAL_MA_PARAM_DIM,
+    TIME_DIM,
 )
 
 
@@ -38,13 +39,12 @@ def _verify_order(p, d, q, P, D, Q, S):
             )
 
 
-class BayesianSARIMA(PyMCStateSpace):
+class BayesianSARIMAX(PyMCStateSpace):
     r"""
     Seasonal AutoRegressive Integrated Moving Average with eXogenous regressors.
 
-    This class implements a Bayesian approach to SARIMA models, which are used for
-    modeling univariate time series data with seasonal and non-seasonal components.
-    The model supports exogenous regressors and can be represented in state-space form.
+    This class implements a Bayesian approach to SARIMAX models, which are used for modeling univariate time series data
+    with seasonal and non-seasonal components. The model supports exogenous regressors.
 
     Notes
     -----
@@ -98,14 +98,14 @@ class BayesianSARIMA(PyMCStateSpace):
 
     Examples
     --------
-    The following example shows how to build an ARMA(1, 1) model -- ARIMA(1, 0, 1) -- using the BayesianSARIMA class:
+    The following example shows how to build an ARMA(1, 1) model -- ARIMA(1, 0, 1) -- using the BayesianSARIMAX class:
 
     .. code:: python
 
         import pymc_extras.statespace as pmss
         import pymc as pm
 
-        ss_mod = pmss.BayesianSARIMA(order=(1, 0, 1), verbose=True)
+        ss_mod = pmss.BayesianSARIMAX(order=(1, 0, 1), verbose=True)
 
         with pm.Model(coords=ss_mod.coords) as arma_model:
             state_sigmas = pm.HalfNormal("sigma_state", sigma=1.0, dims=ss_mod.param_dims["sigma_state"])
@@ -140,11 +140,11 @@ class BayesianSARIMA(PyMCStateSpace):
         mode: str | Mode | None = None,
     ):
         """
-        Initialize a BayesianSARIMA model.
+        Initialize a BayesianSARIMAX model.
 
         Parameters
         ----------
-        order : tuple(int, int, int)
+        order : tuple of int, int, int
             Order of the ARIMA process. The order has the notation (p, d, q), where p is the number of autoregressive
             lags, q is the number of moving average components, and d is order of integration -- the number of
             differences needed to render the data stationary.
@@ -153,7 +153,7 @@ class BayesianSARIMA(PyMCStateSpace):
             This is only possible if state_structure = 'fast'. For interpretable states, the user must manually
             difference the data prior to calling the `build_statespace_graph` method.
 
-        seasonal_order : tuple(int, int, int, int), optional
+        seasonal_order : tuple of int, int, int, int, optional
             Seasonal order of the SARIMA process. The order has the notation (P, D, Q, S), where P is the number of seasonal
             lags to include, Q is the number of seasonal innovation lags to include, and D is the number of seasonal
             differences to perform. S is the length of the season.
@@ -232,6 +232,12 @@ class BayesianSARIMA(PyMCStateSpace):
 
         self.stationary_initialization = stationary_initialization
 
+        if (self.d or self.D) and self.stationary_initialization:
+            raise ValueError(
+                "Cannot use stationary initialization with differencing. "
+                "Set stationary_initialization=False."
+            )
+
         self.state_structure = state_structure
 
         self._p_max = max(1, self.p + self.P * self.S)
@@ -271,6 +277,7 @@ class BayesianSARIMA(PyMCStateSpace):
             measurement_error=measurement_error,
             mode=mode,
         )
+        self._needs_exog_data = self.k_exog > 0
 
     @property
     def param_names(self):
@@ -304,6 +311,17 @@ class BayesianSARIMA(PyMCStateSpace):
         return names
 
     @property
+    def data_info(self) -> dict[str, dict[str, Any]]:
+        info = {
+            "exogenous_data": {
+                "dims": (TIME_DIM, "exogenous"),
+                "shape": (None, self.k_exog),
+            }
+        }
+
+        return {name: info[name] for name in self.data_names}
+
+    @property
     def param_info(self) -> dict[str, dict[str, Any]]:
         info = {
             "x0": {
@@ -332,7 +350,7 @@ class BayesianSARIMA(PyMCStateSpace):
             },
             "seasonal_ar_params": {"shape": (self.P,), "constraints": "None"},
             "seasonal_ma_params": {"shape": (self.Q,), "constraints": "None"},
-            "beta_exog": {"shape": (self.k_exog,), "constraints": "None"},
+            "beta_exog": {"shape": (self.k_exog,), "constraints": "None", "dims": ("exogenous",)},
         }
 
         for name in self.param_names:
@@ -357,10 +375,13 @@ class BayesianSARIMA(PyMCStateSpace):
         else:
             raise NotImplementedError()
 
-        if self.k_exog > 0:
-            states += ["exogenous"]
-
         return states
+
+    @property
+    def data_names(self) -> list[str]:
+        if self.k_exog > 0:
+            return ["exogenous_data"]
+        return []
 
     @property
     def observed_states(self):
@@ -396,7 +417,7 @@ class BayesianSARIMA(PyMCStateSpace):
             del coord_map["seasonal_ar_params"]
         if self.Q == 0:
             del coord_map["seasonal_ma_params"]
-        if not self.k_exog == 0:
+        if self.k_exog == 0:
             del coord_map["beta_exog"]
         if self.stationary_initialization:
             del coord_map["P0"]
@@ -426,7 +447,7 @@ class BayesianSARIMA(PyMCStateSpace):
         Q = self.ssm["state_cov"]
         c = self.ssm["state_intercept"]
 
-        x0 = pt.linalg.solve(pt.identity_like(T) - T, c, assume_a="gen", check_finite=True)
+        x0 = pt.linalg.solve(pt.identity_like(T) - T, c, assume_a="gen", check_finite=False)
         P0 = solve_discrete_lyapunov(T, pt.linalg.matrix_dot(R, Q, R.T), method="bilinear")
 
         return x0, P0
@@ -575,7 +596,7 @@ class BayesianSARIMA(PyMCStateSpace):
                 "beta_exog", shape=(self.k_exog,), dtype=floatX
             )
 
-            self.ssm["obs_intercept", :, :] = exog_data @ exog_beta
+            self.ssm["obs_intercept"] = (exog_data @ exog_beta)[:, None]
 
         # Set up the state covariance matrix
         state_cov_idx = ("state_cov", *np.diag_indices(self.k_posdef))
