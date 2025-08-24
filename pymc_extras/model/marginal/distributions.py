@@ -3,10 +3,12 @@ import warnings
 from collections.abc import Sequence
 
 import numpy as np
+import pytensor
 import pytensor.tensor as pt
 
 from pymc.distributions import Bernoulli, Categorical, DiscreteUniform
 from pymc.distributions.distribution import _support_point, support_point
+from pymc.distributions.multivariate import _logdet_from_cholesky, nan_lower_cholesky
 from pymc.logprob.abstract import MeasurableOp, _logprob
 from pymc.logprob.basic import conditional_logp, logp
 from pymc.pytensorf import constant_fold
@@ -19,6 +21,7 @@ from pytensor.graph.replace import clone_replace, graph_replace
 from pytensor.scan import map as scan_map
 from pytensor.scan import scan
 from pytensor.tensor import TensorVariable
+from pytensor.tensor.optimize import minimize
 from pytensor.tensor.random.type import RandomType
 
 from pymc_extras.distributions import DiscreteMarkovChain
@@ -130,6 +133,23 @@ class MarginalFiniteDiscreteRV(MarginalRV):
 
 class MarginalDiscreteMarkovChainRV(MarginalRV):
     """Base class for Marginalized Discrete Markov Chain RVs"""
+
+
+class MarginalLaplaceRV(MarginalRV):
+    """Base class for Marginalized Laplace-Approximated RVs"""
+
+    def __init__(
+        self,
+        *args,
+        Q: TensorVariable,
+        temp_kwargs: list,
+        minimizer_kwargs: dict | None = None,
+        **kwargs,
+    ) -> None:
+        self.temp_kwargs = temp_kwargs  # TODO REMOVE
+        self.Q = Q
+        self.minimizer_kwargs = minimizer_kwargs
+        super().__init__(*args, **kwargs)
 
 
 def get_domain_of_finite_discrete_rv(rv: TensorVariable) -> tuple[int, ...]:
@@ -371,3 +391,72 @@ def marginal_hmm_logp(op, values, *inputs, **kwargs):
     warn_non_separable_logp(values)
     dummy_logps = (DUMMY_ZERO,) * (len(values) - 1)
     return joint_logp, *dummy_logps
+
+
+def _precision_mv_normal_logp(value, mean, tau):
+    k = value.shape[-1].astype("floatX")
+
+    delta = value - mean
+    quadratic_form = delta.T @ tau @ delta
+    logdet, posdef = _logdet_from_cholesky(nan_lower_cholesky(tau))
+    logp = -0.5 * (k * pt.log(2 * np.pi) + quadratic_form) + logdet
+
+    return logp, posdef
+
+
+@_logprob.register(MarginalLaplaceRV)
+def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
+    # Clone the inner RV graph of the Marginalized RV
+    x, *inner_rvs = inline_ofg_outputs(op, inputs)
+
+    # Obtain the joint_logp graph of the inner RV graph
+    inner_rv_values = dict(zip(inner_rvs, values))
+
+    marginalized_vv = x.clone()
+    rv_values = inner_rv_values | {x: marginalized_vv}
+    logps_dict = conditional_logp(rv_values=rv_values, **kwargs)
+
+    # logp(y | x, params)
+    log_likelihood = pt.sum(
+        [logp_term.sum() for value, logp_term in logps_dict.items() if value is not marginalized_vv]
+    )
+
+    # logp = logp(y | x, params) + logp(x | params)
+    logp = pt.sum([pt.sum(logps_dict[k]) for k in logps_dict])
+
+    # Maximize log(p(x | y, params)) wrt x to find mode x0
+    minimizer_kwargs = (
+        op.minimizer_kwargs
+        if op.minimizer_kwargs is not None
+        else {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}}
+    )
+
+    x0, _ = minimize(
+        objective=-logp,  # logp(x | y, params) = logp(y | x, params) + logp(x | params) + const (const omitted during minimization)
+        x=marginalized_vv,
+        **minimizer_kwargs,
+    )
+
+    # Set minimizer initialisation to be random
+    # TODO Assumes that the observed variable y is the first/only element of values, and that d is shape[-1]
+    d = values[0].data.shape[-1]
+    rng = np.random.default_rng(12345)
+    x0_init = rng.random(d)
+    x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: x0_init})
+
+    # TODO USE CLOSED FORM SOLUTION FOR NOW
+    n, y_obs = op.temp_kwargs
+    mu_param = pytensor.graph.basic.get_var_by_name(x, "mu")[0]
+    x0 = (y_obs.sum(axis=0) - mu_param) / (n - 1)
+
+    # logp(x | y, params) using laplace approx evaluated at x0
+    hess = pytensor.gradient.hessian(
+        log_likelihood, marginalized_vv
+    )  # TODO check how stan makes this quicker
+    tau = op.Q - hess
+    mu = x0  # TODO double check with Theo
+    log_laplace_approx, _ = _precision_mv_normal_logp(x0, mu, tau)
+
+    # logp(y | params) = logp(y | x, params) + logp(x | params) - logp(x | y, params)
+    marginal_likelihood = logp - log_laplace_approx
+    return pytensor.graph.replace.graph_replace(marginal_likelihood, {marginalized_vv: x0})
