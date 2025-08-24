@@ -17,6 +17,7 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
     AR_PARAM_DIM,
+    EXOGENOUS_DIM,
     MA_PARAM_DIM,
     OBS_STATE_DIM,
     SARIMAX_STATE_STRUCTURES,
@@ -314,7 +315,7 @@ class BayesianSARIMAX(PyMCStateSpace):
     def data_info(self) -> dict[str, dict[str, Any]]:
         info = {
             "exogenous_data": {
-                "dims": (TIME_DIM, "exogenous"),
+                "dims": (TIME_DIM, EXOGENOUS_DIM),
                 "shape": (None, self.k_exog),
             }
         }
@@ -350,7 +351,7 @@ class BayesianSARIMAX(PyMCStateSpace):
             },
             "seasonal_ar_params": {"shape": (self.P,), "constraints": "None"},
             "seasonal_ma_params": {"shape": (self.Q,), "constraints": "None"},
-            "beta_exog": {"shape": (self.k_exog,), "constraints": "None", "dims": ("exogenous",)},
+            "beta_exog": {"shape": (self.k_exog,), "constraints": "None"},
         }
 
         for name in self.param_names:
@@ -402,7 +403,7 @@ class BayesianSARIMAX(PyMCStateSpace):
             "ma_params": (MA_PARAM_DIM,),
             "seasonal_ar_params": (SEASONAL_AR_PARAM_DIM,),
             "seasonal_ma_params": (SEASONAL_MA_PARAM_DIM,),
-            "beta_exog": ("exogenous",),
+            "beta_exog": (EXOGENOUS_DIM,),
         }
         if self.k_endog == 1:
             coord_map["sigma_state"] = None
@@ -437,7 +438,7 @@ class BayesianSARIMAX(PyMCStateSpace):
         if self.Q > 0:
             coords.update({SEASONAL_MA_PARAM_DIM: list(range(1, self.Q + 1))})
         if self.k_exog > 0:
-            coords.update({"exogenous": self.exog_state_names})
+            coords.update({EXOGENOUS_DIM: self.exog_state_names})
         return coords
 
     def _stationary_initialization(self):
