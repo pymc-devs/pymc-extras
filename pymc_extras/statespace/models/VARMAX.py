@@ -14,11 +14,13 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
     AR_PARAM_DIM,
+    EXOGENOUS_DIM,
     MA_PARAM_DIM,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
     SHOCK_AUX_DIM,
     SHOCK_DIM,
+    TIME_DIM,
 )
 
 floatX = pytensor.config.floatX
@@ -264,6 +266,14 @@ class BayesianVARMAX(PyMCStateSpace):
             names.remove("ar_params")
         if self.q == 0:
             names.remove("ma_params")
+
+        # Add exogenous regression coefficents rather than remove, since we might have to handle
+        # several (if self.exog_state_names is a dict)
+        if isinstance(self.exog_state_names, list):
+            names.append("beta_exog")
+        elif isinstance(self.exog_state_names, dict):
+            names.extend([f"beta_{name}" for name in self.exog_state_names.keys()])
+
         return names
 
     @property
@@ -295,10 +305,48 @@ class BayesianVARMAX(PyMCStateSpace):
             },
         }
 
+        if isinstance(self.exog_state_names, list):
+            k_exog = len(self.exog_state_names)
+            info["beta_exog"] = {
+                "shape": (self.k_endog, k_exog),
+                "constraints": "None",
+            }
+
+        elif isinstance(self.exog_state_names, dict):
+            for name, exog_names in self.exog_state_names.items():
+                k_exog = len(exog_names)
+                info[f"beta_{name}"] = {
+                    "shape": (k_exog,),
+                    "constraints": "None",
+                }
+
         for name in self.param_names:
             info[name]["dims"] = self.param_dims[name]
 
         return {name: info[name] for name in self.param_names}
+
+    @property
+    def data_info(self) -> dict[str, dict[str, Any]]:
+        info = None
+
+        if isinstance(self.exog_state_names, list):
+            info = {
+                "exogenous_data": {
+                    "dims": (TIME_DIM, EXOGENOUS_DIM),
+                    "shape": (None, self.k_exog),
+                }
+            }
+
+        elif isinstance(self.exog_state_names, dict):
+            info = {
+                f"{endog_state}_exogenous_data": {
+                    "dims": (TIME_DIM, f"{EXOGENOUS_DIM}_{endog_state}"),
+                    "shape": (None, len(exog_names)),
+                }
+                for endog_state, exog_names in self.exog_state_names.items()
+            }
+
+        return info
 
     @property
     def data_names(self) -> list[str]:
@@ -312,10 +360,10 @@ class BayesianVARMAX(PyMCStateSpace):
     def state_names(self):
         state_names = self.endog_names.copy()
         state_names += [
-            f"L{i + 1}.{state}" for i in range(self.p - 1) for state in self.endog_names
+            f"L{i + 1}_{state}" for i in range(self.p - 1) for state in self.endog_names
         ]
         state_names += [
-            f"L{i + 1}.{state}_innov" for i in range(self.q) for state in self.endog_names
+            f"L{i + 1}_{state}_innov" for i in range(self.q) for state in self.endog_names
         ]
 
         return state_names
@@ -340,6 +388,12 @@ class BayesianVARMAX(PyMCStateSpace):
         if self.q > 0:
             coords.update({MA_PARAM_DIM: list(range(1, self.q + 1))})
 
+        if isinstance(self.exog_state_names, list):
+            coords[EXOGENOUS_DIM] = self.exog_state_names
+        elif isinstance(self.exog_state_names, dict):
+            for name, exog_names in self.exog_state_names.items():
+                coords[f"{EXOGENOUS_DIM}_{name}"] = exog_names
+
         return coords
 
     @property
@@ -362,6 +416,14 @@ class BayesianVARMAX(PyMCStateSpace):
         if self.stationary_initialization:
             del coord_map["P0"]
             del coord_map["x0"]
+
+        if isinstance(self.exog_state_names, list):
+            coord_map["beta_exog"] = (OBS_STATE_DIM, EXOGENOUS_DIM)
+        elif isinstance(self.exog_state_names, dict):
+            # If each state has its own exogenous variables, each parameter needs it own dim, since we expect the
+            # dim labels to all be different (otherwise we'd be in the list case).
+            for name in self.exog_state_names.keys():
+                coord_map[f"beta_{name}"] = (f"{EXOGENOUS_DIM}_{name}",)
 
         return coord_map
 
@@ -449,6 +511,61 @@ class BayesianVARMAX(PyMCStateSpace):
             "state_cov", shape=(self.k_posdef, self.k_posdef), dtype=floatX
         )
         self.ssm["state_cov", :, :] = state_cov
+
+        if self.exog_state_names is not None:
+            if isinstance(self.exog_state_names, list):
+                beta_exog = self.make_and_register_variable(
+                    "beta_exog", shape=(self.k_posdef, self.k_exog), dtype=floatX
+                )
+                exog_data = self.make_and_register_data(
+                    "exogenous_data", shape=(None, self.k_exog), dtype=floatX
+                )
+
+                obs_intercept = exog_data @ beta_exog.T
+
+            elif isinstance(self.exog_state_names, dict):
+                obs_components = []
+                for i, name in enumerate(self.endog_names):
+                    if name in self.exog_state_names:
+                        k_exog = len(self.exog_state_names[name])
+                        beta_exog = self.make_and_register_variable(
+                            f"beta_{name}", shape=(k_exog,), dtype=floatX
+                        )
+                        exog_data = self.make_and_register_data(
+                            f"{name}_exogenous_data", shape=(None, k_exog), dtype=floatX
+                        )
+                        obs_components.append(pt.expand_dims(exog_data @ beta_exog, axis=-1))
+                    else:
+                        obs_components.append(pt.zeros((1, 1), dtype=floatX))
+
+                # TODO: Replace all of this with pt.concat_with_broadcast once PyMC works with pytensor >= 2.32
+
+                # If there were any zeros, they need to be broadcast against the non-zeros.
+                # Core shape is the last dim, the time dim is always broadcast
+                non_concat_shape = [1, None]
+
+                # Look for the first non-zero component to get the shape from
+                for tensor_inp in obs_components:
+                    for i, (bcast, sh) in enumerate(
+                        zip(tensor_inp.type.broadcastable, tensor_inp.shape)
+                    ):
+                        if bcast or i == 1:
+                            continue
+                        non_concat_shape[i] = sh
+
+                assert non_concat_shape.count(None) == 1
+
+                bcast_tensor_inputs = []
+                for tensor_inp in obs_components:
+                    non_concat_shape[1] = tensor_inp.shape[1]
+                    bcast_tensor_inputs.append(pt.broadcast_to(tensor_inp, non_concat_shape))
+
+                obs_intercept = pt.join(1, *bcast_tensor_inputs)
+
+            else:
+                raise NotImplementedError()
+
+            self.ssm["obs_intercept"] = obs_intercept
 
         if self.stationary_initialization:
             # Solve for matrix quadratic for P0
