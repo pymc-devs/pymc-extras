@@ -28,60 +28,6 @@ class BayesianVARMAX(PyMCStateSpace):
     r"""
     Vector AutoRegressive Moving Average with eXogenous Regressors
 
-    Parameters
-    ----------
-    order: tuple of (int, int)
-        Number of autoregressive (AR) and moving average (MA) terms to include in the model. All terms up to the
-        specified order are included. For restricted models, set zeros directly on the priors.
-
-    endog_names: list of str, optional
-        Names of the endogenous variables being modeled. Used to generate names for the state and shock coords. If
-        None, the state names will simply be numbered.
-
-        Exactly one of either ``endog_names`` or ``k_endog`` must be specified.
-
-    k_endog: int, optional
-        Number of endogenous states to be modeled.
-
-        Exactly one of either ``endog_names`` or ``k_endog`` must be specified.
-
-    stationary_initialization: bool, default False
-        If true, the initial state and initial state covariance will not be assigned priors. Instead, their steady
-        state values will be used. If False, the user is responsible for setting priors on the initial state and
-        initial covariance.
-
-        ..warning :: This option is very sensitive to the priors placed on the AR and MA parameters. If the model dynamics
-                  for a given sample are not stationary, sampling will fail with a "covariance is not positive semi-definite"
-                  error.
-
-    filter_type: str, default "standard"
-        The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
-        and "cholesky". See the docs for kalman filters for more details.
-
-    state_structure: str, default "fast"
-        How to represent the state-space system. When "interpretable", each element of the state vector will have a
-        precise meaning as either lagged data, innovations, or lagged innovations. This comes at the cost of a larger
-        state vector, which may hurt performance.
-
-        When "fast", states are combined to minimize the dimension of the state vector, but lags and innovations are
-        mixed together as a result. Only the first state (the modeled timeseries) will have an obvious interpretation
-        in this case.
-
-    measurement_error: bool, default True
-        If true, a measurement error term is added to the model.
-
-    verbose: bool, default True
-        If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
-
-    mode: str or Mode, optional
-        Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
-        ``forecast``. The mode does **not** effect calls to ``pm.sample``.
-
-        Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
-        to all sampling methods.
-
-    Notes
-    -----
     The VARMA model is a multivariate extension of the SARIMAX model. Given a set of timeseries :math:`\{x_t\}_{t=0}^T`,
     with :math:`x_t = \begin{bmatrix} x_{1,t} & x_{2,t} & \cdots & x_{k,t} \end{bmatrix}^T`, a VARMA models each series
     as a function of the histories of all series. Specifically, denoting the AR-MA order as (p, q),  a VARMA can be
@@ -152,12 +98,77 @@ class BayesianVARMAX(PyMCStateSpace):
         order: tuple[int, int],
         endog_names: list[str] | None = None,
         k_endog: int | None = None,
+        exog_state_names: list[str] | dict[str, list[str]] | None = None,
+        k_exog: int | dict[str, int] | None = None,
         stationary_initialization: bool = False,
         filter_type: str = "standard",
         measurement_error: bool = False,
         verbose: bool = True,
         mode: str | Mode | None = None,
     ):
+        """
+        Create a Bayesian VARMAX model.
+
+        Parameters
+        ----------
+        order: tuple of (int, int)
+            Number of autoregressive (AR) and moving average (MA) terms to include in the model. All terms up to the
+            specified order are included. For restricted models, set zeros directly on the priors.
+
+        endog_names: list of str, optional
+            Names of the endogenous variables being modeled. Used to generate names for the state and shock coords. If
+            None, the state names will simply be numbered.
+
+            Exactly one of either ``endog_names`` or ``k_endog`` must be specified.
+
+        exog_state_names : list[str] or dict[str, list[str]], optional
+            Names of the exogenous state variables. If a list, all endogenous variables will share the same exogenous
+            variables. If a dict, keys should be the names of the endogenous variables, and values should be lists of the
+            exogenous variable names for that endogenous variable. Endogenous variables not included in the dict will
+            be assumed to have no exogenous variables. If None, no exogenous variables will be included.
+
+        k_exog : int or dict[str, int], optional
+            Number of exogenous variables. If an int, all endogenous variables will share the same number of exogenous
+            variables. If a dict, keys should be the names of the endogenous variables, and values should be the number of
+            exogenous variables for that endogenous variable. Endogenous variables not included in the dict will be
+            assumed to have no exogenous variables. If None, no exogenous variables will be included.
+
+        stationary_initialization: bool, default False
+            If true, the initial state and initial state covariance will not be assigned priors. Instead, their steady
+            state values will be used. If False, the user is responsible for setting priors on the initial state and
+            initial covariance.
+
+            ..warning :: This option is very sensitive to the priors placed on the AR and MA parameters. If the model dynamics
+                      for a given sample are not stationary, sampling will fail with a "covariance is not positive semi-definite"
+                      error.
+
+        filter_type: str, default "standard"
+            The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
+            and "cholesky". See the docs for kalman filters for more details.
+
+        state_structure: str, default "fast"
+            How to represent the state-space system. When "interpretable", each element of the state vector will have a
+            precise meaning as either lagged data, innovations, or lagged innovations. This comes at the cost of a larger
+            state vector, which may hurt performance.
+
+            When "fast", states are combined to minimize the dimension of the state vector, but lags and innovations are
+            mixed together as a result. Only the first state (the modeled timeseries) will have an obvious interpretation
+            in this case.
+
+        measurement_error: bool, default True
+            If true, a measurement error term is added to the model.
+
+        verbose: bool, default True
+            If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
+
+        mode: str or Mode, optional
+            Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+            ``forecast``. The mode does **not** effect calls to ``pm.sample``.
+
+            Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+            to all sampling methods.
+
+        """
         if (endog_names is None) and (k_endog is None):
             raise ValueError("Must specify either endog_names or k_endog")
         if (endog_names is not None) and (k_endog is None):
@@ -167,6 +178,48 @@ class BayesianVARMAX(PyMCStateSpace):
         if (endog_names is not None) and (k_endog is not None):
             if len(endog_names) != k_endog:
                 raise ValueError("Length of provided endog_names does not match provided k_endog")
+
+        if k_exog is not None and not isinstance(k_endog, int | dict):
+            raise ValueError("If not None, k_endog must be either an int or a dict")
+        if exog_state_names is not None and not isinstance(exog_state_names, list | dict):
+            raise ValueError("If not None, exog_state_names must be either a list or a dict")
+
+        if k_exog is not None and exog_state_names is not None:
+            if isinstance(k_exog, int) and isinstance(exog_state_names, list):
+                if len(exog_state_names) != k_exog:
+                    raise ValueError("Length of exog_state_names does not match provided k_exog")
+            elif isinstance(k_exog, int) and isinstance(exog_state_names, dict):
+                raise ValueError(
+                    "If k_exog is an int, exog_state_names must be a list of the same length (or None)"
+                )
+            elif isinstance(k_exog, dict) and isinstance(exog_state_names, list):
+                raise ValueError(
+                    "If k_exog is a dict, exog_state_names must be a dict as well (or None)"
+                )
+            elif isinstance(k_exog, dict) and isinstance(exog_state_names, dict):
+                if set(k_exog.keys()) != set(exog_state_names.keys()):
+                    raise ValueError("Keys of k_exog and exog_state_names dicts must match")
+                if not all(
+                    len(names) == k for names, k in zip(exog_state_names.values(), k_exog.values())
+                ):
+                    raise ValueError(
+                        "If both k_endog and exog_state_names are provided, lengths of exog_state_names "
+                        "lists must match corresponding values in k_exog"
+                    )
+
+        if k_exog is not None and exog_state_names is None:
+            if isinstance(k_exog, int):
+                exog_state_names = [f"exog.{i + 1}" for i in range(k_exog)]
+            elif isinstance(k_exog, dict):
+                exog_state_names = {
+                    name: [f"{name}.exog.{i + 1}" for i in range(k)] for name, k in k_exog.items()
+                }
+
+        if k_exog is None and exog_state_names is not None:
+            if isinstance(exog_state_names, list):
+                k_exog = len(exog_state_names)
+            elif isinstance(exog_state_names, dict):
+                k_exog = {name: len(names) for name, names in exog_state_names.items()}
 
         self.endog_names = list(endog_names)
         self.p, self.q = order
@@ -243,6 +296,10 @@ class BayesianVARMAX(PyMCStateSpace):
             info[name]["dims"] = self.param_dims[name]
 
         return {name: info[name] for name in self.param_names}
+
+    @property
+    def data_names(self) -> list[str]:
+        return self._exog_names
 
     @property
     def state_names(self):
