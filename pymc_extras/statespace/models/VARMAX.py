@@ -223,6 +223,16 @@ class BayesianVARMAX(PyMCStateSpace):
             elif isinstance(exog_state_names, dict):
                 k_exog = {name: len(names) for name, names in exog_state_names.items()}
 
+        # If exog_state_names is a dict but 1) all endog variables are among the keys, and 2) all values are the same
+        # then we can drop back to the list case.
+        if (
+            isinstance(exog_state_names, dict)
+            and set(exog_state_names.keys()) == set(endog_names)
+            and len({frozenset(val) for val in exog_state_names.values()}) == 1
+        ):
+            exog_state_names = exog_state_names[endog_names[0]]
+            k_exog = len(exog_state_names)
+
         self.endog_names = list(endog_names)
         self.exog_state_names = exog_state_names
 

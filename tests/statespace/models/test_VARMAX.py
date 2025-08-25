@@ -191,8 +191,7 @@ def test_impulse_response(parameters, varma_mod, idata, rng):
     assert not np.any(np.isnan(irf.irf.values))
 
 
-def test_create_varmax_with_exogenous(data):
-    # Case 1: k_exog as int, exog_state_names is None
+def test_create_varmax_with_exogenous_k_exog_int(data):
     mod = BayesianVARMAX(
         k_endog=data.shape[1],
         order=(1, 0),
@@ -209,7 +208,8 @@ def test_create_varmax_with_exogenous(data):
     assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
     assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
 
-    # Case 2: exog_state_names as list, k_exog is None
+
+def test_create_varmax_with_exogenous_list_of_names(data):
     mod = BayesianVARMAX(
         k_endog=data.shape[1],
         order=(1, 0),
@@ -226,7 +226,8 @@ def test_create_varmax_with_exogenous(data):
     assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
     assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
 
-    # Case 3: k_exog as int, exog_state_names as list (matching)
+
+def test_create_varmax_with_exogenous_both_defined_correctly(data):
     mod = BayesianVARMAX(
         k_endog=data.shape[1],
         order=(1, 0),
@@ -244,7 +245,8 @@ def test_create_varmax_with_exogenous(data):
     assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
     assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
 
-    # Case 4: k_exog as dict, exog_state_names is None
+
+def test_create_varmax_with_exogenous_k_exog_dict(data):
     k_exog = {"observed_0": 2, "observed_1": 1, "observed_2": 0}
     mod = BayesianVARMAX(
         endog_names=["observed_0", "observed_1", "observed_2"],
@@ -285,7 +287,8 @@ def test_create_varmax_with_exogenous(data):
     assert mod.param_info["beta_observed_1"]["shape"] == (1,)
     assert mod.param_info["beta_observed_1"]["dims"] == ("exogenous_observed_1",)
 
-    # Case 5: exog_state_names as dict, k_exog is None
+
+def test_create_varmax_with_exogenous_exog_names_dict(data):
     exog_state_names = {"observed_0": ["a", "b"], "observed_1": ["c"], "observed_2": []}
     mod = BayesianVARMAX(
         endog_names=["observed_0", "observed_1", "observed_2"],
@@ -319,7 +322,8 @@ def test_create_varmax_with_exogenous(data):
     assert mod.param_info["beta_observed_1"]["shape"] == (1,)
     assert mod.param_info["beta_observed_1"]["dims"] == ("exogenous_observed_1",)
 
-    # Case 6: k_exog as dict, exog_state_names as dict (matching)
+
+def test_create_varmax_with_exogenous_both_dict_correct(data):
     k_exog = {"observed_0": 2, "observed_1": 1}
     exog_state_names = {"observed_0": ["a", "b"], "observed_1": ["c"]}
     mod = BayesianVARMAX(
@@ -343,7 +347,33 @@ def test_create_varmax_with_exogenous(data):
     assert mod.param_info["beta_observed_1"]["shape"] == (1,)
     assert mod.param_info["beta_observed_1"]["dims"] == ("exogenous_observed_1",)
 
-    # Error: k_exog as int, exog_state_names as list (length mismatch)
+
+def test_create_varmax_with_exogenous_dict_converts_to_list(data):
+    exog_state_names = {
+        "observed_0": ["a", "b"],
+        "observed_1": ["a", "b"],
+        "observed_2": ["a", "b"],
+    }
+    mod = BayesianVARMAX(
+        endog_names=["observed_0", "observed_1", "observed_2"],
+        order=(1, 0),
+        exog_state_names=exog_state_names,
+        verbose=False,
+        measurement_error=False,
+        stationary_initialization=False,
+    )
+
+    assert mod.k_exog == 2
+    assert mod.exog_state_names == ["a", "b"]
+    assert mod.data_names == ["exogenous_data"]
+    assert mod.param_dims["beta_exog"] == ("observed_state", "exogenous")
+    assert mod.coords["exogenous"] == ["a", "b"]
+    assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
+    assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
+
+
+def test_create_varmax_with_exogenous_raises_if_args_disagree(data):
+    # List case
     with pytest.raises(
         ValueError, match="Length of exog_state_names does not match provided k_exog"
     ):
@@ -357,8 +387,10 @@ def test_create_varmax_with_exogenous(data):
             stationary_initialization=False,
         )
 
-    # Error: k_exog as int, exog_state_names as dict
-    with pytest.raises(ValueError):
+    # Dict case
+    with pytest.raises(
+        ValueError, match="If k_exog is an int, exog_state_names must be a list of the same length"
+    ):
         BayesianVARMAX(
             k_endog=2,
             order=(1, 0),
@@ -369,8 +401,10 @@ def test_create_varmax_with_exogenous(data):
             stationary_initialization=False,
         )
 
-    # Error: k_exog as dict, exog_state_names as list
-    with pytest.raises(ValueError):
+    # dict + list
+    with pytest.raises(
+        ValueError, match="If k_exog is a dict, exog_state_names must be a dict as well"
+    ):
         BayesianVARMAX(
             endog_names=["observed_0", "observed_1"],
             order=(1, 0),
@@ -381,7 +415,7 @@ def test_create_varmax_with_exogenous(data):
             stationary_initialization=False,
         )
 
-    # Error: k_exog as dict, exog_state_names as dict (keys mismatch)
+    # Dict/dict, key mismatch
     with pytest.raises(ValueError, match="Keys of k_exog and exog_state_names dicts must match"):
         BayesianVARMAX(
             endog_names=["observed_0", "observed_1"],
@@ -393,7 +427,7 @@ def test_create_varmax_with_exogenous(data):
             stationary_initialization=False,
         )
 
-    # Error: k_exog as dict, exog_state_names as dict (length mismatch)
+    # Dict/dict, length mismatch
     with pytest.raises(ValueError, match="lengths of exog_state_names lists must match"):
         BayesianVARMAX(
             endog_names=["observed_0", "observed_1"],
