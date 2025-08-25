@@ -181,7 +181,7 @@ class BayesianVARMAX(PyMCStateSpace):
             if len(endog_names) != k_endog:
                 raise ValueError("Length of provided endog_names does not match provided k_endog")
 
-        if k_exog is not None and not isinstance(k_endog, int | dict):
+        if k_exog is not None and not isinstance(k_exog, int | dict):
             raise ValueError("If not None, k_endog must be either an int or a dict")
         if exog_state_names is not None and not isinstance(exog_state_names, list | dict):
             raise ValueError("If not None, exog_state_names must be either a list or a dict")
