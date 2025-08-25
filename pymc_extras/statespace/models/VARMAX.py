@@ -174,7 +174,7 @@ class BayesianVARMAX(PyMCStateSpace):
         if (endog_names is not None) and (k_endog is None):
             k_endog = len(endog_names)
         if (endog_names is None) and (k_endog is not None):
-            endog_names = [f"state.{i + 1}" for i in range(k_endog)]
+            endog_names = [f"observed_{i}" for i in range(k_endog)]
         if (endog_names is not None) and (k_endog is not None):
             if len(endog_names) != k_endog:
                 raise ValueError("Length of provided endog_names does not match provided k_endog")
@@ -209,10 +209,10 @@ class BayesianVARMAX(PyMCStateSpace):
 
         if k_exog is not None and exog_state_names is None:
             if isinstance(k_exog, int):
-                exog_state_names = [f"exog.{i + 1}" for i in range(k_exog)]
+                exog_state_names = [f"exogenous_{i}" for i in range(k_exog)]
             elif isinstance(k_exog, dict):
                 exog_state_names = {
-                    name: [f"{name}.exog.{i + 1}" for i in range(k)] for name, k in k_exog.items()
+                    name: [f"{name}_exogenous_{i}" for i in range(k)] for name, k in k_exog.items()
                 }
 
         if k_exog is None and exog_state_names is not None:
@@ -222,6 +222,9 @@ class BayesianVARMAX(PyMCStateSpace):
                 k_exog = {name: len(names) for name, names in exog_state_names.items()}
 
         self.endog_names = list(endog_names)
+        self.exog_state_names = exog_state_names
+
+        self.k_exog = k_exog
         self.p, self.q = order
         self.stationary_initialization = stationary_initialization
 
@@ -299,7 +302,11 @@ class BayesianVARMAX(PyMCStateSpace):
 
     @property
     def data_names(self) -> list[str]:
-        return self._exog_names
+        if isinstance(self.exog_state_names, list):
+            return ["exogenous_data"]
+        elif isinstance(self.exog_state_names, dict):
+            return [f"{endog_state}_exogenous_data" for endog_state in self.exog_state_names.keys()]
+        return []
 
     @property
     def state_names(self):
