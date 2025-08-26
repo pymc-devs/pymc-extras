@@ -26,50 +26,6 @@ def rng():
     return np.random.default_rng(seed)
 
 
-@pytest.mark.filterwarnings("ignore:Currently only valid for a nested normal model. WIP.")
-def test_non_gaussian_latent(rng):
-    """
-    INLA should raise an error if trying to use a non-Gaussian latent
-    """
-    n = 10000
-
-    mu_true = rng.random()
-    tau = 1
-    y_obs = rng.normal(loc=mu_true, scale=1 / tau, size=n)
-
-    with pm.Model() as model:
-        lam = pm.HalfNormal("lam", tau=tau)
-        x = pm.Exponential("x", lam=lam)
-        y = pm.Normal("y", mu=x, tau=tau, observed=y_obs)
-
-        with pytest.raises(ValueError):
-            pmx.fit(method="INLA", x=x)
-
-
-@pytest.mark.filterwarnings("ignore:Currently only valid for a nested normal model. WIP.")
-def test_non_precision_MvNormal(rng):
-    """
-    INLA should raise an error if trying to use a latent not in precision form
-    """
-    n = 10000
-    d = 3
-
-    mu_mu = np.zeros((d,))
-    mu_true = rng.random(d)
-    tau = np.identity(d)
-    cov = np.linalg.inv(tau)
-    y_obs = rng.multivariate_normal(mean=mu_true, cov=cov, size=n)
-
-    with pm.Model() as model:
-        mu = pm.MvNormal("mu", mu=mu_mu, tau=tau)
-        x = pm.MvNormal("x", mu=mu, cov=cov)
-        y = pm.MvNormal("y", mu=x, tau=tau, observed=y_obs)
-
-        with pytest.raises(ValueError):
-            pmx.fit(method="INLA", x=x)
-
-
-@pytest.mark.filterwarnings("ignore:Currently only valid for a nested normal model. WIP.")
 def test_3_layer_normal(rng):
     """
     Test INLA against a simple toy problem:

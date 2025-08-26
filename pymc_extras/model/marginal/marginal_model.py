@@ -191,10 +191,6 @@ def marginalize(
                 raise NotImplementedError(
                     "Marginalization for DiscreteMarkovChain with non-matrix transition probability is not supported"
                 )
-        # elif use_laplace and not isinstance(rv_op, MvNormal):
-        #     raise ValueError(
-        #         f"Marginalisation method set to Laplace but RV {rv_to_marginalize} is not instance of MvNormal. Has distribution {rv_to_marginalize.owner.op}"
-        #     )
 
         elif not use_laplace and not isinstance(rv_op, Bernoulli | Categorical | DiscreteUniform):
             raise NotImplementedError(

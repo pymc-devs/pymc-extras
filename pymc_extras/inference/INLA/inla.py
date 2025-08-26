@@ -17,22 +17,6 @@ def fit_INLA(
 ) -> az.InferenceData:
     model = pm.modelcontext(model)
 
-    # Check if latent field is Gaussian
-    # if not isinstance(x.owner.op, MvNormal):
-    #     raise ValueError(
-    #         f"Latent field {x} is not instance of MvNormal. Has distribution {x.owner.op}."
-    #     )
-
-    # _, _, _, tau = x.owner.inputs
-
-    # # Latent field should use precison rather than covariance
-    # if not (tau.owner and tau.owner.op == matrix_inverse):
-    #     raise ValueError(
-    #         f"Latent field {x} is not in precision matrix form. Use MvNormal(tau=Q) instead."
-    #     )
-
-    # Q = tau.owner.inputs[0]
-
     # TODO is there a better way to check if it's a RV?
     # print(vars(Q.owner))
     # if isinstance(Q, TensorVariable) and "module" in vars(Q.owner):
@@ -48,7 +32,6 @@ def fit_INLA(
     marginal_model = marginalize(model, x, use_laplace=True, **marginalize_kwargs)
 
     # Sample over the hyperparameters
-    # marginal_model.logp().dprint()
     idata = pm.sample(model=marginal_model, **sampler_kwargs)
 
     if not return_latent_posteriors:
