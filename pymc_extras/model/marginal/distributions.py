@@ -395,6 +395,18 @@ def marginal_hmm_logp(op, values, *inputs, **kwargs):
 
 
 def _precision_mv_normal_logp(value, mean, tau):
+    """
+    Compute the log likelihood of a multivariate normal distribution in precision form. May be phased out - see https://github.com/pymc-devs/pymc/pull/7895
+
+    Parameters
+    ----------
+    value: TODO
+        Query point to compute the log prob at.
+    mean: TODO
+        Mean vector of the Gaussian,
+    tau: TODO
+        Precision matrix of the Gaussian (i.e. cov = inv(tau))
+    """
     k = value.shape[-1].astype("floatX")
 
     delta = value - mean
