@@ -537,7 +537,7 @@ class TestDFMConfiguration:
             assert mod.coords[k] == v
         assert len(mod.state_names) == 7
         assert mod.observed_states == ["y0", "y1", "y2"]
-        assert len(mod.shock_names) == 7
+        assert len(mod.shock_names) == 4
 
     def test_exog_shared_exog_states_exog_innovations(self):
         mod = BayesianDynamicFactor(
