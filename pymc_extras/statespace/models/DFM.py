@@ -238,6 +238,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
         verbose: bool = True,
     ):
         """
+        Create a Bayesian Dynamic Factor Model.
+
         Parameters
         ----------
         k_factors : int

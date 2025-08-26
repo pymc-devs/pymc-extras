@@ -14,8 +14,16 @@ from statsmodels.tsa.statespace.dynamic_factor import DynamicFactor
 
 from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
 from pymc_extras.statespace.utils.constants import (
+    ALL_STATE_AUX_DIM,
+    ALL_STATE_DIM,
+    AR_PARAM_DIM,
+    ERROR_AR_PARAM_DIM,
+    EXOG_STATE_DIM,
+    FACTOR_DIM,
     LONG_MATRIX_NAMES,
     MATRIX_NAMES,
+    OBS_STATE_AUX_DIM,
+    OBS_STATE_DIM,
     SHORT_NAME_TO_LONG,
 )
 from tests.statespace.shared_fixtures import rng
@@ -367,3 +375,308 @@ def test_DFM_exog_shared_vs_not(shared):
         assert not np.allclose(
             contributions[0], contributions[1]
         ), f"Expected different contributions, got {contributions}"
+
+
+class TestDFMConfiguration:
+    def test_static_factor_no_ar_no_exog_diagonal_error(self):
+        mod = BayesianDynamicFactor(
+            k_factors=1,
+            factor_order=0,
+            k_endog=3,
+            endog_names=["y0", "y1", "y2"],
+            error_order=0,
+            error_var=False,
+            error_cov_type="diagonal",
+            measurement_error=False,
+            verbose=False,
+        )
+
+        expected_param_names = ["x0", "P0", "factor_loadings", "error_sigma"]
+        expected_param_dims = {
+            "x0": (ALL_STATE_DIM,),
+            "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
+            "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
+            "error_sigma": (OBS_STATE_DIM,),
+        }
+        expected_coords = {
+            OBS_STATE_DIM: ["y0", "y1", "y2"],
+            ALL_STATE_DIM: ["L0.factor_0"],
+            ALL_STATE_AUX_DIM: ["L0.factor_0"],
+            FACTOR_DIM: ["factor_1"],
+        }
+
+        assert mod.param_names == expected_param_names
+        assert mod.param_dims == expected_param_dims
+        for k, v in expected_coords.items():
+            assert mod.coords[k] == v
+        assert mod.state_names == ["L0.factor_0"]
+        assert mod.observed_states == ["y0", "y1", "y2"]
+        assert mod.shock_names == ["factor_shock_0"]
+
+    def test_dynamic_factor_ar1_error_diagonal_error(self):
+        mod = BayesianDynamicFactor(
+            k_factors=2,
+            factor_order=2,
+            k_endog=3,
+            endog_names=["y0", "y1", "y2"],
+            error_order=1,
+            error_var=False,
+            error_cov_type="diagonal",
+            measurement_error=True,
+            verbose=False,
+        )
+        expected_param_names = [
+            "x0",
+            "P0",
+            "factor_loadings",
+            "factor_ar",
+            "error_ar",
+            "error_sigma",
+            "sigma_obs",
+        ]
+        expected_param_dims = {
+            "x0": (ALL_STATE_DIM,),
+            "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
+            "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
+            "factor_ar": (FACTOR_DIM, AR_PARAM_DIM),
+            "error_ar": (OBS_STATE_DIM, ERROR_AR_PARAM_DIM),
+            "error_sigma": (OBS_STATE_DIM,),
+            "sigma_obs": (OBS_STATE_DIM,),
+        }
+        expected_coords = {
+            OBS_STATE_DIM: ["y0", "y1", "y2"],
+            ALL_STATE_DIM: [
+                "L0.factor_0",
+                "L1.factor_0",
+                "L0.factor_1",
+                "L1.factor_1",
+                "L0.error_0",
+                "L0.error_1",
+                "L0.error_2",
+            ],
+            ALL_STATE_AUX_DIM: [
+                "L0.factor_0",
+                "L1.factor_0",
+                "L0.factor_1",
+                "L1.factor_1",
+                "L0.error_0",
+                "L0.error_1",
+                "L0.error_2",
+            ],
+            FACTOR_DIM: ["factor_1", "factor_2"],
+            AR_PARAM_DIM: list(range(1, 2 * 2 + 1)),
+            ERROR_AR_PARAM_DIM: [1],
+        }
+
+        assert mod.param_names == expected_param_names
+        assert mod.param_dims == expected_param_dims
+        for k, v in expected_coords.items():
+            assert mod.coords[k] == v
+        assert len(mod.state_names) == 7
+        assert mod.observed_states == ["y0", "y1", "y2"]
+        assert len(mod.shock_names) == 5
+
+    def test_dynamic_factor_ar2_error_var_unstructured(self):
+        mod = BayesianDynamicFactor(
+            k_factors=1,
+            factor_order=1,
+            k_endog=3,
+            endog_names=["y0", "y1", "y2"],
+            error_order=2,
+            error_var=True,
+            error_cov_type="unstructured",
+            measurement_error=True,
+            verbose=False,
+        )
+        expected_param_names = [
+            "x0",
+            "P0",
+            "factor_loadings",
+            "factor_ar",
+            "error_ar",
+            "error_cov",
+            "sigma_obs",
+        ]
+        expected_param_dims = {
+            "x0": (ALL_STATE_DIM,),
+            "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
+            "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
+            "factor_ar": (FACTOR_DIM, AR_PARAM_DIM),
+            "error_ar": (OBS_STATE_DIM, ERROR_AR_PARAM_DIM),
+            "error_cov": (OBS_STATE_DIM, OBS_STATE_AUX_DIM),
+            "sigma_obs": (OBS_STATE_DIM,),
+        }
+        expected_coords = {
+            OBS_STATE_DIM: ["y0", "y1", "y2"],
+            ALL_STATE_DIM: [
+                "L0.factor_0",
+                "L0.error_0",
+                "L1.error_0",
+                "L0.error_1",
+                "L1.error_1",
+                "L0.error_2",
+                "L1.error_2",
+            ],
+            ALL_STATE_AUX_DIM: [
+                "L0.factor_0",
+                "L0.error_0",
+                "L1.error_0",
+                "L0.error_1",
+                "L1.error_1",
+                "L0.error_2",
+                "L1.error_2",
+            ],
+            FACTOR_DIM: ["factor_1"],
+            AR_PARAM_DIM: [1],
+            ERROR_AR_PARAM_DIM: list(range(1, 2 * 3 + 1)),
+        }
+
+        assert mod.param_names == expected_param_names
+        assert mod.param_dims == expected_param_dims
+        for k, v in expected_coords.items():
+            assert mod.coords[k] == v
+        assert len(mod.state_names) == 7
+        assert mod.observed_states == ["y0", "y1", "y2"]
+        assert len(mod.shock_names) == 7
+
+    def test_exog_shared_exog_states_exog_innovations(self):
+        mod = BayesianDynamicFactor(
+            k_factors=2,
+            factor_order=1,
+            k_endog=3,
+            endog_names=["y0", "y1", "y2"],
+            error_order=1,
+            error_var=False,
+            k_exog=2,
+            exog_names=["x0", "x1"],
+            shared_exog_states=True,
+            exog_innovations=True,
+            error_cov_type="diagonal",
+            measurement_error=True,
+            verbose=False,
+        )
+        expected_param_names = [
+            "x0",
+            "P0",
+            "factor_loadings",
+            "factor_ar",
+            "error_ar",
+            "error_sigma",
+            "sigma_obs",
+            "beta",
+            "beta_sigma",
+        ]
+        expected_param_dims = {
+            "x0": (ALL_STATE_DIM,),
+            "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
+            "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
+            "factor_ar": (FACTOR_DIM, AR_PARAM_DIM),
+            "error_ar": (OBS_STATE_DIM, ERROR_AR_PARAM_DIM),
+            "error_sigma": (OBS_STATE_DIM,),
+            "sigma_obs": (OBS_STATE_DIM,),
+            "beta": (EXOG_STATE_DIM,),
+            "beta_sigma": (EXOG_STATE_DIM,),
+        }
+        expected_coords = {
+            OBS_STATE_DIM: ["y0", "y1", "y2"],
+            ALL_STATE_DIM: [
+                "L0.factor_0",
+                "L0.factor_1",
+                "L0.error_0",
+                "L0.error_1",
+                "L0.error_2",
+                "beta_x0[shared]",
+                "beta_x1[shared]",
+            ],
+            ALL_STATE_AUX_DIM: [
+                "L0.factor_0",
+                "L0.factor_1",
+                "L0.error_0",
+                "L0.error_1",
+                "L0.error_2",
+                "beta_x0[shared]",
+                "beta_x1[shared]",
+            ],
+            FACTOR_DIM: ["factor_1", "factor_2"],
+            AR_PARAM_DIM: [1, 2],
+            ERROR_AR_PARAM_DIM: [1],
+            EXOG_STATE_DIM: [1, 2],
+        }
+
+        assert mod.param_names == expected_param_names
+        assert mod.param_dims == expected_param_dims
+        for k, v in expected_coords.items():
+            assert mod.coords[k] == v
+        assert len(mod.state_names) == 7
+        assert mod.observed_states == ["y0", "y1", "y2"]
+        assert len(mod.shock_names) == 7
+
+    def test_exog_not_shared_no_exog_innovations(self):
+        mod = BayesianDynamicFactor(
+            k_factors=1,
+            factor_order=2,
+            k_endog=3,
+            endog_names=["y0", "y1", "y2"],
+            error_order=1,
+            error_var=False,
+            k_exog=1,
+            exog_names=["x0"],
+            shared_exog_states=False,
+            exog_innovations=False,
+            error_cov_type="scalar",
+            measurement_error=False,
+            verbose=False,
+        )
+        expected_param_names = [
+            "x0",
+            "P0",
+            "factor_loadings",
+            "factor_ar",
+            "error_ar",
+            "error_sigma",
+            "beta",
+        ]
+        expected_param_dims = {
+            "x0": (ALL_STATE_DIM,),
+            "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
+            "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
+            "factor_ar": (FACTOR_DIM, AR_PARAM_DIM),
+            "error_ar": (OBS_STATE_DIM, ERROR_AR_PARAM_DIM),
+            "error_sigma": (),
+            "beta": (EXOG_STATE_DIM,),
+        }
+        expected_coords = {
+            OBS_STATE_DIM: ["y0", "y1", "y2"],
+            ALL_STATE_DIM: [
+                "L0.factor_0",
+                "L1.factor_0",
+                "L0.error_0",
+                "L0.error_1",
+                "L0.error_2",
+                "beta_x0[y0]",
+                "beta_x0[y1]",
+                "beta_x0[y2]",
+            ],
+            ALL_STATE_AUX_DIM: [
+                "L0.factor_0",
+                "L1.factor_0",
+                "L0.error_0",
+                "L0.error_1",
+                "L0.error_2",
+                "beta_x0[y0]",
+                "beta_x0[y1]",
+                "beta_x0[y2]",
+            ],
+            FACTOR_DIM: ["factor_1"],
+            AR_PARAM_DIM: [1, 2],
+            ERROR_AR_PARAM_DIM: [1],
+            EXOG_STATE_DIM: [1, 2, 3],
+        }
+
+        assert mod.param_names == expected_param_names
+        assert mod.param_dims == expected_param_dims
+        for k, v in expected_coords.items():
+            assert mod.coords[k] == v
+        assert len(mod.state_names) == 8
+        assert mod.observed_states == ["y0", "y1", "y2"]
+        assert len(mod.shock_names) == 7
