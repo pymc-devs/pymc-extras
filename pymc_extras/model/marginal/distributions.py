@@ -137,7 +137,10 @@ class MarginalDiscreteMarkovChainRV(MarginalRV):
 
 
 class MarginalLaplaceRV(MarginalRV):
-    """Base class for Marginalized Laplace-Approximated RVs"""
+    """Base class for Marginalized Laplace-Approximated RVs.
+
+    Estimates log likelihood using Laplace approximations.
+    """
 
     def __init__(
         self,

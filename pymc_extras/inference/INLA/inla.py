@@ -15,12 +15,15 @@ def fit_INLA(
     return_latent_posteriors: bool = True,
     **sampler_kwargs,
 ) -> az.InferenceData:
+    """
+    TODO ADD DOCSTRING
+    """
     model = pm.modelcontext(model)
 
     # TODO is there a better way to check if it's a RV?
     # print(vars(Q.owner))
     # if isinstance(Q, TensorVariable) and "module" in vars(Q.owner):
-    Q = model.rvs_to_values[Q]
+    Q = model.rvs_to_values[Q] if isinstance(Q, TensorVariable) else Q
 
     # Marginalize out the latent field
     marginalize_kwargs = {
