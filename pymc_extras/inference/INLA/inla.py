@@ -37,5 +37,5 @@ def fit_INLA(
     if not return_latent_posteriors:
         return idata
 
-    # TODO Unmarginalize stuff
-    raise NotImplementedError("Latent posteriors not supported yet, WIP.")
+    # Unmarginalize stuff
+    raise NotImplementedError("Inference over the latent field with INLA is currently unsupported.")
