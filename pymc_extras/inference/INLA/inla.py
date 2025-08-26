@@ -11,7 +11,7 @@ def fit_INLA(
     Q: TensorVariable,
     minimizer_seed: int = 42,
     model: pm.Model | None = None,
-    minimizer_kwargs: dict | None = None,
+    minimizer_kwargs: dict = {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}},
     return_latent_posteriors: bool = True,
     **sampler_kwargs,
 ) -> az.InferenceData:
@@ -23,7 +23,6 @@ def fit_INLA(
     Q = model.rvs_to_values[Q]
 
     # Marginalize out the latent field
-    minimizer_kwargs = {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}}
     marginalize_kwargs = {
         "Q": Q,
         "minimizer_seed": minimizer_seed,

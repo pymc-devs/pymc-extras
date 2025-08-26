@@ -144,7 +144,7 @@ class MarginalLaplaceRV(MarginalRV):
         *args,
         Q: TensorVariable,
         minimizer_seed: int,
-        minimizer_kwargs: dict | None = None,
+        minimizer_kwargs: dict = {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}},
         **kwargs,
     ) -> None:
         self.Q = Q
@@ -426,17 +426,11 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     logp = pt.sum([pt.sum(logps_dict[k]) for k in logps_dict])
 
     # Maximize log(p(x | y, params)) wrt x to find mode x0
-    minimizer_kwargs = (
-        op.minimizer_kwargs
-        if op.minimizer_kwargs is not None
-        else {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}}
-    )
-
     # This step is currently bottlenecking the logp calculation.
     x0, _ = minimize(
         objective=-logp,  # logp(x | y, params) = logp(y | x, params) + logp(x | params) + const (const omitted during minimization)
         x=marginalized_vv,
-        **minimizer_kwargs,
+        **op.minimizer_kwargs,
     )
 
     # Set minimizer initialisation to be random
