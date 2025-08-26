@@ -9,6 +9,7 @@ import pytest
 import statsmodels.api as sm
 
 from numpy.testing import assert_allclose, assert_array_less
+from pymc.model.transform.optimization import freeze_dims_and_data
 
 from pymc_extras.statespace import BayesianVARMAX
 from pymc_extras.statespace.utils.constants import SHORT_NAME_TO_LONG
@@ -188,3 +189,357 @@ def test_impulse_response(parameters, varma_mod, idata, rng):
     irf = varma_mod.impulse_response_function(idata.prior, random_seed=rng, **parameters)
 
     assert not np.any(np.isnan(irf.irf.values))
+
+
+class TestVARMAXWithExogenous:
+    def test_create_varmax_with_exogenous_k_exog_int(self, data):
+        mod = BayesianVARMAX(
+            k_endog=data.shape[1],
+            order=(1, 0),
+            k_exog=2,
+            verbose=False,
+            measurement_error=False,
+            stationary_initialization=False,
+        )
+        assert mod.k_exog == 2
+        assert mod.exog_state_names == ["exogenous_0", "exogenous_1"]
+        assert mod.data_names == ["exogenous_data"]
+        assert mod.param_dims["beta_exog"] == ("observed_state", "exogenous")
+        assert mod.coords["exogenous"] == ["exogenous_0", "exogenous_1"]
+        assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
+        assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
+
+    def test_create_varmax_with_exogenous_list_of_names(self, data):
+        mod = BayesianVARMAX(
+            k_endog=data.shape[1],
+            order=(1, 0),
+            exog_state_names=["foo", "bar"],
+            verbose=False,
+            measurement_error=False,
+            stationary_initialization=False,
+        )
+        assert mod.k_exog == 2
+        assert mod.exog_state_names == ["foo", "bar"]
+        assert mod.data_names == ["exogenous_data"]
+        assert mod.param_dims["beta_exog"] == ("observed_state", "exogenous")
+        assert mod.coords["exogenous"] == ["foo", "bar"]
+        assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
+        assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
+
+    def test_create_varmax_with_exogenous_both_defined_correctly(self, data):
+        mod = BayesianVARMAX(
+            k_endog=data.shape[1],
+            order=(1, 0),
+            k_exog=2,
+            exog_state_names=["a", "b"],
+            verbose=False,
+            measurement_error=False,
+            stationary_initialization=False,
+        )
+        assert mod.k_exog == 2
+        assert mod.exog_state_names == ["a", "b"]
+        assert mod.data_names == ["exogenous_data"]
+        assert mod.param_dims["beta_exog"] == ("observed_state", "exogenous")
+        assert mod.coords["exogenous"] == ["a", "b"]
+        assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
+        assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
+
+    def test_create_varmax_with_exogenous_k_exog_dict(self, data):
+        k_exog = {"observed_0": 2, "observed_1": 1, "observed_2": 0}
+        mod = BayesianVARMAX(
+            endog_names=["observed_0", "observed_1", "observed_2"],
+            order=(1, 0),
+            k_exog=k_exog,
+            verbose=False,
+            measurement_error=False,
+            stationary_initialization=False,
+        )
+        assert mod.k_exog == k_exog
+        assert mod.exog_state_names == {
+            "observed_0": ["observed_0_exogenous_0", "observed_0_exogenous_1"],
+            "observed_1": ["observed_1_exogenous_0"],
+            "observed_2": [],
+        }
+        assert mod.data_names == [
+            "observed_0_exogenous_data",
+            "observed_1_exogenous_data",
+            "observed_2_exogenous_data",
+        ]
+        assert mod.param_dims["beta_observed_0"] == ("exogenous_observed_0",)
+        assert mod.param_dims["beta_observed_1"] == ("exogenous_observed_1",)
+        assert (
+            "beta_observed_2" not in mod.param_dims
+            or mod.param_info.get("beta_observed_2") is None
+            or mod.param_info.get("beta_observed_2", {}).get("shape", (0,))[0] == 0
+        )
+
+        assert mod.coords["exogenous_observed_0"] == [
+            "observed_0_exogenous_0",
+            "observed_0_exogenous_1",
+        ]
+        assert mod.coords["exogenous_observed_1"] == ["observed_1_exogenous_0"]
+        assert "exogenous_observed_2" in mod.coords and mod.coords["exogenous_observed_2"] == []
+
+        assert mod.param_info["beta_observed_0"]["shape"] == (2,)
+        assert mod.param_info["beta_observed_0"]["dims"] == ("exogenous_observed_0",)
+        assert mod.param_info["beta_observed_1"]["shape"] == (1,)
+        assert mod.param_info["beta_observed_1"]["dims"] == ("exogenous_observed_1",)
+
+    def test_create_varmax_with_exogenous_exog_names_dict(self, data):
+        exog_state_names = {"observed_0": ["a", "b"], "observed_1": ["c"], "observed_2": []}
+        mod = BayesianVARMAX(
+            endog_names=["observed_0", "observed_1", "observed_2"],
+            order=(1, 0),
+            exog_state_names=exog_state_names,
+            verbose=False,
+            measurement_error=False,
+            stationary_initialization=False,
+        )
+        assert mod.k_exog == {"observed_0": 2, "observed_1": 1, "observed_2": 0}
+        assert mod.exog_state_names == exog_state_names
+        assert mod.data_names == [
+            "observed_0_exogenous_data",
+            "observed_1_exogenous_data",
+            "observed_2_exogenous_data",
+        ]
+        assert mod.param_dims["beta_observed_0"] == ("exogenous_observed_0",)
+        assert mod.param_dims["beta_observed_1"] == ("exogenous_observed_1",)
+        assert (
+            "beta_observed_2" not in mod.param_dims
+            or mod.param_info.get("beta_observed_2") is None
+            or mod.param_info.get("beta_observed_2", {}).get("shape", (0,))[0] == 0
+        )
+
+        assert mod.coords["exogenous_observed_0"] == ["a", "b"]
+        assert mod.coords["exogenous_observed_1"] == ["c"]
+        assert "exogenous_observed_2" in mod.coords and mod.coords["exogenous_observed_2"] == []
+
+        assert mod.param_info["beta_observed_0"]["shape"] == (2,)
+        assert mod.param_info["beta_observed_0"]["dims"] == ("exogenous_observed_0",)
+        assert mod.param_info["beta_observed_1"]["shape"] == (1,)
+        assert mod.param_info["beta_observed_1"]["dims"] == ("exogenous_observed_1",)
+
+    def test_create_varmax_with_exogenous_both_dict_correct(self, data):
+        k_exog = {"observed_0": 2, "observed_1": 1}
+        exog_state_names = {"observed_0": ["a", "b"], "observed_1": ["c"]}
+        mod = BayesianVARMAX(
+            endog_names=["observed_0", "observed_1"],
+            order=(1, 0),
+            k_exog=k_exog,
+            exog_state_names=exog_state_names,
+            verbose=False,
+            measurement_error=False,
+            stationary_initialization=False,
+        )
+        assert mod.k_exog == k_exog
+        assert mod.exog_state_names == exog_state_names
+        assert mod.data_names == ["observed_0_exogenous_data", "observed_1_exogenous_data"]
+        assert mod.param_dims["beta_observed_0"] == ("exogenous_observed_0",)
+        assert mod.param_dims["beta_observed_1"] == ("exogenous_observed_1",)
+        assert mod.coords["exogenous_observed_0"] == ["a", "b"]
+        assert mod.coords["exogenous_observed_1"] == ["c"]
+        assert mod.param_info["beta_observed_0"]["shape"] == (2,)
+        assert mod.param_info["beta_observed_0"]["dims"] == ("exogenous_observed_0",)
+        assert mod.param_info["beta_observed_1"]["shape"] == (1,)
+        assert mod.param_info["beta_observed_1"]["dims"] == ("exogenous_observed_1",)
+
+    def test_create_varmax_with_exogenous_dict_converts_to_list(self, data):
+        exog_state_names = {
+            "observed_0": ["a", "b"],
+            "observed_1": ["a", "b"],
+            "observed_2": ["a", "b"],
+        }
+        mod = BayesianVARMAX(
+            endog_names=["observed_0", "observed_1", "observed_2"],
+            order=(1, 0),
+            exog_state_names=exog_state_names,
+            verbose=False,
+            measurement_error=False,
+            stationary_initialization=False,
+        )
+
+        assert mod.k_exog == 2
+        assert mod.exog_state_names == ["a", "b"]
+        assert mod.data_names == ["exogenous_data"]
+        assert mod.param_dims["beta_exog"] == ("observed_state", "exogenous")
+        assert mod.coords["exogenous"] == ["a", "b"]
+        assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
+        assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
+
+    def test_create_varmax_with_exogenous_raises_if_args_disagree(self, data):
+        # List case
+        with pytest.raises(
+            ValueError, match="Length of exog_state_names does not match provided k_exog"
+        ):
+            BayesianVARMAX(
+                k_endog=2,
+                order=(1, 0),
+                k_exog=3,
+                exog_state_names=["a", "b"],
+                verbose=False,
+                measurement_error=False,
+                stationary_initialization=False,
+            )
+
+        # Dict case
+        with pytest.raises(
+            ValueError,
+            match="If k_exog is an int, exog_state_names must be a list of the same length",
+        ):
+            BayesianVARMAX(
+                k_endog=2,
+                order=(1, 0),
+                k_exog=2,
+                exog_state_names={"observed_0": ["a"], "observed_1": ["b"]},
+                verbose=False,
+                measurement_error=False,
+                stationary_initialization=False,
+            )
+
+        # dict + list
+        with pytest.raises(
+            ValueError, match="If k_exog is a dict, exog_state_names must be a dict as well"
+        ):
+            BayesianVARMAX(
+                endog_names=["observed_0", "observed_1"],
+                order=(1, 0),
+                k_exog={"observed_0": 1, "observed_1": 1},
+                exog_state_names=["a", "b"],
+                verbose=False,
+                measurement_error=False,
+                stationary_initialization=False,
+            )
+
+        # Dict/dict, key mismatch
+        with pytest.raises(
+            ValueError, match="Keys of k_exog and exog_state_names dicts must match"
+        ):
+            BayesianVARMAX(
+                endog_names=["observed_0", "observed_1"],
+                order=(1, 0),
+                k_exog={"observed_0": 1, "observed_1": 1},
+                exog_state_names={"observed_0": ["a"], "observed_2": ["b"]},
+                verbose=False,
+                measurement_error=False,
+                stationary_initialization=False,
+            )
+
+        # Dict/dict, length mismatch
+        with pytest.raises(ValueError, match="lengths of exog_state_names lists must match"):
+            BayesianVARMAX(
+                endog_names=["observed_0", "observed_1"],
+                order=(1, 0),
+                k_exog={"observed_0": 2, "observed_1": 1},
+                exog_state_names={"observed_0": ["a"], "observed_1": ["b"]},
+                verbose=False,
+                measurement_error=False,
+                stationary_initialization=False,
+            )
+
+    @pytest.mark.parametrize(
+        "k_exog, exog_state_names",
+        [
+            (2, None),
+            (None, ["foo", "bar"]),
+            (None, {"y1": ["a", "b"], "y2": ["c"]}),
+        ],
+        ids=["k_exog_int", "exog_state_names_list", "exog_state_names_dict"],
+    )
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    def test_varmax_with_exog(self, rng, k_exog, exog_state_names):
+        endog_names = ["y1", "y2", "y3"]
+        n_obs = 50
+        time_idx = pd.date_range(start="2020-01-01", periods=n_obs, freq="D")
+
+        y = rng.normal(size=(n_obs, len(endog_names)))
+        df = pd.DataFrame(y, columns=endog_names, index=time_idx).astype(floatX)
+
+        if isinstance(exog_state_names, dict):
+            exog_data = {
+                f"{name}_exogenous_data": pd.DataFrame(
+                    rng.normal(size=(n_obs, len(exog_names))).astype(floatX),
+                    columns=exog_names,
+                    index=time_idx,
+                )
+                for name, exog_names in exog_state_names.items()
+            }
+        else:
+            exog_names = exog_state_names or [f"exogenous_{i}" for i in range(k_exog)]
+            exog_data = {
+                "exogenous_data": pd.DataFrame(
+                    rng.normal(size=(n_obs, k_exog or len(exog_state_names))).astype(floatX),
+                    columns=exog_names,
+                    index=time_idx,
+                )
+            }
+
+        mod = BayesianVARMAX(
+            endog_names=endog_names,
+            order=(1, 0),
+            k_exog=k_exog,
+            exog_state_names=exog_state_names,
+            verbose=False,
+            measurement_error=False,
+            stationary_initialization=False,
+            mode="JAX",
+        )
+
+        with pm.Model(coords=mod.coords) as m:
+            for var_name, data in exog_data.items():
+                pm.Data(var_name, data, dims=mod.data_info[var_name]["dims"])
+
+            x0 = pm.Deterministic("x0", pt.zeros(mod.k_states), dims=mod.param_dims["x0"])
+            P0_diag = pm.Exponential("P0_diag", 1.0, dims=mod.param_dims["P0"][0])
+            P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=mod.param_dims["P0"])
+
+            ar_params = pm.Normal("ar_params", mu=0, sigma=1, dims=mod.param_dims["ar_params"])
+            state_cov_diag = pm.Exponential(
+                "state_cov_diag", 1.0, dims=mod.param_dims["state_cov"][0]
+            )
+            state_cov = pm.Deterministic(
+                "state_cov", pt.diag(state_cov_diag), dims=mod.param_dims["state_cov"]
+            )
+
+            # Exogenous priors
+            if isinstance(mod.exog_state_names, list):
+                beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=mod.param_dims["beta_exog"])
+            elif isinstance(mod.exog_state_names, dict):
+                for name in mod.exog_state_names:
+                    if mod.exog_state_names.get(name):
+                        pm.Normal(
+                            f"beta_{name}", mu=0, sigma=1, dims=mod.param_dims[f"beta_{name}"]
+                        )
+
+            mod.build_statespace_graph(data=df)
+
+        with freeze_dims_and_data(m):
+            prior = pm.sample_prior_predictive(
+                draws=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
+            )
+
+        prior_cond = mod.sample_conditional_prior(prior, mvn_method="eigh")
+        beta_dot_data = prior_cond.filtered_prior_observed.values - prior_cond.filtered_prior.values
+
+        if isinstance(exog_state_names, list) or k_exog is not None:
+            beta = prior.prior.beta_exog
+            assert beta.shape == (1, 10, 3, 2)
+
+            np.testing.assert_allclose(
+                beta_dot_data,
+                np.einsum("tx,...sx->...ts", exog_data["exogenous_data"].values, beta),
+                atol=1e-2,
+            )
+
+        elif isinstance(exog_state_names, dict):
+            assert prior.prior.beta_y1.shape == (1, 10, 2)
+            assert prior.prior.beta_y2.shape == (1, 10, 1)
+
+            obs_intercept = [
+                np.einsum("tx,...x->...t", exog_data[f"{name}_exogenous_data"].values, beta)
+                for name, beta in zip(["y1", "y2"], [prior.prior.beta_y1, prior.prior.beta_y2])
+            ]
+
+            # y3 has no exogenous variables
+            obs_intercept.append(np.zeros_like(obs_intercept[0]))
+
+            np.testing.assert_allclose(beta_dot_data, np.stack(obs_intercept, axis=-1), atol=1e-2)
