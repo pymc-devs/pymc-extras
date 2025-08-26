@@ -97,7 +97,6 @@ def test_3_layer_normal(rng):
         idata = pmx.fit(
             method="INLA",
             x=x,
-            temp_kwargs=[n, y_obs],  # TODO REMOVE LATER - DEBUGGING TOOL
             return_latent_posteriors=False,
         )
 

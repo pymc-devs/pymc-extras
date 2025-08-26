@@ -9,7 +9,6 @@ import pytensor.tensor as pt
 from arviz import InferenceData, dict_to_dataset
 from pymc.backends.arviz import coords_and_dims_for_inferencedata, dataset_to_point_list
 from pymc.distributions.discrete import Bernoulli, Categorical, DiscreteUniform
-from pymc.distributions.multivariate import MvNormal
 from pymc.distributions.transforms import Chain
 from pymc.logprob.transforms import IntervalTransform
 from pymc.model import Model
@@ -192,10 +191,10 @@ def marginalize(
                 raise NotImplementedError(
                     "Marginalization for DiscreteMarkovChain with non-matrix transition probability is not supported"
                 )
-        elif use_laplace and not isinstance(rv_op, MvNormal):
-            raise ValueError(
-                f"Marginalisation method set to Laplace but RV {rv_to_marginalize} is not instance of MvNormal. Has distribution {rv_to_marginalize.owner.op}"
-            )
+        # elif use_laplace and not isinstance(rv_op, MvNormal):
+        #     raise ValueError(
+        #         f"Marginalisation method set to Laplace but RV {rv_to_marginalize} is not instance of MvNormal. Has distribution {rv_to_marginalize.owner.op}"
+        #     )
 
         elif not use_laplace and not isinstance(rv_op, Bernoulli | Categorical | DiscreteUniform):
             raise NotImplementedError(
@@ -587,9 +586,7 @@ def replace_marginal_subgraph(
                 "You can try splitting the marginalized RV into separate components and marginalizing them separately."
             ) from e
     else:
-        dependent_rvs_dim_connections = [
-            (None,),
-        ]
+        dependent_rvs_dim_connections = None
 
     output_rvs = [rv_to_marginalize, *dependent_rvs]
     rng_updates = collect_default_updates(output_rvs, inputs=input_rvs, must_be_shared=False)

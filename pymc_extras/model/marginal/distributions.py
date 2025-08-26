@@ -9,6 +9,7 @@ import pytensor.tensor as pt
 from pymc.distributions import Bernoulli, Categorical, DiscreteUniform
 from pymc.distributions.distribution import _support_point, support_point
 from pymc.distributions.multivariate import _logdet_from_cholesky, nan_lower_cholesky
+from pymc.logprob import ValuedRV
 from pymc.logprob.abstract import MeasurableOp, _logprob
 from pymc.logprob.basic import conditional_logp, logp
 from pymc.pytensorf import constant_fold
@@ -142,12 +143,12 @@ class MarginalLaplaceRV(MarginalRV):
         self,
         *args,
         Q: TensorVariable,
-        temp_kwargs: list,
+        minimizer_seed: int,
         minimizer_kwargs: dict | None = None,
         **kwargs,
     ) -> None:
-        self.temp_kwargs = temp_kwargs  # TODO REMOVE
         self.Q = Q
+        self.minimizer_seed = minimizer_seed
         self.minimizer_kwargs = minimizer_kwargs
         super().__init__(*args, **kwargs)
 
@@ -440,21 +441,42 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     # Set minimizer initialisation to be random
     # TODO Assumes that the observed variable y is the first/only element of values, and that d is shape[-1]
     d = values[0].data.shape[-1]
-    rng = np.random.default_rng(12345)
+    rng = np.random.default_rng(op.minimizer_seed)
     x0_init = rng.random(d)
     x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: x0_init})
-
-    # TODO USE CLOSED FORM SOLUTION FOR NOW
-    n, y_obs = op.temp_kwargs
-    mu_param = pytensor.graph.basic.get_var_by_name(x, "mu")[0]
-    x0 = (y_obs.sum(axis=0) - mu_param) / (n - 1)
 
     # logp(x | y, params) using laplace approx evaluated at x0
     hess = pytensor.gradient.hessian(
         log_likelihood, marginalized_vv
     )  # TODO check how stan makes this quicker
-    tau = op.Q - hess
-    mu = x0  # TODO double check with Theo
+
+    # Get Q from the list of inputs
+    Q = None
+    if isinstance(op.Q, TensorVariable):
+        for var in inputs:
+            if var.owner is not None and isinstance(var.owner.op, ValuedRV):
+                for inp in var.owner.inputs:
+                    if (
+                        inp.name is not None
+                        and inp.name == op.Q.name
+                        or inp.name == op.Q.name + "_log"
+                    ):
+                        Q = var
+                        break
+
+            if var.name is not None and var.name == op.Q.name or var.name == op.Q.name + "_log":
+                Q = var
+                break
+
+        if Q is None:
+            raise ValueError(f"No inputs could be matched to precision matrix {op.Q}: {inputs}.")
+
+    # Q is an array
+    else:
+        Q = op.Q
+
+    tau = Q - hess
+    mu = x0
     log_laplace_approx, _ = _precision_mv_normal_logp(x0, mu, tau)
 
     # logp(y | params) = logp(y | x, params) + logp(x | params) - logp(x | y, params)
