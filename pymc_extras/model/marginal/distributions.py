@@ -432,6 +432,7 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
         else {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}}
     )
 
+    # This step is currently bottlenecking the logp calculation.
     x0, _ = minimize(
         objective=-logp,  # logp(x | y, params) = logp(y | x, params) + logp(x | params) + const (const omitted during minimization)
         x=marginalized_vv,
@@ -439,16 +440,17 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     )
 
     # Set minimizer initialisation to be random
-    # TODO Assumes that the observed variable y is the first/only element of values, and that d is shape[-1]
+    # Assumes that the observed variable y is the first/only element of values, and that d is shape[-1]
     d = values[0].data.shape[-1]
     rng = np.random.default_rng(op.minimizer_seed)
     x0_init = rng.random(d)
     x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: x0_init})
 
     # logp(x | y, params) using laplace approx evaluated at x0
-    hess = pytensor.gradient.hessian(
-        log_likelihood, marginalized_vv
-    )  # TODO check how stan makes this quicker
+    # This step is also expensive (but not as much as minimize). Could be made more efficient by recycling hessian from the minimizer step, however that requires a bespoke algorithm described in Rasmussen & Williams
+    # since the general optimisation scheme maximises logp(x | y, params) rather than logp(y | x, params), and thus the hessian that comes out of methods
+    # like L-BFGS-B is in fact not the hessian of logp(y | x, params)
+    hess = pytensor.gradient.hessian(log_likelihood, marginalized_vv)
 
     # Get Q from the list of inputs
     Q = None
