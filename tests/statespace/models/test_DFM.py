@@ -414,13 +414,19 @@ class TestDFMConfiguration:
         assert mod.shock_names == ["factor_shock_0"]
 
     def test_dynamic_factor_ar1_error_diagonal_error(self):
+        k_factors = 2
+        factor_order = 2
+        k_endog = 3
+        error_order = 1
+        error_var = False
+
         mod = BayesianDynamicFactor(
-            k_factors=2,
-            factor_order=2,
-            k_endog=3,
+            k_factors=k_factors,
+            factor_order=factor_order,
+            k_endog=k_endog,
             endog_names=["y0", "y1", "y2"],
-            error_order=1,
-            error_var=False,
+            error_order=error_order,
+            error_var=error_var,
             error_cov_type="diagonal",
             measurement_error=True,
             verbose=False,
@@ -464,26 +470,33 @@ class TestDFMConfiguration:
                 "L0.error_2",
             ],
             FACTOR_DIM: ["factor_1", "factor_2"],
-            AR_PARAM_DIM: list(range(1, 2 * 2 + 1)),
-            ERROR_AR_PARAM_DIM: [1],
+            AR_PARAM_DIM: list(range(1, k_factors * max(factor_order, 1) + 1)),
+            ERROR_AR_PARAM_DIM: list(range(1, (error_order * k_endog) + 1))
+            if error_var
+            else list(range(1, error_order + 1)),
         }
 
         assert mod.param_names == expected_param_names
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == 7
+        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order
         assert mod.observed_states == ["y0", "y1", "y2"]
-        assert len(mod.shock_names) == 5
+        assert len(mod.shock_names) == k_factors + k_endog
 
     def test_dynamic_factor_ar2_error_var_unstructured(self):
+        k_factors = 1
+        factor_order = 1
+        k_endog = 3
+        error_order = 2
+        error_var = True
         mod = BayesianDynamicFactor(
-            k_factors=1,
-            factor_order=1,
-            k_endog=3,
+            k_factors=k_factors,
+            factor_order=factor_order,
+            k_endog=k_endog,
             endog_names=["y0", "y1", "y2"],
-            error_order=2,
-            error_var=True,
+            error_order=error_order,
+            error_var=error_var,
             error_cov_type="unstructured",
             measurement_error=True,
             verbose=False,
@@ -527,29 +540,38 @@ class TestDFMConfiguration:
                 "L1.error_2",
             ],
             FACTOR_DIM: ["factor_1"],
-            AR_PARAM_DIM: [1],
-            ERROR_AR_PARAM_DIM: list(range(1, 2 * 3 + 1)),
+            AR_PARAM_DIM: list(range(1, k_factors * max(factor_order, 1) + 1)),
+            ERROR_AR_PARAM_DIM: list(range(1, (error_order * k_endog) + 1))
+            if error_var
+            else list(range(1, error_order + 1)),
         }
 
         assert mod.param_names == expected_param_names
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == 7
+        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order
         assert mod.observed_states == ["y0", "y1", "y2"]
-        assert len(mod.shock_names) == 4
+        assert len(mod.shock_names) == k_factors + k_endog
 
     def test_exog_shared_exog_states_exog_innovations(self):
+        k_factors = 2
+        factor_order = 1
+        k_endog = 3
+        error_order = 1
+        k_exog = 2
+        error_var = False
+        shared_exog_states = True
         mod = BayesianDynamicFactor(
-            k_factors=2,
-            factor_order=1,
-            k_endog=3,
+            k_factors=k_factors,
+            factor_order=factor_order,
+            k_endog=k_endog,
             endog_names=["y0", "y1", "y2"],
-            error_order=1,
-            error_var=False,
+            error_order=error_order,
+            error_var=error_var,
             k_exog=2,
             exog_names=["x0", "x1"],
-            shared_exog_states=True,
+            shared_exog_states=shared_exog_states,
             exog_innovations=True,
             error_cov_type="diagonal",
             measurement_error=True,
@@ -598,30 +620,45 @@ class TestDFMConfiguration:
                 "beta_x1[shared]",
             ],
             FACTOR_DIM: ["factor_1", "factor_2"],
-            AR_PARAM_DIM: [1, 2],
-            ERROR_AR_PARAM_DIM: [1],
-            EXOG_STATE_DIM: [1, 2],
+            AR_PARAM_DIM: list(range(1, k_factors * max(factor_order, 1) + 1)),
+            ERROR_AR_PARAM_DIM: list(range(1, (error_order * k_endog) + 1))
+            if error_var
+            else list(range(1, error_order + 1)),
+            EXOG_STATE_DIM: list(range(1, k_exog + 1))
+            if shared_exog_states
+            else list(range(1, k_exog * k_endog + 1)),
         }
 
         assert mod.param_names == expected_param_names
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == 7
+        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order + (
+            k_exog if shared_exog_states else k_exog * k_endog
+        )
         assert mod.observed_states == ["y0", "y1", "y2"]
-        assert len(mod.shock_names) == 7
+        assert len(mod.shock_names) == k_factors + k_endog + (
+            k_exog if shared_exog_states else k_exog * k_endog
+        )
 
     def test_exog_not_shared_no_exog_innovations(self):
+        k_factors = 1
+        factor_order = 2
+        k_endog = 3
+        error_order = 1
+        k_exog = 1
+        error_var = False
+        shared_exog_states = False
         mod = BayesianDynamicFactor(
-            k_factors=1,
-            factor_order=2,
-            k_endog=3,
+            k_factors=k_factors,
+            factor_order=factor_order,
+            k_endog=k_endog,
             endog_names=["y0", "y1", "y2"],
-            error_order=1,
-            error_var=False,
-            k_exog=1,
+            error_order=error_order,
+            error_var=error_var,
+            k_exog=k_exog,
             exog_names=["x0"],
-            shared_exog_states=False,
+            shared_exog_states=shared_exog_states,
             exog_innovations=False,
             error_cov_type="scalar",
             measurement_error=False,
@@ -668,15 +705,23 @@ class TestDFMConfiguration:
                 "beta_x0[y2]",
             ],
             FACTOR_DIM: ["factor_1"],
-            AR_PARAM_DIM: [1, 2],
-            ERROR_AR_PARAM_DIM: [1],
-            EXOG_STATE_DIM: [1, 2, 3],
+            AR_PARAM_DIM: list(range(1, k_factors * max(factor_order, 1) + 1)),
+            ERROR_AR_PARAM_DIM: list(range(1, (error_order * k_endog) + 1))
+            if error_var
+            else list(range(1, error_order + 1)),
+            EXOG_STATE_DIM: list(range(1, k_exog + 1))
+            if shared_exog_states
+            else list(range(1, k_exog * k_endog + 1)),
         }
 
         assert mod.param_names == expected_param_names
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == 8
+        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order + (
+            k_exog if shared_exog_states else k_exog * k_endog
+        )
         assert mod.observed_states == ["y0", "y1", "y2"]
-        assert len(mod.shock_names) == 7
+        assert len(mod.shock_names) == k_factors + k_endog + (
+            k_exog if shared_exog_states else k_exog * k_endog
+        )
