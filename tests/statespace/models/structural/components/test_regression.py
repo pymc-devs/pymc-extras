@@ -6,8 +6,6 @@ import pytest
 from numpy.testing import assert_allclose
 from pytensor import config
 from pytensor import tensor as pt
-from pytensor.graph.basic import explicit_graph_inputs
-from scipy.linalg import block_diag
 
 from pymc_extras.statespace.models import structural as st
 from tests.statespace.models.structural.conftest import _assert_basic_coords_correct
@@ -327,13 +325,14 @@ def test_regression_mixed_shared_and_not_shared():
         Z,
         np.concat(
             (
-                block_diag(*[data_individual[:, np.newaxis] for _ in range(mod.k_endog)]),
-                np.concat((data_joint[:, np.newaxis], data_joint[:, np.newaxis]), axis=1),
+                pt.linalg.block_diag(
+                    *[data_individual[:, None] for _ in range(mod.k_endog)]
+                ).eval(),
+                np.concat((data_joint[:, None], data_joint[:, None]), axis=1),
             ),
             axis=2,
         ),
     )
 
     np.testing.assert_allclose(T, np.eye(mod.k_states))
-
     np.testing.assert_allclose(R, np.eye(mod.k_states))

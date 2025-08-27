@@ -1,6 +1,7 @@
 from itertools import combinations
 
 import numpy as np
+import pandas as pd
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
@@ -8,8 +9,10 @@ import pytest
 import statsmodels.api as sm
 
 from numpy.testing import assert_allclose, assert_array_less
+from pymc.testing import mock_sample_setup_and_teardown
+from pytensor.graph.basic import explicit_graph_inputs
 
-from pymc_extras.statespace import BayesianSARIMA
+from pymc_extras.statespace import BayesianSARIMAX
 from pymc_extras.statespace.models.utilities import (
     make_harvey_state_names,
     make_SARIMA_transition_matrix,
@@ -26,6 +29,8 @@ from tests.statespace.test_utilities import (
     make_stationary_params,
     simulate_from_numpy_model,
 )
+
+mock_sample = pytest.fixture()(mock_sample_setup_and_teardown)
 
 floatX = pytensor.config.floatX
 ATOL = 1e-8 if floatX.endswith("64") else 1e-6
@@ -167,7 +172,7 @@ def data():
 
 @pytest.fixture(scope="session")
 def arima_mod():
-    return BayesianSARIMA(order=(2, 0, 1), stationary_initialization=True, verbose=False)
+    return BayesianSARIMAX(order=(2, 0, 1), stationary_initialization=True, verbose=False)
 
 
 @pytest.fixture(scope="session")
@@ -188,7 +193,7 @@ def pymc_mod(arima_mod):
 
 @pytest.fixture(scope="session")
 def arima_mod_interp():
-    return BayesianSARIMA(
+    return BayesianSARIMAX(
         order=(3, 0, 3),
         stationary_initialization=False,
         verbose=False,
@@ -219,7 +224,7 @@ def pymc_mod_interp(arima_mod_interp):
 
 def test_mode_argument():
     # Mode argument should be passed to the parent class
-    mod = BayesianSARIMA(order=(0, 0, 3), mode="FAST_RUN", verbose=False)
+    mod = BayesianSARIMAX(order=(0, 0, 3), mode="FAST_RUN", verbose=False)
     assert mod.mode == "FAST_RUN"
 
 
@@ -269,7 +274,7 @@ def test_SARIMAX_update_matches_statsmodels(p, d, q, P, D, Q, S, data, rng):
     param_d = {name: getattr(np, floatX)(rng.normal(scale=0.1) ** 2) for name in param_names}
 
     res = sm_sarimax.fit_constrained(param_d)
-    mod = BayesianSARIMA(
+    mod = BayesianSARIMAX(
         order=(p, d, q), seasonal_order=(P, D, Q, S), verbose=False, stationary_initialization=False
     )
 
@@ -331,9 +336,9 @@ def test_interpretable_raises_if_d_nonzero():
     with pytest.raises(
         ValueError, match="Cannot use interpretable state structure with statespace differencing"
     ):
-        BayesianSARIMA(
+        BayesianSARIMAX(
             order=(2, 1, 1),
-            stationary_initialization=True,
+            stationary_initialization=False,
             verbose=False,
             state_structure="interpretable",
         )
@@ -383,7 +388,7 @@ def test_representations_are_equivalent(p, d, q, P, D, Q, S, data, rng):
 
     for representation in SARIMAX_STATE_STRUCTURES:
         rng = np.random.default_rng(sum(map(ord, "representation test")))
-        mod = BayesianSARIMA(
+        mod = BayesianSARIMAX(
             order=(p, d, q),
             seasonal_order=(P, D, Q, S),
             stationary_initialization=False,
@@ -414,4 +419,52 @@ def test_representations_are_equivalent(p, d, q, P, D, Q, S, data, rng):
 def test_invalid_order_raises(order, name):
     p, P, q, Q = order
     with pytest.raises(ValueError, match=f"The following {name} and seasonal {name} terms overlap"):
-        BayesianSARIMA(order=(p, 0, q), seasonal_order=(P, 0, Q, 4))
+        BayesianSARIMAX(order=(p, 0, q), seasonal_order=(P, 0, Q, 4))
+
+
+def test_SARIMA_with_exogenous(rng, mock_sample):
+    ss_mod = BayesianSARIMAX(order=(3, 0, 1), seasonal_order=(1, 0, 0, 12), k_exog=2)
+
+    assert ss_mod.param_dims["beta_exog"] == ("exogenous",)
+    assert ss_mod.data_names == ["exogenous_data"]
+    assert ss_mod.coords["exogenous"] == ["exogenous_0", "exogenous_1"]
+
+    obs_intercept = ss_mod.ssm["obs_intercept"]
+    assert obs_intercept.type.shape == (None, ss_mod.k_endog)
+
+    intercept_fn = pytensor.function(
+        inputs=list(explicit_graph_inputs(obs_intercept)), outputs=obs_intercept
+    )
+    data_val = rng.normal(size=(100, 2)).astype(floatX)
+    beta_val = rng.normal(size=(2,)).astype(floatX)
+
+    intercept_val = intercept_fn(data_val, beta_val)
+    np.testing.assert_allclose(intercept_val, intercept_fn(data_val, beta_val))
+
+    data_df = pd.DataFrame(
+        rng.normal(size=(100, 1)),
+        index=pd.date_range(start="2020-01-01", periods=100, freq="D"),
+        columns=["endog"],
+    )
+
+    with pm.Model(coords=ss_mod.coords) as pymc_mod:
+        pm.Data("exogenous_data", data_val, dims=["time", "exogenous"])
+
+        ar_params = pm.Normal("ar_params", dims=["lag_ar"])
+        ma_params = pm.Normal("ma_params", dims=["lag_ma"])
+        seasonal_ar_params = pm.Normal("seasonal_ar_params", dims=["seasonal_lag_ar"])
+
+        beta_exog = pm.Normal("beta_exog", dims=["exogenous"])
+
+        sigma_state = pm.Exponential("sigma_state", 1.0)
+
+        ss_mod.build_statespace_graph(data=data_df, save_kalman_filter_outputs_in_idata=True)
+        idata = pm.sample(chains=2, draws=100)
+
+    assert "exogenous_data" in idata.constant_data
+    assert idata.posterior.beta_exog.shape == (
+        2,
+        100,
+        2,
+    )
+    np.testing.assert_allclose(ss_mod._fit_exog_data["exogenous_data"]["value"], data_val)

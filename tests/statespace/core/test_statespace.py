@@ -2,6 +2,7 @@ import re
 
 from collections.abc import Sequence
 from functools import partial
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -44,8 +45,12 @@ def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False,
             pass
 
         @property
-        def data_info(self):
+        def data_info(self) -> dict[str, dict[str, Any]]:
             return data_info
+
+        @property
+        def data_names(self) -> list[str]:
+            return list(data_info.keys()) if data_info is not None else []
 
     ss = StateSpace(
         k_states=k_states,
@@ -55,7 +60,6 @@ def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False,
         verbose=verbose,
     )
     ss._needs_exog_data = data_info is not None
-    ss._exog_names = list(data_info.keys()) if data_info is not None else []
 
     return ss
 

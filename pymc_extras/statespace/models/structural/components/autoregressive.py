@@ -46,7 +46,7 @@ class AutoregressiveComponent(Component):
     The coefficient :math:`\rho_3` has been constrained to zero.
 
     .. warning:: This class is meant to be used as a component in a structural time series model. For modeling of
-              stationary processes with ARIMA, use ``statespace.BayesianSARIMA``.
+              stationary processes with ARIMA, use ``statespace.BayesianSARIMAX``.
 
     Examples
     --------
