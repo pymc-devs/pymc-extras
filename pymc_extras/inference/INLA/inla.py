@@ -16,7 +16,13 @@ def fit_INLA(
     **sampler_kwargs,
 ) -> az.InferenceData:
     r"""
-    Performs inference over a linear mixed model using Integrated Nested Laplace Approximations (INLA).
+    Performs inference over a linear mixed model using Integrated Nested Laplace Approximations (INLA). Assumes a model of the form:
+
+    \begin{equation}
+    \theta \rightarrow x \rightarrow y
+    \end{equation}
+
+    Where the prior on the hyperparameters $\pi(\theta)$ is arbitrary, the prior on the latent field is Gaussian (and in precision form): $\pi(x) = N(\mu, Q^{-1})$ and the latent field is linked to the observables $y$ through some linear map.
 
     As it stands, INLA in PyMC Extras has three main limitations:
 
