@@ -14,7 +14,7 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
     AR_PARAM_DIM,
-    EXOGENOUS_DIM,
+    EXOG_STATE_DIM,
     MA_PARAM_DIM,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
@@ -342,7 +342,7 @@ class BayesianVARMAX(PyMCStateSpace):
         if isinstance(self.exog_state_names, list):
             info = {
                 "exogenous_data": {
-                    "dims": (TIME_DIM, EXOGENOUS_DIM),
+                    "dims": (TIME_DIM, EXOG_STATE_DIM),
                     "shape": (None, self.k_exog),
                 }
             }
@@ -350,7 +350,7 @@ class BayesianVARMAX(PyMCStateSpace):
         elif isinstance(self.exog_state_names, dict):
             info = {
                 f"{endog_state}_exogenous_data": {
-                    "dims": (TIME_DIM, f"{EXOGENOUS_DIM}_{endog_state}"),
+                    "dims": (TIME_DIM, f"{EXOG_STATE_DIM}_{endog_state}"),
                     "shape": (None, len(exog_names)),
                 }
                 for endog_state, exog_names in self.exog_state_names.items()
@@ -399,10 +399,10 @@ class BayesianVARMAX(PyMCStateSpace):
             coords.update({MA_PARAM_DIM: list(range(1, self.q + 1))})
 
         if isinstance(self.exog_state_names, list):
-            coords[EXOGENOUS_DIM] = self.exog_state_names
+            coords[EXOG_STATE_DIM] = self.exog_state_names
         elif isinstance(self.exog_state_names, dict):
             for name, exog_names in self.exog_state_names.items():
-                coords[f"{EXOGENOUS_DIM}_{name}"] = exog_names
+                coords[f"{EXOG_STATE_DIM}_{name}"] = exog_names
 
         return coords
 
@@ -428,12 +428,12 @@ class BayesianVARMAX(PyMCStateSpace):
             del coord_map["x0"]
 
         if isinstance(self.exog_state_names, list):
-            coord_map["beta_exog"] = (OBS_STATE_DIM, EXOGENOUS_DIM)
+            coord_map["beta_exog"] = (OBS_STATE_DIM, EXOG_STATE_DIM)
         elif isinstance(self.exog_state_names, dict):
             # If each state has its own exogenous variables, each parameter needs it own dim, since we expect the
             # dim labels to all be different (otherwise we'd be in the list case).
             for name in self.exog_state_names.keys():
-                coord_map[f"beta_{name}"] = (f"{EXOGENOUS_DIM}_{name}",)
+                coord_map[f"beta_{name}"] = (f"{EXOG_STATE_DIM}_{name}",)
 
         return coord_map
 
