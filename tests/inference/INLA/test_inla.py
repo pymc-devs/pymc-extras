@@ -53,6 +53,7 @@ def test_3_layer_normal(rng):
         idata = pmx.fit(
             method="INLA",
             x=x,
+            Q=tau,
             return_latent_posteriors=False,
         )
 
