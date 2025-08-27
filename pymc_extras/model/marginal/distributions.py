@@ -9,8 +9,7 @@ import pytensor.tensor as pt
 from pymc.distributions import Bernoulli, Categorical, DiscreteUniform
 from pymc.distributions.distribution import _support_point, support_point
 from pymc.distributions.multivariate import _logdet_from_cholesky, nan_lower_cholesky
-from pymc.logprob import ValuedRV
-from pymc.logprob.abstract import MeasurableOp, _logprob
+from pymc.logprob.abstract import MeasurableOp, ValuedRV, _logprob
 from pymc.logprob.basic import conditional_logp, logp
 from pymc.pytensorf import constant_fold
 from pytensor import Variable
