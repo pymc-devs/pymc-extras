@@ -34,9 +34,8 @@ def fit_INLA(
     marginal_model = marginalize(model, x, use_laplace=True, **marginalize_kwargs)
 
     # Sample over the hyperparameters
-    idata = pm.sample(model=marginal_model, **sampler_kwargs)
-
     if not return_latent_posteriors:
+        idata = pm.sample(model=marginal_model, **sampler_kwargs)
         return idata
 
     # Unmarginalize stuff
