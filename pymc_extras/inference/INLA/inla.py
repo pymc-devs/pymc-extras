@@ -15,8 +15,31 @@ def fit_INLA(
     return_latent_posteriors: bool = False,
     **sampler_kwargs,
 ) -> az.InferenceData:
-    """
-    TODO ADD DOCSTRING
+    r"""
+    Performs inference over a linear mixed model using Integrated Nested Laplace Approximations (INLA).
+
+    As it stands, INLA in PyMC Extras has three main limitations:
+
+    - Does not support inference over the latent field, only the hyperparameters.
+    - Optimisation for $\mu^*$ is bottlenecked by calling `minimize`, and to a lesser extent, computing the hessian $f^"(x)$.
+    - Does not offer sparse support which can provide significant speedups.
+
+    Parameters
+    ----------
+    x: TensorVariable
+        The latent gaussian to marginalize out.
+    Q: TensorVariable
+        Precision matrix of the latent field.
+    minimizer_seed: int
+        Seed for random initialisation of the minimum point x*.
+    model: pm.Model
+        PyMC model.
+    minimizer_kwargs:
+        Kwargs to pass to pytensor.optimize.minimize during the optimization step maximizing logp(x | y, params).
+    returned_latent_posteriors:
+        If True, also return posteriors for the latent Gaussian field (currently unsupported).
+    sampler_kwargs:
+        Kwargs to pass to pm.sample.
     """
     model = pm.modelcontext(model)
 
