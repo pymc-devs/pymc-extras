@@ -12,7 +12,7 @@ def fit_INLA(
     minimizer_seed: int = 42,
     model: pm.Model | None = None,
     minimizer_kwargs: dict = {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}},
-    return_latent_posteriors: bool = True,
+    return_latent_posteriors: bool = False,
     **sampler_kwargs,
 ) -> az.InferenceData:
     """
@@ -40,4 +40,6 @@ def fit_INLA(
         return idata
 
     # Unmarginalize stuff
-    raise NotImplementedError("Inference over the latent field with INLA is currently unsupported.")
+    raise NotImplementedError(
+        "Inference over the latent field with INLA is currently unsupported. Set return_latent_posteriors to False"
+    )
