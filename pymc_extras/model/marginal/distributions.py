@@ -436,7 +436,7 @@ def get_laplace_approx(
     minimizer_kwargs: dict = {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}},
 ):
     """
-    Compute the laplace approximation of some variable x.
+    Compute the laplace approximation logp_G(x | y, params) of some variable x.
 
     Parameters
     ----------
@@ -458,7 +458,7 @@ def get_laplace_approx(
     x0: TensorVariable
         x*, the maximizer of logp(x | y, params) in x.
     log_laplace_approx: TensorVariable
-        Laplace approximation evaluated at x.
+        Laplace approximation of logp(x | y, params) evaluated at x.
     """
     # Maximize log(p(x | y, params)) wrt x to find mode x0
     # This step is currently bottlenecking the logp calculation.
@@ -471,13 +471,12 @@ def get_laplace_approx(
     # Set minimizer initialisation to be random
     x0 = pytensor.graph.replace.graph_replace(x0, {x: x0_init})
 
-    # logp(x | y, params) using laplace approx evaluated at x0
     # This step is also expensive (but not as much as minimize). Could be made more efficient by recycling hessian from the minimizer step, however that requires a bespoke algorithm described in Rasmussen & Williams
     # since the general optimisation scheme maximises logp(x | y, params) rather than logp(y | x, params), and thus the hessian that comes out of methods
     # like L-BFGS-B is in fact not the hessian of logp(y | x, params)
     hess = pytensor.gradient.hessian(log_likelihood, x)
 
-    # Evaluate logp of Laplace approx N(x*, Q - f"(x*)) at some point x
+    # Evaluate logp of Laplace approx of logp(x | y, params) at some point x
     tau = Q - hess
     mu = x0
     log_laplace_approx, _ = _precision_mv_normal_logp(x, mu, tau)
@@ -502,7 +501,7 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
         [logp_term.sum() for value, logp_term in logps_dict.items() if value is not marginalized_vv]
     )
 
-    # logp = logp(y | x, params) + logp(x | params)
+    # logp = logp(y | x, params) + logp(x | params) (i.e. logp(x | y, params) up to a constant in x)
     logp = pt.sum([pt.sum(logps_dict[k]) for k in logps_dict])
 
     # Set minimizer initialisation to be random
