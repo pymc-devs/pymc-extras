@@ -21,7 +21,7 @@ from pytensor.graph.basic import equal_computations
 from pytensor.graph.replace import clone_replace, graph_replace
 from pytensor.scan import map as scan_map
 from pytensor.scan import scan
-from pytensor.tensor import TensorVariable
+from pytensor.tensor import TensorLike, TensorVariable
 from pytensor.tensor.optimize import minimize
 from pytensor.tensor.random.type import RandomType
 
@@ -397,18 +397,25 @@ def marginal_hmm_logp(op, values, *inputs, **kwargs):
     return joint_logp, *dummy_logps
 
 
-def _precision_mv_normal_logp(value, mean, tau):
+def _precision_mv_normal_logp(value: TensorLike, mean: TensorLike, tau: TensorLike):
     """
     Compute the log likelihood of a multivariate normal distribution in precision form. May be phased out - see https://github.com/pymc-devs/pymc/pull/7895
 
     Parameters
     ----------
-    value: TODO
+    value: TensorLike
         Query point to compute the log prob at.
-    mean: TODO
+    mean: TensorLike
         Mean vector of the Gaussian,
-    tau: TODO
+    tau: TensorLike
         Precision matrix of the Gaussian (i.e. cov = inv(tau))
+
+    Returns
+    -------
+    logp: TensorLike
+        Log likelihood at value.
+    posdef: TensorLike
+        Boolean indicating whether the precision matrix is positive definite.
     """
     k = value.shape[-1].astype("floatX")
 
@@ -418,6 +425,64 @@ def _precision_mv_normal_logp(value, mean, tau):
     logp = -0.5 * (k * pt.log(2 * np.pi) + quadratic_form) + logdet
 
     return logp, posdef
+
+
+def get_laplace_approx(
+    log_likelihood: TensorVariable,
+    logp_objective: TensorVariable,
+    x: TensorVariable,
+    x0_init: TensorLike,
+    Q: TensorLike,
+    minimizer_kwargs: dict = {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}},
+):
+    """
+    Compute the laplace approximation of some variable x.
+
+    Parameters
+    ----------
+    log_likelihood: TensorVariable
+        Model likelihood logp(y | x, params).
+    logp_objective: TensorVariable
+        Obective log likelihood to maximize, logp(x | y, params) (up to some constant in x).
+    x: TensorVariable
+        Variable to be laplace approximated.
+    x0_init: TensorLike
+        Initial guess for minimization.
+    Q: TensorLike
+        Precision matrix of x.
+    minimizer_kwargs:
+        Kwargs to pass to pytensor.optimize.minimize.
+
+    Returns
+    -------
+    x0: TensorVariable
+        x*, the maximizer of logp(x | y, params) in x.
+    log_laplace_approx: TensorVariable
+        Laplace approximation evaluated at x.
+    """
+    # Maximize log(p(x | y, params)) wrt x to find mode x0
+    # This step is currently bottlenecking the logp calculation.
+    x0, _ = minimize(
+        objective=-logp_objective,  # logp(x | y, params) = logp(y | x, params) + logp(x | params) + const (const omitted during minimization)
+        x=x,
+        **minimizer_kwargs,
+    )
+
+    # Set minimizer initialisation to be random
+    x0 = pytensor.graph.replace.graph_replace(x0, {x: x0_init})
+
+    # logp(x | y, params) using laplace approx evaluated at x0
+    # This step is also expensive (but not as much as minimize). Could be made more efficient by recycling hessian from the minimizer step, however that requires a bespoke algorithm described in Rasmussen & Williams
+    # since the general optimisation scheme maximises logp(x | y, params) rather than logp(y | x, params), and thus the hessian that comes out of methods
+    # like L-BFGS-B is in fact not the hessian of logp(y | x, params)
+    hess = pytensor.gradient.hessian(log_likelihood, x)
+
+    # Evaluate logp of Laplace approx N(x*, Q - f"(x*)) at some point x
+    tau = Q - hess
+    mu = x0
+    log_laplace_approx, _ = _precision_mv_normal_logp(x, mu, tau)
+
+    return x0, log_laplace_approx
 
 
 @_logprob.register(MarginalLaplaceRV)
@@ -440,26 +505,11 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     # logp = logp(y | x, params) + logp(x | params)
     logp = pt.sum([pt.sum(logps_dict[k]) for k in logps_dict])
 
-    # Maximize log(p(x | y, params)) wrt x to find mode x0
-    # This step is currently bottlenecking the logp calculation.
-    x0, _ = minimize(
-        objective=-logp,  # logp(x | y, params) = logp(y | x, params) + logp(x | params) + const (const omitted during minimization)
-        x=marginalized_vv,
-        **op.minimizer_kwargs,
-    )
-
     # Set minimizer initialisation to be random
     # Assumes that the observed variable y is the first/only element of values, and that d is shape[-1]
     d = values[0].data.shape[-1]
     rng = np.random.default_rng(op.minimizer_seed)
     x0_init = rng.random(d)
-    x0 = pytensor.graph.replace.graph_replace(x0, {marginalized_vv: x0_init})
-
-    # logp(x | y, params) using laplace approx evaluated at x0
-    # This step is also expensive (but not as much as minimize). Could be made more efficient by recycling hessian from the minimizer step, however that requires a bespoke algorithm described in Rasmussen & Williams
-    # since the general optimisation scheme maximises logp(x | y, params) rather than logp(y | x, params), and thus the hessian that comes out of methods
-    # like L-BFGS-B is in fact not the hessian of logp(y | x, params)
-    hess = pytensor.gradient.hessian(log_likelihood, marginalized_vv)
 
     # Get Q from the list of inputs
     Q = None
@@ -486,9 +536,10 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     else:
         Q = op.Q
 
-    tau = Q - hess
-    mu = x0
-    log_laplace_approx, _ = _precision_mv_normal_logp(x0, mu, tau)
+    # Obtain laplace approx
+    x0, log_laplace_approx = get_laplace_approx(
+        log_likelihood, logp, marginalized_vv, x0_init, Q, op.minimizer_kwargs
+    )
 
     # logp(y | params) = logp(y | x, params) + logp(x | params) - logp(x | y, params)
     marginal_likelihood = logp - log_laplace_approx
