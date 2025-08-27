@@ -1,14 +1,14 @@
 import arviz as az
 import pymc as pm
 
-from pytensor.tensor import TensorVariable
+from pytensor.tensor import TensorLike, TensorVariable
 
 from pymc_extras.model.marginal.marginal_model import marginalize
 
 
 def fit_INLA(
     x: TensorVariable,
-    Q: TensorVariable,
+    Q: TensorLike,
     minimizer_seed: int = 42,
     model: pm.Model | None = None,
     minimizer_kwargs: dict = {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}},
@@ -34,7 +34,7 @@ def fit_INLA(
     ----------
     x: TensorVariable
         The latent gaussian to marginalize out.
-    Q: TensorVariable
+    Q: TensorLike
         Precision matrix of the latent field.
     minimizer_seed: int
         Seed for random initialisation of the minimum point x*.
