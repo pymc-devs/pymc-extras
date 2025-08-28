@@ -29,6 +29,8 @@ def fit_dadvi(
     n_draws: int = 1000,
     keep_untransformed: bool = False,
     optimizer_method: minimize_method = "trust-ncg",
+    use_jacobian: bool = True,
+    use_hessp: bool = True,
     **minimize_kwargs,
 ) -> az.InferenceData:
     """
@@ -73,6 +75,12 @@ def fit_dadvi(
         ``scipy.optimize.minimize`` function. See the documentation of
         that function for details.
 
+    use_jacobian:
+        If True, pass the Jacobian function to `scipy.optimize.minimize`.
+
+    use_hessp:
+        If True, pass the hessian vector product to `scipy.optimize.minimize`.
+
     Returns
     -------
     :class:`~arviz.InferenceData`
@@ -106,12 +114,18 @@ def fit_dadvi(
         compute_hess=False,
     )
 
+    derivative_kwargs = {}
+
+    if use_jacobian:
+        derivative_kwargs["jac"] = True
+    if use_hessp:
+        derivative_kwargs["hessp"] = f_hessp
+
     result = minimize(
         f_fused,
         np.zeros(2 * n_params),
-        jac=True,
         method=optimizer_method,
-        hessp=f_hessp,
+        **derivative_kwargs,
         **minimize_kwargs,
     )
 
