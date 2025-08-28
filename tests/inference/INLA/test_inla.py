@@ -22,7 +22,7 @@ import pymc_extras as pmx
 
 @pytest.fixture(scope="session")
 def rng():
-    seed = 12345
+    seed = 123
     return np.random.default_rng(seed)
 
 
@@ -61,3 +61,36 @@ def test_3_layer_normal(rng):
         posterior_mean_true = (mu_mu + mu_true) / 2
         posterior_mean_inla = idata.posterior.mu.mean(axis=(0, 1))
         np.testing.assert_allclose(posterior_mean_true, posterior_mean_inla, atol=0.1)
+
+
+@pytest.mark.filterwarnings(r"ignore:INLA is currently experimental")
+def test_AR1(rng):
+    T = 10
+    x = np.zeros((T,))
+
+    # true stationarity:
+    true_theta = 0.95
+    # true standard deviation of the innovation:
+    true_sigma = 2.0
+    # true process mean:
+    true_center = 0.0
+
+    for t in range(1, T):
+        x[t] = true_theta * x[t - 1] + rng.normal(loc=true_center, scale=true_sigma)
+
+    y_obs = rng.poisson(np.exp(x))
+
+    with pm.Model() as ar1:
+        theta = pm.Normal("theta", 0.0, 1.0)
+        tau = pm.Exponential("tau", 0.5)
+
+        x = pm.AR(
+            "x", rho=theta, tau=tau, steps=T - 1, init_dist=pm.Normal.dist(0, 100, shape=(T,))
+        )
+
+        y = pm.Poisson("y", mu=pm.math.exp(x), observed=y_obs)
+
+        idata = pm.sample()
+
+    theta_inla = idata.posterior.theta.mean(axis=(0, 1))
+    np.testing.assert_allclose(np.array([true_theta]), theta_inla, atol=0.1)
