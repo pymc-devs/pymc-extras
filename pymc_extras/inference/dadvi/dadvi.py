@@ -109,6 +109,7 @@ def fit_dadvi(
     result = minimize(
         f_fused,
         np.zeros(2 * n_params),
+        jac=True,
         method=optimizer_method,
         hessp=f_hessp,
         **minimize_kwargs,
