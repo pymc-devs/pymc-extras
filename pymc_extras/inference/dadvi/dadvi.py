@@ -5,6 +5,7 @@ import pytensor
 import pytensor.tensor as pt
 import xarray
 
+from better_optimize.constants import minimize_method
 from pymc import DictToArrayBijection, Model, join_nonshared_inputs
 from pymc.backends.arviz import (
     PointFunc,
@@ -21,16 +22,18 @@ from pymc_extras.inference.laplace_approx.scipy_interface import (
 )
 
 
-def fit_deterministic_advi(
+def fit_dadvi(
     model: Model | None = None,
     n_fixed_draws: int = 30,
     random_seed: RandomSeed = None,
     n_draws: int = 1000,
     keep_untransformed: bool = False,
+    method: minimize_method = "trust-ncg",
+    **minimize_kwargs,
 ) -> az.InferenceData:
     """
     Does inference using deterministic ADVI (automatic differentiation
-    variational inference).
+    variational inference), DADVI for short.
 
     For full details see the paper cited in the references:
     https://www.jmlr.org/papers/v25/23-1015.html
@@ -56,6 +59,19 @@ def fit_deterministic_advi(
     keep_untransformed: bool
         Whether or not to keep the unconstrained variables (such as
         logs of positive-constrained parameters) in the output.
+
+    method: str
+        Which optimization method to use. The function calls
+        ``scipy.optimize.minimize``, so any of the methods there can
+        be used. The default is trust-ncg, which uses second-order
+        information and is generally very reliable. Other methods such
+        as L-BFGS-B might be faster but potentially more brittle and
+        may not converge exactly to the optimum.
+
+    minimize_kwargs:
+        Additional keyword arguments to pass to the
+        ``scipy.optimize.minimize`` function. See the documentation of
+        that function for details.
 
     Returns
     -------
@@ -90,7 +106,14 @@ def fit_deterministic_advi(
         compute_hess=False,
     )
 
-    result = minimize(f_fused, np.zeros(2 * n_params), method="trust-ncg", jac=True, hessp=f_hessp)
+    result = minimize(
+        f_fused,
+        np.zeros(2 * n_params),
+        method=method,
+        jac=True,
+        hessp=f_hessp,
+        **minimize_kwargs,
+    )
 
     opt_var_params = result.x
     opt_means, opt_log_sds = np.split(opt_var_params, 2)
@@ -151,8 +174,7 @@ def create_dadvi_graph(
     )
 
     var_params = pt.vector(name="eta", shape=(2 * n_params,))
-
-    means , log_sds= pt.split(var_params, 2)
+    means, log_sds = var_params[:n_params], var_params[n_params:]
 
     draw_matrix = pt.constant(draws)
     samples = means + pt.exp(log_sds) * draw_matrix

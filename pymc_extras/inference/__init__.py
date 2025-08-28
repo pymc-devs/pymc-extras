@@ -12,7 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-from pymc_extras.inference.deterministic_advi.dadvi import fit_deterministic_advi
+from pymc_extras.inference.dadvi.dadvi import fit_dadvi
 from pymc_extras.inference.fit import fit
 from pymc_extras.inference.laplace_approx.find_map import find_MAP
 from pymc_extras.inference.laplace_approx.laplace import fit_laplace
@@ -23,5 +23,5 @@ __all__ = [
     "fit",
     "fit_laplace",
     "fit_pathfinder",
-    "fit_deterministic_advi",
+    "fit_dadvi",
 ]
