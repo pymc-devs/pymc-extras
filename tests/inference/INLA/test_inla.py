@@ -26,6 +26,7 @@ def rng():
     return np.random.default_rng(seed)
 
 
+@pytest.mark.filterwarnings(r"ignore:INLA is currently experimental")
 def test_3_layer_normal(rng):
     """
     Test INLA against a simple toy problem:

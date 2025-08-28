@@ -1,3 +1,5 @@
+import warnings
+
 import arviz as az
 import pymc as pm
 
@@ -83,6 +85,10 @@ def fit_INLA(
             [3.48732847 0.35738072 1.46851421]
 
     """
+    warnings.warn(
+        "INLA is currently experimental. Please see the INLA Roadmap for more info: https://github.com/pymc-devs/pymc-extras/issues/340.",
+        UserWarning,
+    )
     model = pm.modelcontext(model)
 
     # Get the TensorVariable if Q is provided as an RV
