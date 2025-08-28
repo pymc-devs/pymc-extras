@@ -504,7 +504,12 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     logp = pt.sum([pt.sum(logps_dict[k]) for k in logps_dict])
 
     # Set minimizer initialisation to be random
-    # Assumes that the observed variable y is the first/only element of values, and that d is shape[-1]
+    # Assumes that the observed variable y is the only element in values, and that d is shape[-1] - if this is invalid it will simply crash rather than producing an invalid result.
+    # A more robust method of obtaining d would be ideal.
+    if len(values) > 1:
+        warnings.warn(
+            f"INLA assumes that the latent field {marginalized_vv.name} is of the same shape as the observables, however more than one input value to the logp was provided."
+        )
     d = values[0].data.shape[-1]
     rng = np.random.default_rng(op.minimizer_seed)
     x0_init = rng.random(d)
