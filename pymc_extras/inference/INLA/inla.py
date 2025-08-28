@@ -49,10 +49,9 @@ def fit_INLA(
     """
     model = pm.modelcontext(model)
 
-    # TODO is there a better way to check if it's a RV?
-    # print(vars(Q.owner))
-    # if isinstance(Q, TensorVariable) and "module" in vars(Q.owner):
-    Q = model.rvs_to_values[Q] if isinstance(Q, TensorVariable) else Q
+    # Get the TensorVariable if Q is provided as an RV
+    if Q in model.rvs_to_values.keys():
+        Q = model.rvs_to_values[Q]
 
     # Marginalize out the latent field
     marginalize_kwargs = {
