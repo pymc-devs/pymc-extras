@@ -29,7 +29,7 @@ def fit_dadvi(
     n_draws: int = 1000,
     keep_untransformed: bool = False,
     optimizer_method: minimize_method = "trust-ncg",
-    use_jacobian: bool = True,
+    use_grad: bool = True,
     use_hessp: bool = True,
     **minimize_kwargs,
 ) -> az.InferenceData:
@@ -75,8 +75,9 @@ def fit_dadvi(
         ``scipy.optimize.minimize`` function. See the documentation of
         that function for details.
 
-    use_jacobian:
-        If True, pass the Jacobian function to `scipy.optimize.minimize`.
+    use_grad:
+        If True, pass the gradient function to
+        `scipy.optimize.minimize` (where it is referred to as `jac`).
 
     use_hessp:
         If True, pass the hessian vector product to `scipy.optimize.minimize`.
@@ -116,7 +117,7 @@ def fit_dadvi(
 
     derivative_kwargs = {}
 
-    if use_jacobian:
+    if use_grad:
         derivative_kwargs["jac"] = True
     if use_hessp:
         derivative_kwargs["hessp"] = f_hessp
