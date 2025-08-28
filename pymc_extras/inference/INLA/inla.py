@@ -24,11 +24,7 @@ def fit_INLA(
 
     Where the prior on the hyperparameters :math:`\pi(\theta)` is arbitrary, the prior on the latent field is Gaussian (and in precision form): :math:`\pi(x) = N(\mu, Q^{-1})` and the latent field is linked to the observables $y$ through some linear map.
 
-    As it stands, INLA in PyMC Extras has three main limitations:
-
-    - Does not support inference over the latent field, only the hyperparameters.
-    - Optimisation for :math:`\mu^*` is bottlenecked by calling `minimize`, and to a lesser extent, computing the hessian :math:`f^"(x)`.
-    - Does not offer sparse support which can provide significant speedups.
+    As it stands, INLA in PyMC Extras is currently experimental.
 
     Parameters
     ----------
@@ -46,11 +42,51 @@ def fit_INLA(
         If True, also return posteriors for the latent Gaussian field (currently unsupported).
     sampler_kwargs:
         Kwargs to pass to pm.sample.
+
+    Returns
+    -------
+    idata: az.InferenceData
+        Standard PyMC InferenceData instance.
+
+    Examples
+    --------
+    .. code:: ipython
+
+        In [1]: rng = np.random.default_rng(123)
+           ...: n = 10000
+           ...: d = 3
+           ...: mu_mu = 10 * rng.random(d)
+           ...: mu_true = rng.random(d)
+           ...: tau = np.identity(d)
+           ...: cov = np.linalg.inv(tau)
+           ...: y_obs = rng.multivariate_normal(mean=mu_true, cov=cov, size=n)
+
+        In [2]: with pm.Model() as model:
+           ...:     mu = pm.MvNormal("mu", mu=mu_mu, tau=tau)
+           ...:     x = pm.MvNormal("x", mu=mu, tau=tau)
+           ...:     y = pm.MvNormal("y", mu=x, tau=tau, observed=y_obs)
+
+           ...:     idata = pmx.fit(
+           ...:     method="INLA",
+           ...:     x=x,
+           ...:     Q=tau,
+           ...:     return_latent_posteriors=False,
+           ...:     )
+
+        In[3]: posterior_mean_true = (mu_mu + mu_true) / 2
+           ...: posterior_mean_inla = idata.posterior.mu.mean(axis=(0, 1)).values
+           ...: print(posterior_mean_true)
+           ...: print(posterior_mean_inla)
+
+        Out[3]:
+            [3.50394522 0.35705804 1.50784662]
+            [3.48732847 0.35738072 1.46851421]
+
     """
     model = pm.modelcontext(model)
 
     # Get the TensorVariable if Q is provided as an RV
-    if Q in model.rvs_to_values.keys():
+    if isinstance(Q, TensorVariable) and Q in model.rvs_to_values.keys():
         Q = model.rvs_to_values[Q]
 
     # Marginalize out the latent field
