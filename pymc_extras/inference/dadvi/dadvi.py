@@ -28,7 +28,7 @@ def fit_dadvi(
     random_seed: RandomSeed = None,
     n_draws: int = 1000,
     keep_untransformed: bool = False,
-    method: minimize_method = "trust-ncg",
+    opt_method: minimize_method = "trust-ncg",
     **minimize_kwargs,
 ) -> az.InferenceData:
     """
@@ -60,7 +60,7 @@ def fit_dadvi(
         Whether or not to keep the unconstrained variables (such as
         logs of positive-constrained parameters) in the output.
 
-    method: str
+    opt_method: str
         Which optimization method to use. The function calls
         ``scipy.optimize.minimize``, so any of the methods there can
         be used. The default is trust-ncg, which uses second-order
@@ -109,7 +109,7 @@ def fit_dadvi(
     result = minimize(
         f_fused,
         np.zeros(2 * n_params),
-        method=method,
+        method=opt_method,
         jac=True,
         hessp=f_hessp,
         **minimize_kwargs,
