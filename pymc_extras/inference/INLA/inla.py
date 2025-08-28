@@ -18,16 +18,16 @@ def fit_INLA(
     r"""
     Performs inference over a linear mixed model using Integrated Nested Laplace Approximations (INLA). Assumes a model of the form:
 
-    \begin{equation}
-    \theta \rightarrow x \rightarrow y
-    \end{equation}
+    .. math::
 
-    Where the prior on the hyperparameters $\pi(\theta)$ is arbitrary, the prior on the latent field is Gaussian (and in precision form): $\pi(x) = N(\mu, Q^{-1})$ and the latent field is linked to the observables $y$ through some linear map.
+        \theta \rightarrow x \rightarrow y
+
+    Where the prior on the hyperparameters :math:`\pi(\theta)` is arbitrary, the prior on the latent field is Gaussian (and in precision form): :math:`\pi(x) = N(\mu, Q^{-1})` and the latent field is linked to the observables $y$ through some linear map.
 
     As it stands, INLA in PyMC Extras has three main limitations:
 
     - Does not support inference over the latent field, only the hyperparameters.
-    - Optimisation for $\mu^*$ is bottlenecked by calling `minimize`, and to a lesser extent, computing the hessian $f^"(x)$.
+    - Optimisation for :math:`\mu^*` is bottlenecked by calling `minimize`, and to a lesser extent, computing the hessian :math:`f^"(x)`.
     - Does not offer sparse support which can provide significant speedups.
 
     Parameters
