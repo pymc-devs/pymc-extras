@@ -197,7 +197,8 @@ def create_dadvi_graph(
     )
 
     var_params = pt.vector(name="eta", shape=(2 * n_params,))
-    means, log_sds = var_params[:n_params], var_params[n_params:]
+
+    means, log_sds = pt.split(var_params, axis=0, splits_size=[n_params, n_params], n_splits=2)
 
     draw_matrix = pt.constant(draws)
     samples = means + pt.exp(log_sds) * draw_matrix
