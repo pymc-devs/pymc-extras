@@ -5,6 +5,7 @@ import pytensor
 import pytensor.tensor as pt
 import xarray
 
+from better_optimize import minimize
 from better_optimize.constants import minimize_method
 from pymc import DictToArrayBijection, Model, join_nonshared_inputs
 from pymc.backends.arviz import (
@@ -14,7 +15,6 @@ from pymc.backends.arviz import (
 )
 from pymc.util import RandomSeed, get_default_varnames
 from pytensor.tensor.variable import TensorVariable
-from scipy.optimize import minimize
 
 from pymc_extras.inference.laplace_approx.laplace import unstack_laplace_draws
 from pymc_extras.inference.laplace_approx.scipy_interface import (
@@ -31,6 +31,7 @@ def fit_dadvi(
     optimizer_method: minimize_method = "trust-ncg",
     use_grad: bool = True,
     use_hessp: bool = True,
+    use_hess: bool = False,
     **minimize_kwargs,
 ) -> az.InferenceData:
     """
@@ -82,6 +83,11 @@ def fit_dadvi(
     use_hessp:
         If True, pass the hessian vector product to `scipy.optimize.minimize`.
 
+    use_hess:
+        If True, pass the hessian to `scipy.optimize.minimize`. Note that
+        this is generally not recommended since its computation can be slow
+        and memory-intensive if there are many parameters.
+
     Returns
     -------
     :class:`~arviz.InferenceData`
@@ -110,9 +116,9 @@ def fit_dadvi(
     f_fused, f_hessp = _compile_functions_for_scipy_optimize(
         objective,
         [var_params],
-        compute_grad=True,
-        compute_hessp=True,
-        compute_hess=False,
+        compute_grad=use_grad,
+        compute_hessp=use_hessp,
+        compute_hess=use_hess,
     )
 
     derivative_kwargs = {}
@@ -121,6 +127,8 @@ def fit_dadvi(
         derivative_kwargs["jac"] = True
     if use_hessp:
         derivative_kwargs["hessp"] = f_hessp
+    if use_hess:
+        derivative_kwargs["hess"] = True
 
     result = minimize(
         f_fused,
