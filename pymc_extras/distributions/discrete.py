@@ -402,57 +402,39 @@ class Skellam:
         )
 
 
-class GrassiaIIGeometricRV(RandomVariable):
-    name = "g2g"
-    signature = "(),(),(t)->()"
+class ShiftedBetaGeometricRV(RandomVariable):
+    name = "sbg"
+    signature = "(),()->()"
 
     dtype = "int64"
-    _print_name = ("GrassiaIIGeometric", "\\operatorname{GrassiaIIGeometric}")
+    _print_name = ("ShiftedBetaGeometric", "\\operatorname{ShiftedBetaGeometric}")
 
     @classmethod
-    def rng_fn(cls, rng, r, alpha, time_covariate_vector, size):
-        # Aggregate time covariates for each sample before broadcasting
-        time_cov = np.asarray(time_covariate_vector)
-        if np.ndim(time_cov) == 0:
-            exp_time_covar = np.asarray(1.0)
-        else:
-            # Collapse all time/feature axes to a scalar multiplier for RNG
-            exp_time_covar = np.asarray(np.exp(time_cov).sum())
-
+    def rng_fn(cls, rng, alpha, beta, size):
         # Determine output size
         if size is None:
-            size = np.broadcast_shapes(r.shape, alpha.shape, exp_time_covar.shape)
+            size = np.broadcast_shapes(alpha.shape, beta.shape)
 
         # Broadcast parameters to output size
-        r = np.broadcast_to(r, size)
         alpha = np.broadcast_to(alpha, size)
-        exp_time_covar = np.broadcast_to(exp_time_covar, size)
+        beta = np.broadcast_to(beta, size)
 
-        lam = rng.gamma(shape=r, scale=1 / alpha, size=size)
+        p = rng.beta(a=alpha, b=beta, size=size)
 
-        lam_covar = lam * exp_time_covar
-
-        p = 1 - np.exp(-lam_covar)
-        # TODO: This is a hack to ensure valid probability in (0, 1]
-        # We should find a better way to do this.
-        # Ensure valid probability in (0, 1]
-        tiny = np.finfo(p.dtype).tiny
-        p = np.clip(p, tiny, 1.0)
-        samples = rng.geometric(p)
-        # samples = np.ceil(np.log(1 - rng.uniform(size=size)) / (-lam_covar))
+        samples = rng.geometric(p, size=size)
 
         return samples
 
 
-g2g = GrassiaIIGeometricRV()
+sbg = ShiftedBetaGeometricRV()
 
 
 # TODO: Add covariate expressions to docstrings.
-class GrassiaIIGeometric(Discrete):
-    r"""Grassia(II)-Geometric distribution.
+class ShiftedBetaGeometric(Discrete):
+    r"""Shifted Beta-Geometric distribution.
 
     This distribution is a flexible alternative to the Geometric distribution for the number of trials until a
-    discrete event, and can be extended to support both static and time-varying covariates.
+    discrete event, and can be extended to support static and time-varying covariates.
 
     Hardie and Fader describe this distribution with the following PMF and survival functions in [1]_:
 
@@ -501,124 +483,46 @@ class GrassiaIIGeometric(Discrete):
        https://www.brucehardie.com/notes/037/time-varying_covariates_in_BG.pdf
     """
 
-    rv_op = g2g
+    rv_op = sbg
 
     @classmethod
-    def dist(cls, r, alpha, time_covariate_vector=None, *args, **kwargs):
-        r = pt.as_tensor_variable(r)
+    def dist(cls, alpha, beta, *args, **kwargs):
         alpha = pt.as_tensor_variable(alpha)
+        beta = pt.as_tensor_variable(beta)
 
-        if time_covariate_vector is None:
-            time_covariate_vector = pt.constant(0.0)
-        time_covariate_vector = pt.as_tensor_variable(time_covariate_vector)
-        # Normalize covariate to be 1D over time
-        if time_covariate_vector.ndim == 0:
-            time_covariate_vector = pt.reshape(time_covariate_vector, (1,))
-        elif time_covariate_vector.ndim > 1:
-            feature_axes = tuple(range(time_covariate_vector.ndim - 1))
-            time_covariate_vector = pt.sum(time_covariate_vector, axis=feature_axes)
+        return super().dist([alpha, beta], *args, **kwargs)
 
-        return super().dist([r, alpha, time_covariate_vector], *args, **kwargs)
-
-    def logp(value, r, alpha, time_covariate_vector):
-        v = pt.as_tensor_variable(value)
-        ct_prev = C_t(v - 1, time_covariate_vector)
-        ct_curr = C_t(v, time_covariate_vector)
-        logS_prev = r * (pt.log(alpha) - pt.log(alpha + ct_prev))
-        logS_curr = r * (pt.log(alpha) - pt.log(alpha + ct_curr))
-        # Compute log(exp(logS_prev) - exp(logS_curr)) stably
-        max_logS = pt.maximum(logS_prev, logS_curr)
-        diff = pt.exp(logS_prev - max_logS) - pt.exp(logS_curr - max_logS)
-        logp = max_logS + pt.log(diff)
-
-        # Handle invalid / out-of-domain values
-        logp = pt.switch(value < 1, -np.inf, logp)
+    def logp(value, alpha, beta):
+        value = pt.as_tensor_variable(value)
+        logp = betaln(alpha + 1, beta + value - 1) - betaln(alpha, beta)
 
         return check_parameters(
             logp,
-            r > 0,
             alpha > 0,
+            beta > 0,
             msg="r > 0, alpha > 0",
         )
 
-    def logcdf(value, r, alpha, time_covariate_vector):
-        # Log CDF: log(1 - (alpha / (alpha + C(t)))**r)
-        t = pt.as_tensor_variable(value)
-        ct = C_t(t, time_covariate_vector)
-        logS = r * (pt.log(alpha) - pt.log(alpha + ct))
-        # Numerically stable log(1 - exp(logS))
-        logcdf = pt.switch(
-            pt.lt(logS, np.log(0.5)),
-            pt.log1p(-pt.exp(logS)),
-            pt.log(-pt.expm1(logS)),
-        )
+    def logcdf(value, alpha, beta):
+        value = pt.as_tensor_variable(value)
+
+        logcdf = pt.log(1 - (pt.beta(alpha, beta + value) / pt.beta(alpha, beta)))
 
         return check_parameters(
             logcdf,
-            r > 0,
             alpha > 0,
+            beta > 0,
             msg="r > 0, alpha > 0",
         )
 
-    def support_point(rv, size, r, alpha, time_covariate_vector):
+    def support_point(rv, size, alpha, beta):
         """Calculate a reasonable starting point for sampling.
 
-        For the GrassiaIIGeometric distribution, we use a point estimate based on
+        For the Shifted Beta-Geometric distribution, we use a point estimate based on
         the expected value of the mixing distribution. Since the mixing distribution
-        is Gamma(r, 1/alpha), its mean is r/alpha. We then transform this through
-        the geometric link function and round to ensure an integer value.
+        is Beta, its mean is alpha/alpha + beta).
 
-        When time_covariate_vector is provided, it affects the expected value through
-        the exponential link function: exp(time_covariate_vector).
         """
-        base_lambda = r / alpha
+        base_theta = alpha / (alpha + beta)
 
-        # Approximate expected value of geometric distribution
-        mean = pt.switch(
-            base_lambda < 0.1,
-            1.0 / base_lambda,  # Approximation for small lambda
-            1.0 / (1.0 - pt.exp(-base_lambda)),  # Full expression for larger lambda
-        )
-
-        # Apply time covariates if provided: multiply by exp(sum over axis=0)
-        # This yields a scalar for 1D covariates and a time-length vector for 2D (features x time)
-        tcv = pt.as_tensor_variable(time_covariate_vector)
-        if tcv.ndim != 0:
-            mean = mean * pt.exp(tcv.sum(axis=0))
-
-        # Round up to nearest integer and ensure >= 1
-        mean = pt.maximum(pt.ceil(mean), 1.0)
-
-        # Handle size parameter
-        if not rv_size_is_none(size):
-            mean = pt.full(size, mean)
-
-        return mean
-
-
-def C_t(t: pt.TensorVariable, time_covariate_vector: pt.TensorVariable) -> pt.TensorVariable:
-    """Utility for processing time-varying covariates in GrassiaIIGeometric distribution."""
-    # If unspecified (scalar), simply return t
-    if time_covariate_vector.ndim == 0:
-        return t
-
-    # Sum exp(covariates) across feature axes, keep last axis as time
-    if time_covariate_vector.ndim == 1:
-        per_time_sum = pt.exp(time_covariate_vector)
-    else:
-        # If axis=0 is time and axis>0 are features, sum over features (axis>0)
-        per_time_sum = pt.sum(pt.exp(time_covariate_vector), axis=0)
-
-    # Build cumulative sum up to each t without advanced indexing
-    time_length = pt.shape(per_time_sum)[0]
-    # Ensure t is at least 1D int64 for broadcasting
-    t_vec = pt.cast(t, "int64")
-    t_vec = pt.shape_padleft(t_vec) if t_vec.ndim == 0 else t_vec
-    # Create time indices [0, 1, ..., T-1]
-    time_idx = pt.arange(time_length, dtype="int64")
-    # Mask where time index < t (exclusive upper bound)
-    mask = pt.lt(time_idx, pt.shape_padright(t_vec, 1))
-    # Sum per-time contributions over time axis
-    base_sum = pt.sum(pt.shape_padleft(per_time_sum) * mask, axis=-1)
-    # If original t was scalar, return scalar (saturate at last time step)
-    return pt.squeeze(base_sum)
+        return base_theta

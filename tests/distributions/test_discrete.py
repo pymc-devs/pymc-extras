@@ -24,7 +24,7 @@ from pymc.testing import (
     BaseTestDistributionRandom,
     Domain,
     I,
-    NatBig,
+    Nat,
     Rplus,
     assert_support_point_is_expected,
     check_logp,
@@ -36,7 +36,7 @@ from pytensor import config
 from pymc_extras.distributions import (
     BetaNegativeBinomial,
     GeneralizedPoisson,
-    GrassiaIIGeometric,
+    ShiftedBetaGeometric,
     Skellam,
 )
 
@@ -214,11 +214,11 @@ class TestSkellam:
             )
 
 
-class TestGrassiaIIGeometric:
+class TestShiftedBetaGeometric:
     class TestRandomVariable(BaseTestDistributionRandom):
-        pymc_dist = GrassiaIIGeometric
-        pymc_dist_params = {"r": 0.5, "alpha": 2.0, "time_covariate_vector": [1.0, 2.0, 3.0]}
-        expected_rv_op_params = {"r": 0.5, "alpha": 2.0, "time_covariate_vector": [1.0, 2.0, 3.0]}
+        pymc_dist = ShiftedBetaGeometric
+        pymc_dist_params = {"alpha": 2.0, "beta": 3.0}
+        expected_rv_op_params = {"alpha": 2.0, "beta": 3.0}
         tests_to_run = [
             "check_pymc_params_match_rv_op",
             "check_rv_size",
@@ -227,58 +227,48 @@ class TestGrassiaIIGeometric:
         def test_random_basic_properties(self):
             """Test basic random sampling properties"""
             # Test with standard parameter values
-            r_vals = [0.5, 1.0, 2.0]
             alpha_vals = [0.5, 1.0, 2.0]
-            time_cov_vals = [[0.0], [1.0], [2.0]]
+            beta_vals = [0.5, 1.0, 2.0]
 
-            for r in r_vals:
-                for alpha in alpha_vals:
-                    for time_cov in time_cov_vals:
-                        dist = self.pymc_dist.dist(
-                            r=r, alpha=alpha, time_covariate_vector=time_cov, size=1000
-                        )
-                        draws = dist.eval()
+            for alpha in alpha_vals:
+                for beta in beta_vals:
+                    dist = self.pymc_dist.dist(alpha=alpha, beta=beta, size=1000)
+                    draws = dist.eval()
 
-                        # Check basic properties
-                        assert np.all(draws > 0)
-                        assert np.all(draws.astype(int) == draws)
-                        assert np.mean(draws) > 0
-                        assert np.var(draws) > 0
+                    # Check basic properties
+                    assert np.all(draws > 0)
+                    assert np.all(draws.astype(int) == draws)
+                    assert np.mean(draws) > 0
+                    assert np.var(draws) > 0
 
         def test_random_edge_cases(self):
             """Test edge cases with more reasonable parameter values"""
-            # Test with small r and large alpha values
-            r_vals = [0.1, 0.5]
+            # Test with small beta and large alpha values
+            beta_vals = [0.1, 0.5]
             alpha_vals = [5.0, 10.0]
-            time_cov_vals = [[0.0, 1.0, 2.0], [5.0, 10.0, 15.0]]
 
-            for r in r_vals:
+            for beta in beta_vals:
                 for alpha in alpha_vals:
-                    for time_cov in time_cov_vals:
-                        dist = self.pymc_dist.dist(
-                            r=r, alpha=alpha, time_covariate_vector=time_cov, size=1000
-                        )
-                        draws = dist.eval()
+                    dist = self.pymc_dist.dist(alpha=alpha, beta=beta, size=1000)
+                    draws = dist.eval()
 
-                        # Check basic properties
-                        assert np.all(draws > 0)
-                        assert np.all(draws.astype(int) == draws)
-                        assert np.mean(draws) > 0
-                        assert np.var(draws) > 0
+                    # Check basic properties
+                    assert np.all(draws > 0)
+                    assert np.all(draws.astype(int) == draws)
+                    assert np.mean(draws) > 0
+                    assert np.var(draws) > 0
 
         @pytest.mark.parametrize(
-            "r,alpha,time_covariate_vector",
+            "alpha,beta",
             [
-                (0.5, 1.0, [[0.0], [0.0], [0.0]]),
-                (1.0, 2.0, [1.0]),
-                (2.0, 0.5, [[1.0], [2.0]]),
-                ([5.0], [1.0], [0.0, 0.0, 0.0]),
+                (0.5, 1.0),
+                (1.0, [2.0, 1.0]),
+                ([1.0, 2.0], 1.0),
+                ([2.0, 0.5], [1.0, 2.0]),
             ],
         )
-        def test_random_moments(self, r, alpha, time_covariate_vector):
-            dist = self.pymc_dist.dist(
-                r=r, alpha=alpha, time_covariate_vector=time_covariate_vector, size=10_000
-            )
+        def test_random_moments(self, alpha, beta):
+            dist = self.pymc_dist.dist(alpha=alpha, beta=beta, size=10_000)
             draws = dist.eval()
 
             assert np.all(draws > 0)
@@ -288,13 +278,12 @@ class TestGrassiaIIGeometric:
 
     def test_logp(self):
         # Create PyTensor variables with explicit values to ensure proper initialization
-        r = pt.as_tensor_variable(1.0)
         alpha = pt.as_tensor_variable(2.0)
-        time_covariate_vector = pt.as_tensor_variable([[0.5, 1.0, 1.5], [0.0, 0.0, 0.0]])
+        beta = pt.as_tensor_variable(1.0)
         value = pt.vector("value", dtype="int64")
 
         # Create the distribution with the PyTensor variables
-        dist = GrassiaIIGeometric.dist(r, alpha, time_covariate_vector)
+        dist = ShiftedBetaGeometric.dist(alpha, beta)
         logp = pm.logp(dist, value)
         logp_fn = pytensor.function([value], logp)
 
@@ -314,25 +303,23 @@ class TestGrassiaIIGeometric:
     def test_logcdf(self):
         # test logcdf matches log sums across parameter values
         check_selfconsistency_discrete_logcdf(
-            GrassiaIIGeometric, NatBig, {"r": Rplus, "alpha": Rplus, "time_covariate_vector": I}
+            ShiftedBetaGeometric, Nat, {"alpha": Rplus, "beta": Rplus}
         )
 
     @pytest.mark.parametrize(
-        "r, alpha, time_covariate_vector, size, expected_shape",
+        "alpha, beta, size, expected_shape",
         [
-            (1.0, 1.0, [0.0, 0.0, 0.0], None, ()),  # Scalar output
-            ([1.0, 2.0], 1.0, [0.0], None, (2,)),  # Vector output from r
-            (1.0, [1.0, 2.0], [0.0], None, (2,)),  # Vector output from alpha
-            (1.0, 1.0, [[1.0, 2.0], [3.0, 4.0]], None, (2,)),  # Vector output from time covariates
-            (1.0, 1.0, [1.0, 2.0], (3, 2), (3, 2)),  # Explicit size with time covariates
+            (1.0, 1.0, None, ()),  # Scalar output
+            ([1.0, 2.0], 1.0, None, (2,)),  # Vector output from alpha
+            (1.0, [1.0, 2.0], None, (2,)),  # Vector output from beta
+            ([1.0, 2.0], [1.0, 2.0], None, (2,)),  # Vector output from alpha and beta
+            (1.0, [1.0, 2.0], (3, 2), (3, 2)),  # Explicit size with scalar alpha and vector beta
         ],
     )
-    def test_support_point(self, r, alpha, time_covariate_vector, size, expected_shape):
+    def test_support_point(self, alpha, beta, size, expected_shape):
         """Test that support_point returns reasonable values with correct shapes"""
         with pm.Model() as model:
-            GrassiaIIGeometric(
-                "x", r=r, alpha=alpha, time_covariate_vector=time_covariate_vector, size=size
-            )
+            ShiftedBetaGeometric("x", alpha=alpha, beta=beta, size=size)
 
         init_point = model.initial_point()["x"]
 
@@ -348,4 +335,4 @@ class TestGrassiaIIGeometric:
         assert np.all(init_point < 1e6)  # Should not be extremely large
 
         # TODO: expected values must be provided
-        # assert_support_point_is_expected(model, init_point)
+        assert_support_point_is_expected(model, init_point)

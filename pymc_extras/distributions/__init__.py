@@ -21,8 +21,8 @@ from pymc_extras.distributions.continuous import Chi, GenExtreme, Maxwell
 from pymc_extras.distributions.discrete import (
     BetaNegativeBinomial,
     GeneralizedPoisson,
+    ShiftedBetaGeometric,
     Skellam,
-    GrassiaIIGeometric,
 )
 from pymc_extras.distributions.histogram_utils import histogram_approximation
 from pymc_extras.distributions.multivariate import R2D2M2CP
@@ -40,5 +40,6 @@ __all__ = [
     "PartialOrder",
     "Skellam",
     "histogram_approximation",
-    "GrassiaIIGeometric",
+    "ShiftedBetaGeometric",
     "PartialOrder",
+]
