@@ -44,6 +44,11 @@ class TimeSeasonality(Component):
     observed_state_names: list[str] | None, default None
         List of strings for observed state labels. If None, defaults to ["data"].
 
+    share_states: bool, default False
+        Whether latent states are shared across the observed states. If True, there will be only one set of latent
+        states, which are observed by all observed states. If False, each observed state has its own set of
+        latent states. This argument has no effect if `k_endog` is 1.
+
     Notes
     -----
     A seasonal effect is any pattern that repeats at fixed intervals. There are several ways to model such effects;
@@ -212,7 +217,7 @@ class TimeSeasonality(Component):
             sigma_level_trend = pm.HalfNormal(
                 "sigma_level_trend", sigma=1e-6, dims=ss_mod.param_dims["sigma_level_trend"]
             )
-            coefs_annual = pm.Normal("coefs_annual", sigma=1e-2, dims=ss_mod.param_dims["coefs_annual"])
+            params_annual = pm.Normal("params_annual", sigma=1e-2, dims=ss_mod.param_dims["params_annual"])
 
             ss_mod.build_statespace_graph(data)
             idata = pm.sample(
@@ -235,6 +240,7 @@ class TimeSeasonality(Component):
         state_names: list | None = None,
         remove_first_state: bool = True,
         observed_state_names: list[str] | None = None,
+        share_states: bool = False,
     ):
         if observed_state_names is None:
             observed_state_names = ["data"]
@@ -261,6 +267,7 @@ class TimeSeasonality(Component):
                 )
             state_names = state_names.copy()
 
+        self.share_states = share_states
         self.innovations = innovations
         self.duration = duration
         self.remove_first_state = remove_first_state
@@ -281,44 +288,55 @@ class TimeSeasonality(Component):
         super().__init__(
             name=name,
             k_endog=k_endog,
-            k_states=k_states * k_endog,
-            k_posdef=k_posdef * k_endog,
+            k_states=k_states if share_states else k_states * k_endog,
+            k_posdef=k_posdef if share_states else k_posdef * k_endog,
             observed_state_names=observed_state_names,
             measurement_error=False,
             combine_hidden_states=True,
-            obs_state_idxs=np.tile(np.array([1.0] + [0.0] * (k_states - 1)), k_endog),
+            obs_state_idxs=np.tile(
+                np.array([1.0] + [0.0] * (k_states - 1)), 1 if share_states else k_endog
+            ),
+            share_states=share_states,
         )
 
     def populate_component_properties(self):
-        k_states = self.k_states // self.k_endog
         k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
 
-        self.state_names = [
-            f"{state_name}[{endog_name}]"
-            for endog_name in self.observed_state_names
-            for state_name in self.provided_state_names
-        ]
-        self.param_names = [f"coefs_{self.name}"]
+        k_states = self.k_states // k_endog_effective
+
+        if self.share_states:
+            self.state_names = [
+                f"{state_name}[{self.name}_shared]" for state_name in self.provided_state_names
+            ]
+        else:
+            self.state_names = [
+                f"{state_name}[{endog_name}]"
+                for endog_name in self.observed_state_names
+                for state_name in self.provided_state_names
+            ]
+
+        self.param_names = [f"params_{self.name}"]
 
         self.param_info = {
-            f"coefs_{self.name}": {
+            f"params_{self.name}": {
                 "shape": (k_states,) if k_endog == 1 else (k_endog, k_states),
                 "constraints": None,
                 "dims": (f"state_{self.name}",)
-                if k_endog == 1
+                if k_endog_effective == 1
                 else (f"endog_{self.name}", f"state_{self.name}"),
             }
         }
 
         self.param_dims = {
-            f"coefs_{self.name}": (f"state_{self.name}",)
-            if k_endog == 1
+            f"params_{self.name}": (f"state_{self.name}",)
+            if k_endog_effective == 1
             else (f"endog_{self.name}", f"state_{self.name}")
         }
 
         self.coords = (
             {f"state_{self.name}": self.provided_state_names}
-            if k_endog == 1
+            if k_endog_effective == 1
             else {
                 f"endog_{self.name}": self.observed_state_names,
                 f"state_{self.name}": self.provided_state_names,
@@ -328,18 +346,26 @@ class TimeSeasonality(Component):
         if self.innovations:
             self.param_names += [f"sigma_{self.name}"]
             self.param_info[f"sigma_{self.name}"] = {
-                "shape": (),
+                "shape": () if k_endog_effective == 1 else (k_endog,),
                 "constraints": "Positive",
-                "dims": None,
+                "dims": None if k_endog_effective == 1 else (f"endog_{self.name}",),
             }
-            self.shock_names = [f"{self.name}[{name}]" for name in self.observed_state_names]
+            if self.share_states:
+                self.shock_names = [f"{self.name}[shared]"]
+            else:
+                self.shock_names = [f"{self.name}[{name}]" for name in self.observed_state_names]
+
+            if k_endog > 1:
+                self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
 
     def make_symbolic_graph(self) -> None:
-        k_states = self.k_states // self.k_endog
-        duration = self.duration
-        k_unique_states = k_states // duration
-        k_posdef = self.k_posdef // self.k_endog
         k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+        k_states = self.k_states // k_endog_effective
+        duration = self.duration
+
+        k_unique_states = k_states // duration
+        k_posdef = self.k_posdef // k_endog_effective
 
         if self.remove_first_state:
             # In this case, parameters are normalized to sum to zero, so the current state is the negative sum of
@@ -371,16 +397,18 @@ class TimeSeasonality(Component):
             T = pt.eye(k_states, k=1)
             T = pt.set_subtensor(T[-1, 0], 1)
 
-        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
+        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
 
         Z = pt.zeros((1, k_states))[0, 0].set(1)
-        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
+        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
 
         initial_states = self.make_and_register_variable(
-            f"coefs_{self.name}",
-            shape=(k_unique_states,) if k_endog == 1 else (k_endog, k_unique_states),
+            f"params_{self.name}",
+            shape=(k_unique_states,)
+            if k_endog_effective == 1
+            else (k_endog_effective, k_unique_states),
         )
-        if k_endog == 1:
+        if k_endog_effective == 1:
             self.ssm["initial_state", :] = pt.extra_ops.repeat(initial_states, duration, axis=0)
         else:
             self.ssm["initial_state", :] = pt.extra_ops.repeat(
@@ -389,11 +417,11 @@ class TimeSeasonality(Component):
 
         if self.innovations:
             R = pt.zeros((k_states, k_posdef))[0, 0].set(1.0)
-            self.ssm["selection", :, :] = pt.join(0, *[R for _ in range(k_endog)])
+            self.ssm["selection", :, :] = pt.join(0, *[R for _ in range(k_endog_effective)])
             season_sigma = self.make_and_register_variable(
-                f"sigma_{self.name}", shape=() if k_endog == 1 else (k_endog,)
+                f"sigma_{self.name}", shape=() if k_endog_effective == 1 else (k_endog_effective,)
             )
-            cov_idx = ("state_cov", *np.diag_indices(k_posdef * k_endog))
+            cov_idx = ("state_cov", *np.diag_indices(k_posdef * k_endog_effective))
             self.ssm[cov_idx] = season_sigma**2
 
 
@@ -421,6 +449,11 @@ class FrequencySeasonality(Component):
 
     observed_state_names: list[str] | None, default None
         List of strings for observed state labels. If None, defaults to ["data"].
+
+    share_states: bool, default False
+        Whether latent states are shared across the observed states. If True, there will be only one set of latent
+        states, which are observed by all observed states. If False, each observed state has its own set of
+        latent states. This argument has no effect if `k_endog` is 1.
 
     Notes
     -----
@@ -453,15 +486,17 @@ class FrequencySeasonality(Component):
 
     def __init__(
         self,
-        season_length,
-        n=None,
-        name=None,
-        innovations=True,
+        season_length: int,
+        n: int | None = None,
+        name: str | None = None,
+        innovations: bool = True,
         observed_state_names: list[str] | None = None,
+        share_states: bool = False,
     ):
         if observed_state_names is None:
             observed_state_names = ["data"]
 
+        self.share_states = share_states
         k_endog = len(observed_state_names)
 
         if n is None:
@@ -477,18 +512,21 @@ class FrequencySeasonality(Component):
         # If the model is completely saturated (n = s // 2), the last state will not be identified, so it shouldn't
         # get a parameter assigned to it and should just be fixed to zero.
         # Test this way (rather than n == s // 2) to catch cases when n is non-integer.
-        self.last_state_not_identified = self.season_length / self.n == 2.0
+        self.last_state_not_identified = (self.season_length / self.n) == 2.0
         self.n_coefs = k_states - int(self.last_state_not_identified)
 
         obs_state_idx = np.zeros(k_states)
         obs_state_idx[slice(0, k_states, 2)] = 1
-        obs_state_idx = np.tile(obs_state_idx, k_endog)
+        obs_state_idx = np.tile(obs_state_idx, 1 if share_states else k_endog)
 
         super().__init__(
             name=name,
             k_endog=k_endog,
-            k_states=k_states * k_endog,
-            k_posdef=k_states * int(self.innovations) * k_endog,
+            k_states=k_states if share_states else k_states * k_endog,
+            k_posdef=k_states * int(self.innovations)
+            if share_states
+            else k_states * int(self.innovations) * k_endog,
+            share_states=share_states,
             observed_state_names=observed_state_names,
             measurement_error=False,
             combine_hidden_states=True,
@@ -497,22 +535,24 @@ class FrequencySeasonality(Component):
 
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog
-        k_states = self.k_states // k_endog
-        k_posdef = self.k_posdef // k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+
+        k_states = self.k_states // k_endog_effective
+        k_posdef = self.k_posdef // k_endog_effective
         n_coefs = self.n_coefs
 
         Z = pt.zeros((1, k_states))[0, slice(0, k_states, 2)].set(1.0)
 
-        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
+        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
 
         init_state = self.make_and_register_variable(
-            f"{self.name}", shape=(n_coefs,) if k_endog == 1 else (k_endog, n_coefs)
+            f"params_{self.name}", shape=(n_coefs,) if k_endog == 1 else (k_endog, n_coefs)
         )
 
         init_state_idx = np.concatenate(
             [
                 np.arange(k_states * i, (i + 1) * k_states, dtype=int)[:n_coefs]
-                for i in range(k_endog)
+                for i in range(k_endog_effective)
             ],
             axis=0,
         )
@@ -521,11 +561,11 @@ class FrequencySeasonality(Component):
 
         T_mats = [_frequency_transition_block(self.season_length, j + 1) for j in range(self.n)]
         T = pt.linalg.block_diag(*T_mats)
-        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog)])
+        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
 
         if self.innovations:
             sigma_season = self.make_and_register_variable(
-                f"sigma_{self.name}", shape=() if k_endog == 1 else (k_endog,)
+                f"sigma_{self.name}", shape=() if k_endog_effective == 1 else (k_endog_effective,)
             )
             self.ssm["selection", :, :] = pt.eye(self.k_states)
             self.ssm["state_cov", :, :] = pt.eye(self.k_posdef) * pt.repeat(
@@ -534,45 +574,55 @@ class FrequencySeasonality(Component):
 
     def populate_component_properties(self):
         k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
         n_coefs = self.n_coefs
-        k_states = self.k_states // k_endog
 
-        self.state_names = [
-            f"{f}_{self.name}_{i}[{obs_state_name}]"
-            for obs_state_name in self.observed_state_names
-            for i in range(self.n)
-            for f in ["Cos", "Sin"]
-        ]
-        self.param_names = [f"{self.name}"]
+        base_names = [f"{f}_{i}_{self.name}" for i in range(self.n) for f in ["Cos", "Sin"]]
 
-        self.param_dims = {self.name: (f"state_{self.name}",)}
+        if self.share_states:
+            self.state_names = [f"{name}[shared]" for name in base_names]
+        else:
+            self.state_names = [
+                f"{name}[{obs_state_name}]"
+                for obs_state_name in self.observed_state_names
+                for name in base_names
+            ]
+
+        # Trim state names if the model is saturated
+        param_state_names = base_names[:n_coefs]
+
+        self.param_names = [f"params_{self.name}"]
+        self.param_dims = {
+            f"params_{self.name}": (f"state_{self.name}",)
+            if k_endog_effective == 1
+            else (f"endog_{self.name}", f"state_{self.name}")
+        }
         self.param_info = {
-            f"{self.name}": {
-                "shape": (n_coefs,) if k_endog == 1 else (k_endog, n_coefs),
+            f"params_{self.name}": {
+                "shape": (n_coefs,) if k_endog_effective == 1 else (k_endog_effective, n_coefs),
                 "constraints": None,
                 "dims": (f"state_{self.name}",)
-                if k_endog == 1
+                if k_endog_effective == 1
                 else (f"endog_{self.name}", f"state_{self.name}"),
             }
         }
 
-        # Regardless of whether the fourier basis are saturated, there will always be one symbolic state per basis.
-        # That's why the self.states is just a simple loop over everything. But when saturated, one of those states
-        # doesn't have an associated **parameter**, so the coords need to be adjusted to reflect this.
-        init_state_idx = np.concatenate(
-            [
-                np.arange(k_states * i, (i + 1) * k_states, dtype=int)[:n_coefs]
-                for i in range(k_endog)
-            ],
-            axis=0,
+        self.coords = (
+            {f"state_{self.name}": param_state_names}
+            if k_endog == 1
+            else {
+                f"endog_{self.name}": self.observed_state_names,
+                f"state_{self.name}": param_state_names,
+            }
         )
-        self.coords = {f"state_{self.name}": [self.state_names[i] for i in init_state_idx]}
 
         if self.innovations:
-            self.shock_names = self.state_names.copy()
             self.param_names += [f"sigma_{self.name}"]
+            self.shock_names = self.state_names.copy()
             self.param_info[f"sigma_{self.name}"] = {
-                "shape": () if k_endog == 1 else (k_endog, n_coefs),
+                "shape": () if k_endog_effective == 1 else (k_endog_effective, n_coefs),
                 "constraints": "Positive",
-                "dims": None if k_endog == 1 else (f"endog_{self.name}",),
+                "dims": None if k_endog_effective == 1 else (f"endog_{self.name}",),
             }
+            if k_endog_effective > 1:
+                self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)

@@ -17,11 +17,13 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
     AR_PARAM_DIM,
+    EXOGENOUS_DIM,
     MA_PARAM_DIM,
     OBS_STATE_DIM,
     SARIMAX_STATE_STRUCTURES,
     SEASONAL_AR_PARAM_DIM,
     SEASONAL_MA_PARAM_DIM,
+    TIME_DIM,
 )
 
 
@@ -38,70 +40,16 @@ def _verify_order(p, d, q, P, D, Q, S):
             )
 
 
-class BayesianSARIMA(PyMCStateSpace):
+class BayesianSARIMAX(PyMCStateSpace):
     r"""
-    Seasonal AutoRegressive Integrated Moving Average with eXogenous regressors
+    Seasonal AutoRegressive Integrated Moving Average with eXogenous regressors.
 
-    Parameters
-    ----------
-    order: tuple(int, int, int)
-        Order of the ARIMA process. The order has the notation (p, d, q), where p is the number of autoregressive
-        lags, q is the number of moving average components, and d is order of integration -- the number of
-        differences needed to render the data stationary.
-
-        If d > 0, the differences are modeled as components of the hidden state, and all available data can be used.
-        This is only possible if state_structure = 'fast'. For interpretable states, the user must manually
-        difference the data prior to calling the `build_statespace_graph` method.
-
-    seasonal_order: tuple(int, int, int, int), optional
-        Seasonal order of the SARIMA process. The order has the notation (P, D, Q, S), where P is the number of seasonal
-        lags to include, Q is the number of seasonal innovation lags to include, and D is the number of seasonal
-        differences to perform. S is the length of the season.
-
-        Seasonal terms are similar to ARIMA terms, in that they are merely lags of the data or innovations. It is thus
-        possible for the seasonal lags and the ARIMA lags to overlap, for example if P <= p. In this case, an error
-        will be raised.
-
-    stationary_initialization: bool, default False
-        If true, the initial state and initial state covariance will not be assigned priors. Instead, their steady
-        state values will be used.
-
-        .. warning:: This option is very sensitive to the priors placed on the AR and MA parameters. If the model dynamics
-                  for a given sample are not stationary, sampling will fail with a "covariance is not positive semi-definite"
-                  error.
-
-    filter_type: str, default "standard"
-        The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
-        and "cholesky". See the docs for kalman filters for more details.
-
-    state_structure: str, default "fast"
-        How to represent the state-space system. Currently, there are two choices: "fast" or "interpretable"
-
-        - "fast" corresponds to the state space used by [2], and is called the "Harvey" representation in statsmodels.
-           This is also the default representation used by statsmodels.tsa.statespace.SARIMAX. The states combine lags
-           and innovations at different lags to compress the dimension of the state vector to max(p, 1+q). As a result,
-           it is very preformat, but only the first state has a clear interpretation.
-
-        - "interpretable" maximally expands the state vector, doing zero state compression. As a result, the state has
-          dimension max(1, p) + max(1, q). What is gained by doing this is that every state has an obvious meaning, as
-          either the data, an innovation, or a lag thereof.
-
-    measurement_error: bool, default True
-        If true, a measurement error term is added to the model.
-
-    verbose: bool, default True
-        If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
-
-    mode: str or Mode, optional
-        Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
-        ``forecast``. The mode does **not** effect calls to ``pm.sample``.
-
-        Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
-        to all sampling methods.
+    This class implements a Bayesian approach to SARIMAX models, which are used for modeling univariate time series data
+    with seasonal and non-seasonal components. The model supports exogenous regressors.
 
     Notes
     -----
-        The ARIMAX model is a univariate time series model that posits the future evolution of a stationary time series will
+    The ARIMAX model is a univariate time series model that posits the future evolution of a stationary time series will
     be a function of its past values, together with exogenous "innovations" and their past history. The model is
     described by its "order", a 3-tuple (p, d, q), that are:
 
@@ -151,14 +99,14 @@ class BayesianSARIMA(PyMCStateSpace):
 
     Examples
     --------
-    The following example shows how to build an ARMA(1, 1) model -- ARIMA(1, 0, 1) -- using the BayesianSARIMA class:
+    The following example shows how to build an ARMA(1, 1) model -- ARIMA(1, 0, 1) -- using the BayesianSARIMAX class:
 
     .. code:: python
 
         import pymc_extras.statespace as pmss
         import pymc as pm
 
-        ss_mod = pmss.BayesianSARIMA(order=(1, 0, 1), verbose=True)
+        ss_mod = pmss.BayesianSARIMAX(order=(1, 0, 1), verbose=True)
 
         with pm.Model(coords=ss_mod.coords) as arma_model:
             state_sigmas = pm.HalfNormal("sigma_state", sigma=1.0, dims=ss_mod.param_dims["sigma_state"])
@@ -183,6 +131,8 @@ class BayesianSARIMA(PyMCStateSpace):
         self,
         order: tuple[int, int, int],
         seasonal_order: tuple[int, int, int, int] | None = None,
+        exog_state_names: list[str] | None = None,
+        k_exog: int | None = None,
         stationary_initialization: bool = True,
         filter_type: str = "standard",
         state_structure: str = "fast",
@@ -191,27 +141,103 @@ class BayesianSARIMA(PyMCStateSpace):
         mode: str | Mode | None = None,
     ):
         """
+        Initialize a BayesianSARIMAX model.
 
         Parameters
         ----------
-        order
-        seasonal_order
-        stationary_initialization
-        filter_type
-        state_structure
-        measurement_error
-        verbose
-        mode
+        order : tuple of int, int, int
+            Order of the ARIMA process. The order has the notation (p, d, q), where p is the number of autoregressive
+            lags, q is the number of moving average components, and d is order of integration -- the number of
+            differences needed to render the data stationary.
+
+            If d > 0, the differences are modeled as components of the hidden state, and all available data can be used.
+            This is only possible if state_structure = 'fast'. For interpretable states, the user must manually
+            difference the data prior to calling the `build_statespace_graph` method.
+
+        seasonal_order : tuple of int, int, int, int, optional
+            Seasonal order of the SARIMA process. The order has the notation (P, D, Q, S), where P is the number of seasonal
+            lags to include, Q is the number of seasonal innovation lags to include, and D is the number of seasonal
+            differences to perform. S is the length of the season.
+
+            Seasonal terms are similar to ARIMA terms, in that they are merely lags of the data or innovations. It is thus
+            possible for the seasonal lags and the ARIMA lags to overlap, for example if P <= p. In this case, an error
+            will be raised.
+
+        exog_state_names : list[str], optional
+            Names of the exogenous state variables.
+
+        k_exog : int, optional
+            Number of exogenous variables. If provided, must match the length of
+            `exog_state_names`.
+
+        stationary_initialization : bool, default True
+            If true, the initial state and initial state covariance will not be assigned priors. Instead, their steady
+            state values will be used.
+
+            .. warning:: This option is very sensitive to the priors placed on the AR and MA parameters. If the model dynamics
+                      for a given sample are not stationary, sampling will fail with a "covariance is not positive semi-definite"
+                      error.
+
+        filter_type : str, default "standard"
+            The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
+            and "cholesky". See the docs for kalman filters for more details.
+
+        state_structure : str, default "fast"
+            How to represent the state-space system. Currently, there are two choices: "fast" or "interpretable"
+
+            - "fast" corresponds to the state space used by [2], and is called the "Harvey" representation in statsmodels.
+               This is also the default representation used by statsmodels.tsa.statespace.SARIMAX. The states combine lags
+               and innovations at different lags to compress the dimension of the state vector to max(p, 1+q). As a result,
+               it is very performant, but only the first state has a clear interpretation.
+
+            - "interpretable" maximally expands the state vector, doing zero state compression. As a result, the state has
+              dimension max(1, p) + max(1, q). What is gained by doing this is that every state has an obvious meaning, as
+              either the data, an innovation, or a lag thereof.
+
+        measurement_error : bool, default False
+            If true, a measurement error term is added to the model.
+
+        verbose : bool, default True
+            If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
+
+        mode : str or Mode, optional
+            Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+            ``forecast``. The mode does **not** affect calls to ``pm.sample``.
+
+            Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+            to all sampling methods.
         """
         # Model order
         self.p, self.d, self.q = order
         if seasonal_order is None:
             seasonal_order = (0, 0, 0, 0)
 
+        if exog_state_names is None and k_exog is not None:
+            exog_state_names = [f"exogenous_{i}" for i in range(k_exog)]
+        elif exog_state_names is not None and k_exog is None:
+            k_exog = len(exog_state_names)
+        elif exog_state_names is not None and k_exog is not None:
+            if len(exog_state_names) != k_exog:
+                raise ValueError(
+                    f"Based on provided inputs, expected exog_state_names to have {k_exog} elements, but "
+                    f"found {len(exog_state_names)}"
+                )
+        else:
+            k_exog = 0
+
+        self.exog_state_names = exog_state_names
+        self.k_exog = k_exog
+
         self.P, self.D, self.Q, self.S = seasonal_order
         _verify_order(self.p, self.d, self.q, self.P, self.D, self.Q, self.S)
 
         self.stationary_initialization = stationary_initialization
+
+        if (self.d or self.D) and self.stationary_initialization:
+            raise ValueError(
+                "Cannot use stationary initialization with differencing. "
+                "Set stationary_initialization=False."
+            )
 
         self.state_structure = state_structure
 
@@ -224,7 +250,7 @@ class BayesianSARIMA(PyMCStateSpace):
         if state_structure not in SARIMAX_STATE_STRUCTURES:
             raise ValueError(
                 f"Got invalid argument {state_structure} for state structure, expected one of "
-                f'{", ".join(SARIMAX_STATE_STRUCTURES)}'
+                f"{', '.join(SARIMAX_STATE_STRUCTURES)}"
             )
 
         if state_structure == "interpretable" and (self.d + self.D) > 0:
@@ -252,6 +278,7 @@ class BayesianSARIMA(PyMCStateSpace):
             measurement_error=measurement_error,
             mode=mode,
         )
+        self._needs_exog_data = self.k_exog > 0
 
     @property
     def param_names(self):
@@ -262,6 +289,7 @@ class BayesianSARIMA(PyMCStateSpace):
             "ma_params",
             "seasonal_ar_params",
             "seasonal_ma_params",
+            "beta_exog",
             "sigma_state",
             "sigma_obs",
         ]
@@ -276,10 +304,23 @@ class BayesianSARIMA(PyMCStateSpace):
             names.remove("ma_params")
         if self.Q == 0:
             names.remove("seasonal_ma_params")
+        if self.k_exog == 0:
+            names.remove("beta_exog")
         if not self.measurement_error:
             names.remove("sigma_obs")
 
         return names
+
+    @property
+    def data_info(self) -> dict[str, dict[str, Any]]:
+        info = {
+            "exogenous_data": {
+                "dims": (TIME_DIM, EXOGENOUS_DIM),
+                "shape": (None, self.k_exog),
+            }
+        }
+
+        return {name: info[name] for name in self.data_names}
 
     @property
     def param_info(self) -> dict[str, dict[str, Any]]:
@@ -293,11 +334,11 @@ class BayesianSARIMA(PyMCStateSpace):
                 "constraints": "Positive Semi-definite",
             },
             "sigma_obs": {
-                "shape": None if self.k_endog == 1 else (self.k_endog,),
+                "shape": () if self.k_endog == 1 else (self.k_endog,),
                 "constraints": "Positive",
             },
             "sigma_state": {
-                "shape": None if self.k_posdef == 1 else (self.k_posdef,),
+                "shape": () if self.k_posdef == 1 else (self.k_posdef,),
                 "constraints": "Positive",
             },
             "ar_params": {
@@ -310,6 +351,7 @@ class BayesianSARIMA(PyMCStateSpace):
             },
             "seasonal_ar_params": {"shape": (self.P,), "constraints": "None"},
             "seasonal_ma_params": {"shape": (self.Q,), "constraints": "None"},
+            "beta_exog": {"shape": (self.k_exog,), "constraints": "None"},
         }
 
         for name in self.param_names:
@@ -337,6 +379,12 @@ class BayesianSARIMA(PyMCStateSpace):
         return states
 
     @property
+    def data_names(self) -> list[str]:
+        if self.k_exog > 0:
+            return ["exogenous_data"]
+        return []
+
+    @property
     def observed_states(self):
         return [self.state_names[0]]
 
@@ -355,6 +403,7 @@ class BayesianSARIMA(PyMCStateSpace):
             "ma_params": (MA_PARAM_DIM,),
             "seasonal_ar_params": (SEASONAL_AR_PARAM_DIM,),
             "seasonal_ma_params": (SEASONAL_MA_PARAM_DIM,),
+            "beta_exog": (EXOGENOUS_DIM,),
         }
         if self.k_endog == 1:
             coord_map["sigma_state"] = None
@@ -369,6 +418,8 @@ class BayesianSARIMA(PyMCStateSpace):
             del coord_map["seasonal_ar_params"]
         if self.Q == 0:
             del coord_map["seasonal_ma_params"]
+        if self.k_exog == 0:
+            del coord_map["beta_exog"]
         if self.stationary_initialization:
             del coord_map["P0"]
             del coord_map["x0"]
@@ -386,7 +437,8 @@ class BayesianSARIMA(PyMCStateSpace):
             coords.update({SEASONAL_AR_PARAM_DIM: list(range(1, self.P + 1))})
         if self.Q > 0:
             coords.update({SEASONAL_MA_PARAM_DIM: list(range(1, self.Q + 1))})
-
+        if self.k_exog > 0:
+            coords.update({EXOGENOUS_DIM: self.exog_state_names})
         return coords
 
     def _stationary_initialization(self):
@@ -396,7 +448,7 @@ class BayesianSARIMA(PyMCStateSpace):
         Q = self.ssm["state_cov"]
         c = self.ssm["state_intercept"]
 
-        x0 = pt.linalg.solve(pt.identity_like(T) - T, c, assume_a="gen", check_finite=True)
+        x0 = pt.linalg.solve(pt.identity_like(T) - T, c, assume_a="gen", check_finite=False)
         P0 = solve_discrete_lyapunov(T, pt.linalg.matrix_dot(R, Q, R.T), method="bilinear")
 
         return x0, P0
@@ -534,6 +586,18 @@ class BayesianSARIMA(PyMCStateSpace):
                     self.ssm[cross_term_idx] = pt.repeat(seasonal_ma_params, q) * pt.tile(
                         ma_params, Q
                     )
+
+        # If exogenous regressors are present, register them as data and include a regression term
+        # in the observation intercept
+        if self.k_exog > 0:
+            exog_data = self.make_and_register_data(
+                "exogenous_data", shape=(None, self.k_exog), dtype=floatX
+            )
+            exog_beta = self.make_and_register_variable(
+                "beta_exog", shape=(self.k_exog,), dtype=floatX
+            )
+
+            self.ssm["obs_intercept"] = (exog_data @ exog_beta)[:, None]
 
         # Set up the state covariance matrix
         state_cov_idx = ("state_cov", *np.diag_indices(self.k_posdef))

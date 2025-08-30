@@ -44,7 +44,7 @@ def test_histogram_init_cont(use_dask, zero_inflation, ndims):
     assert histogram["mid"].shape == (size,) + (1,) * len(data.shape[1:])
     assert histogram["lower"].shape == (size,) + (1,) * len(data.shape[1:])
     assert histogram["upper"].shape == (size,) + (1,) * len(data.shape[1:])
-    assert histogram["count"].shape == (size,) + data.shape[1:]
+    assert histogram["count"].shape == (size, *data.shape[1:])
     assert (histogram["count"].sum(0) == 10000).all()
     if zero_inflation:
         (histogram["count"][0] == 100).all()
@@ -71,7 +71,7 @@ def test_histogram_init_discrete(use_dask, min_count, ndims):
     else:
         size = len(u)
     assert histogram["mid"].shape == (size,) + (1,) * len(data.shape[1:])
-    assert histogram["count"].shape == (size,) + data.shape[1:]
+    assert histogram["count"].shape == (size, *data.shape[1:])
     if not min_count:
         assert (histogram["count"].sum(0) == 10000).all()
 

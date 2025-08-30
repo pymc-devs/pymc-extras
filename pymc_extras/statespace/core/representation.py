@@ -153,19 +153,19 @@ class PytensorRepresentation:
     """
 
     __slots__ = (
-        "k_endog",
-        "k_states",
-        "k_posdef",
-        "shapes",
         "design",
-        "obs_intercept",
-        "obs_cov",
-        "transition",
-        "state_intercept",
-        "selection",
-        "state_cov",
         "initial_state",
         "initial_state_cov",
+        "k_endog",
+        "k_posdef",
+        "k_states",
+        "obs_cov",
+        "obs_intercept",
+        "selection",
+        "shapes",
+        "state_cov",
+        "state_intercept",
+        "transition",
     )
 
     def __init__(

@@ -17,4 +17,4 @@ from pymc_extras.inference.laplace_approx.find_map import find_MAP
 from pymc_extras.inference.laplace_approx.laplace import fit_laplace
 from pymc_extras.inference.pathfinder.pathfinder import fit_pathfinder
 
-__all__ = ["fit", "fit_pathfinder", "fit_laplace", "find_MAP"]
+__all__ = ["find_MAP", "fit", "fit_laplace", "fit_pathfinder"]

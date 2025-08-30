@@ -2,6 +2,7 @@ import re
 
 from collections.abc import Sequence
 from functools import partial
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -44,8 +45,12 @@ def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False,
             pass
 
         @property
-        def data_info(self):
+        def data_info(self) -> dict[str, dict[str, Any]]:
             return data_info
+
+        @property
+        def data_names(self) -> list[str]:
+            return list(data_info.keys()) if data_info is not None else []
 
     ss = StateSpace(
         k_states=k_states,
@@ -55,7 +60,6 @@ def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False,
         verbose=verbose,
     )
     ss._needs_exog_data = data_info is not None
-    ss._exog_names = list(data_info.keys()) if data_info is not None else []
 
     return ss
 
@@ -884,8 +888,7 @@ def test_invalid_scenarios():
     # Giving a list, tuple, or Series when a matrix of data is expected should always raise
     with pytest.raises(
         ValueError,
-        match="Scenario data for variable 'a' has the wrong number of columns. "
-        "Expected 2, got 1",
+        match="Scenario data for variable 'a' has the wrong number of columns. Expected 2, got 1",
     ):
         for data_type in [list, tuple, pd.Series]:
             ss_mod._validate_scenario_data(data_type(np.zeros(10)))
@@ -894,15 +897,14 @@ def test_invalid_scenarios():
     # Providing irrevelant data raises
     with pytest.raises(
         ValueError,
-        match="Scenario data provided for variable 'jk lol', which is not an exogenous " "variable",
+        match="Scenario data provided for variable 'jk lol', which is not an exogenous variable",
     ):
         ss_mod._validate_scenario_data({"jk lol": np.zeros(10)})
 
     # Incorrect 2nd dimension of a non-dataframe
     with pytest.raises(
         ValueError,
-        match="Scenario data for variable 'a' has the wrong number of columns. Expected "
-        "2, got 1",
+        match="Scenario data for variable 'a' has the wrong number of columns. Expected 2, got 1",
     ):
         scenario = np.zeros(10).tolist()
         ss_mod._validate_scenario_data(scenario)

@@ -30,15 +30,15 @@ from pymc_extras.distributions.timeseries import DiscreteMarkovChain
 from pymc_extras.distributions.transforms import PartialOrder
 
 __all__ = [
-    "Chi",
-    "Maxwell",
-    "DiscreteMarkovChain",
-    "GeneralizedPoisson",
-    "BetaNegativeBinomial",
-    "GenExtreme",
     "R2D2M2CP",
+    "BetaNegativeBinomial",
+    "Chi",
+    "DiscreteMarkovChain",
+    "GenExtreme",
+    "GeneralizedPoisson",
+    "Maxwell",
+    "PartialOrder",
     "Skellam",
     "histogram_approximation",
     "GrassiaIIGeometric",
     "PartialOrder",
-]

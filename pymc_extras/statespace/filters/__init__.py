@@ -7,9 +7,9 @@ from pymc_extras.statespace.filters.kalman_filter import (
 from pymc_extras.statespace.filters.kalman_smoother import KalmanSmoother
 
 __all__ = [
+    "KalmanSmoother",
+    "LinearGaussianStateSpace",
+    "SquareRootFilter",
     "StandardFilter",
     "UnivariateFilter",
-    "KalmanSmoother",
-    "SquareRootFilter",
-    "LinearGaussianStateSpace",
 ]

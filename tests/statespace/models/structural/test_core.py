@@ -28,7 +28,7 @@ def test_add_components():
         "sigma_level_trend": np.ones(2, dtype=floatX),
     }
     se_params = {
-        "coefs_seasonal": np.ones(11, dtype=floatX),
+        "params_seasonal": np.ones(11, dtype=floatX),
         "sigma_seasonal": 1.0,
     }
     all_params = ll_params.copy()
@@ -97,7 +97,7 @@ def test_extract_components_from_idata(rng):
         beta_exog = pm.Normal("beta_exog", dims=["state_exog"])
         initial_trend = pm.Normal("initial_level_trend", dims=["state_level_trend"])
         sigma_trend = pm.Exponential("sigma_level_trend", 1, dims=["shock_level_trend"])
-        seasonal_coefs = pm.Normal("seasonal", dims=["state_seasonal"])
+        seasonal_coefs = pm.Normal("params_seasonal", dims=["state_seasonal"])
         sigma_obs = pm.Exponential("sigma_obs", 1)
 
         mod.build_statespace_graph(y)
@@ -144,7 +144,7 @@ def test_extract_multiple_observed(rng):
         sigma_auto_regressive = pm.Normal("sigma_auto_regressive", dims=["endog_auto_regressive"])
         initial_trend = pm.Normal("initial_trend", dims=["endog_trend", "state_trend"])
         sigma_trend = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "shock_trend"])
-        seasonal_coefs = pm.Normal("seasonal", dims=["state_seasonal"])
+        seasonal_coefs = pm.Normal("params_seasonal", dims=["state_seasonal"])
         sigma_obs = pm.Exponential("sigma_obs", 1, dims=["endog_obs"])
 
         mod.build_statespace_graph(y)
