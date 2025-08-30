@@ -496,24 +496,35 @@ class ShiftedBetaGeometric(Discrete):
         value = pt.as_tensor_variable(value)
         logp = betaln(alpha + 1, beta + value - 1) - betaln(alpha, beta)
 
+        logp = pt.switch(
+            pt.or_(
+                alpha <= 0,
+                beta <= 0,
+            ),
+            -np.inf,
+            logp,
+        )
+
         return check_parameters(
             logp,
             alpha > 0,
             beta > 0,
-            msg="r > 0, alpha > 0",
+            msg="alpha > 0, alpha > 0",
         )
 
+    # TODO: Try recursive variant; shared named between beta function and param is not ideal.
     def logcdf(value, alpha, beta):
-        value = pt.as_tensor_variable(value)
+        pass
+        # value = pt.as_tensor_variable(value)
 
-        logcdf = pt.log(1 - (pt.beta(alpha, beta + value) / pt.beta(alpha, beta)))
+        # logcdf = pt.log(1 - (pt.beta(alpha, beta + value) / pt.beta(alpha, beta)))
 
-        return check_parameters(
-            logcdf,
-            alpha > 0,
-            beta > 0,
-            msg="r > 0, alpha > 0",
-        )
+        # return check_parameters(
+        #     logcdf,
+        #     alpha > 0,
+        #     beta > 0,
+        #     msg="alpha > 0, alpha > 0",
+        # )
 
     def support_point(rv, size, alpha, beta):
         """Calculate a reasonable starting point for sampling.
@@ -523,6 +534,7 @@ class ShiftedBetaGeometric(Discrete):
         is Beta, its mean is alpha/alpha + beta).
 
         """
+        # TODO: Also try the reciprocal of this - the expected value of the geometric distribution.
         base_theta = alpha / (alpha + beta)
 
         return base_theta
