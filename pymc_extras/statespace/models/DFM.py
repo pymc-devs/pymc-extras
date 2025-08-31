@@ -620,6 +620,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         if len(matrix_parts) == 1:
             design_matrix = factor_loadings * 1.0  # copy to ensure a new PyTensor variable
             design_matrix.name = "design"
+            # TODO: This is a hack to ensure the design matrix isn't identically equal to the factor_loadings when error_order=0 and factor_order=0
         else:
             design_matrix = pt.concatenate(matrix_parts, axis=1)
             design_matrix.name = "design"
@@ -654,6 +655,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         # Construction with block-diagonal structure:
         # Each latent component (factors, errors, exogenous states) contributes its own transition block,
         # and the full transition matrix is assembled with block_diag.
+        #   T = block_diag(A, B, C)
         #
         # - Factors (block A):
         #   If factor_order > 0, the factor AR coefficients are organized into a
