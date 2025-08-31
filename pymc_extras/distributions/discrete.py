@@ -18,6 +18,7 @@ import pymc as pm
 from pymc.distributions.dist_math import betaln, check_parameters, factln, logpow
 from pymc.distributions.distribution import Discrete
 from pymc.distributions.shape_utils import rv_size_is_none
+from pytensor import scan
 from pytensor import tensor as pt
 from pytensor.tensor.random.op import RandomVariable
 
@@ -493,8 +494,26 @@ class ShiftedBetaGeometric(Discrete):
         return super().dist([alpha, beta], *args, **kwargs)
 
     def logp(value, alpha, beta):
-        value = pt.as_tensor_variable(value)
-        logp = betaln(alpha + 1, beta + value - 1) - betaln(alpha, beta)
+        # Number of recursive steps: T = 2..t  ⇒ n_steps = max(t-1, 0)
+        n_steps = pt.maximum(value - 1, 0)
+        t_seq = pt.arange(n_steps, dtype="int64") + 2  # [2, 3, ..., t]
+
+        def step(t, acc, alpha, beta):
+            term = pt.log(beta + t - 2) - pt.log(alpha + beta + t - 1)
+            return acc + term
+
+        (accs, updates) = scan(
+            fn=step,
+            sequences=[t_seq],
+            outputs_info=pt.as_tensor_variable(0.0),
+            non_sequences=[alpha, beta],
+        )
+
+        sum_increments = pt.switch(pt.gt(n_steps, 0), accs[-1], 0.0)
+        logp = pt.log(alpha / (alpha + beta)) + sum_increments
+
+        # TODO: Test performance of recursive variant against beta function variant.
+        # logp = betaln(alpha + 1, beta + value - 1) - betaln(alpha, beta)
 
         logp = pt.switch(
             pt.or_(
@@ -530,11 +549,14 @@ class ShiftedBetaGeometric(Discrete):
         """Calculate a reasonable starting point for sampling.
 
         For the Shifted Beta-Geometric distribution, we use a point estimate based on
-        the expected value of the mixing distribution. Since the mixing distribution
-        is Beta, its mean is alpha/alpha + beta).
+        the expected value of both mixture components.
 
         """
-        # TODO: Also try the reciprocal of this - the expected value of the geometric distribution.
-        base_theta = alpha / (alpha + beta)
-
-        return base_theta
+        geo_mean = pt.floor(
+            pt.reciprocal(  # expected value of the geometric distribution
+                alpha / (alpha + beta)  # expected value of the beta distribution
+            )
+        )
+        if not rv_size_is_none(size):
+            geo_mean = pt.full(size, geo_mean)
+        return geo_mean
