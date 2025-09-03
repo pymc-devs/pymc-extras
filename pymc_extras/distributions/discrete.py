@@ -15,10 +15,10 @@
 import numpy as np
 import pymc as pm
 
+from pymc.distributions import dist_math as dm  # only for logcdf testing
 from pymc.distributions.dist_math import betaln, check_parameters, factln, logpow
 from pymc.distributions.distribution import Discrete
 from pymc.distributions.shape_utils import rv_size_is_none
-from pytensor import scan
 from pytensor import tensor as pt
 from pytensor.tensor.random.op import RandomVariable
 
@@ -430,7 +430,7 @@ class ShiftedBetaGeometricRV(RandomVariable):
 sbg = ShiftedBetaGeometricRV()
 
 
-# TODO: Add covariate expressions to docstrings.
+# TODO: Update docstrings for sBG, including plotting code
 class ShiftedBetaGeometric(Discrete):
     r"""Shifted Beta-Geometric distribution.
 
@@ -493,27 +493,28 @@ class ShiftedBetaGeometric(Discrete):
 
         return super().dist([alpha, beta], *args, **kwargs)
 
+    # TODO: Determine if current period cohorts must be excluded and/or if S(t) must be called and added as well.
     def logp(value, alpha, beta):
-        # Number of recursive steps: T = 2..t  ⇒ n_steps = max(t-1, 0)
-        n_steps = pt.maximum(value - 1, 0)
-        t_seq = pt.arange(n_steps, dtype="int64") + 2  # [2, 3, ..., t]
+        ##### RECURSIVE VARIANT PRESERVED UNTIL PR MERGED #####
+        # # Number of recursive steps: T = 2..t  ⇒ n_steps = max(t-1, 0)
+        # n_steps = pt.maximum(value - 1, 0)
+        # t_seq = pt.arange(n_steps, dtype="int64") + 2  # [2, 3, ..., t]
 
-        def step(t, acc, alpha, beta):
-            term = pt.log(beta + t - 2) - pt.log(alpha + beta + t - 1)
-            return acc + term
+        # def step(t, acc, alpha, beta):
+        #     term = pt.log(beta + t - 2) - pt.log(alpha + beta + t - 1)
+        #     return acc + term
 
-        (accs, updates) = scan(
-            fn=step,
-            sequences=[t_seq],
-            outputs_info=pt.as_tensor_variable(0.0),
-            non_sequences=[alpha, beta],
-        )
+        # (accs, updates) = scan(
+        #     fn=step,
+        #     sequences=[t_seq],
+        #     outputs_info=pt.as_tensor_variable(0.0),
+        #     non_sequences=[alpha, beta],
+        # )
 
-        sum_increments = pt.switch(pt.gt(n_steps, 0), accs[-1], 0.0)
-        logp = pt.log(alpha / (alpha + beta)) + sum_increments
+        # sum_increments = pt.switch(pt.gt(n_steps, 0), accs[-1], 0.0)
+        # logp = pt.log(alpha / (alpha + beta)) + sum_increments
 
-        # TODO: Test performance of recursive variant against beta function variant.
-        # logp = betaln(alpha + 1, beta + value - 1) - betaln(alpha, beta)
+        logp = betaln(alpha + 1, beta + value - 1) - betaln(alpha, beta)
 
         logp = pt.switch(
             pt.or_(
@@ -528,22 +529,21 @@ class ShiftedBetaGeometric(Discrete):
             logp,
             alpha > 0,
             beta > 0,
-            msg="alpha > 0, alpha > 0",
+            msg="alpha > 0, beta > 0",
         )
 
-    # TODO: Try recursive variant; shared named between beta function and param is not ideal.
+    # TODO: This may not be added at all, but is useful for logp testing.
     def logcdf(value, alpha, beta):
-        pass
-        # value = pt.as_tensor_variable(value)
+        value = pt.as_tensor_variable(value)
 
-        # logcdf = pt.log(1 - (pt.beta(alpha, beta + value) / pt.beta(alpha, beta)))
+        logcdf = pt.log(1 - (dm.beta(alpha, beta + value) / dm.beta(alpha, beta)))
 
-        # return check_parameters(
-        #     logcdf,
-        #     alpha > 0,
-        #     beta > 0,
-        #     msg="alpha > 0, alpha > 0",
-        # )
+        return check_parameters(
+            logcdf,
+            alpha > 0,
+            beta > 0,
+            msg="alpha > 0, alpha > 0",
+        )
 
     def support_point(rv, size, alpha, beta):
         """Calculate a reasonable starting point for sampling.
@@ -552,7 +552,7 @@ class ShiftedBetaGeometric(Discrete):
         the expected value of both mixture components.
 
         """
-        geo_mean = pt.floor(
+        geo_mean = pt.ceil(
             pt.reciprocal(  # expected value of the geometric distribution
                 alpha / (alpha + beta)  # expected value of the beta distribution
             )

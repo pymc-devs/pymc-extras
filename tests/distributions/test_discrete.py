@@ -312,35 +312,13 @@ class TestShiftedBetaGeometric:
         assert np.all(np.isfinite(logp_vals))
 
         # Out-of-domain values
-        bad = logp_fn(np.array([0]), 1.2, 3.4)
-        assert bad == -np.inf
+        bad_alpha = logp_fn(np.array([0]), -1.2, 3.4)
+        bad_beta = logp_fn(np.array([0]), 1.2, -3.4)
+        for bad in [bad_alpha, bad_beta]:
+            assert bad == -np.inf
 
         with pytest.raises(TypeError):
             _ = logp_fn(np.array([1.5]), 1.2, 3.4)  # Value must be integer
-
-    def test_logp_closed_form_vs_scan(self):
-        # Compare closed-form betaln to recursive scan for a few t
-        alpha = 1.7
-        beta = 2.3
-        t_vec = np.array([1, 2, 3, 5, 10], dtype="int64")
-
-        # Closed form
-        alpha_sym = pt.scalar()
-        beta_sym = pt.scalar()
-        value = pt.vector(dtype="int64")
-        logp_closed = pt.betaln(alpha_sym + 1, beta_sym + value - 1) - pt.betaln(
-            alpha_sym, beta_sym
-        )
-        closed_fn = pytensor.function([value, alpha_sym, beta_sym], logp_closed)
-
-        # Distribution logp
-        dist = ShiftedBetaGeometric.dist(alpha_sym, beta_sym)
-        logp_dist = pm.logp(dist, value)
-        dist_fn = pytensor.function([value, alpha_sym, beta_sym], logp_dist)
-
-        np.testing.assert_allclose(
-            dist_fn(t_vec, alpha, beta), closed_fn(t_vec, alpha, beta), rtol=1e-10, atol=1e-12
-        )
 
     def test_logp_matches_paper_alpha1_beta1(self):
         # For alpha=1, beta=1, P(T=t) = 1 / (t (t+1)) → logp = -log(t(t+1))
@@ -361,12 +339,10 @@ class TestShiftedBetaGeometric:
         np.testing.assert_allclose(fn(t_vec, alpha, beta), expected, rtol=1e-12, atol=1e-12)
 
     def test_logcdf(self):
-        pass
-        # TODO: Implement recursive variant of logcdf rather than beta function variant.
-        # # test logcdf matches log sums across parameter values
-        # check_selfconsistency_discrete_logcdf(
-        #     ShiftedBetaGeometric, Nat, {"alpha": Rplus, "beta": Rplus}
-        # )
+        # test logcdf matches log sums across parameter values
+        check_self_consistency_discrete_logcdf(
+            ShiftedBetaGeometric, Nat, {"alpha": Rplus, "beta": Rplus}
+        )
 
     @pytest.mark.parametrize(
         "alpha, beta, size, expected_shape",
