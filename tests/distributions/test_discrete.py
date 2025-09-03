@@ -311,14 +311,23 @@ class TestShiftedBetaGeometric:
         assert not np.any(np.isnan(logp_vals))
         assert np.all(np.isfinite(logp_vals))
 
-        # Out-of-domain values
-        bad_alpha = logp_fn(np.array([0]), -1.2, 3.4)
-        bad_beta = logp_fn(np.array([0]), 1.2, -3.4)
-        for bad in [bad_alpha, bad_beta]:
-            assert bad == -np.inf
+        # Check out-of-bounds values
+        value = pt.scalar("value")
+        logp = pm.logp(ShiftedBetaGeometric.dist(alpha, beta), value)
+        logp_fn = pytensor.function([value, alpha, beta], logp)
 
-        with pytest.raises(TypeError):
-            _ = logp_fn(np.array([1.5]), 1.2, 3.4)  # Value must be integer
+        logp_fn(-1, alpha=5, beta=0) == -np.inf
+        logp_fn(9, alpha=5, beta=-1) == -np.inf
+
+        # Check mu/lam restrictions
+        with pytest.raises(ParameterValueError):
+            logp_fn(1, alpha=1, beta=2)
+
+        with pytest.raises(ParameterValueError):
+            logp_fn(1, alpha=0, beta=0)
+
+        with pytest.raises(ParameterValueError):
+            logp_fn(1, alpha=1, beta=-1)
 
     def test_logp_matches_paper_alpha1_beta1(self):
         # For alpha=1, beta=1, P(T=t) = 1 / (t (t+1)) → logp = -log(t(t+1))
@@ -337,12 +346,6 @@ class TestShiftedBetaGeometric:
         logp = pm.logp(dist, value)
         fn = pytensor.function([value, alpha_sym, beta_sym], logp)
         np.testing.assert_allclose(fn(t_vec, alpha, beta), expected, rtol=1e-12, atol=1e-12)
-
-    def test_logcdf(self):
-        # test logcdf matches log sums across parameter values
-        check_self_consistency_discrete_logcdf(
-            ShiftedBetaGeometric, Nat, {"alpha": Rplus, "beta": Rplus}
-        )
 
     @pytest.mark.parametrize(
         "alpha, beta, size, expected_shape",

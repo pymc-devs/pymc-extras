@@ -15,7 +15,6 @@
 import numpy as np
 import pymc as pm
 
-from pymc.distributions import dist_math as dm  # only for logcdf testing
 from pymc.distributions.dist_math import betaln, check_parameters, factln, logpow
 from pymc.distributions.distribution import Discrete
 from pymc.distributions.shape_utils import rv_size_is_none
@@ -530,19 +529,6 @@ class ShiftedBetaGeometric(Discrete):
             alpha > 0,
             beta > 0,
             msg="alpha > 0, beta > 0",
-        )
-
-    # TODO: This may not be added at all, but is useful for logp testing.
-    def logcdf(value, alpha, beta):
-        value = pt.as_tensor_variable(value)
-
-        logcdf = pt.log(1 - (dm.beta(alpha, beta + value) / dm.beta(alpha, beta)))
-
-        return check_parameters(
-            logcdf,
-            alpha > 0,
-            beta > 0,
-            msg="alpha > 0, alpha > 0",
         )
 
     def support_point(rv, size, alpha, beta):
