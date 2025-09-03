@@ -433,15 +433,15 @@ sbg = ShiftedBetaGeometricRV()
 class ShiftedBetaGeometric(Discrete):
     r"""Shifted Beta-Geometric distribution.
 
-    This distribution is a flexible alternative to the Geometric distribution for the number of trials until a
-    discrete event, and can be extended to support static and time-varying covariates.
+    This mixture distribution extends the Geometric distribution for the number of trials until a discrete event
+    to support heterogeneity across observations.
 
     Hardie and Fader describe this distribution with the following PMF and survival functions in [1]_:
 
     .. math::
-        \mathbb{P}T=t|r,\alpha,\beta;Z(t)) = (\frac{\alpha}{\alpha+C(t-1)})^{r} - (\frac{\alpha}{\alpha+C(t)})^{r}  \\
+        \mathbb{P}T=t|\alpha,\beta) = (\frac{B(\alpha+1,\beta+t-1)}{B(\alpha,\beta}),t=1,2,...  \\
         \begin{align}
-        \mathbb{S}(t|r,\alpha,\beta;Z(t)) = (\frac{\alpha}{\alpha+C(t)})^{r} \\
+        \mathbb{S}(t|\alpha,\beta) = (\frac{B(\alpha,\beta+t)}{B(\alpha,\beta}),t=1,2,... \\
         \end{align}
 
     .. plot::
@@ -450,14 +450,15 @@ class ShiftedBetaGeometric(Discrete):
         import matplotlib.pyplot as plt
         import numpy as np
         import scipy.stats as st
+        from scipy.special import beta
         import arviz as az
         plt.style.use('arviz-darkgrid')
         t = np.arange(1, 11)
         alpha_vals = [1., 1., 2., 2.]
-        r_vals = [.1, .25, .5, 1.]
-        for alpha, r in zip(alpha_vals, r_vals):
-            pmf = (alpha/(alpha + t - 1))**r - (alpha/(alpha+t))**r
-            plt.plot(t, pmf, '-o', label=r'$\alpha$ = {}, $r$ = {}'.format(alpha, r))
+        beta_vals = [.1, .25, .5, 1.]
+        for alpha, _beta in zip(alpha_vals, beta_vals):
+            pmf = beta(alpha + 1, beta + t - 1) / beta(alpha, beta)
+            plt.plot(t, pmf, '-o', label=r'$\alpha$ = {}, $beta$ = {}'.format(alpha, beta))
         plt.xlabel('t', fontsize=12)
         plt.ylabel('p(t)', fontsize=12)
         plt.legend(loc=1)
@@ -469,18 +470,16 @@ class ShiftedBetaGeometric(Discrete):
 
     Parameters
     ----------
-    r : tensor_like of float
-        Shape parameter (r > 0).
     alpha : tensor_like of float
         Scale parameter (alpha > 0).
-    time_covariate_vector : tensor_like of float
-        Vector containing dot products of time-varying covariates and coefficients.
+    beta : tensor_like of float
+        Scale parameter (beta > 0).
 
     References
     ----------
-    .. [1] Fader, Peter & G. S. Hardie, Bruce (2020).
-       "Incorporating Time-Varying Covariates in a Simple Mixture Model for Discrete-Time Duration Data."
-       https://www.brucehardie.com/notes/037/time-varying_covariates_in_BG.pdf
+    .. [1] Fader, P. S., & Hardie, B. G. (2007). How to project customer retention.
+           Journal of Interactive Marketing, 21(1), 76-90.
+           https://faculty.wharton.upenn.edu/wp-content/uploads/2012/04/Fader_hardie_jim_07.pdf
     """
 
     rv_op = sbg
