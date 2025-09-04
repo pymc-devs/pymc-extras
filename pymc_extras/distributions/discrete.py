@@ -411,11 +411,9 @@ class ShiftedBetaGeometricRV(RandomVariable):
 
     @classmethod
     def rng_fn(cls, rng, alpha, beta, size):
-        # Determine output size
         if size is None:
             size = np.broadcast_shapes(alpha.shape, beta.shape)
 
-        # Broadcast parameters to output size
         alpha = np.broadcast_to(alpha, size)
         beta = np.broadcast_to(beta, size)
 
@@ -432,13 +430,12 @@ sbg = ShiftedBetaGeometricRV()
 class ShiftedBetaGeometric(Discrete):
     r"""Shifted Beta-Geometric distribution.
 
-    This mixture distribution extends the Geometric distribution for the number of trials until a discrete event
-    to support heterogeneity across observations.
+    This mixture distribution extends the Geometric distribution to support heterogeneity across observations.
 
     Hardie and Fader describe this distribution with the following PMF and survival functions in [1]_:
 
     .. math::
-        \mathbb{P}T=t|\alpha,\beta) = (\frac{B(\alpha+1,\beta+t-1)}{B(\alpha,\beta}),t=1,2,...  \\
+        \mathbb{P}(T=t|\alpha,\beta) = (\frac{B(\alpha+1,\beta+t-1)}{B(\alpha,\beta}),t=1,2,...  \\
         \begin{align}
         \mathbb{S}(t|\alpha,\beta) = (\frac{B(\alpha,\beta+t)}{B(\alpha,\beta}),t=1,2,... \\
         \end{align}
@@ -491,36 +488,16 @@ class ShiftedBetaGeometric(Discrete):
 
         return super().dist([alpha, beta], *args, **kwargs)
 
-    # TODO: Determine if current period cohorts must be excluded and/or if S(t) must be called and added as well.
     def logp(value, alpha, beta):
-        ##### RECURSIVE VARIANT PRESERVED UNTIL PR MERGED #####
-        # # Number of recursive steps: T = 2..t  ⇒ n_steps = max(t-1, 0)
-        # n_steps = pt.maximum(value - 1, 0)
-        # t_seq = pt.arange(n_steps, dtype="int64") + 2  # [2, 3, ..., t]
-
-        # def step(t, acc, alpha, beta):
-        #     term = pt.log(beta + t - 2) - pt.log(alpha + beta + t - 1)
-        #     return acc + term
-
-        # (accs, updates) = scan(
-        #     fn=step,
-        #     sequences=[t_seq],
-        #     outputs_info=pt.as_tensor_variable(0.0),
-        #     non_sequences=[alpha, beta],
-        # )
-
-        # sum_increments = pt.switch(pt.gt(n_steps, 0), accs[-1], 0.0)
-        # logp = pt.log(alpha / (alpha + beta)) + sum_increments
-
         logp = betaln(alpha + 1, beta + value - 1) - betaln(alpha, beta)
 
         logp = pt.switch(
             pt.or_(
+                pt.lt(value, 1),
                 pt.or_(
                     alpha <= 0,
                     beta <= 0,
                 ),
-                pt.lt(value, 1),
             ),
             -np.inf,
             logp,
@@ -538,7 +515,6 @@ class ShiftedBetaGeometric(Discrete):
 
         For the Shifted Beta-Geometric distribution, we use a point estimate based on
         the expected value of the mixture components.
-
         """
         geo_mean = pt.ceil(
             pt.reciprocal(

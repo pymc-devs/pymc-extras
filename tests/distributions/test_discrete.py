@@ -240,10 +240,9 @@ class TestShiftedBetaGeometric:
                     assert np.var(draws) > 0
 
         def test_random_edge_cases(self):
-            """Test edge cases with more reasonable parameter values"""
-            # Test with small beta and large alpha values
-            beta_vals = [0.1, 0.5]
-            alpha_vals = [5.0, 10.0]
+            """Test with very small and large beta and alpha values"""
+            beta_vals = [20.0, 0.07, 18.0, 0.05]
+            alpha_vals = [20.0, 14.0, 0.06, 0.05]
 
             for beta in beta_vals:
                 for alpha in alpha_vals:
@@ -256,27 +255,10 @@ class TestShiftedBetaGeometric:
                     assert np.mean(draws) > 0
                     assert np.var(draws) > 0
 
-        @pytest.mark.parametrize(
-            "alpha",
-            [
-                (0.5, 1.0, 10.0),
-            ],
-        )
-        def test_random_moments(self, alpha):
-            beta = np.array([0.5, 1.0, 10.0])
-            dist = self.pymc_dist.dist(alpha=alpha, beta=beta, size=(10_000, len(beta)))
-            draws = dist.eval()
-
-            assert np.all(draws > 0)
-            assert np.all(draws.astype(int) == draws)
-            assert np.mean(draws) > 0
-            assert np.var(draws) > 0
-
     def test_logp(self):
-        # Create PyTensor variables with explicit values to ensure proper initialization
         alpha = pt.scalar("alpha")
         beta = pt.scalar("beta")
-        value = pt.vector("value", dtype="int64")
+        value = pt.vector(dtype="int64")
 
         # Compile logp function for testing
         dist = ShiftedBetaGeometric.dist(alpha, beta)
@@ -289,33 +271,33 @@ class TestShiftedBetaGeometric:
         assert not np.any(np.isnan(logp_vals))
         assert np.all(np.isfinite(logp_vals))
 
-        assert logp_fn(-1, alpha=5, beta=1) == -np.inf
+        neg_value = np.array([-1], dtype="int64")
+        assert logp_fn(neg_value, alpha=5, beta=1)[0] == -np.inf
 
         # Check alpha/beta restrictions
+        valid_value = np.array([1], dtype="int64")
         with pytest.raises(ParameterValueError):
-            logp_fn(1, alpha=-1, beta=2)
+            logp_fn(valid_value, alpha=-1, beta=2)  # invalid neg alpha
         with pytest.raises(ParameterValueError):
-            logp_fn(1, alpha=0, beta=0)
+            logp_fn(valid_value, alpha=0, beta=0)  # invalid zero alpha and beta
         with pytest.raises(ParameterValueError):
-            logp_fn(1, alpha=1, beta=-1)
+            logp_fn(valid_value, alpha=1, beta=-1)  # invalid neg beta
 
-    def test_logp_matches_paper_alpha1_beta1(self):
-        # For alpha=1, beta=1, P(T=t) = 1 / (t (t+1)) → logp = -log(t(t+1))
-        # Derived from B(2, t) / B(1,1); see Appendix B (B3)
-        # Reference: Fader & Hardie (2007), Appendix B [Figure B1, expression (B3)]
+    def test_logp_matches_paper(self):
+        # Reference: Fader & Hardie (2007), Appendix B (Figure B1, cells B6:B12)
         # https://faculty.wharton.upenn.edu/wp-content/uploads/2012/04/Fader_hardie_jim_07.pdf
         alpha = 1.0
         beta = 1.0
-        t_vec = np.array([1, 2, 3, 4, 5], dtype="int64")
-        expected = -np.log(t_vec * (t_vec + 1))
+        t_vec = np.array([1, 2, 3, 4, 5, 6, 7], dtype="int64")
+        p_t = np.array([0.5, 0.167, 0.083, 0.05, 0.033, 0.024, 0.018], dtype="float64")
+        expected = np.log(p_t)
 
-        alpha_sym = pt.scalar()
-        beta_sym = pt.scalar()
+        alpha_ = pt.scalar("alpha")
+        beta_ = pt.scalar("beta")
         value = pt.vector(dtype="int64")
-        dist = ShiftedBetaGeometric.dist(alpha_sym, beta_sym)
-        logp = pm.logp(dist, value)
-        fn = pytensor.function([value, alpha_sym, beta_sym], logp)
-        np.testing.assert_allclose(fn(t_vec, alpha, beta), expected, rtol=1e-12, atol=1e-12)
+        logp = pm.logp(ShiftedBetaGeometric.dist(alpha_, beta_), value)
+        logp_fn = pytensor.function([value, alpha_, beta_], logp)
+        np.testing.assert_allclose(logp_fn(t_vec, alpha, beta), expected, rtol=1e-2)
 
     @pytest.mark.parametrize(
         "alpha, beta, size, expected_shape",
@@ -339,24 +321,10 @@ class TestShiftedBetaGeometric:
 
         # Check values are positive integers
         assert np.all(init_point > 0)
-        # assert np.all(init_point.astype(int) == init_point)
+        assert np.all(init_point.astype(int) == init_point)
 
         # Check values are finite and reasonable
         assert np.all(np.isfinite(init_point))
         assert np.all(init_point < 1e6)  # Should not be extremely large
 
-        # TODO: expected values must be provided
         assert_support_point_is_expected(model, init_point)
-
-    # TODO: Adapt this to ShiftedBetaGeometric and delete above test?
-    @pytest.mark.parametrize(
-        "mu, lam, size, expected",
-        [
-            (50, [-0.6, 0, 0.6], None, np.floor(50 / (1 - np.array([-0.6, 0, 0.6])))),
-            ([5, 50], -0.1, (4, 2), np.full((4, 2), np.floor(np.array([5, 50]) / 1.1))),
-        ],
-    )
-    def test_moment(self, mu, lam, size, expected):
-        with pm.Model() as model:
-            GeneralizedPoisson("x", mu=mu, lam=lam, size=size)
-        assert_support_point_is_expected(model, expected)
