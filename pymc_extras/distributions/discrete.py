@@ -429,7 +429,6 @@ class ShiftedBetaGeometricRV(RandomVariable):
 sbg = ShiftedBetaGeometricRV()
 
 
-# TODO: Update docstrings for sBG, including plotting code
 class ShiftedBetaGeometric(Discrete):
     r"""Shifted Beta-Geometric distribution.
 
@@ -517,8 +516,11 @@ class ShiftedBetaGeometric(Discrete):
 
         logp = pt.switch(
             pt.or_(
-                alpha <= 0,
-                beta <= 0,
+                pt.or_(
+                    alpha <= 0,
+                    beta <= 0,
+                ),
+                pt.lt(value, 1),
             ),
             -np.inf,
             logp,
@@ -535,13 +537,13 @@ class ShiftedBetaGeometric(Discrete):
         """Calculate a reasonable starting point for sampling.
 
         For the Shifted Beta-Geometric distribution, we use a point estimate based on
-        the expected value of both mixture components.
+        the expected value of the mixture components.
 
         """
         geo_mean = pt.ceil(
-            pt.reciprocal(  # expected value of the geometric distribution
+            pt.reciprocal(
                 alpha / (alpha + beta)  # expected value of the beta distribution
-            )
+            )  # expected value of the geometric distribution
         )
         if not rv_size_is_none(size):
             geo_mean = pt.full(size, geo_mean)

@@ -215,37 +215,17 @@ class TestSkellam:
 class TestShiftedBetaGeometric:
     class TestRandomVariable(BaseTestDistributionRandom):
         pymc_dist = ShiftedBetaGeometric
-        pymc_dist_params = {"alpha": 2.0, "beta": 3.0}
-        expected_rv_op_params = {"alpha": 2.0, "beta": 3.0}
+        pymc_dist_params = {"alpha": 1.0, "beta": 1.0}
+        expected_rv_op_params = {"alpha": 1.0, "beta": 1.0}
         tests_to_run = [
             "check_pymc_params_match_rv_op",
             "check_rv_size",
         ]
 
-        # TODO: Adapt this to ShiftedBetaGeometric and delete random_moments tests?
-        # def test_random_matches_geometric(self):
-        #     discrete_random_tester(
-        #         dist=self.pymc_dist,
-        #         paramdomains={"theta": Rplus, "alpha": Domain([0], edges=(None, None))},
-        #         ref_rand=lambda mu, lam, size: scipy.stats.geometric.rvs(theta, size=size),
-        #     )
-
-        # @pytest.mark.parametrize("mu", (2.5, 20, 50))
-        # def test_random_lam_expected_moments(self, mu):
-        #     lam = np.array([-0.9, -0.7, -0.2, 0, 0.2, 0.7, 0.9])
-        #     dist = self.pymc_dist.dist(mu=mu, lam=lam, size=(10_000, len(lam)))
-        #     draws = dist.eval()
-
-        #     expected_mean = mu / (1 - lam)
-        #     np.testing.assert_allclose(draws.mean(0), expected_mean, rtol=1e-1)
-
-        #     expected_std = np.sqrt(mu / (1 - lam) ** 3)
-        #     np.testing.assert_allclose(draws.std(0), expected_std, rtol=1e-1)
-
         def test_random_basic_properties(self):
             """Test basic random sampling properties"""
             # Test with standard parameter values
-            alpha_vals = [0.5, 1.0, 2.0]
+            alpha_vals = [1.0, 0.5, 2.0]
             beta_vals = [0.5, 1.0, 2.0]
 
             for alpha in alpha_vals:
@@ -277,16 +257,14 @@ class TestShiftedBetaGeometric:
                     assert np.var(draws) > 0
 
         @pytest.mark.parametrize(
-            "alpha,beta",
+            "alpha",
             [
-                (0.5, 1.0),
-                (1.0, np.array([2.0, 1.0])),
-                (np.array([1.0, 2.0]), 1.0),
-                (np.array([2.0, 0.5]), np.array([1.0, 2.0])),
+                (0.5, 1.0, 10.0),
             ],
         )
-        def test_random_moments(self, alpha, beta):
-            dist = self.pymc_dist.dist(alpha=alpha, beta=beta, size=10_000)
+        def test_random_moments(self, alpha):
+            beta = np.array([0.5, 1.0, 10.0])
+            dist = self.pymc_dist.dist(alpha=alpha, beta=beta, size=(10_000, len(beta)))
             draws = dist.eval()
 
             assert np.all(draws > 0)
@@ -300,7 +278,7 @@ class TestShiftedBetaGeometric:
         beta = pt.scalar("beta")
         value = pt.vector("value", dtype="int64")
 
-        # Check out-of-bounds values
+        # Compile logp function for testing
         dist = ShiftedBetaGeometric.dist(alpha, beta)
         logp = pm.logp(dist, value)
         logp_fn = pytensor.function([value, alpha, beta], logp)
@@ -311,21 +289,13 @@ class TestShiftedBetaGeometric:
         assert not np.any(np.isnan(logp_vals))
         assert np.all(np.isfinite(logp_vals))
 
-        # Check out-of-bounds values
-        value = pt.scalar("value")
-        logp = pm.logp(ShiftedBetaGeometric.dist(alpha, beta), value)
-        logp_fn = pytensor.function([value, alpha, beta], logp)
+        assert logp_fn(-1, alpha=5, beta=1) == -np.inf
 
-        logp_fn(-1, alpha=5, beta=0) == -np.inf
-        logp_fn(9, alpha=5, beta=-1) == -np.inf
-
-        # Check mu/lam restrictions
+        # Check alpha/beta restrictions
         with pytest.raises(ParameterValueError):
-            logp_fn(1, alpha=1, beta=2)
-
+            logp_fn(1, alpha=-1, beta=2)
         with pytest.raises(ParameterValueError):
             logp_fn(1, alpha=0, beta=0)
-
         with pytest.raises(ParameterValueError):
             logp_fn(1, alpha=1, beta=-1)
 
