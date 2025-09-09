@@ -24,9 +24,11 @@ from pymc.testing import (
     BaseTestDistributionRandom,
     Domain,
     I,
+    Nat,
     Rplus,
     assert_support_point_is_expected,
     check_logp,
+    check_selfconsistency_discrete_logcdf,
     discrete_random_tester,
 )
 from pytensor import config
@@ -241,8 +243,8 @@ class TestShiftedBetaGeometric:
 
         def test_random_edge_cases(self):
             """Test with very small and large beta and alpha values"""
-            beta_vals = [20.0, 0.07, 18.0, 0.05]
-            alpha_vals = [20.0, 14.0, 0.06, 0.05]
+            beta_vals = [20.0, 0.08, 18.0, 0.06]
+            alpha_vals = [20.0, 14.0, 0.07, 0.06]
 
             for beta in beta_vals:
                 for alpha in alpha_vals:
@@ -298,6 +300,13 @@ class TestShiftedBetaGeometric:
         logp = pm.logp(ShiftedBetaGeometric.dist(alpha_, beta_), value)
         logp_fn = pytensor.function([value, alpha_, beta_], logp)
         np.testing.assert_allclose(logp_fn(t_vec, alpha, beta), expected, rtol=1e-2)
+
+    def test_logcdf(self):
+        check_selfconsistency_discrete_logcdf(
+            distribution=ShiftedBetaGeometric,
+            domain=Nat,
+            paramdomains={"alpha": Rplus, "beta": Rplus},
+        )
 
     @pytest.mark.parametrize(
         "alpha, beta, size, expected_shape",

@@ -489,6 +489,8 @@ class ShiftedBetaGeometric(Discrete):
         return super().dist([alpha, beta], *args, **kwargs)
 
     def logp(value, alpha, beta):
+        """From Expression (5) on p.6 of Fader & Hardie (2007)"""
+
         logp = betaln(alpha + 1, beta + value - 1) - betaln(alpha, beta)
 
         logp = pt.switch(
@@ -509,6 +511,18 @@ class ShiftedBetaGeometric(Discrete):
             beta > 0,
             msg="alpha > 0, beta > 0",
         )
+
+    def logcdf(value, alpha, beta):
+        """Adapted from Expression (6) on p.6 of Fader & Hardie (2007)"""
+        # survival function from paper
+        logS = (
+            pt.gammaln(beta + value)
+            - pt.gammaln(beta)
+            + pt.gammaln(alpha + beta)
+            - pt.gammaln(alpha + beta + value)
+        )
+        # log(1-exp())
+        return pt.log1mexp(logS)
 
     def support_point(rv, size, alpha, beta):
         """Calculate a reasonable starting point for sampling.
