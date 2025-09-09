@@ -17,9 +17,13 @@ import pymc as pm
 
 from pymc.distributions.dist_math import betaln, check_parameters, factln, logpow
 from pymc.distributions.distribution import Discrete
-from pymc.distributions.shape_utils import rv_size_is_none
+from pymc.distributions.shape_utils import implicit_size_from_params, rv_size_is_none
+from pymc.pytensorf import normalize_rng_param
 from pytensor import tensor as pt
+from pytensor.tensor.random.basic import beta as beta_rng
+from pytensor.tensor.random.basic import geometric as geometric_rng
 from pytensor.tensor.random.op import RandomVariable
+from pytensor.tensor.random.utils import normalize_size_param
 
 
 def log1mexp(x):
@@ -404,24 +408,28 @@ class Skellam:
 
 class ShiftedBetaGeometricRV(RandomVariable):
     name = "sbg"
+    extended_signature = "[rng],[size],(),()->[rng],()"
     signature = "(),()->()"
-
-    dtype = "int64"
     _print_name = ("ShiftedBetaGeometric", "\\operatorname{ShiftedBetaGeometric}")
 
     @classmethod
-    def rng_fn(cls, rng, alpha, beta, size):
-        if size is None:
-            size = np.broadcast_shapes(alpha.shape, beta.shape)
+    def rv_op(cls, alpha, beta, *, size=None, rng=None):
+        alpha = pt.as_tensor(alpha)
+        beta = pt.as_tensor(beta)
+        rng = normalize_rng_param(rng)
+        size = normalize_size_param(size)
 
-        alpha = np.broadcast_to(alpha, size)
-        beta = np.broadcast_to(beta, size)
+        if rv_size_is_none(size):
+            size = implicit_size_from_params(alpha, beta, ndims_params=cls.ndims_params)
 
-        p = rng.beta(a=alpha, b=beta, size=size)
+        next_rng, p = beta_rng(a=alpha, b=beta, size=size, rng=rng).owner.outputs
 
-        samples = rng.geometric(p, size=size)
+        draws = geometric_rng(p, size=size)
+        draws = draws.astype("int64")
 
-        return samples
+        return cls(inputs=[rng, size, alpha, beta], outputs=[next_rng, draws])(
+            rng, size, alpha, beta
+        )
 
 
 sbg = ShiftedBetaGeometricRV()
@@ -521,7 +529,7 @@ class ShiftedBetaGeometric(Discrete):
             + pt.gammaln(alpha + beta)
             - pt.gammaln(alpha + beta + value)
         )
-        # log(1-exp())
+        # log(1-exp(logS))
         return pt.log1mexp(logS)
 
     def support_point(rv, size, alpha, beta):
