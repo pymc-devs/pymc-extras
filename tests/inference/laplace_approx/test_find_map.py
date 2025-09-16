@@ -133,8 +133,8 @@ def test_jax_functions_from_graph(gradient_backend: GradientBackend):
     ],
 )
 @pytest.mark.parametrize(
-    "backend, gradient_backend, include_transformed",
-    [("jax", "jax", True), ("jax", "pytensor", False)],
+    "backend, gradient_backend, include_transformed, compute_covariance",
+    [("jax", "jax", True, True), ("jax", "pytensor", False, False)],
     ids=str,
 )
 def test_find_MAP(
@@ -145,6 +145,7 @@ def test_find_MAP(
     backend,
     gradient_backend: GradientBackend,
     include_transformed,
+    compute_covariance,
     rng,
 ):
     pytest.importorskip("jax")
@@ -164,6 +165,7 @@ def test_find_MAP(
             include_transformed=include_transformed,
             compile_kwargs={"mode": backend.upper()},
             maxiter=5,
+            compute_covariance=compute_covariance,
         )
 
     assert hasattr(idata, "posterior")
@@ -183,6 +185,8 @@ def test_find_MAP(
         assert unconstrained_posterior["sigma_log__"].shape == ()
     else:
         assert not hasattr(idata, "unconstrained_posterior")
+
+    assert ("covariance_matrix" in idata.fit) == compute_covariance
 
 
 def test_find_map_outside_model_context():

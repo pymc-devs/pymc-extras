@@ -136,7 +136,10 @@ def map_results_to_inference_data(
 
 
 def add_fit_to_inference_data(
-    idata: az.InferenceData, mu: RaveledVars, H_inv: np.ndarray, model: pm.Model | None = None
+    idata: az.InferenceData,
+    mu: RaveledVars,
+    H_inv: np.ndarray | None,
+    model: pm.Model | None = None,
 ) -> az.InferenceData:
     """
     Add the mean vector and covariance matrix of the Laplace approximation to an InferenceData object.
@@ -147,7 +150,7 @@ def add_fit_to_inference_data(
         An InferenceData object containing the approximated posterior samples.
     mu: RaveledVars
         The MAP estimate of the model parameters.
-    H_inv: np.ndarray
+    H_inv: np.ndarray, optional
         The inverse Hessian matrix of the log-posterior evaluated at the MAP estimate.
     model: Model, optional
         A PyMC model. If None, the model is taken from the current model context.

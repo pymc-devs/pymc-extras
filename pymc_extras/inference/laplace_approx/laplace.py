@@ -389,6 +389,7 @@ def fit_laplace(
         include_transformed=include_transformed,
         gradient_backend=gradient_backend,
         compile_kwargs=compile_kwargs,
+        compute_covariance=True,
         **optimizer_kwargs,
     )
 
