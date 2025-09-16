@@ -198,7 +198,7 @@ def find_MAP(
     include_transformed: bool = True,
     gradient_backend: GradientBackend = "pytensor",
     compile_kwargs: dict | None = None,
-    compute_covariance: bool = True,
+    compute_covariance: bool = False,
     **optimizer_kwargs,
 ) -> (
     dict[str, np.ndarray]
@@ -243,7 +243,7 @@ def find_MAP(
     compute_covariance: bool
         If True, the inverse Hessian matrix at the optimum will be computed and included in the returned
         InferenceData object. This is needed for the Laplace approximation, but can be computationally expensive for
-        high-dimensional problems. Defaults to True.
+        high-dimensional problems. Defaults to False.
     compile_kwargs: dict, optional
         Additional options to pass to the ``pytensor.function`` function when compiling loss functions.
     **optimizer_kwargs
