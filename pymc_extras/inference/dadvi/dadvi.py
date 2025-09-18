@@ -13,12 +13,18 @@ from pymc.backends.arviz import (
     apply_function_over_dataset,
     coords_and_dims_for_inferencedata,
 )
+from pymc.blocking import RaveledVars
 from pymc.util import RandomSeed, get_default_varnames
 from pytensor.tensor.variable import TensorVariable
 
+from pymc_extras.inference.laplace_approx.idata import (
+    add_data_to_inference_data,
+    add_optimizer_result_to_inference_data,
+)
 from pymc_extras.inference.laplace_approx.laplace import unstack_laplace_draws
 from pymc_extras.inference.laplace_approx.scipy_interface import (
-    _compile_functions_for_scipy_optimize,
+    scipy_optimize_funcs_from_loss,
+    set_optimizer_function_defaults,
 )
 
 
@@ -29,17 +35,17 @@ def fit_dadvi(
     n_draws: int = 1000,
     keep_untransformed: bool = False,
     optimizer_method: minimize_method = "trust-ncg",
-    use_grad: bool = True,
-    use_hessp: bool = True,
-    use_hess: bool = False,
+    use_grad: bool | None = None,
+    use_hessp: bool | None = None,
+    use_hess: bool | None = None,
+    gradient_backend: str = "pytensor",
+    compile_kwargs: dict | None = None,
     **minimize_kwargs,
 ) -> az.InferenceData:
     """
-    Does inference using deterministic ADVI (automatic differentiation
-    variational inference), DADVI for short.
+    Does inference using Deterministic ADVI (Automatic Differentiation Variational Inference), DADVI for short.
 
-    For full details see the paper cited in the references:
-    https://www.jmlr.org/papers/v25/23-1015.html
+    For full details see the paper cited in the references: https://www.jmlr.org/papers/v25/23-1015.html
 
     Parameters
     ----------
@@ -47,46 +53,45 @@ def fit_dadvi(
         The PyMC model to be fit. If None, the current model context is used.
 
     n_fixed_draws : int
-        The number of fixed draws to use for the optimisation. More
-        draws will result in more accurate estimates, but also
-        increase inference time. Usually, the default of 30 is a good
-        tradeoff.between speed and accuracy.
+        The number of fixed draws to use for the optimisation. More draws will result in more accurate estimates, but
+        also increase inference time. Usually, the default of 30 is a good tradeoff between speed and accuracy.
 
     random_seed: int
-        The random seed to use for the fixed draws. Running the optimisation
-        twice with the same seed should arrive at the same result.
+        The random seed to use for the fixed draws. Running the optimisation twice with the same seed should arrive at
+        the same result.
 
     n_draws: int
         The number of draws to return from the variational approximation.
 
     keep_untransformed: bool
-        Whether or not to keep the unconstrained variables (such as
-        logs of positive-constrained parameters) in the output.
+        Whether or not to keep the unconstrained variables (such as logs of positive-constrained parameters) in the
+        output.
 
     optimizer_method: str
-        Which optimization method to use. The function calls
-        ``scipy.optimize.minimize``, so any of the methods there can
-        be used. The default is trust-ncg, which uses second-order
-        information and is generally very reliable. Other methods such
-        as L-BFGS-B might be faster but potentially more brittle and
-        may not converge exactly to the optimum.
+        Which optimization method to use. The function calls ``scipy.optimize.minimize``, so any of the methods there
+        can be used. The default is trust-ncg, which uses second-order information and is generally very reliable.
+        Other methods such as L-BFGS-B might be faster but potentially more brittle and may not converge exactly to
+        the optimum.
+
+    gradient_backend: str
+        Which backend to use to compute gradients. Must be one of "jax" or "pytensor". Default is "pytensor".
+
+    compile_kwargs: dict, optional
+        Additional keyword arguments to pass to `pytensor.function`
 
     minimize_kwargs:
-        Additional keyword arguments to pass to the
-        ``scipy.optimize.minimize`` function. See the documentation of
+        Additional keyword arguments to pass to the ``scipy.optimize.minimize`` function. See the documentation of
         that function for details.
 
-    use_grad:
-        If True, pass the gradient function to
-        `scipy.optimize.minimize` (where it is referred to as `jac`).
+    use_grad: bool, optional
+        If True, pass the gradient function to `scipy.optimize.minimize` (where it is referred to as `jac`).
 
-    use_hessp:
+    use_hessp: bool, optional
         If True, pass the hessian vector product to `scipy.optimize.minimize`.
 
-    use_hess:
-        If True, pass the hessian to `scipy.optimize.minimize`. Note that
-        this is generally not recommended since its computation can be slow
-        and memory-intensive if there are many parameters.
+    use_hess: bool, optional
+        If True, pass the hessian to `scipy.optimize.minimize`. Note that this is generally not recommended since its
+        computation can be slow and memory-intensive if there are many parameters.
 
     Returns
     -------
@@ -95,16 +100,15 @@ def fit_dadvi(
 
     References
     ----------
-    Giordano, R., Ingram, M., & Broderick, T. (2024). Black Box
-    Variational Inference with a Deterministic Objective: Faster, More
-    Accurate, and Even More Black Box. Journal of Machine Learning
-    Research, 25(18), 1–39.
+    Giordano, R., Ingram, M., & Broderick, T. (2024). Black Box Variational Inference with a Deterministic Objective:
+    Faster, More Accurate, and Even More Black Box. Journal of Machine Learning Research, 25(18), 1–39.
     """
 
     model = pymc.modelcontext(model) if model is None else model
 
     initial_point_dict = model.initial_point()
-    n_params = DictToArrayBijection.map(initial_point_dict).data.shape[0]
+    initial_point = DictToArrayBijection.map(initial_point_dict)
+    n_params = initial_point.data.shape[0]
 
     var_params, objective = create_dadvi_graph(
         model,
@@ -113,30 +117,44 @@ def fit_dadvi(
         n_params=n_params,
     )
 
-    f_fused, f_hessp = _compile_functions_for_scipy_optimize(
-        objective,
-        [var_params],
-        compute_grad=use_grad,
-        compute_hessp=use_hessp,
-        compute_hess=use_hess,
+    use_grad, use_hess, use_hessp = set_optimizer_function_defaults(
+        optimizer_method, use_grad, use_hess, use_hessp
     )
 
-    derivative_kwargs = {}
+    f_fused, f_hessp = scipy_optimize_funcs_from_loss(
+        loss=objective,
+        inputs=[var_params],
+        initial_point_dict=None,
+        use_grad=use_grad,
+        use_hessp=use_hessp,
+        use_hess=use_hess,
+        gradient_backend=gradient_backend,
+        compile_kwargs=compile_kwargs,
+        inputs_are_flat=True,
+    )
 
-    if use_grad:
-        derivative_kwargs["jac"] = True
-    if use_hessp:
-        derivative_kwargs["hessp"] = f_hessp
-    if use_hess:
-        derivative_kwargs["hess"] = True
+    dadvi_initial_point = {
+        f"{var_name}_mu": np.zeros_like(value).ravel()
+        for var_name, value in initial_point_dict.items()
+    }
+    dadvi_initial_point.update(
+        {
+            f"{var_name}_sigma__log": np.zeros_like(value).ravel()
+            for var_name, value in initial_point_dict.items()
+        }
+    )
+
+    dadvi_initial_point = DictToArrayBijection.map(dadvi_initial_point)
 
     result = minimize(
-        f_fused,
-        np.zeros(2 * n_params),
+        f=f_fused,
+        x0=dadvi_initial_point.data,
         method=optimizer_method,
-        **derivative_kwargs,
+        hessp=f_hessp,
         **minimize_kwargs,
     )
+
+    raveled_optimized = RaveledVars(result.x, dadvi_initial_point.point_map_info)
 
     opt_var_params = result.x
     opt_means, opt_log_sds = np.split(opt_var_params, 2)
@@ -148,9 +166,29 @@ def fit_dadvi(
     draws = opt_means + draws_raw * np.exp(opt_log_sds)
     draws_arviz = unstack_laplace_draws(draws, model, chains=1, draws=n_draws)
 
-    transformed_draws = transform_draws(draws_arviz, model, keep_untransformed=keep_untransformed)
+    idata = az.InferenceData(
+        posterior=transform_draws(draws_arviz, model, keep_untransformed=keep_untransformed)
+    )
 
-    return transformed_draws
+    var_name_to_model_var = {f"{var_name}_mu": var_name for var_name in initial_point_dict.keys()}
+    var_name_to_model_var.update(
+        {f"{var_name}_sigma__log": var_name for var_name in initial_point_dict.keys()}
+    )
+
+    idata = add_optimizer_result_to_inference_data(
+        idata=idata,
+        result=result,
+        method=optimizer_method,
+        mu=raveled_optimized,
+        model=model,
+        var_name_to_model_var=var_name_to_model_var,
+    )
+
+    idata = add_data_to_inference_data(
+        idata=idata, progressbar=False, model=model, compile_kwargs=compile_kwargs
+    )
+
+    return idata
 
 
 def create_dadvi_graph(

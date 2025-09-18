@@ -1,3 +1,5 @@
+import logging
+
 from collections.abc import Callable
 from importlib.util import find_spec
 from typing import Literal, get_args
@@ -6,6 +8,7 @@ import numpy as np
 import pymc as pm
 import pytensor
 
+from better_optimize.constants import MINIMIZE_MODE_KWARGS
 from pymc import join_nonshared_inputs
 from pytensor import tensor as pt
 from pytensor.compile import Function
@@ -13,6 +16,39 @@ from pytensor.tensor import TensorVariable
 
 GradientBackend = Literal["pytensor", "jax"]
 VALID_BACKENDS = get_args(GradientBackend)
+
+_log = logging.getLogger(__name__)
+
+
+def set_optimizer_function_defaults(
+    method: str, use_grad: bool | None, use_hess: bool | None, use_hessp: bool | None
+):
+    method_info = MINIMIZE_MODE_KWARGS[method].copy()
+
+    if use_hess and use_hessp:
+        _log.warning(
+            'Both "use_hess" and "use_hessp" are set to True, but scipy.optimize.minimize never uses both at the '
+            'same time. When possible "use_hessp" is preferred because its is computationally more efficient. '
+            'Setting "use_hess" to False.'
+        )
+        use_hess = False
+
+    use_grad = use_grad if use_grad is not None else method_info["uses_grad"]
+
+    if use_hessp is not None and use_hess is None:
+        use_hess = not use_hessp
+
+    elif use_hess is not None and use_hessp is None:
+        use_hessp = not use_hess
+
+    elif use_hessp is None and use_hess is None:
+        use_hessp = method_info["uses_hessp"]
+        use_hess = method_info["uses_hess"]
+        if use_hessp and use_hess:
+            # If a method could use either hess or hessp, we default to using hessp
+            use_hess = False
+
+    return use_grad, use_hess, use_hessp
 
 
 def _compile_grad_and_hess_to_jax(
@@ -144,12 +180,13 @@ def _compile_functions_for_scipy_optimize(
 def scipy_optimize_funcs_from_loss(
     loss: TensorVariable,
     inputs: list[TensorVariable],
-    initial_point_dict: dict[str, np.ndarray | float | int],
-    use_grad: bool,
-    use_hess: bool,
-    use_hessp: bool,
+    initial_point_dict: dict[str, np.ndarray | float | int] | None = None,
+    use_grad: bool | None = None,
+    use_hess: bool | None = None,
+    use_hessp: bool | None = None,
     gradient_backend: GradientBackend = "pytensor",
     compile_kwargs: dict | None = None,
+    inputs_are_flat: bool = False,
 ) -> tuple[Callable, ...]:
     """
     Compile loss functions for use with scipy.optimize.minimize.
@@ -206,9 +243,12 @@ def scipy_optimize_funcs_from_loss(
     if not isinstance(inputs, list):
         inputs = [inputs]
 
-    [loss], flat_input = join_nonshared_inputs(
-        point=initial_point_dict, outputs=[loss], inputs=inputs
-    )
+    if inputs_are_flat:
+        [flat_input] = inputs
+    else:
+        [loss], flat_input = join_nonshared_inputs(
+            point=initial_point_dict, outputs=[loss], inputs=inputs
+        )
 
     # If we use pytensor gradients, we will use the pytensor function wrapper that handles shared variables. When
     # computing jax gradients, we discard the function wrapper, so we can't handle shared variables --> rewrite them
