@@ -33,7 +33,7 @@ def fit_dadvi(
     n_fixed_draws: int = 30,
     random_seed: RandomSeed = None,
     n_draws: int = 1000,
-    keep_untransformed: bool = False,
+    include_transformed: bool = False,
     optimizer_method: minimize_method = "trust-ncg",
     use_grad: bool | None = None,
     use_hessp: bool | None = None,
@@ -63,7 +63,7 @@ def fit_dadvi(
     n_draws: int
         The number of draws to return from the variational approximation.
 
-    keep_untransformed: bool
+    include_transformed: bool
         Whether or not to keep the unconstrained variables (such as logs of positive-constrained parameters) in the
         output.
 
@@ -166,9 +166,7 @@ def fit_dadvi(
     draws = opt_means + draws_raw * np.exp(opt_log_sds)
     draws_arviz = unstack_laplace_draws(draws, model, chains=1, draws=n_draws)
 
-    idata = az.InferenceData(
-        posterior=transform_draws(draws_arviz, model, keep_untransformed=keep_untransformed)
-    )
+    idata = dadvi_result_to_idata(draws_arviz, model, include_transformed=include_transformed)
 
     var_name_to_model_var = {f"{var_name}_mu": var_name for var_name in initial_point_dict.keys()}
     var_name_to_model_var.update(
@@ -251,10 +249,10 @@ def create_dadvi_graph(
     return var_params, objective
 
 
-def transform_draws(
+def dadvi_result_to_idata(
     unstacked_draws: xarray.Dataset,
     model: Model,
-    keep_untransformed: bool = False,
+    include_transformed: bool = False,
 ):
     """
     Transforms the unconstrained draws back into the constrained space.
@@ -270,7 +268,7 @@ def transform_draws(
     n_draws: int
         The number of draws to return from the variational approximation.
 
-    keep_untransformed: bool
+    include_transformed: bool
         Whether or not to keep the unconstrained variables in the output.
 
     Returns
@@ -281,7 +279,7 @@ def transform_draws(
 
     filtered_var_names = model.unobserved_value_vars
     vars_to_sample = list(
-        get_default_varnames(filtered_var_names, include_transformed=keep_untransformed)
+        get_default_varnames(filtered_var_names, include_transformed=include_transformed)
     )
     fn = pytensor.function(model.value_vars, vars_to_sample)
     point_func = PointFunc(fn)
@@ -296,4 +294,17 @@ def transform_draws(
         dims=dims,
     )
 
-    return transformed_result
+    constrained_names = [
+        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=False)
+    ]
+    all_varnames = [
+        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=True)
+    ]
+    unconstrained_names = set(all_varnames) - set(constrained_names)
+
+    idata = az.InferenceData(posterior=transformed_result[constrained_names])
+
+    if unconstrained_names and include_transformed:
+        idata["unconstrained_posterior"] = transformed_result[unconstrained_names]
+
+    return idata
