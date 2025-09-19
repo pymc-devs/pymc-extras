@@ -5,7 +5,7 @@ import pytensor
 import pytensor.tensor as pt
 import xarray
 
-from better_optimize import minimize
+from better_optimize import basinhopping, minimize
 from better_optimize.constants import minimize_method
 from pymc import DictToArrayBijection, Model, join_nonshared_inputs
 from pymc.backends.arviz import (
@@ -31,7 +31,6 @@ from pymc_extras.inference.laplace_approx.scipy_interface import (
 def fit_dadvi(
     model: Model | None = None,
     n_fixed_draws: int = 30,
-    random_seed: RandomSeed = None,
     n_draws: int = 1000,
     include_transformed: bool = False,
     optimizer_method: minimize_method = "trust-ncg",
@@ -40,7 +39,9 @@ def fit_dadvi(
     use_hess: bool | None = None,
     gradient_backend: str = "pytensor",
     compile_kwargs: dict | None = None,
-    **minimize_kwargs,
+    random_seed: RandomSeed = None,
+    progressbar: bool = True,
+    **optimizer_kwargs,
 ) -> az.InferenceData:
     """
     Does inference using Deterministic ADVI (Automatic Differentiation Variational Inference), DADVI for short.
@@ -79,10 +80,6 @@ def fit_dadvi(
     compile_kwargs: dict, optional
         Additional keyword arguments to pass to `pytensor.function`
 
-    minimize_kwargs:
-        Additional keyword arguments to pass to the ``scipy.optimize.minimize`` function. See the documentation of
-        that function for details.
-
     use_grad: bool, optional
         If True, pass the gradient function to `scipy.optimize.minimize` (where it is referred to as `jac`).
 
@@ -92,6 +89,13 @@ def fit_dadvi(
     use_hess: bool, optional
         If True, pass the hessian to `scipy.optimize.minimize`. Note that this is generally not recommended since its
         computation can be slow and memory-intensive if there are many parameters.
+
+    progressbar: bool
+        Whether or not to show a progress bar during optimization. Default is True.
+
+    optimizer_kwargs:
+        Additional keyword arguments to pass to the ``scipy.optimize.minimize`` function. See the documentation of
+        that function for details.
 
     Returns
     -------
@@ -105,6 +109,16 @@ def fit_dadvi(
     """
 
     model = pymc.modelcontext(model) if model is None else model
+    do_basinhopping = optimizer_method == "basinhopping"
+    minimizer_kwargs = optimizer_kwargs.pop("minimizer_kwargs", {})
+
+    if do_basinhopping:
+        # For a nice API, we let the user set method="basinhopping", but if we're doing basinhopping we still need
+        # another method for the inner optimizer. This will be set in the minimizer_kwargs, but also needs a default
+        # if one isn't provided.
+
+        optimizer_method = minimizer_kwargs.pop("method", "L-BFGS-B")
+        minimizer_kwargs["method"] = optimizer_method
 
     initial_point_dict = model.initial_point()
     initial_point = DictToArrayBijection.map(initial_point_dict)
@@ -145,14 +159,34 @@ def fit_dadvi(
     )
 
     dadvi_initial_point = DictToArrayBijection.map(dadvi_initial_point)
+    args = optimizer_kwargs.pop("args", ())
 
-    result = minimize(
-        f=f_fused,
-        x0=dadvi_initial_point.data,
-        method=optimizer_method,
-        hessp=f_hessp,
-        **minimize_kwargs,
-    )
+    if do_basinhopping:
+        if "args" not in minimizer_kwargs:
+            minimizer_kwargs["args"] = args
+        if "hessp" not in minimizer_kwargs:
+            minimizer_kwargs["hessp"] = f_hessp
+        if "method" not in minimizer_kwargs:
+            minimizer_kwargs["method"] = optimizer_method
+
+        result = basinhopping(
+            func=f_fused,
+            x0=dadvi_initial_point.data,
+            progressbar=progressbar,
+            minimizer_kwargs=minimizer_kwargs,
+            **optimizer_kwargs,
+        )
+
+    else:
+        result = minimize(
+            f=f_fused,
+            x0=dadvi_initial_point.data,
+            args=args,
+            method=optimizer_method,
+            hessp=f_hessp,
+            progressbar=progressbar,
+            **optimizer_kwargs,
+        )
 
     raveled_optimized = RaveledVars(result.x, dadvi_initial_point.point_map_info)
 
@@ -166,7 +200,9 @@ def fit_dadvi(
     draws = opt_means + draws_raw * np.exp(opt_log_sds)
     draws_arviz = unstack_laplace_draws(draws, model, chains=1, draws=n_draws)
 
-    idata = dadvi_result_to_idata(draws_arviz, model, include_transformed=include_transformed)
+    idata = dadvi_result_to_idata(
+        draws_arviz, model, include_transformed=include_transformed, progressbar=progressbar
+    )
 
     var_name_to_model_var = {f"{var_name}_mu": var_name for var_name in initial_point_dict.keys()}
     var_name_to_model_var.update(
@@ -253,6 +289,7 @@ def dadvi_result_to_idata(
     unstacked_draws: xarray.Dataset,
     model: Model,
     include_transformed: bool = False,
+    progressbar: bool = True,
 ):
     """
     Transforms the unconstrained draws back into the constrained space.
@@ -270,6 +307,9 @@ def dadvi_result_to_idata(
 
     include_transformed: bool
         Whether or not to keep the unconstrained variables in the output.
+
+    progressbar: bool
+        Whether or not to show a progress bar during the transformation. Default is True.
 
     Returns
     -------
@@ -292,6 +332,7 @@ def dadvi_result_to_idata(
         output_var_names=[x.name for x in vars_to_sample],
         coords=coords,
         dims=dims,
+        progressbar=progressbar,
     )
 
     constrained_names = [

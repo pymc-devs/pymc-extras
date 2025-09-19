@@ -140,3 +140,42 @@ def test_fit_dadvi_ragged_coords(rng):
     # strictly positive
     assert (idata["posterior"].beta.sel(feature=0).to_numpy() < 0).all()
     assert (idata["posterior"].beta.sel(feature=1).to_numpy() > 0).all()
+
+
+@pytest.mark.parametrize(
+    "method, use_grad, use_hess, use_hessp",
+    [
+        ("Newton-CG", True, True, False),
+        ("Newton-CG", True, False, True),
+    ],
+)
+def test_dadvi_basinhopping(method, use_grad, use_hess, use_hessp, rng):
+    pytest.importorskip("jax")
+
+    with pm.Model() as m:
+        mu = pm.Normal("mu")
+        sigma = pm.Exponential("sigma", 1)
+        pm.Normal("y_hat", mu=mu, sigma=sigma, observed=rng.normal(loc=3, scale=1.5, size=10))
+
+        idata = fit_dadvi(
+            optimizer_method="basinhopping",
+            use_grad=use_grad,
+            use_hess=use_hess,
+            use_hessp=use_hessp,
+            progressbar=False,
+            include_transformed=True,
+            minimizer_kwargs=dict(method=method),
+            niter=1,
+            n_draws=100,
+        )
+
+    assert hasattr(idata, "posterior")
+    assert hasattr(idata, "unconstrained_posterior")
+
+    posterior = idata.posterior
+    unconstrained_posterior = idata.unconstrained_posterior
+    assert "mu" in posterior
+    assert posterior["mu"].shape == (1, 100)
+
+    assert "sigma_log__" in unconstrained_posterior
+    assert unconstrained_posterior["sigma_log__"].shape == (1, 100)
