@@ -464,6 +464,7 @@ def get_laplace_approx(
     x0, _ = minimize(
         objective=-logp_objective,  # logp(x | y, params) = logp(y | x, params) + logp(x | params) + const (const omitted during minimization)
         x=x,
+        use_vectorized_jac=True,
         **minimizer_kwargs,
     )
 
