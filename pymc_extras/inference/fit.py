@@ -45,10 +45,10 @@ def fit(method: str, **kwargs) -> az.InferenceData:
         from pymc_extras.inference.INLA import fit_INLA
 
         return fit_INLA(**kwargs)
-      
+
     elif method == "dadvi":
         from pymc_extras.inference import fit_dadvi
-        
+
         return fit_dadvi(**kwargs)
 
     else:
