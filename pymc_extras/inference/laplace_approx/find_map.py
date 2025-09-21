@@ -198,6 +198,7 @@ def find_MAP(
     include_transformed: bool = True,
     gradient_backend: GradientBackend = "pytensor",
     compile_kwargs: dict | None = None,
+    compute_hessian: bool = False,
     **optimizer_kwargs,
 ) -> (
     dict[str, np.ndarray]
@@ -239,6 +240,10 @@ def find_MAP(
         Whether to include transformed variable values in the returned dictionary. Defaults to True.
     gradient_backend: str, default "pytensor"
         Which backend to use to compute gradients. Must be one of "pytensor" or "jax".
+    compute_hessian: bool
+        If True, the inverse Hessian matrix at the optimum will be computed and included in the returned
+        InferenceData object. This is needed for the Laplace approximation, but can be computationally expensive for
+        high-dimensional problems. Defaults to False.
     compile_kwargs: dict, optional
         Additional options to pass to the ``pytensor.function`` function when compiling loss functions.
     **optimizer_kwargs
@@ -316,14 +321,17 @@ def find_MAP(
             **optimizer_kwargs,
         )
 
-    H_inv = _compute_inverse_hessian(
-        optimizer_result=optimizer_result,
-        optimal_point=None,
-        f_fused=f_fused,
-        f_hessp=f_hessp,
-        use_hess=use_hess,
-        method=method,
-    )
+    if compute_hessian:
+        H_inv = _compute_inverse_hessian(
+            optimizer_result=optimizer_result,
+            optimal_point=None,
+            f_fused=f_fused,
+            f_hessp=f_hessp,
+            use_hess=use_hess,
+            method=method,
+        )
+    else:
+        H_inv = None
 
     raveled_optimized = RaveledVars(optimizer_result.x, initial_params.point_map_info)
     unobserved_vars = get_default_varnames(model.unobserved_value_vars, include_transformed=True)
