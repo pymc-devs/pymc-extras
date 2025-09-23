@@ -188,7 +188,14 @@ ids = ["from-posterior-cov", "scalar_shock_size", "array_shock_size", "user-cov"
 def test_impulse_response(parameters, varma_mod, idata, rng):
     irf = varma_mod.impulse_response_function(idata.prior, random_seed=rng, **parameters)
 
-    assert not np.any(np.isnan(irf.irf.values))
+    assert np.isfinite(irf.irf.values).all()
+
+
+def test_forecast(varma_mod, idata, rng):
+    forecast = varma_mod.forecast(idata.prior, periods=10, random_seed=rng)
+
+    assert np.isfinite(forecast.forecast_latent.values).all()
+    assert np.isfinite(forecast.forecast_observed.values).all()
 
 
 class TestVARMAXWithExogenous:
@@ -436,42 +443,8 @@ class TestVARMAXWithExogenous:
                 stationary_initialization=False,
             )
 
-    @pytest.mark.parametrize(
-        "k_exog, exog_state_names",
-        [
-            (2, None),
-            (None, ["foo", "bar"]),
-            (None, {"y1": ["a", "b"], "y2": ["c"]}),
-        ],
-        ids=["k_exog_int", "exog_state_names_list", "exog_state_names_dict"],
-    )
-    @pytest.mark.filterwarnings("ignore::UserWarning")
-    def test_varmax_with_exog(self, rng, k_exog, exog_state_names):
-        endog_names = ["y1", "y2", "y3"]
-        n_obs = 50
-        time_idx = pd.date_range(start="2020-01-01", periods=n_obs, freq="D")
-
-        y = rng.normal(size=(n_obs, len(endog_names)))
-        df = pd.DataFrame(y, columns=endog_names, index=time_idx).astype(floatX)
-
-        if isinstance(exog_state_names, dict):
-            exog_data = {
-                f"{name}_exogenous_data": pd.DataFrame(
-                    rng.normal(size=(n_obs, len(exog_names))).astype(floatX),
-                    columns=exog_names,
-                    index=time_idx,
-                )
-                for name, exog_names in exog_state_names.items()
-            }
-        else:
-            exog_names = exog_state_names or [f"exogenous_{i}" for i in range(k_exog)]
-            exog_data = {
-                "exogenous_data": pd.DataFrame(
-                    rng.normal(size=(n_obs, k_exog or len(exog_state_names))).astype(floatX),
-                    columns=exog_names,
-                    index=time_idx,
-                )
-            }
+    def _build_varmax(self, df, k_exog, exog_state_names, exog_data):
+        endog_names = df.columns.values.tolist()
 
         mod = BayesianVARMAX(
             endog_names=endog_names,
@@ -512,6 +485,47 @@ class TestVARMAXWithExogenous:
 
             mod.build_statespace_graph(data=df)
 
+        return mod, m
+
+    @pytest.mark.parametrize(
+        "k_exog, exog_state_names",
+        [
+            (2, None),
+            (None, ["foo", "bar"]),
+            (None, {"y1": ["a", "b"], "y2": ["c"]}),
+        ],
+        ids=["k_exog_int", "exog_state_names_list", "exog_state_names_dict"],
+    )
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    def test_varmax_with_exog(self, rng, k_exog, exog_state_names):
+        endog_names = ["y1", "y2", "y3"]
+        n_obs = 50
+        time_idx = pd.date_range(start="2020-01-01", periods=n_obs, freq="D")
+
+        y = rng.normal(size=(n_obs, len(endog_names)))
+        df = pd.DataFrame(y, columns=endog_names, index=time_idx).astype(floatX)
+
+        if isinstance(exog_state_names, dict):
+            exog_data = {
+                f"{name}_exogenous_data": pd.DataFrame(
+                    rng.normal(size=(n_obs, len(exog_names))).astype(floatX),
+                    columns=exog_names,
+                    index=time_idx,
+                )
+                for name, exog_names in exog_state_names.items()
+            }
+        else:
+            exog_names = exog_state_names or [f"exogenous_{i}" for i in range(k_exog)]
+            exog_data = {
+                "exogenous_data": pd.DataFrame(
+                    rng.normal(size=(n_obs, k_exog or len(exog_state_names))).astype(floatX),
+                    columns=exog_names,
+                    index=time_idx,
+                )
+            }
+
+        mod, m = self._build_varmax(df, k_exog, exog_state_names, exog_data)
+
         with freeze_dims_and_data(m):
             prior = pm.sample_prior_predictive(
                 draws=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
@@ -543,3 +557,53 @@ class TestVARMAXWithExogenous:
             obs_intercept.append(np.zeros_like(obs_intercept[0]))
 
             np.testing.assert_allclose(beta_dot_data, np.stack(obs_intercept, axis=-1), atol=1e-2)
+
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    def test_forecast_with_exog(self, rng):
+        endog_names = ["y1", "y2", "y3"]
+        n_obs = 50
+        time_idx = pd.date_range(start="2020-01-01", periods=n_obs, freq="D")
+
+        y = rng.normal(size=(n_obs, len(endog_names)))
+        df = pd.DataFrame(y, columns=endog_names, index=time_idx).astype(floatX)
+
+        mod, m = self._build_varmax(
+            df,
+            k_exog=2,
+            exog_state_names=None,
+            exog_data={
+                "exogenous_data": pd.DataFrame(
+                    rng.normal(size=(n_obs, 2)).astype(floatX),
+                    columns=["exogenous_0", "exogenous_1"],
+                    index=time_idx,
+                )
+            },
+        )
+
+        with freeze_dims_and_data(m):
+            prior = pm.sample_prior_predictive(
+                draws=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
+            )
+
+        with pytest.raises(
+            ValueError,
+            match="This model was fit using exogenous data. Forecasting cannot be performed "
+            "without providing scenario data",
+        ):
+            mod.forecast(prior.prior, periods=10, random_seed=rng)
+
+        forecast = mod.forecast(
+            prior.prior,
+            periods=10,
+            random_seed=rng,
+            scenario={
+                "exogenous_data": pd.DataFrame(
+                    rng.normal(size=(10, 2)).astype(floatX),
+                    columns=["exogenous_0", "exogenous_1"],
+                    index=pd.date_range(start=df.index[-1], periods=10, freq="D"),
+                )
+            },
+        )
+
+        assert np.isfinite(forecast.forecast_latent.values).all()
+        assert np.isfinite(forecast.forecast_observed.values).all()

@@ -254,6 +254,8 @@ class BayesianVARMAX(PyMCStateSpace):
             mode=mode,
         )
 
+        self._needs_exog_data = exog_state_names is not None and len(exog_state_names) > 0
+
         # Save counts of the number of parameters in each category
         self.param_counts = {
             "x0": k_states * (1 - self.stationary_initialization),
@@ -337,7 +339,7 @@ class BayesianVARMAX(PyMCStateSpace):
 
     @property
     def data_info(self) -> dict[str, dict[str, Any]]:
-        info = None
+        info = {}
 
         if isinstance(self.exog_state_names, list):
             info = {
