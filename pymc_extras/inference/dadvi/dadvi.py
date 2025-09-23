@@ -341,7 +341,7 @@ def dadvi_result_to_idata(
     all_varnames = [
         x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=True)
     ]
-    unconstrained_names = set(all_varnames) - set(constrained_names)
+    unconstrained_names = sorted(set(all_varnames) - set(constrained_names))
 
     idata = az.InferenceData(posterior=transformed_result[constrained_names])
 

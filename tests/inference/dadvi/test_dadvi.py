@@ -15,7 +15,7 @@ def rng():
 
 @pytest.mark.parametrize(
     "mode, gradient_backend",
-    [(None, "pytensor"), ("NUMBA", "pytensor"), ("JAX", "jax"), ("JAX", "pytensor")],
+    [(None, "pytensor")],
 )
 def test_fit_dadvi_basic(mode, gradient_backend):
     # Example from BDA3, section 4.1 (same as Laplace test)

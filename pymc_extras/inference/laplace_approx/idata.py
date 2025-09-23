@@ -115,7 +115,7 @@ def map_results_to_inference_data(
         x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=True)
     ]
 
-    unconstrained_names = set(all_varnames) - set(constrained_names)
+    unconstrained_names = sorted(set(all_varnames) - set(constrained_names))
 
     idata = az.from_dict(
         posterior={
