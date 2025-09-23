@@ -22,9 +22,14 @@ def make_default_labels(name: str, shape: tuple[int, ...]) -> list:
     return [list(range(dim)) for dim in shape]
 
 
-def make_unpacked_variable_names(names: list[str], model: pm.Model) -> list[str]:
+def make_unpacked_variable_names(
+    names: list[str], model: pm.Model, var_name_to_model_var: dict[str, str] | None = None
+) -> list[str]:
     coords = model.coords
     initial_point = model.initial_point()
+
+    if var_name_to_model_var is None:
+        var_name_to_model_var = {}
 
     value_to_dim = {
         value.name: model.named_vars_to_dims.get(model.values_to_rvs[value].name, None)
@@ -37,6 +42,7 @@ def make_unpacked_variable_names(names: list[str], model: pm.Model) -> list[str]
 
     unpacked_variable_names = []
     for name in names:
+        name = var_name_to_model_var.get(name, name)
         shape = initial_point[name].shape
         if shape:
             dims = dims_dict.get(name)
@@ -109,7 +115,7 @@ def map_results_to_inference_data(
         x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=True)
     ]
 
-    unconstrained_names = set(all_varnames) - set(constrained_names)
+    unconstrained_names = sorted(set(all_varnames) - set(constrained_names))
 
     idata = az.from_dict(
         posterior={
@@ -258,6 +264,7 @@ def optimizer_result_to_dataset(
     method: minimize_method | Literal["basinhopping"],
     mu: RaveledVars | None = None,
     model: pm.Model | None = None,
+    var_name_to_model_var: dict[str, str] | None = None,
 ) -> xr.Dataset:
     """
     Convert an OptimizeResult object to an xarray Dataset object.
@@ -268,6 +275,9 @@ def optimizer_result_to_dataset(
         The result of the optimization process.
     method: minimize_method or "basinhopping"
         The optimization method used.
+    var_name_to_model_var: dict, optional
+        Mapping between variables in the optimization result and the model variable names. Used when auxiliary
+        variables were introduced, e.g. in DADVI.
 
     Returns
     -------
@@ -279,7 +289,9 @@ def optimizer_result_to_dataset(
 
     model = pm.modelcontext(model) if model is None else model
     variable_names, *_ = zip(*mu.point_map_info)
-    unpacked_variable_names = make_unpacked_variable_names(variable_names, model)
+    unpacked_variable_names = make_unpacked_variable_names(
+        variable_names, model, var_name_to_model_var
+    )
 
     data_vars = {}
 
@@ -368,6 +380,7 @@ def add_optimizer_result_to_inference_data(
     method: minimize_method | Literal["basinhopping"],
     mu: RaveledVars | None = None,
     model: pm.Model | None = None,
+    var_name_to_model_var: dict[str, str] | None = None,
 ) -> az.InferenceData:
     """
     Add the optimization result to an InferenceData object.
@@ -384,13 +397,18 @@ def add_optimizer_result_to_inference_data(
         The MAP estimate of the model parameters.
     model: Model, optional
         A PyMC model. If None, the model is taken from the current model context.
+    var_name_to_model_var: dict, optional
+        Mapping between variables in the optimization result and the model variable names. Used when auxiliary
+        variables were introduced, e.g. in DADVI.
 
     Returns
     -------
     idata: az.InferenceData
         The provided InferenceData, with the optimization results added to the "optimizer" group.
     """
-    dataset = optimizer_result_to_dataset(result, method=method, mu=mu, model=model)
+    dataset = optimizer_result_to_dataset(
+        result, method=method, mu=mu, model=model, var_name_to_model_var=var_name_to_model_var
+    )
     idata.add_groups({"optimizer_result": dataset})
 
     return idata
