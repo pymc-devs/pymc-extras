@@ -148,15 +148,6 @@ class BayesianVARMAX(PyMCStateSpace):
             The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
             and "cholesky". See the docs for kalman filters for more details.
 
-        state_structure: str, default "fast"
-            How to represent the state-space system. When "interpretable", each element of the state vector will have a
-            precise meaning as either lagged data, innovations, or lagged innovations. This comes at the cost of a larger
-            state vector, which may hurt performance.
-
-            When "fast", states are combined to minimize the dimension of the state vector, but lags and innovations are
-            mixed together as a result. Only the first state (the modeled timeseries) will have an obvious interpretation
-            in this case.
-
         measurement_error: bool, default True
             If true, a measurement error term is added to the model.
 
