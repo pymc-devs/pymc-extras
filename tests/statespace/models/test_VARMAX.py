@@ -580,6 +580,8 @@ class TestVARMAXWithExogenous:
             },
         )
 
+        assert mod._needs_exog_data
+
         with freeze_dims_and_data(m):
             prior = pm.sample_prior_predictive(
                 draws=10, random_seed=rng, compile_kwargs={"mode": "JAX"}

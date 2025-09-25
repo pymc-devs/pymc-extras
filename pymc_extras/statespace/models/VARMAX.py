@@ -172,6 +172,8 @@ class BayesianVARMAX(PyMCStateSpace):
             if len(endog_names) != k_endog:
                 raise ValueError("Length of provided endog_names does not match provided k_endog")
 
+        needs_exog_data = False
+
         if k_exog is not None and not isinstance(k_exog, int | dict):
             raise ValueError("If not None, k_endog must be either an int or a dict")
         if exog_state_names is not None and not isinstance(exog_state_names, list | dict):
@@ -199,6 +201,7 @@ class BayesianVARMAX(PyMCStateSpace):
                         "If both k_endog and exog_state_names are provided, lengths of exog_state_names "
                         "lists must match corresponding values in k_exog"
                     )
+            needs_exog_data = True
 
         if k_exog is not None and exog_state_names is None:
             if isinstance(k_exog, int):
@@ -207,12 +210,14 @@ class BayesianVARMAX(PyMCStateSpace):
                 exog_state_names = {
                     name: [f"{name}_exogenous_{i}" for i in range(k)] for name, k in k_exog.items()
                 }
+            needs_exog_data = True
 
         if k_exog is None and exog_state_names is not None:
             if isinstance(exog_state_names, list):
                 k_exog = len(exog_state_names)
             elif isinstance(exog_state_names, dict):
                 k_exog = {name: len(names) for name, names in exog_state_names.items()}
+            needs_exog_data = True
 
         # If exog_state_names is a dict but 1) all endog variables are among the keys, and 2) all values are the same
         # then we can drop back to the list case.
@@ -245,7 +250,7 @@ class BayesianVARMAX(PyMCStateSpace):
             mode=mode,
         )
 
-        self._needs_exog_data = exog_state_names is not None and len(exog_state_names) > 0
+        self._needs_exog_data = needs_exog_data
 
         # Save counts of the number of parameters in each category
         self.param_counts = {
