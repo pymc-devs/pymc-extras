@@ -175,7 +175,7 @@ class BayesianVARMAX(PyMCStateSpace):
         needs_exog_data = False
 
         if k_exog is not None and not isinstance(k_exog, int | dict):
-            raise ValueError("If not None, k_endog must be either an int or a dict")
+            raise ValueError("If not None, k_exog must be either an int or a dict")
         if exog_state_names is not None and not isinstance(exog_state_names, list | dict):
             raise ValueError("If not None, exog_state_names must be either a list or a dict")
 
