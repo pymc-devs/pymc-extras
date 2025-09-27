@@ -148,15 +148,6 @@ class BayesianVARMAX(PyMCStateSpace):
             The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
             and "cholesky". See the docs for kalman filters for more details.
 
-        state_structure: str, default "fast"
-            How to represent the state-space system. When "interpretable", each element of the state vector will have a
-            precise meaning as either lagged data, innovations, or lagged innovations. This comes at the cost of a larger
-            state vector, which may hurt performance.
-
-            When "fast", states are combined to minimize the dimension of the state vector, but lags and innovations are
-            mixed together as a result. Only the first state (the modeled timeseries) will have an obvious interpretation
-            in this case.
-
         measurement_error: bool, default True
             If true, a measurement error term is added to the model.
 
@@ -181,8 +172,10 @@ class BayesianVARMAX(PyMCStateSpace):
             if len(endog_names) != k_endog:
                 raise ValueError("Length of provided endog_names does not match provided k_endog")
 
+        needs_exog_data = False
+
         if k_exog is not None and not isinstance(k_exog, int | dict):
-            raise ValueError("If not None, k_endog must be either an int or a dict")
+            raise ValueError("If not None, k_exog must be either an int or a dict")
         if exog_state_names is not None and not isinstance(exog_state_names, list | dict):
             raise ValueError("If not None, exog_state_names must be either a list or a dict")
 
@@ -208,6 +201,7 @@ class BayesianVARMAX(PyMCStateSpace):
                         "If both k_endog and exog_state_names are provided, lengths of exog_state_names "
                         "lists must match corresponding values in k_exog"
                     )
+            needs_exog_data = True
 
         if k_exog is not None and exog_state_names is None:
             if isinstance(k_exog, int):
@@ -216,12 +210,14 @@ class BayesianVARMAX(PyMCStateSpace):
                 exog_state_names = {
                     name: [f"{name}_exogenous_{i}" for i in range(k)] for name, k in k_exog.items()
                 }
+            needs_exog_data = True
 
         if k_exog is None and exog_state_names is not None:
             if isinstance(exog_state_names, list):
                 k_exog = len(exog_state_names)
             elif isinstance(exog_state_names, dict):
                 k_exog = {name: len(names) for name, names in exog_state_names.items()}
+            needs_exog_data = True
 
         # If exog_state_names is a dict but 1) all endog variables are among the keys, and 2) all values are the same
         # then we can drop back to the list case.
@@ -253,6 +249,8 @@ class BayesianVARMAX(PyMCStateSpace):
             measurement_error=measurement_error,
             mode=mode,
         )
+
+        self._needs_exog_data = needs_exog_data
 
         # Save counts of the number of parameters in each category
         self.param_counts = {
@@ -337,7 +335,7 @@ class BayesianVARMAX(PyMCStateSpace):
 
     @property
     def data_info(self) -> dict[str, dict[str, Any]]:
-        info = None
+        info = {}
 
         if isinstance(self.exog_state_names, list):
             info = {
