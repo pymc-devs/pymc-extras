@@ -163,6 +163,12 @@ def test_autoregressive_shared_and_not_shared():
         observed_state_names=["data_1", "data_2", "data_3"],
         share_states=True,
     )
+
+    # make sure param_info is correct
+    # shound't have endog state when share_states is True
+    assert "endog_" not in shared.param_info["params_shared_ar"]["dims"][0]
+    assert shared.param_info["sigma_shared_ar"]["dims"] is None
+
     individual = st.AutoregressiveComponent(
         order=3,
         name="individual_ar",
