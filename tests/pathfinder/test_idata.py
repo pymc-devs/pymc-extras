@@ -145,18 +145,17 @@ class TestPathfinderResultToXarray:
             num_draws=1000,
         )
 
-        summary_ds, paths_ds = multipathfinder_result_to_xarray(result, model=None)
+        ds = multipathfinder_result_to_xarray(result, model=None)
 
         # Check that path dimension is correctly inferred as 4 (not 1000)
-        assert paths_ds is not None
-        assert "path" in paths_ds.dims
-        assert paths_ds.sizes["path"] == 4  # Should be 4 paths, not 1000 samples
+        assert "path" in ds.dims
+        assert ds.sizes["path"] == 4  # Should be 4 paths, not 1000 samples
 
-        # Check that per-path data has correct shape
-        assert "lbfgs_niter" in paths_ds.data_vars
-        assert paths_ds.lbfgs_niter.shape == (4,)
-        assert "elbo_argmax" in paths_ds.data_vars
-        assert paths_ds.elbo_argmax.shape == (4,)
+        # Check that per-path data has correct shape with paths/ prefix
+        assert "paths/lbfgs_niter" in ds.data_vars
+        assert ds["paths/lbfgs_niter"].shape == (4,)
+        assert "paths/elbo_argmax" in ds.data_vars
+        assert ds["paths/elbo_argmax"].shape == (4,)
 
     def test_determine_num_paths_helper(self):
         """Test the _determine_num_paths helper function."""
@@ -207,10 +206,24 @@ class TestMultiPathfinderResultToXarray:
     """Tests for converting MultiPathfinderResult to xarray."""
 
     def test_multi_result_conversion(self):
-        """Test conversion of MultiPathfinderResult to datasets."""
+        """Test conversion of MultiPathfinderResult to consolidated dataset."""
         pytest.importorskip("arviz")
 
         from pymc_extras.inference.pathfinder.idata import multipathfinder_result_to_xarray
+        from pymc_extras.inference.pathfinder.pathfinder import PathfinderConfig
+
+        # Create mock config
+        config = PathfinderConfig(
+            num_draws=100,
+            maxcor=5,
+            maxiter=1000,
+            ftol=1e-5,
+            gtol=1e-8,
+            maxls=1000,
+            jitter=2.0,
+            epsilon=1e-8,
+            num_elbo_draws=10,
+        )
 
         # Create mock multi-path result
         result = MockMultiPathfinderResult(
@@ -226,25 +239,59 @@ class TestMultiPathfinderResultToXarray:
             compile_time=1.5,
             compute_time=10.2,
             pareto_k=0.5,
+            pathfinder_config=config,
         )
 
-        summary_ds, paths_ds = multipathfinder_result_to_xarray(result, model=None)
+        # Test without diagnostics
+        ds = multipathfinder_result_to_xarray(result, model=None, store_diagnostics=False)
 
-        # Check summary dataset
-        assert isinstance(summary_ds, xr.Dataset)
-        assert "num_paths" in summary_ds.data_vars
-        assert "num_draws" in summary_ds.data_vars
-        assert "compile_time" in summary_ds.data_vars
-        assert "compute_time" in summary_ds.data_vars
-        assert "total_time" in summary_ds.data_vars
-        assert "pareto_k" in summary_ds.data_vars
+        # Check that we get a single consolidated dataset
+        assert isinstance(ds, xr.Dataset)
 
-        # Check per-path dataset
-        assert isinstance(paths_ds, xr.Dataset)
-        assert "path" in paths_ds.dims
-        assert paths_ds.sizes["path"] == 3
-        assert "lbfgs_niter" in paths_ds.data_vars
-        assert "elbo_argmax" in paths_ds.data_vars
+        # Check summary data (top level)
+        assert "num_paths" in ds.data_vars
+        assert "num_draws" in ds.data_vars
+        assert "compile_time" in ds.data_vars
+        assert "compute_time" in ds.data_vars
+        assert "total_time" in ds.data_vars
+        assert "pareto_k" in ds.data_vars
+        assert "lbfgs_status_counts" in ds.data_vars
+        assert "path_status_counts" in ds.data_vars
+
+        # Check per-path data (paths/ prefix)
+        assert "paths/lbfgs_niter" in ds.data_vars
+        assert "paths/elbo_argmax" in ds.data_vars
+        assert "paths/logP_mean" in ds.data_vars
+        assert "paths/logQ_mean" in ds.data_vars
+        assert "paths/final_sample" in ds.data_vars
+
+        # Verify path dimension
+        assert "path" in ds.dims
+        assert ds.sizes["path"] == 3
+        assert ds["paths/lbfgs_niter"].shape == (3,)
+
+        # Check config data (config/ prefix)
+        assert "config/num_draws" in ds.data_vars
+        assert "config/maxcor" in ds.data_vars
+        assert "config/maxiter" in ds.data_vars
+        assert ds["config/num_draws"].values == 100
+        assert ds["config/maxcor"].values == 5
+
+        # Check no diagnostics data when store_diagnostics=False
+        diagnostics_vars = [k for k in ds.data_vars.keys() if k.startswith("diagnostics/")]
+        assert len(diagnostics_vars) == 0
+
+        # Test with diagnostics
+        ds_with_diag = multipathfinder_result_to_xarray(result, model=None, store_diagnostics=True)
+
+        # Check diagnostics data (diagnostics/ prefix)
+        assert "diagnostics/logP_full" in ds_with_diag.data_vars
+        assert "diagnostics/logQ_full" in ds_with_diag.data_vars
+        assert "diagnostics/samples_full" in ds_with_diag.data_vars
+
+        # Verify diagnostics shapes
+        assert ds_with_diag["diagnostics/logP_full"].shape == (3, 100)
+        assert ds_with_diag["diagnostics/samples_full"].shape == (3, 100, 2)
 
 
 class TestAddPathfinderToInferenceData:
@@ -286,18 +333,15 @@ class TestAddPathfinderToInferenceData:
 
 
 class TestDiagnosticsAndConfigGroups:
-    """Tests for diagnostics and config group functionality."""
+    """Tests for diagnostics and config nested within consolidated pathfinder group."""
 
-    def test_config_group_creation(self):
-        """Test that config group is created when PathfinderConfig is available."""
+    def test_config_data_integration(self):
+        """Test that config data is integrated into consolidated pathfinder group."""
         pytest.importorskip("arviz")
 
         import arviz as az
 
-        from pymc_extras.inference.pathfinder.idata import (
-            _build_config_dataset,
-            add_pathfinder_to_inference_data,
-        )
+        from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
         from pymc_extras.inference.pathfinder.pathfinder import PathfinderConfig
 
         # Create mock InferenceData
@@ -317,42 +361,37 @@ class TestDiagnosticsAndConfigGroups:
             num_elbo_draws=10,
         )
 
-        # Test config dataset creation
-        config_ds = _build_config_dataset(config)
-        assert isinstance(config_ds, xr.Dataset)
-        assert "num_draws" in config_ds.data_vars
-        assert "maxcor" in config_ds.data_vars
-        assert "maxiter" in config_ds.data_vars
-        assert config_ds.num_draws.values == 1000
-        assert config_ds.maxcor.values == 5
-
         # Test with MultiPathfinderResult that has config
         result = MockMultiPathfinderResult(
             samples=np.random.normal(0, 1, (2, 50, 1)),
             num_paths=2,
             pathfinder_config=config,
+            lbfgs_status=Counter({LBFGSStatus.CONVERGED: 2}),
+            path_status=Counter({PathStatus.SUCCESS: 2}),
         )
 
-        # Add pathfinder groups
-        idata_updated = add_pathfinder_to_inference_data(
-            idata, result, model=None, config_group="test_config"
-        )
+        # Add pathfinder group
+        idata_updated = add_pathfinder_to_inference_data(idata, result, model=None)
 
-        # Check config group was added
+        # Check that we only have one pathfinder group
         groups = list(idata_updated.groups())
-        assert "test_config" in groups
-        assert "num_draws" in idata_updated.test_config.data_vars
+        assert "pathfinder" in groups
+        assert "pathfinder_config" not in groups  # No separate config group
 
-    def test_diagnostics_group_creation(self):
-        """Test that diagnostics group is created when store_diagnostics=True."""
+        # Check config data is nested within pathfinder group with config/ prefix
+        assert "config/num_draws" in idata_updated.pathfinder.data_vars
+        assert "config/maxcor" in idata_updated.pathfinder.data_vars
+        assert "config/maxiter" in idata_updated.pathfinder.data_vars
+        assert idata_updated.pathfinder["config/num_draws"].values == 1000
+        assert idata_updated.pathfinder["config/maxcor"].values == 5
+
+    def test_diagnostics_data_integration(self):
+        """Test that diagnostics data is integrated into consolidated pathfinder group."""
         pytest.importorskip("arviz")
 
         import arviz as az
 
-        from pymc_extras.inference.pathfinder.idata import (
-            _build_diagnostics_dataset,
-            add_pathfinder_to_inference_data,
-        )
+        from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
 
         # Create mock InferenceData
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
@@ -363,27 +402,31 @@ class TestDiagnosticsAndConfigGroups:
             samples=np.random.normal(0, 1, (2, 50, 3)),  # 2 paths, 50 draws, 3 params
             logP=np.random.normal(-10, 1, (2, 50)),  # Per-path, per-draw logP
             logQ=np.random.normal(-11, 1, (2, 50)),  # Per-path, per-draw logQ
+            lbfgs_niter=np.array([30, 40]),
+            elbo_argmax=np.array([15, 25]),
+            lbfgs_status=Counter({LBFGSStatus.CONVERGED: 2}),
+            path_status=Counter({PathStatus.SUCCESS: 2}),
             num_paths=2,
         )
 
-        # Test diagnostics dataset creation
-        diag_ds = _build_diagnostics_dataset(result, model=None)
-        assert isinstance(diag_ds, xr.Dataset)
-        assert "logP_full" in diag_ds.data_vars
-        assert "logQ_full" in diag_ds.data_vars
-        assert "samples_full" in diag_ds.data_vars
-        assert diag_ds.logP_full.shape == (2, 50)
-        assert diag_ds.samples_full.shape == (2, 50, 3)
-
-        # Test with add_pathfinder_to_inference_data
+        # Test with add_pathfinder_to_inference_data and store_diagnostics=True
         idata_updated = add_pathfinder_to_inference_data(
-            idata, result, model=None, store_diagnostics=True, diagnostics_group="test_diag"
+            idata, result, model=None, store_diagnostics=True
         )
 
-        # Check diagnostics group was added
+        # Check that we only have one pathfinder group
         groups = list(idata_updated.groups())
-        assert "test_diag" in groups
-        assert "logP_full" in idata_updated.test_diag.data_vars
+        assert "pathfinder" in groups
+        assert "pathfinder_diagnostics" not in groups  # No separate diagnostics group
+
+        # Check diagnostics data is nested within pathfinder group with diagnostics/ prefix
+        assert "diagnostics/logP_full" in idata_updated.pathfinder.data_vars
+        assert "diagnostics/logQ_full" in idata_updated.pathfinder.data_vars
+        assert "diagnostics/samples_full" in idata_updated.pathfinder.data_vars
+
+        # Verify shapes
+        assert idata_updated.pathfinder["diagnostics/logP_full"].shape == (2, 50)
+        assert idata_updated.pathfinder["diagnostics/samples_full"].shape == (2, 50, 3)
 
     def test_no_diagnostics_when_store_false(self):
         """Test that diagnostics group is NOT created when store_diagnostics=False."""
@@ -419,8 +462,10 @@ def test_import_structure():
     """Test that all expected imports work."""
     # This test should pass even without full dependencies
     from pymc_extras.inference.pathfinder.idata import (
-        _build_config_dataset,
-        _build_diagnostics_dataset,
+        _add_config_data,
+        _add_diagnostics_data,
+        _add_paths_data,
+        _add_summary_data,
         add_pathfinder_to_inference_data,
         get_param_coords,
         multipathfinder_result_to_xarray,
@@ -432,8 +477,10 @@ def test_import_structure():
     assert callable(pathfinder_result_to_xarray)
     assert callable(multipathfinder_result_to_xarray)
     assert callable(add_pathfinder_to_inference_data)
-    assert callable(_build_config_dataset)
-    assert callable(_build_diagnostics_dataset)
+    assert callable(_add_summary_data)
+    assert callable(_add_paths_data)
+    assert callable(_add_config_data)
+    assert callable(_add_diagnostics_data)
 
 
 if __name__ == "__main__":
