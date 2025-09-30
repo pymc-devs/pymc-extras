@@ -1723,7 +1723,7 @@ def fit_pathfinder(
 
     # Handle display_summary logic
     should_display_summary = display_summary == "auto" or display_summary is True
-    
+
     if inference_backend == "pymc":
         mp_result = multipath_pathfinder(
             model,
@@ -1795,7 +1795,7 @@ def fit_pathfinder(
     if add_pathfinder_groups:
         if inference_backend == "pymc":
             from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
-            
+
             idata = add_pathfinder_to_inference_data(
                 idata=idata,
                 result=mp_result,
