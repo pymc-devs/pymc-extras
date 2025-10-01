@@ -97,8 +97,8 @@ def unstable_lbfgs_update_mask_model() -> pm.Model:
 def test_unstable_lbfgs_update_mask(capsys, jitter):
     model = unstable_lbfgs_update_mask_model()
 
-    # Both 500.0 and 1000.0 jitter values can cause all paths to fail due to numerical overflow
     if jitter < 500.0:
+        # Low jitter values should succeed
         with model:
             idata = pmx.fit(
                 method="pathfinder",
