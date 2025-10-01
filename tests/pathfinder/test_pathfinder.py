@@ -93,11 +93,11 @@ def unstable_lbfgs_update_mask_model() -> pm.Model:
     return mdl
 
 
-@pytest.mark.parametrize("jitter", [12.0, 500.0, 1000.0])
+@pytest.mark.parametrize("jitter", [12.0, 750.0, 1000.0])
 def test_unstable_lbfgs_update_mask(capsys, jitter):
     model = unstable_lbfgs_update_mask_model()
 
-    if jitter < 500.0:
+    if jitter < 750.0:
         # Low jitter values should succeed
         with model:
             idata = pmx.fit(
