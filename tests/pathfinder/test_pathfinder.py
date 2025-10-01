@@ -144,6 +144,7 @@ def test_pathfinder(inference_backend, reference_idata):
                 jitter=12.0,
                 random_seed=41,
                 inference_backend=inference_backend,
+                add_pathfinder_groups=False,  # Diagnostic groups not supported with blackjax
             )
     else:
         idata = reference_idata
