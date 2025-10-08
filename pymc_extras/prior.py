@@ -1474,9 +1474,33 @@ class Censored:
 
 
 class Scaled:
-    """Scaled distribution for numerical stability."""
+    """Scaled distribution for numerical stability.
 
-    def __init__(self, dist: Prior, factor: float | pt.TensorVariable) -> None:
+    This is the same as multiplying the variable by a constant factor.
+
+    Parameters
+    ----------
+    dist : Prior
+        The prior distribution to scale.
+    factor : pt.TensorLike
+        The scaling factor. This will have to be broadcastable to the
+        dimensions of the distribution.
+
+    Examples
+    --------
+    Create a scaled normal distribution.
+
+    .. code-block:: python
+
+        from pymc_extras.prior import Prior, Scaled
+
+        normal = Prior("Normal", mu=0, sigma=1)
+        # Same as Normal(mu=0, sigma=10)
+        scaled_normal = Scaled(normal, factor=10)
+
+    """
+
+    def __init__(self, dist: Prior, factor: pt.TensorLike) -> None:
         self.dist = dist
         self.factor = factor
 
