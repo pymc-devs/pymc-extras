@@ -113,8 +113,10 @@ class DiscreteMarkovChain(Distribution):
 
         with pm.Model() as markov_chain:
             P = pm.Dirichlet("P", a=[1, 1, 1], size=(3,))
-            init_dist = pm.Categorical.dist(p = np.full(3, 1 / 3))
-            markov_chain = pmx.DiscreteMarkovChain("markov_chain", P=P, init_dist=init_dist, shape=(100,))
+            init_dist = pm.Categorical.dist(p=np.full(3, 1 / 3))
+            markov_chain = pmx.DiscreteMarkovChain(
+                "markov_chain", P=P, init_dist=init_dist, shape=(100,)
+            )
 
     """
 

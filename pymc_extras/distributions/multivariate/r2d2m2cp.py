@@ -305,6 +305,7 @@ def R2D2M2CP(
         import pymc_extras as pmx
         import pymc as pm
         import numpy as np
+
         X = np.random.randn(10, 3)
         b = np.random.randn(3)
         y = X @ b + np.random.randn(10) * 0.04 + 5
@@ -339,7 +340,7 @@ def R2D2M2CP(
                 # "c" - a must have in the relation
                 variables_importance=[10, 1, 34],
                 # NOTE: try both
-                centered=True
+                centered=True,
             )
             # intercept prior centering should be around prior predictive mean
             intercept = y.mean()
@@ -365,7 +366,7 @@ def R2D2M2CP(
                 r2_std=0.2,
                 # NOTE: if you know where a variable should go
                 # if you do not know, leave as 0.5
-                centered=False
+                centered=False,
             )
             # intercept prior centering should be around prior predictive mean
             intercept = y.mean()
@@ -394,7 +395,7 @@ def R2D2M2CP(
                 # if you do not know, leave as 0.5
                 positive_probs=[0.8, 0.5, 0.1],
                 # NOTE: try both
-                centered=True
+                centered=True,
             )
             intercept = y.mean()
             obs = pm.Normal("obs", intercept + X @ beta, eps, observed=y)
