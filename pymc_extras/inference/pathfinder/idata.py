@@ -116,11 +116,10 @@ def pathfinder_result_to_xarray(
     >>> with pm.Model() as model:
     ...     x = pm.Normal("x", 0, 1)
     ...     y = pm.Normal("y", x, 1, observed=2.0)
-    ...
     >>> # Assuming we have a PathfinderResult from a pathfinder run
     >>> ds = pathfinder_result_to_xarray(result, model=model)
     >>> print(ds.data_vars)  # Shows lbfgs_niter, elbo_argmax, status info, etc.
-    >>> print(ds.attrs)      # Shows metadata like lbfgs_status, path_status
+    >>> print(ds.attrs)  # Shows metadata like lbfgs_status, path_status
     """
     data_vars = {}
     coords = {}
@@ -214,9 +213,16 @@ def multipathfinder_result_to_xarray(
     >>> # Assuming we have a MultiPathfinderResult from multiple pathfinder runs
     >>> ds = multipathfinder_result_to_xarray(result, model=model)
     >>> print("All data:", ds.data_vars)
-    >>> print("Summary:", [k for k in ds.data_vars.keys() if not k.startswith(('paths/', 'config/', 'diagnostics/'))])
-    >>> print("Per-path:", [k for k in ds.data_vars.keys() if k.startswith('paths/')])
-    >>> print("Config:", [k for k in ds.data_vars.keys() if k.startswith('config/')])
+    >>> print(
+    ...     "Summary:",
+    ...     [
+    ...         k
+    ...         for k in ds.data_vars.keys()
+    ...         if not k.startswith(("paths/", "config/", "diagnostics/"))
+    ...     ],
+    ... )
+    >>> print("Per-path:", [k for k in ds.data_vars.keys() if k.startswith("paths/")])
+    >>> print("Config:", [k for k in ds.data_vars.keys() if k.startswith("config/")])
     """
     n_params = result.samples.shape[-1] if result.samples is not None else None
     param_coords = get_param_coords(model, n_params) if n_params is not None else None
@@ -477,13 +483,16 @@ def add_pathfinder_to_inference_data(
     >>> with pm.Model() as model:
     ...     x = pm.Normal("x", 0, 1)
     ...     idata = pmx.fit(method="pathfinder", model=model, add_pathfinder_groups=False)
-    ...
     >>> # Assuming we have pathfinder results
     >>> idata = add_pathfinder_to_inference_data(idata, results, model=model)
     >>> print(list(idata.groups()))  # Will show ['posterior', 'pathfinder']
     >>> # Access nested data:
-    >>> print([k for k in idata.pathfinder.data_vars.keys() if k.startswith('paths/')])  # Per-path data
-    >>> print([k for k in idata.pathfinder.data_vars.keys() if k.startswith('config/')])  # Config data
+    >>> print(
+    ...     [k for k in idata.pathfinder.data_vars.keys() if k.startswith("paths/")]
+    ... )  # Per-path data
+    >>> print(
+    ...     [k for k in idata.pathfinder.data_vars.keys() if k.startswith("config/")]
+    ... )  # Config data
     """
     # Detect if this is a multi-path result
     # Use isinstance() as primary check, but fall back to duck typing for compatibility

@@ -13,10 +13,7 @@ Make use of the already registered deserializers:
 
     from pymc_extras.deserialize import deserialize
 
-    prior_class_data = {
-        "dist": "Normal",
-        "kwargs": {"mu": 0, "sigma": 1}
-    }
+    prior_class_data = {"dist": "Normal", "kwargs": {"mu": 0, "sigma": 1}}
     prior = deserialize(prior_class_data)
     # Prior("Normal", mu=0, sigma=1)
 
@@ -26,6 +23,7 @@ Register custom class deserialization:
 
     from pymc_extras.deserialize import register_deserialization
 
+
     class MyClass:
         def __init__(self, value: int):
             self.value = value
@@ -33,6 +31,7 @@ Register custom class deserialization:
         def to_dict(self) -> dict:
             # Example of what the to_dict method might look like.
             return {"value": self.value}
+
 
     register_deserialization(
         is_type=lambda data: data.keys() == {"value"} and isinstance(data["value"], int),
@@ -80,17 +79,22 @@ class Deserializer:
 
         from typing import Any
 
+
         class MyClass:
             def __init__(self, value: int):
                 self.value = value
 
+
         from pymc_extras.deserialize import Deserializer
+
 
         def is_type(data: Any) -> bool:
             return data.keys() == {"value"} and isinstance(data["value"], int)
 
+
         def deserialize(data: dict) -> MyClass:
             return MyClass(value=data["value"])
+
 
         deserialize_logic = Deserializer(is_type=is_type, deserialize=deserialize)
 
@@ -196,6 +200,7 @@ def register_deserialization(is_type: IsType, deserialize: Deserialize) -> None:
 
         from pymc_extras.deserialize import register_deserialization
 
+
         class MyClass:
             def __init__(self, value: int):
                 self.value = value
@@ -203,6 +208,7 @@ def register_deserialization(is_type: IsType, deserialize: Deserialize) -> None:
             def to_dict(self) -> dict:
                 # Example of what the to_dict method might look like.
                 return {"value": self.value}
+
 
         register_deserialization(
             is_type=lambda data: data.keys() == {"value"} and isinstance(data["value"], int),

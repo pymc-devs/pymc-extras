@@ -354,7 +354,7 @@ def fit_laplace(
     >>> import numpy as np
     >>> import pymc as pm
     >>> import arviz as az
-    >>> y = np.array([2642, 3503, 4358]*10)
+    >>> y = np.array([2642, 3503, 4358] * 10)
     >>> with pm.Model() as m:
     >>>     logsigma = pm.Uniform("logsigma", 1, 100)
     >>>     mu = pm.Uniform("mu", -10000, 10000)

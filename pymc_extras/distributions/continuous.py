@@ -265,7 +265,7 @@ class Chi:
         from pymc_extras.distributions import Chi
 
         with pm.Model():
-            x = Chi('x', nu=1)
+            x = Chi("x", nu=1)
     """
 
     @staticmethod

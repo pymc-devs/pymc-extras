@@ -97,19 +97,13 @@ def bspline_interpolation(x, *, n=None, eval_points=None, degree=3, sparse=True)
     --------
     >>> import pymc as pm
     >>> import numpy as np
-    >>> half_months = np.linspace(0, 365, 12*2)
+    >>> half_months = np.linspace(0, 365, 12 * 2)
     >>> with pm.Model(coords=dict(knots_time=half_months, time=np.arange(365))) as model:
-    ...     kernel = pm.gp.cov.ExpQuad(1, ls=365/12)
+    ...     kernel = pm.gp.cov.ExpQuad(1, ls=365 / 12)
     ...     # ready to define gp (a latent process over parameters)
-    ...     gp = pm.gp.gp.Latent(
-    ...         cov_func=kernel
-    ...     )
+    ...     gp = pm.gp.gp.Latent(cov_func=kernel)
     ...     y_knots = gp.prior("y_knots", half_months[:, None], dims="knots_time")
-    ...     y = pm.Deterministic(
-    ...         "y",
-    ...         bspline_interpolation(y_knots, n=365, degree=3),
-    ...         dims="time"
-    ...     )
+    ...     y = pm.Deterministic("y", bspline_interpolation(y_knots, n=365, degree=3), dims="time")
     ...     trace = pm.sample_prior_predictive(1)
 
     Notes

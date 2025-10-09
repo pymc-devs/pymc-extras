@@ -176,20 +176,16 @@ def prior_from_idata(
 
     >>> with pm.Model(coords=dict(test=range(4), options=range(3))) as model2:
     ...     priors = prior_from_idata(
-    ...         trace,                  # the old trace (posterior)
-    ...         var_names=["a", "d"],   # take variables as is
-    ...
-    ...         e="new_e",              # assign new name "new_e" for a variable
-    ...                                 # similar to dict(name="new_e")
-    ...
-    ...         b=("test", ),           # set a dim to "test"
-    ...                                 # similar to dict(dims=("test", ))
-    ...
-    ...         c=transforms.log,       # apply log transform to a positive variable
-    ...                                 # similar to dict(transform=transforms.log)
-    ...
-    ...                                 # set a name, assign a dim and apply simplex transform
-    ...         f=dict(name="new_f", dims="options", transform=transforms.simplex)
+    ...         trace,  # the old trace (posterior)
+    ...         var_names=["a", "d"],  # take variables as is
+    ...         e="new_e",  # assign new name "new_e" for a variable
+    ...         # similar to dict(name="new_e")
+    ...         b=("test",),  # set a dim to "test"
+    ...         # similar to dict(dims=("test", ))
+    ...         c=transforms.log,  # apply log transform to a positive variable
+    ...         # similar to dict(transform=transforms.log)
+    ...         # set a name, assign a dim and apply simplex transform
+    ...         f=dict(name="new_f", dims="options", transform=transforms.simplex),
     ...     )
     ...     trace1 = pm.sample_prior_predictive(100)
     """

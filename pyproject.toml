@@ -120,6 +120,9 @@ exclude_lines = [
 line-length = 100
 target-version = "py310"
 
+[tool.ruff.format]
+docstring-code-format = true
+
 [tool.ruff.lint]
 select = ["D", "E", "F", "I", "UP", "W", "RUF"]
 ignore = [
