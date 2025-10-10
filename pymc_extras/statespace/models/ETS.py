@@ -20,6 +20,195 @@ from pymc_extras.statespace.utils.constants import (
 
 
 class BayesianETS(PyMCStateSpace):
+    r"""
+    Exponential Smoothing State Space Model
+
+    This class can represent a subset of exponential smoothing state space models, specifically those with additive
+    errors. Following .. [1], The general form of the model is:
+
+    .. math::
+
+        \begin{align}
+        y_t &= l_{t-1} + b_{t-1} + s_{t-m} + \epsilon_t \\
+        \epsilon_t &\sim N(0, \sigma)
+        \end{align}
+
+    where :math:`l_t` is the level component, :math:`b_t` is the trend component, and :math:`s_t` is the seasonal
+    component. These components can be included or excluded, leading to different model specifications. The following
+    models are possible:
+
+    * `ETS(A,N,N)`: Simple exponential smoothing
+
+        .. math::
+
+            \begin{align}
+            y_t &= l_{t-1} + \epsilon_t \\
+            l_t &= l_{t-1} + \alpha \epsilon_t
+            \end{align}
+
+    Where :math:`\alpha \in [0, 1]` is a mixing parameter between past observations and current innovations.
+    These equations arise by starting from the "component form":
+
+        .. math::
+
+            \begin{align}
+            \hat{y}_{t+1 | t} &= l_t \\
+            l_t &= \alpha y_t + (1 - \alpha) l_{t-1} \\
+            &= l_{t-1} + \alpha (y_t - l_{t-1})
+            &= l_{t-1} + \alpha \epsilon_t
+            \end{align}
+
+    Where $\epsilon_t$ are the forecast errors, assumed to be IID mean zero and normally distributed. The role of
+    :math:`\alpha` is clearest in the second line. The level of the time series at each time is a mixture of
+    :math:`\alpha` percent of the incoming data, and :math:`1 - \alpha` percent of the previous level. Recursive
+    substitution reveals that the level is a weighted composite of all previous observations; thus the name
+    "Exponential Smoothing".
+
+    Additional supposed specifications include:
+
+    * `ETS(A,A,N)`: Holt's linear trend method
+
+        .. math::
+
+            \begin{align}
+            y_t &= l_{t-1} + b_{t-1} + \epsilon_t \\
+            l_t &= l_{t-1} + b_{t-1} + \alpha \epsilon_t \\
+            b_t &= b_{t-1} + \alpha \beta^\star \epsilon_t
+            \end{align}
+
+        [1]_ also consider an alternative parameterization with :math:`\beta = \alpha \beta^\star`.
+
+    * `ETS(A,N,A)`: Additive seasonal method
+
+        .. math::
+
+            \begin{align}
+            y_t &= l_{t-1} + s_{t-m} + \epsilon_t \\
+            l_t &= l_{t-1} + \alpha \epsilon_t \\
+            s_t &= s_{t-m} + (1 - \alpha)\gamma^\star \epsilon_t
+            \end{align}
+
+        [1]_ also consider an alternative parameterization with :math:`\gamma = (1 - \alpha) \gamma^\star`.
+
+    * `ETS(A,A,A)`: Additive Holt-Winters method
+
+        .. math::
+
+            \begin{align}
+            y_t &= l_{t-1} + b_{t-1} + s_{t-m} + \epsilon_t \\
+            l_t &= l_{t-1} + \alpha \epsilon_t \\
+            b_t &= b_{t-1} + \alpha \beta^\star \epsilon_t \\
+            s_t &= s_{t-m} + (1 - \alpha) \gamma^\star \epsilon_t
+            \end{align}
+
+        [1]_ also consider an alternative parameterization with :math:`\beta = \alpha \beta^star` and
+        :math:`\gamma = (1 - \alpha) \gamma^\star`.
+
+    * `ETS(A, Ad, N)`: Dampened trend method
+
+        .. math::
+
+            \begin{align}
+            y_t &= l_{t-1} + b_{t-1} + \epsilon_t \\
+            l_t &= l_{t-1} + \alpha \epsilon_t \\
+            b_t &= \phi b_{t-1} + \alpha \beta^\star \epsilon_t
+            \end{align}
+
+        [1]_ also consider an alternative parameterization with :math:`\beta = \alpha \beta^\star`.
+
+    * `ETS(A, Ad, A)`: Dampened trend with seasonal method
+
+        .. math::
+
+            \begin{align}
+            y_t &= l_{t-1} + b_{t-1} + s_{t-m} + \epsilon_t \\
+            l_t &= l_{t-1} + \alpha \epsilon_t \\
+            b_t &= \phi b_{t-1} + \alpha \beta^\star \epsilon_t \\
+            s_t &= s_{t-m} + (1 - \alpha) \gamma^\star \epsilon_t
+            \end{align}
+
+        [1]_ also consider an alternative parameterization with :math:`\beta = \alpha \beta^star` and
+        :math:`\gamma = (1 - \alpha) \gamma^\star`.
+
+
+    Parameters
+    ----------
+    order: tuple of string, Optional
+        The exponential smoothing "order". This is a tuple of three strings, each of which should be one of 'A', 'Ad',
+        or 'N'.
+        If provided, the model will be initialized from the given order, and the `trend`, `damped_trend`, and `seasonal`
+        arguments will be ignored.
+    endog_names: str or list of str, Optional
+        Names associated with observed states. If a list, the length should be equal to the number of time series
+        to be estimated.
+    k_endog: int, Optional
+        Number of time series to estimate. If endog_names are provided, this is ignored and len(endog_names) is
+        used instead.
+    trend: bool
+        Whether to include a trend component. Setting ``trend=True`` is equivalent to ``order[1] == 'A'``.
+    damped_trend: bool
+        Whether to include a damping parameter on the trend component. Ignored if `trend` is `False`. Setting
+        ``trend=True`` and ``damped_trend=True`` is equivalent to order[1] == 'Ad'.
+    seasonal: bool
+        Whether to include a seasonal component. Setting ``seasonal=True`` is equivalent to ``order[2] = 'A'``.
+    seasonal_periods: int
+        The number of periods in a complete seasonal cycle. Ignored if `seasonal` is `False`
+        (or if ``order[2] == "N"``)
+    measurement_error: bool
+        Whether to include a measurement error term in the model. Default is `False`.
+    use_transformed_parameterization: bool, default False
+        If true, use the :math:`\alpha, \beta, \gamma` parameterization, otherwise use the :math:`\alpha, \beta^\star,
+        \gamma^\star` parameterization. This will change the admissible region for the priors.
+
+        - Under the **non-transformed** parameterization, all of :math:`\alpha, \beta^\star, \gamma^\star` should be
+          between 0 and 1.
+        - Under the **transformed**  parameterization, :math:`\alpha \in (0, 1)`, :math:`\beta \in (0, \alpha)`, and
+          :math:`\gamma \in (0, 1 - \alpha)`
+
+        The :meth:`param_info` method will change to reflect the suggested intervals based on the value of this
+        argument.
+    dense_innovation_covariance: bool, default False
+        Whether to estimate a dense covariance for statespace innovations. In an ETS models, each observed variable
+        has a single source of stochastic variation. If True, these innovations are allowed to be correlated.
+        Ignored if ``k_endog == 1``
+    stationary_initialization: bool, default False
+        If True, the Kalman Filter's initial covariance matrix will be set to an approximate steady-state value.
+        The approximation is formed by adding a small dampening factor to each state. Specifically, the level state
+        for a ('A', 'N', 'N') model is written:
+
+        .. math::
+            \ell_t = \ell_{t-1} + \alpha * e_t
+
+        That this system is not stationary can be understood in ARIMA terms: the level is a random walk; that is,
+        :math:`rho = 1`. This can be remedied by pretending that we instead have a dampened system:
+
+        .. math::
+            \ell_t = \rho \ell_{t-1} + \alpha * e_t
+
+        With :math:`\rho \approx 1`, the system is stationary, and we can solve for the steady-state covariance
+        matrix. This is then used as the initial covariance matrix for the Kalman Filter. This is a heuristic
+        method that helps avoid setting a prior on the initial covariance matrix.
+    initialization_dampening: float, default 0.8
+        Dampening factor to add to non-stationary model components. This is only used for initialization, it does
+        *not* add dampening to the model. Ignored if `stationary_initialization` is `False`.
+    filter_type: str, default "standard"
+        The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
+        and "cholesky". See the docs for kalman filters for more details.
+    verbose: bool, default True
+        If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
+    mode: str or Mode, optional
+        Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+        ``forecast``. The mode does **not** effect calls to ``pm.sample``.
+
+        Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+        to all sampling methods.
+
+
+    References
+    ----------
+    .. [1] Hyndman, Rob J., and George Athanasopoulos. Forecasting: principles and practice. OTexts, 2018.
+    """
+
     def __init__(
         self,
         order: tuple[str, str, str] | None = None,
@@ -38,195 +227,6 @@ class BayesianETS(PyMCStateSpace):
         verbose: bool = True,
         mode: str | Mode | None = None,
     ):
-        r"""
-        Exponential Smoothing State Space Model
-
-        This class can represent a subset of exponential smoothing state space models, specifically those with additive
-        errors. Following .. [1], The general form of the model is:
-
-        .. math::
-
-            \begin{align}
-            y_t &= l_{t-1} + b_{t-1} + s_{t-m} + \epsilon_t \\
-            \epsilon_t &\sim N(0, \sigma)
-            \end{align}
-
-        where :math:`l_t` is the level component, :math:`b_t` is the trend component, and :math:`s_t` is the seasonal
-        component. These components can be included or excluded, leading to different model specifications. The following
-        models are possible:
-
-        * `ETS(A,N,N)`: Simple exponential smoothing
-
-            .. math::
-
-                \begin{align}
-                y_t &= l_{t-1} + \epsilon_t \\
-                l_t &= l_{t-1} + \alpha \epsilon_t
-                \end{align}
-
-        Where :math:`\alpha \in [0, 1]` is a mixing parameter between past observations and current innovations.
-        These equations arise by starting from the "component form":
-
-            .. math::
-
-                \begin{align}
-                \hat{y}_{t+1 | t} &= l_t \\
-                l_t &= \alpha y_t + (1 - \alpha) l_{t-1} \\
-                &= l_{t-1} + \alpha (y_t - l_{t-1})
-                &= l_{t-1} + \alpha \epsilon_t
-                \end{align}
-
-        Where $\epsilon_t$ are the forecast errors, assumed to be IID mean zero and normally distributed. The role of
-        :math:`\alpha` is clearest in the second line. The level of the time series at each time is a mixture of
-        :math:`\alpha` percent of the incoming data, and :math:`1 - \alpha` percent of the previous level. Recursive
-        substitution reveals that the level is a weighted composite of all previous observations; thus the name
-        "Exponential Smoothing".
-
-        Additional supposed specifications include:
-
-        * `ETS(A,A,N)`: Holt's linear trend method
-
-            .. math::
-
-                \begin{align}
-                y_t &= l_{t-1} + b_{t-1} + \epsilon_t \\
-                l_t &= l_{t-1} + b_{t-1} + \alpha \epsilon_t \\
-                b_t &= b_{t-1} + \alpha \beta^\star \epsilon_t
-                \end{align}
-
-            [1]_ also consider an alternative parameterization with :math:`\beta = \alpha \beta^\star`.
-
-        * `ETS(A,N,A)`: Additive seasonal method
-
-            .. math::
-
-                \begin{align}
-                y_t &= l_{t-1} + s_{t-m} + \epsilon_t \\
-                l_t &= l_{t-1} + \alpha \epsilon_t \\
-                s_t &= s_{t-m} + (1 - \alpha)\gamma^\star \epsilon_t
-                \end{align}
-
-            [1]_ also consider an alternative parameterization with :math:`\gamma = (1 - \alpha) \gamma^\star`.
-
-        * `ETS(A,A,A)`: Additive Holt-Winters method
-
-            .. math::
-
-                \begin{align}
-                y_t &= l_{t-1} + b_{t-1} + s_{t-m} + \epsilon_t \\
-                l_t &= l_{t-1} + \alpha \epsilon_t \\
-                b_t &= b_{t-1} + \alpha \beta^\star \epsilon_t \\
-                s_t &= s_{t-m} + (1 - \alpha) \gamma^\star \epsilon_t
-                \end{align}
-
-            [1]_ also consider an alternative parameterization with :math:`\beta = \alpha \beta^star` and
-            :math:`\gamma = (1 - \alpha) \gamma^\star`.
-
-        * `ETS(A, Ad, N)`: Dampened trend method
-
-            .. math::
-
-                \begin{align}
-                y_t &= l_{t-1} + b_{t-1} + \epsilon_t \\
-                l_t &= l_{t-1} + \alpha \epsilon_t \\
-                b_t &= \phi b_{t-1} + \alpha \beta^\star \epsilon_t
-                \end{align}
-
-            [1]_ also consider an alternative parameterization with :math:`\beta = \alpha \beta^\star`.
-
-        * `ETS(A, Ad, A)`: Dampened trend with seasonal method
-
-            .. math::
-
-                \begin{align}
-                y_t &= l_{t-1} + b_{t-1} + s_{t-m} + \epsilon_t \\
-                l_t &= l_{t-1} + \alpha \epsilon_t \\
-                b_t &= \phi b_{t-1} + \alpha \beta^\star \epsilon_t \\
-                s_t &= s_{t-m} + (1 - \alpha) \gamma^\star \epsilon_t
-                \end{align}
-
-            [1]_ also consider an alternative parameterization with :math:`\beta = \alpha \beta^star` and
-            :math:`\gamma = (1 - \alpha) \gamma^\star`.
-
-
-        Parameters
-        ----------
-        order: tuple of string, Optional
-            The exponential smoothing "order". This is a tuple of three strings, each of which should be one of 'A', 'Ad',
-            or 'N'.
-            If provided, the model will be initialized from the given order, and the `trend`, `damped_trend`, and `seasonal`
-            arguments will be ignored.
-        endog_names: str or list of str, Optional
-            Names associated with observed states. If a list, the length should be equal to the number of time series
-            to be estimated.
-        k_endog: int, Optional
-            Number of time series to estimate. If endog_names are provided, this is ignored and len(endog_names) is
-            used instead.
-        trend: bool
-            Whether to include a trend component. Setting ``trend=True`` is equivalent to ``order[1] == 'A'``.
-        damped_trend: bool
-            Whether to include a damping parameter on the trend component. Ignored if `trend` is `False`. Setting
-            ``trend=True`` and ``damped_trend=True`` is equivalent to order[1] == 'Ad'.
-        seasonal: bool
-            Whether to include a seasonal component. Setting ``seasonal=True`` is equivalent to ``order[2] = 'A'``.
-        seasonal_periods: int
-            The number of periods in a complete seasonal cycle. Ignored if `seasonal` is `False`
-            (or if ``order[2] == "N"``)
-        measurement_error: bool
-            Whether to include a measurement error term in the model. Default is `False`.
-        use_transformed_parameterization: bool, default False
-            If true, use the :math:`\alpha, \beta, \gamma` parameterization, otherwise use the :math:`\alpha, \beta^\star,
-            \gamma^\star` parameterization. This will change the admissible region for the priors.
-
-            - Under the **non-transformed** parameterization, all of :math:`\alpha, \beta^\star, \gamma^\star` should be
-              between 0 and 1.
-            - Under the **transformed**  parameterization, :math:`\alpha \in (0, 1)`, :math:`\beta \in (0, \alpha)`, and
-              :math:`\gamma \in (0, 1 - \alpha)`
-
-            The :meth:`param_info` method will change to reflect the suggested intervals based on the value of this
-            argument.
-        dense_innovation_covariance: bool, default False
-            Whether to estimate a dense covariance for statespace innovations. In an ETS models, each observed variable
-            has a single source of stochastic variation. If True, these innovations are allowed to be correlated.
-            Ignored if ``k_endog == 1``
-        stationary_initialization: bool, default False
-            If True, the Kalman Filter's initial covariance matrix will be set to an approximate steady-state value.
-            The approximation is formed by adding a small dampening factor to each state. Specifically, the level state
-            for a ('A', 'N', 'N') model is written:
-
-            .. math::
-                \ell_t = \ell_{t-1} + \alpha * e_t
-
-            That this system is not stationary can be understood in ARIMA terms: the level is a random walk; that is,
-            :math:`rho = 1`. This can be remedied by pretending that we instead have a dampened system:
-
-            .. math::
-                \ell_t = \rho \ell_{t-1} + \alpha * e_t
-
-            With :math:`\rho \approx 1`, the system is stationary, and we can solve for the steady-state covariance
-            matrix. This is then used as the initial covariance matrix for the Kalman Filter. This is a heuristic
-            method that helps avoid setting a prior on the initial covariance matrix.
-        initialization_dampening: float, default 0.8
-            Dampening factor to add to non-stationary model components. This is only used for initialization, it does
-            *not* add dampening to the model. Ignored if `stationary_initialization` is `False`.
-        filter_type: str, default "standard"
-            The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
-            and "cholesky". See the docs for kalman filters for more details.
-        verbose: bool, default True
-            If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
-        mode: str or Mode, optional
-            Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
-            ``forecast``. The mode does **not** effect calls to ``pm.sample``.
-
-            Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
-            to all sampling methods.
-
-
-        References
-        ----------
-        .. [1] Hyndman, Rob J., and George Athanasopoulos. Forecasting: principles and practice. OTexts, 2018.
-        """
-
         if order is not None:
             if len(order) != 3 or any(not isinstance(o, str) for o in order):
                 raise ValueError("Order must be a tuple of three strings.")
