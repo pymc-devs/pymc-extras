@@ -55,5 +55,5 @@ def stabilize(cov, jitter=JITTER_DEFAULT):
 
 
 def quad_form_sym(A, B):
-    out = matrix_dot(A, B, A.T)
-    return 0.5 * (out + out.T)
+    out = matrix_dot(A, B, A.mT)
+    return 0.5 * (out + out.mT)
