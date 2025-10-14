@@ -48,12 +48,11 @@ def split_vars_into_seq_and_nonseq(params, param_names):
 
 
 def stabilize(cov, jitter=JITTER_DEFAULT):
-    # Ensure diagonal is non-zero
     cov = cov + pt.identity_like(cov) * jitter
 
     return cov
 
 
 def quad_form_sym(A, B):
-    out = matrix_dot(A, B, A.mT)
+    out = A @ B @ A.mT
     return 0.5 * (out + out.mT)
