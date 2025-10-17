@@ -28,7 +28,7 @@ def compile_statespace(
         x0, P0, c, d, T, Z, R, H, Q, steps=steps, sequence_names=sequence_names
     )
 
-    inputs = list(pytensor.graph.basic.explicit_graph_inputs(outputs))
+    inputs = list(pytensor.graph.traversal.explicit_graph_inputs(outputs))
 
     _f = pm.compile(inputs, outputs, on_unused_input="ignore", **compile_kwargs)
 
