@@ -103,10 +103,6 @@ filterwarnings =[
     "error",
     # JAX issues an over-eager warning if os.fork() is called when the JAX module is loaded, even if JAX isn't being used
     'ignore:os\.fork\(\) was called\.:RuntimeWarning',
-
-    # Silence warning emitted by pytensor when BLAS is not available
-    "ignore:\\n?Found Intel OpenMP \\('libiomp'\\) and LLVM OpenMP \\('libomp'\\).*:RuntimeWarning",
-    'ignore:PyTensor could not link to a BLAS installation:UserWarning'
 ]
 
 [tool.coverage.report]
