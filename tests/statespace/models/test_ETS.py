@@ -4,7 +4,7 @@ import pytest
 import statsmodels.api as sm
 
 from numpy.testing import assert_allclose
-from pytensor.graph.basic import explicit_graph_inputs
+from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
 
 from pymc_extras.statespace.models.ETS import BayesianETS

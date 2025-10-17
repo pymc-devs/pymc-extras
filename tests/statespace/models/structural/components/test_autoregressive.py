@@ -4,7 +4,7 @@ import pytest
 
 from numpy.testing import assert_allclose
 from pytensor import config
-from pytensor.graph.basic import explicit_graph_inputs
+from pytensor.graph.traversal import explicit_graph_inputs
 
 from pymc_extras.statespace.models import structural as st
 from tests.statespace.models.structural.conftest import _assert_basic_coords_correct
