@@ -103,6 +103,9 @@ filterwarnings =[
     "error",
     # JAX issues an over-eager warning if os.fork() is called when the JAX module is loaded, even if JAX isn't being used
     'ignore:os\.fork\(\) was called\.:RuntimeWarning',
+
+    # Preliz needs to update for pytensor > 2.35
+   'ignore:.*`pytensor\.graph\.basic\.ancestors`.*`pytensor\.graph\.traversal\.ancestors`.*:FutureWarning:^preliz(\.|$)'
 ]
 
 [tool.coverage.report]
