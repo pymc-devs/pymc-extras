@@ -1,7 +1,5 @@
 import pytensor.tensor as pt
 
-from pytensor.tensor.nlinalg import matrix_dot
-
 from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, NEVER_TIME_VARYING, VECTOR_VALUED
 
 
