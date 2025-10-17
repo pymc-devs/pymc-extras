@@ -530,7 +530,7 @@ def bfgs_sample_sparse(
 
     # qr_input: (L, N, 2J)
     qr_input = inv_sqrt_alpha_diag @ beta
-    (Q, R), _ = pytensor.scan(fn=pt.nlinalg.qr, sequences=[qr_input], allow_gc=False)
+    (Q, R), _ = pytensor.scan(fn=pt.linalg.qr, sequences=[qr_input], allow_gc=False)
 
     IdN = pt.eye(R.shape[1])[None, ...]
     IdN += IdN * REGULARISATION_TERM
