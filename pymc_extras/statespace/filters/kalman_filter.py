@@ -200,7 +200,7 @@ class BaseFilter(ABC):
         self.n_endog = Z_shape[-2]
 
         data, a0, P0, *params = self.check_params(data, a0, P0, c, d, T, Z, R, H, Q)
-
+        data = pt.specify_shape(data, (data.type.shape[0], self.n_endog))
         sequences, non_sequences, seq_names, non_seq_names = split_vars_into_seq_and_nonseq(
             params, PARAM_NAMES
         )
@@ -658,7 +658,7 @@ class SquareRootFilter(BaseFilter):
         # Construct upper-triangular block matrix A = [[chol(H), Z @ L_pred],
         #                                              [0,           L_pred]]
         # The Schur decomposition of this matrix will be B (upper triangular). We are
-        # more insterested in B^T:
+        # more interested in B^T:
         # Structure of B^T = [[chol(F),     0              ],
         #                    [K @ chol(F), chol(P_filtered)]
         zeros = pt.zeros((self.n_states, self.n_endog))
