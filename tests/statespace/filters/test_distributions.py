@@ -93,7 +93,7 @@ def ss_mod_no_me():
     return ss_mod
 
 
-@pytest.mark.parametrize("kfilter", filter_names, ids=filter_names)
+@pytest.mark.parametrize("kfilter", filter_names)
 def test_loglike_vectors_agree(kfilter, pymc_model):
     # TODO: This test might be flakey, I've gotten random failures
     ss_mod = structural.LevelTrendComponent(order=2).build(

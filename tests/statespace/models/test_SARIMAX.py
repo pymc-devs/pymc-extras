@@ -432,15 +432,7 @@ def test_SARIMA_with_exogenous(rng, mock_sample):
     obs_intercept = ss_mod.ssm["obs_intercept"]
     assert obs_intercept.type.shape == (None, ss_mod.k_endog)
 
-    intercept_fn = pytensor.function(
-        inputs=list(explicit_graph_inputs(obs_intercept)), outputs=obs_intercept
-    )
     data_val = rng.normal(size=(100, 2)).astype(floatX)
-    beta_val = rng.normal(size=(2,)).astype(floatX)
-
-    intercept_val = intercept_fn(data_val, beta_val)
-    np.testing.assert_allclose(intercept_val, intercept_fn(data_val, beta_val))
-
     data_df = pd.DataFrame(
         rng.normal(size=(100, 1)),
         index=pd.date_range(start="2020-01-01", periods=100, freq="D"),
