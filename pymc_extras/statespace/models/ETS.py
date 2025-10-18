@@ -138,12 +138,9 @@ class BayesianETS(PyMCStateSpace):
         or 'N'.
         If provided, the model will be initialized from the given order, and the `trend`, `damped_trend`, and `seasonal`
         arguments will be ignored.
-    endog_names: str or list of str, Optional
+    endog_names: str or list of str
         Names associated with observed states. If a list, the length should be equal to the number of time series
         to be estimated.
-    k_endog: int, Optional
-        Number of time series to estimate. If endog_names are provided, this is ignored and len(endog_names) is
-        used instead.
     trend: bool
         Whether to include a trend component. Setting ``trend=True`` is equivalent to ``order[1] == 'A'``.
     damped_trend: bool
@@ -213,7 +210,6 @@ class BayesianETS(PyMCStateSpace):
         self,
         order: tuple[str, str, str] | None = None,
         endog_names: str | list[str] | None = None,
-        k_endog: int = 1,
         trend: bool = True,
         damped_trend: bool = False,
         seasonal: bool = False,
@@ -265,11 +261,13 @@ class BayesianETS(PyMCStateSpace):
         if self.seasonal and self.seasonal_periods is None:
             raise ValueError("If seasonal is True, seasonal_periods must be provided.")
 
-        if endog_names is not None:
+        if endog_names is None:
+            raise ValueError(
+                "endog_names must be provided as either a string or a list of strings."
+            )
+        else:
             endog_names = list(endog_names)
             k_endog = len(endog_names)
-        else:
-            endog_names = [f"data_{i}" for i in range(k_endog)] if k_endog > 1 else ["data"]
 
         self.endog_names = endog_names
 
