@@ -224,9 +224,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         self,
         k_factors: int,
         factor_order: int,
-        k_endog: int | None = None,
         endog_names: Sequence[str] | None = None,
-        k_exog: int | None = None,
         exog_names: Sequence[str] | None = None,
         shared_exog_states: bool = False,
         exog_innovations: bool = False,
@@ -249,16 +247,9 @@ class BayesianDynamicFactor(PyMCStateSpace):
             and are modeled as a white noise process, i.e., :math:`f_t = \varepsilon_{f,t}`.
             Therefore, the state vector will include one state per factor and "factor_ar" will not exist.
 
-        k_endog : int, optional
-            Number of observed time series. If not provided, the number of observed series will be inferred from `endog_names`.
-            At least one of `k_endog` or `endog_names` must be provided.
-
         endog_names : list of str, optional
             Names of the observed time series. If not provided, default names will be generated as `endog_1`, `endog_2`, ..., `endog_k` based on `k_endog`.
             At least one of `k_endog` or `endog_names` must be provided.
-
-        k_exog : int, optional
-            Number of exogenous variables. If not provided, the model will not have exogenous variables.
 
         exog_names : Sequence[str], optional
             Names of the exogenous variables. If not provided, but `k_exog` is specified, default names will be generated as `exog_1`, `exog_2`, ..., `exog_k`.
@@ -289,12 +280,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         """
 
-        if k_endog is None and endog_names is None:
-            raise ValueError("Either k_endog or endog_names must be provided.")
-        if k_endog is None:
-            k_endog = len(endog_names)
         if endog_names is None:
-            endog_names = [f"endog_{i}" for i in range(k_endog)]
+            raise ValueError("endog_names must be provided.")
+        else:
+            k_endog = len(endog_names)
 
         self.endog_names = endog_names
         self.k_endog = k_endog
@@ -304,17 +293,14 @@ class BayesianDynamicFactor(PyMCStateSpace):
         self.error_var = error_var
         self.error_cov_type = error_cov_type
 
-        if k_exog is None and exog_names is None:
-            self.k_exog = 0
-        else:
+        if exog_names is not None:
             self.shared_exog_states = shared_exog_states
             self.exog_innovations = exog_innovations
-            if k_exog is None:
-                k_exog = len(exog_names) if exog_names is not None else 0
-            elif exog_names is None:
-                exog_names = [f"exog_{i}" for i in range(k_exog)] if k_exog > 0 else None
+            k_exog = len(exog_names) if exog_names is not None else 0
             self.k_exog = k_exog
             self.exog_names = exog_names
+        else:
+            self.k_exog = 0
 
         self.k_exog_states = self.k_exog * self.k_endog if not shared_exog_states else self.k_exog
         self.exog_flag = self.k_exog > 0
