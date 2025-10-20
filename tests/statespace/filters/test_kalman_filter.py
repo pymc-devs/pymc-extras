@@ -30,13 +30,27 @@ floatX = pytensor.config.floatX
 ATOL = 1e-6 if floatX.endswith("64") else 1e-3
 RTOL = 1e-6 if floatX.endswith("64") else 1e-3
 
-standard_inout = initialize_filter(StandardFilter())
-cholesky_inout = initialize_filter(SquareRootFilter())
-univariate_inout = initialize_filter(UnivariateFilter())
 
-f_standard = pytensor.function(*standard_inout, on_unused_input="ignore")
-f_cholesky = pytensor.function(*cholesky_inout, on_unused_input="ignore")
-f_univariate = pytensor.function(*univariate_inout, on_unused_input="ignore")
+@pytest.fixture(scope="session")
+def f_standard():
+    standard_inout = initialize_filter(StandardFilter())
+    f_standard = pytensor.function(*standard_inout, on_unused_input="ignore")
+    return f_standard
+
+
+@pytest.fixture(scope="session")
+def f_cholesky():
+    cholesky_inout = initialize_filter(SquareRootFilter())
+    f_cholesky = pytensor.function(*cholesky_inout, on_unused_input="ignore")
+    return f_cholesky
+
+
+@pytest.fixture(scope="session")
+def f_univariate():
+    univariate_inout = initialize_filter(UnivariateFilter())
+    f_univariate = pytensor.function(*univariate_inout, on_unused_input="ignore")
+    return f_univariate
+
 
 filter_funcs = [f_standard, f_cholesky, f_univariate]
 
