@@ -230,7 +230,7 @@ def test_nested_marginalized_rvs(batched):
 
         # Test initial_point
         ips = make_initial_point_expression(
-            free_rvs=marginal_m.free_RVs,
+            free_rvs=[marginal_m["sigma"], marginal_m["dep"], marginal_m["sub_dep"]],
             rvs_to_transforms=marginal_m.rvs_to_transforms,
             initval_strategies={},
         )
@@ -294,7 +294,7 @@ def test_interdependent_rvs():
 
     # Test initial_point
     ips = make_initial_point_expression(
-        free_rvs=marginal_m.free_RVs,
+        free_rvs=[marginal_m["x"], marginal_m["y"]],
         rvs_to_transforms={},
         initval_strategies={},
     )
@@ -306,7 +306,7 @@ def test_interdependent_rvs():
     # Test custom initval strategy
     ips = make_initial_point_expression(
         # Test that order does not matter
-        free_rvs=marginal_m.free_RVs[::-1],
+        free_rvs=[marginal_m["y"], marginal_m["x"]],
         rvs_to_transforms={},
         initval_strategies={marginal_x: pt.constant(5.0)},
     )

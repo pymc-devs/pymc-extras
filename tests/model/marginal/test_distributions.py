@@ -128,5 +128,5 @@ def test_marginalized_hmm_multiple_emissions(batch_chain, batch_emission1, batch
         test_value_emission2 = np.broadcast_to(-test_value, emission2_shape)
     test_point = {"emission_1": test_value_emission1, "emission_2": test_value_emission2}
     res_logp, dummy_logp = logp_fn(test_point)
-    assert res_logp.shape == ((1, 3) if batch_chain else ())
+    assert res_logp.shape == ((3, 1) if batch_chain else ())
     np.testing.assert_allclose(res_logp.sum(), expected_logp)
