@@ -130,8 +130,7 @@ def histogram_approximation(name, dist, *, observed, **h_kwargs):
     ...     m = pm.Normal("m", dims="tests")
     ...     s = pm.LogNormal("s", dims="tests")
     ...     pot = pmx.distributions.histogram_approximation(
-    ...         "pot", pm.Normal.dist(m, s),
-    ...         observed=measurements, n_quantiles=50
+    ...         "pot", pm.Normal.dist(m, s), observed=measurements, n_quantiles=50
     ...     )
 
     For special cases like Zero Inflation in Continuous variables there is a flag.
@@ -143,8 +142,11 @@ def histogram_approximation(name, dist, *, observed, **h_kwargs):
     ...     m = pm.Normal("m", dims="tests")
     ...     s = pm.LogNormal("s", dims="tests")
     ...     pot = pmx.distributions.histogram_approximation(
-    ...         "pot", pm.Normal.dist(m, s),
-    ...         observed=measurements, n_quantiles=50, zero_inflation=True
+    ...         "pot",
+    ...         pm.Normal.dist(m, s),
+    ...         observed=measurements,
+    ...         n_quantiles=50,
+    ...         zero_inflation=True,
     ...     )
     """
     try:

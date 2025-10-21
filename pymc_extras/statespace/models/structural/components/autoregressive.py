@@ -141,19 +141,19 @@ class AutoregressiveComponent(Component):
 
         self.param_info = {
             f"params_{self.name}": {
-                "shape": (k_states,) if self.k_endog == 1 else (self.k_endog, k_states),
+                "shape": (k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,),
                 "constraints": None,
                 "dims": (AR_PARAM_DIM,)
-                if self.k_endog == 1
+                if k_endog_effective == 1
                 else (
                     f"endog_{self.name}",
                     f"lag_{self.name}",
                 ),
             },
             f"sigma_{self.name}": {
-                "shape": () if self.k_endog == 1 else (self.k_endog,),
+                "shape": (k_endog_effective,) if k_endog_effective > 1 else (),
                 "constraints": "Positive",
-                "dims": None if self.k_endog == 1 else (f"endog_{self.name}",),
+                "dims": (f"endog_{self.name}",) if k_endog_effective > 1 else None,
             },
         }
 

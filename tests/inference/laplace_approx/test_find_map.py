@@ -6,11 +6,11 @@ import pytest
 from pymc_extras.inference.laplace_approx.find_map import (
     find_MAP,
     get_nearest_psd,
-    set_optimizer_function_defaults,
 )
 from pymc_extras.inference.laplace_approx.scipy_interface import (
     GradientBackend,
     scipy_optimize_funcs_from_loss,
+    set_optimizer_function_defaults,
 )
 
 

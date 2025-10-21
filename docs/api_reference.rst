@@ -56,6 +56,7 @@ Prior
    create_dim_handler
    handle_dims
    Prior
+   register_tensor_transform
    VariableFactory
    sample_prior
    Censored

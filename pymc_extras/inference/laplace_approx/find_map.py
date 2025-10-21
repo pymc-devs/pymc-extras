@@ -7,7 +7,7 @@ import numpy as np
 import pymc as pm
 
 from better_optimize import basinhopping, minimize
-from better_optimize.constants import MINIMIZE_MODE_KWARGS, minimize_method
+from better_optimize.constants import minimize_method
 from pymc.blocking import DictToArrayBijection, RaveledVars
 from pymc.initial_point import make_initial_point_fn
 from pymc.model.transform.optimization import freeze_dims_and_data
@@ -24,38 +24,10 @@ from pymc_extras.inference.laplace_approx.idata import (
 from pymc_extras.inference.laplace_approx.scipy_interface import (
     GradientBackend,
     scipy_optimize_funcs_from_loss,
+    set_optimizer_function_defaults,
 )
 
 _log = logging.getLogger(__name__)
-
-
-def set_optimizer_function_defaults(method, use_grad, use_hess, use_hessp):
-    method_info = MINIMIZE_MODE_KWARGS[method].copy()
-
-    if use_hess and use_hessp:
-        _log.warning(
-            'Both "use_hess" and "use_hessp" are set to True, but scipy.optimize.minimize never uses both at the '
-            'same time. When possible "use_hessp" is preferred because its is computationally more efficient. '
-            'Setting "use_hess" to False.'
-        )
-        use_hess = False
-
-    use_grad = use_grad if use_grad is not None else method_info["uses_grad"]
-
-    if use_hessp is not None and use_hess is None:
-        use_hess = not use_hessp
-
-    elif use_hess is not None and use_hessp is None:
-        use_hessp = not use_hess
-
-    elif use_hessp is None and use_hess is None:
-        use_hessp = method_info["uses_hessp"]
-        use_hess = method_info["uses_hess"]
-        if use_hessp and use_hess:
-            # If a method could use either hess or hessp, we default to using hessp
-            use_hess = False
-
-    return use_grad, use_hess, use_hessp
 
 
 def get_nearest_psd(A: np.ndarray) -> np.ndarray:

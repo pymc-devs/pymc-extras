@@ -100,21 +100,13 @@ addopts = [
 ]
 
 filterwarnings =[
-  "error",
-  # Raised by arviz when the model_builder class adds non-standard group names to InferenceData
-  "ignore::UserWarning:arviz.data.inference_data",
+    "error",
+    # JAX issues an over-eager warning if os.fork() is called when the JAX module is loaded, even if JAX isn't being used
+    'ignore:os\.fork\(\) was called\.:RuntimeWarning',
 
-  # bool8, find_common_type, cumproduct, and product had deprecation warnings added in numpy 1.25
-  'ignore:.*(\b(pkg_resources\.declare_namespace|np\.bool8|np\.find_common_type|cumproduct|product)\b).*:DeprecationWarning',
-
-  # JAX issues an over-eager warning if os.fork() is called when the JAX module is loaded, even if JAX isn't being used
-  'ignore:os\.fork\(\) was called\.:RuntimeWarning',
-
-  # Warning coming from blackjax
-  'ignore:jax\.tree_map is deprecated:DeprecationWarning',
-
-  # PyMC uses numpy.core functions, which emits an warning as of numpy>2.0
-  'ignore:numpy\.core\.numeric is deprecated:DeprecationWarning',
+    # Silence warning emitted by pytensor when BLAS is not available
+    "ignore:\\n?Found Intel OpenMP \\('libiomp'\\) and LLVM OpenMP \\('libomp'\\).*:RuntimeWarning",
+    'ignore:PyTensor could not link to a BLAS installation:UserWarning'
 ]
 
 [tool.coverage.report]
@@ -127,6 +119,9 @@ exclude_lines = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.format]
+docstring-code-format = true
 
 [tool.ruff.lint]
 select = ["D", "E", "F", "I", "UP", "W", "RUF"]

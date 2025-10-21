@@ -334,7 +334,9 @@ class ModelBuilder:
         >>> model = MyModel(ModelBuilder)
         >>> idata = az.InferenceData(your_dataset)
         >>> model.set_idata_attrs(idata=idata)
-        >>> assert "id" in idata.attrs #this and the following lines are part of doctest, not user manual
+        >>> assert (
+        ...     "id" in idata.attrs
+        ... )  # this and the following lines are part of doctest, not user manual
         >>> assert "model_type" in idata.attrs
         >>> assert "version" in idata.attrs
         >>> assert "sampler_config" in idata.attrs
@@ -382,7 +384,7 @@ class ModelBuilder:
         >>>         super().__init__()
         >>> model = MyModel()
         >>> model.fit(data)
-        >>> model.save('model_results.nc')  # This will call the overridden method in MyModel
+        >>> model.save("model_results.nc")  # This will call the overridden method in MyModel
         """
         if self.idata is not None and "posterior" in self.idata:
             file = Path(str(fname))
@@ -432,7 +434,7 @@ class ModelBuilder:
         --------
         >>> class MyModel(ModelBuilder):
         >>>     ...
-        >>> name = './mymodel.nc'
+        >>> name = "./mymodel.nc"
         >>> imported_model = MyModel.load(name)
         """
         filepath = Path(str(fname))
@@ -554,7 +556,7 @@ class ModelBuilder:
         >>> model = MyModel()
         >>> idata = model.fit(data)
         >>> x_pred = []
-        >>> prediction_data = pd.DataFrame({'input':x_pred})
+        >>> prediction_data = pd.DataFrame({"input": x_pred})
         >>> pred_mean = model.predict(prediction_data)
         """
 

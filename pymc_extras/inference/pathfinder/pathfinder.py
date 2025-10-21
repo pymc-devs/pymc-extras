@@ -16,6 +16,7 @@
 import collections
 import logging
 import time
+import warnings
 
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -1398,6 +1399,7 @@ def multipath_pathfinder(
     random_seed: RandomSeed,
     pathfinder_kwargs: dict = {},
     compile_kwargs: dict = {},
+    display_summary: bool = True,
 ) -> MultiPathfinderResult:
     """
     Fit the Pathfinder Variational Inference algorithm using multiple paths with PyMC/PyTensor backend.
@@ -1556,8 +1558,9 @@ def multipath_pathfinder(
                     compute_time=compute_end - compute_start,
                 )
             )
-            # TODO: option to disable summary, save to file, etc.
-            mpr.display_summary()
+            # Display summary conditionally
+            if display_summary:
+                mpr.display_summary()
             if mpr.all_paths_failed:
                 raise ValueError(
                     "All paths failed. Consider decreasing the jitter or reparameterizing the model."
@@ -1600,6 +1603,14 @@ def fit_pathfinder(
     pathfinder_kwargs: dict = {},
     compile_kwargs: dict = {},
     initvals: dict | None = None,
+    # New pathfinder result integration options
+    add_pathfinder_groups: bool = True,
+    display_summary: bool | Literal["auto"] = "auto",
+    store_diagnostics: bool = False,
+    pathfinder_group: str = "pathfinder",
+    paths_group: str = "pathfinder_paths",
+    diagnostics_group: str = "pathfinder_diagnostics",
+    config_group: str = "pathfinder_config",
 ) -> az.InferenceData:
     """
     Fit the Pathfinder Variational Inference algorithm.
@@ -1658,6 +1669,22 @@ def fit_pathfinder(
     initvals: dict | None = None
         Initial values for the model parameters, as str:ndarray key-value pairs. Paritial initialization is permitted.
         If None, the model's default initial values are used.
+    add_pathfinder_groups : bool, optional
+        Whether to add pathfinder results as additional groups to the InferenceData (default is True).
+        When True, adds pathfinder and pathfinder_paths groups with optimization diagnostics.
+    display_summary : bool or "auto", optional
+        Whether to display the pathfinder results summary (default is "auto").
+        "auto" preserves current behavior, False suppresses console output.
+    store_diagnostics : bool, optional
+        Whether to include potentially large diagnostic arrays in the pathfinder groups (default is False).
+    pathfinder_group : str, optional
+        Name for the main pathfinder results group (default is "pathfinder").
+    paths_group : str, optional
+        Name for the per-path results group (default is "pathfinder_paths").
+    diagnostics_group : str, optional
+        Name for the diagnostics group (default is "pathfinder_diagnostics").
+    config_group : str, optional
+        Name for the configuration group (default is "pathfinder_config").
 
     Returns
     -------
@@ -1694,6 +1721,9 @@ def fit_pathfinder(
         maxcor = np.ceil(3 * np.log(N)).astype(np.int32)
         maxcor = max(maxcor, 5)
 
+    # Handle display_summary logic
+    should_display_summary = display_summary == "auto" or display_summary is True
+
     if inference_backend == "pymc":
         mp_result = multipath_pathfinder(
             model,
@@ -1714,6 +1744,7 @@ def fit_pathfinder(
             random_seed=random_seed,
             pathfinder_kwargs=pathfinder_kwargs,
             compile_kwargs=compile_kwargs,
+            display_summary=should_display_summary,
         )
         pathfinder_samples = mp_result.samples
     elif inference_backend == "blackjax":
@@ -1759,5 +1790,31 @@ def fit_pathfinder(
     )
 
     idata = add_data_to_inference_data(idata, progressbar, model, compile_kwargs)
+
+    # Add pathfinder results to InferenceData if requested
+    if add_pathfinder_groups:
+        if inference_backend == "pymc":
+            from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
+
+            idata = add_pathfinder_to_inference_data(
+                idata=idata,
+                result=mp_result,
+                model=model,
+                group=pathfinder_group,
+                paths_group=paths_group,
+                diagnostics_group=diagnostics_group,
+                config_group=config_group,
+                store_diagnostics=store_diagnostics,
+            )
+        else:
+            warnings.warn(
+                f"Pathfinder diagnostic groups are only supported with the PyMC backend. "
+                f"Current backend is '{inference_backend}', which does not support adding "
+                "pathfinder diagnostics to InferenceData. The InferenceData will only contain "
+                "posterior samples. To add diagnostic groups, use inference_backend='pymc', "
+                "or set add_pathfinder_groups=False to suppress this warning.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     return idata
