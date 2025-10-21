@@ -446,6 +446,7 @@ class ModelBuilder:
             sampler_config=json.loads(idata.attrs["sampler_config"]),
         )
         model.idata = idata
+        model.is_fitted_ = True
         dataset = idata.fit_data.to_dataframe()
         X = dataset.drop(columns=[model.output_var])
         y = dataset[model.output_var]
@@ -525,6 +526,8 @@ class ModelBuilder:
                 message="The group fit_data is not defined in the InferenceData scheme",
             )
             self.idata.add_groups(fit_data=combined_data.to_xarray())  # type: ignore
+
+        self.is_fitted_ = True
 
         return self.idata  # type: ignore
 
