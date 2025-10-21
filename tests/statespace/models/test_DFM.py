@@ -9,7 +9,7 @@ import pytest
 import statsmodels.api as sm
 
 from numpy.testing import assert_allclose
-from pytensor.graph.basic import explicit_graph_inputs
+from pytensor.graph.traversal import explicit_graph_inputs
 from statsmodels.tsa.statespace.dynamic_factor import DynamicFactor
 
 from pymc_extras.statespace.models.DFM import BayesianDynamicFactor

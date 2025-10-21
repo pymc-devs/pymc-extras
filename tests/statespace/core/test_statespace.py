@@ -14,7 +14,7 @@ import pytest
 from numpy.testing import assert_allclose
 from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.compile import SharedVariable
-from pytensor.graph.basic import graph_inputs
+from pytensor.graph.traversal import graph_inputs
 
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
