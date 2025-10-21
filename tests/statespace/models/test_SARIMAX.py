@@ -10,7 +10,7 @@ import statsmodels.api as sm
 
 from numpy.testing import assert_allclose, assert_array_less
 from pymc.testing import mock_sample_setup_and_teardown
-from pytensor.graph.basic import explicit_graph_inputs
+from pytensor.graph.traversal import explicit_graph_inputs
 
 from pymc_extras.statespace import BayesianSARIMAX
 from pymc_extras.statespace.models.utilities import (
