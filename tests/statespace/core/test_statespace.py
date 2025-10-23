@@ -182,9 +182,8 @@ def exog_ss_mod(exog_data):
     level_trend = st.LevelTrendComponent(name="trend", order=1, innovations_order=[0])
     exog = st.RegressionComponent(
         name="exog",  # Name of this exogenous variable component
-        k_exog=1,  # Only one exogenous variable now
         innovations=False,  # Typically fixed effect (no stochastic evolution)
-        state_names=exog_data[["x1"]].columns.tolist(),
+        state_names=exog_data[["x1"]].columns.tolist(),  # Only one exogenous variable now
     )
 
     combined_model = level_trend + exog
@@ -198,9 +197,8 @@ def exog_ss_mod_mv(exog_data_mv):
     )
     exog = st.RegressionComponent(
         name="exog",  # Name of this exogenous variable component
-        k_exog=1,  # Only one exogenous variable now
         innovations=False,  # Typically fixed effect (no stochastic evolution)
-        state_names=exog_data_mv[["x1"]].columns.tolist(),
+        state_names=exog_data_mv[["x1"]].columns.tolist(),  # Only one exogenous variable now
         observed_state_names=["y1", "y2"],
     )
 
