@@ -670,3 +670,11 @@ def get_exog_dims_from_idata(exog_name, idata):
         exog_dims = None
 
     return exog_dims
+
+
+def _validate_endog_names(endog_names) -> int:
+    if endog_names is None:
+        raise ValueError("Must specify endog_names")
+    else:
+        k_endog = len(endog_names)
+    return k_endog

@@ -5,7 +5,7 @@ import pytensor
 import pytensor.tensor as pt
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
-from pymc_extras.statespace.models.utilities import make_default_coords
+from pymc_extras.statespace.models.utilities import _validate_endog_names, make_default_coords
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
@@ -279,11 +279,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         """
 
-        if endog_names is None:
-            raise ValueError("endog_names must be provided.")
-        else:
-            k_endog = len(endog_names)
-
+        k_endog = _validate_endog_names(endog_names)
         self.endog_names = endog_names
         self.k_endog = k_endog
         self.k_factors = k_factors
