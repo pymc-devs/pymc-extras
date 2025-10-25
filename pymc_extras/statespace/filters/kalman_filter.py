@@ -5,7 +5,6 @@ import pytensor
 import pytensor.tensor as pt
 
 from pymc.pytensorf import constant_fold
-from pytensor.compile.mode import get_mode
 from pytensor.graph.basic import Variable
 from pytensor.raise_op import Assert
 from pytensor.tensor import TensorVariable
@@ -16,10 +15,15 @@ from pymc_extras.statespace.filters.utilities import (
     split_vars_into_seq_and_nonseq,
     stabilize,
 )
-from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL
+from pymc_extras.statespace.utils.constants import (
+    FILTER_OUTPUT_NAMES,
+    JITTER_DEFAULT,
+    MATRIX_NAMES,
+    MISSING_FILL,
+)
 
 MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
-PARAM_NAMES = ["c", "d", "T", "Z", "R", "H", "Q"]
+PARAM_NAMES = MATRIX_NAMES[2:]
 
 assert_time_varying_dim_correct = Assert(
     "The first dimension of a time varying matrix (the time dimension) must be "
@@ -28,14 +32,9 @@ assert_time_varying_dim_correct = Assert(
 
 
 class BaseFilter(ABC):
-    def __init__(self, mode=None):
+    def __init__(self):
         """
         Kalman Filter.
-
-        Parameters
-        ----------
-        mode : str, optional
-            The mode used for Pytensor compilation. Defaults to None.
 
         Notes
         -----
@@ -44,9 +43,6 @@ class BaseFilter(ABC):
 
         Attributes
         ----------
-        mode : str or None
-            The mode used for Pytensor compilation.
-
         seq_names : list[str]
             A list of name representing time-varying statespace matrices. That is, inputs that will need to be
             provided to the `sequences` argument of `pytensor.scan`
@@ -56,7 +52,6 @@ class BaseFilter(ABC):
             to the `non_sequences` argument of `pytensor.scan`
         """
 
-        self.mode: str = mode
         self.seq_names: list[str] = []
         self.non_seq_names: list[str] = []
 
@@ -129,7 +124,7 @@ class BaseFilter(ABC):
         # There are always two outputs_info wedged between the seqs and non_seqs
         seqs, (a0, P0), non_seqs = args[:n_seq], args[n_seq : n_seq + 2], args[n_seq + 2 :]
         return_ordered = []
-        for name in ["c", "d", "T", "Z", "R", "H", "Q"]:
+        for name in PARAM_NAMES:
             if name in self.seq_names:
                 idx = self.seq_names.index(name)
                 return_ordered.append(seqs[idx])
@@ -153,7 +148,6 @@ class BaseFilter(ABC):
         R,
         H,
         Q,
-        mode=None,
         return_updates=False,
         missing_fill_value=None,
         cov_jitter=None,
@@ -165,9 +159,6 @@ class BaseFilter(ABC):
         ----------
         data : TensorVariable
             Data to be filtered
-
-        mode : optional, str
-            Pytensor compile mode, passed to pytensor.scan
 
         return_updates: bool, default False
             Whether to return updates associated with the pytensor scan. Should only be requried to debug pruposes.
@@ -199,7 +190,6 @@ class BaseFilter(ABC):
         if cov_jitter is None:
             cov_jitter = JITTER_DEFAULT
 
-        self.mode = mode
         self.missing_fill_value = missing_fill_value
         self.cov_jitter = cov_jitter
 
@@ -227,7 +217,6 @@ class BaseFilter(ABC):
             outputs_info=[None, a0, None, None, P0, None, None],
             non_sequences=non_sequences,
             name="forward_kalman_pass",
-            mode=get_mode(self.mode),
             strict=False,
         )
 
@@ -269,28 +258,28 @@ class BaseFilter(ABC):
         )
 
         filtered_states = pt.specify_shape(filtered_states, (n, self.n_states))
-        filtered_states.name = "filtered_states"
+        filtered_states.name = FILTER_OUTPUT_NAMES[0]
 
         predicted_states = pt.specify_shape(predicted_states, (n, self.n_states))
-        predicted_states.name = "predicted_states"
-
-        observed_states = pt.specify_shape(observed_states, (n, self.n_endog))
-        observed_states.name = "observed_states"
+        predicted_states.name = FILTER_OUTPUT_NAMES[1]
 
         filtered_covariances = pt.specify_shape(
             filtered_covariances, (n, self.n_states, self.n_states)
         )
-        filtered_covariances.name = "filtered_covariances"
+        filtered_covariances.name = FILTER_OUTPUT_NAMES[2]
 
         predicted_covariances = pt.specify_shape(
             predicted_covariances, (n, self.n_states, self.n_states)
         )
-        predicted_covariances.name = "predicted_covariances"
+        predicted_covariances.name = FILTER_OUTPUT_NAMES[3]
+
+        observed_states = pt.specify_shape(observed_states, (n, self.n_endog))
+        observed_states.name = FILTER_OUTPUT_NAMES[4]
 
         observed_covariances = pt.specify_shape(
             observed_covariances, (n, self.n_endog, self.n_endog)
         )
-        observed_covariances.name = "observed_covariances"
+        observed_covariances.name = FILTER_OUTPUT_NAMES[5]
 
         loglike_obs = pt.specify_shape(loglike_obs.squeeze(), (n,))
         loglike_obs.name = "loglike_obs"
@@ -404,7 +393,7 @@ class BaseFilter(ABC):
         .. [1] Durbin, J., and S. J. Koopman. Time Series Analysis by State Space Methods.
                2nd ed, Oxford University Press, 2012.
         """
-        a_hat = T.dot(a) + c
+        a_hat = T @ a + c
         P_hat = quad_form_sym(T, P) + quad_form_sym(R, Q)
 
         return a_hat, P_hat
@@ -591,16 +580,16 @@ class StandardFilter(BaseFilter):
         .. [1] Durbin, J., and S. J. Koopman. Time Series Analysis by State Space Methods.
                2nd ed, Oxford University Press, 2012.
         """
-        y_hat = d + Z.dot(a)
+        y_hat = d + Z @ a
         v = y - y_hat
 
-        PZT = P.dot(Z.T)
+        PZT = P.dot(Z.mT)
         F = Z.dot(PZT) + stabilize(H, self.cov_jitter)
 
-        K = pt.linalg.solve(F.T, PZT.T, assume_a="pos", check_finite=False).T
+        K = pt.linalg.solve(F.mT, PZT.mT, assume_a="pos", check_finite=False).mT
         I_KZ = pt.eye(self.n_states) - K.dot(Z)
 
-        a_filtered = a + K.dot(v)
+        a_filtered = a + K @ v
         P_filtered = quad_form_sym(I_KZ, P) + quad_form_sym(K, H)
 
         F_inv_v = pt.linalg.solve(F, v, assume_a="pos", check_finite=False)
@@ -641,9 +630,9 @@ class SquareRootFilter(BaseFilter):
         a_hat = T.dot(a) + c
         Q_chol = pt.linalg.cholesky(Q, lower=True)
 
-        M = pt.horizontal_stack(T @ P_chol, R @ Q_chol).T
+        M = pt.horizontal_stack(T @ P_chol, R @ Q_chol).mT
         R_decomp = pt.linalg.qr(M, mode="r")
-        P_chol_hat = R_decomp[: self.n_states, : self.n_states].T
+        P_chol_hat = R_decomp[..., : self.n_states, : self.n_states].mT
 
         return a_hat, P_chol_hat
 
@@ -676,7 +665,7 @@ class SquareRootFilter(BaseFilter):
         upper = pt.horizontal_stack(H_chol, Z @ P_chol)
         lower = pt.horizontal_stack(zeros, P_chol)
         A_T = pt.vertical_stack(upper, lower)
-        B = pt.linalg.qr(A_T.T, mode="r").T
+        B = pt.linalg.qr(A_T.mT, mode="r").mT
 
         F_chol = B[: self.n_endog, : self.n_endog]
         K_F_chol = B[self.n_endog :, : self.n_endog]
@@ -688,6 +677,7 @@ class SquareRootFilter(BaseFilter):
             inner_term = solve_triangular(
                 F_chol, solve_triangular(F_chol, v, lower=True), lower=True
             )
+
             loss = (v.T @ inner_term).ravel()
 
             # abs necessary because we're not guaranteed a positive diagonal from the schur decomposition
@@ -800,7 +790,6 @@ class UnivariateFilter(BaseFilter):
             self._univariate_inner_filter_step,
             sequences=[y_masked, Z_masked, d, pt.diag(H_masked), nan_mask],
             outputs_info=[a, P, None, None, None],
-            mode=get_mode(self.mode),
             name="univariate_inner_scan",
         )
 
@@ -812,7 +801,7 @@ class UnivariateFilter(BaseFilter):
             obs_cov[-1],
         )
 
-        P_filtered = stabilize(0.5 * (P_filtered + P_filtered.T), self.cov_jitter)
+        P_filtered = stabilize(0.5 * (P_filtered + P_filtered.mT), self.cov_jitter)
         a_hat, P_hat = self.predict(a=a_filtered, P=P_filtered, c=c, T=T, R=R, Q=Q)
 
         ll = -0.5 * ((pt.neq(ll_inner, 0).sum()) * MVN_CONST + ll_inner.sum())

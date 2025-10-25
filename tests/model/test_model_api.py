@@ -25,5 +25,14 @@ def test_logp():
 
     mw2 = model_wrapped2(coords=coords)
 
+    @pmx.as_model()
+    def model_wrapped3(mu):
+        pm.Normal("x", mu, 1.0, dims="obs")
+
+    mw3 = model_wrapped3(0.0, coords=coords)
+    mw4 = model_wrapped3(np.array([np.nan]), coords=coords)
+
     np.testing.assert_equal(model.point_logps(), mw.point_logps())
     np.testing.assert_equal(mw.point_logps(), mw2.point_logps())
+    assert mw3["mu"] in mw3.data_vars
+    assert "mu" not in mw4

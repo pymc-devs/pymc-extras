@@ -6,11 +6,9 @@ import pytensor.tensor as pt
 from pymc import intX
 from pymc.distributions.dist_math import check_parameters
 from pymc.distributions.distribution import Continuous, SymbolicRandomVariable
-from pymc.distributions.multivariate import MvNormal
 from pymc.distributions.shape_utils import get_support_shape_1d
 from pymc.logprob.abstract import _logprob
 from pytensor.graph.basic import Node
-from pytensor.tensor.random.basic import MvNormalRV
 
 floatX = pytensor.config.floatX
 COV_ZERO_TOL = 0
@@ -49,44 +47,6 @@ def make_signature(sequence_names):
     return f"{signature},[rng]->[rng],({time},{state_and_obs})"
 
 
-class MvNormalSVDRV(MvNormalRV):
-    name = "multivariate_normal"
-    signature = "(n),(n,n)->(n)"
-    dtype = "floatX"
-    _print_name = ("MultivariateNormal", "\\operatorname{MultivariateNormal}")
-
-
-class MvNormalSVD(MvNormal):
-    """Dummy distribution intended to be rewritten into a JAX multivariate_normal with method="svd".
-
-    A JAX MvNormal robust to low-rank covariance matrices
-    """
-
-    rv_op = MvNormalSVDRV()
-
-
-try:
-    import jax.random
-
-    from pytensor.link.jax.dispatch.random import jax_sample_fn
-
-    @jax_sample_fn.register(MvNormalSVDRV)
-    def jax_sample_fn_mvnormal_svd(op, node):
-        def sample_fn(rng, size, dtype, *parameters):
-            rng_key = rng["jax_state"]
-            rng_key, sampling_key = jax.random.split(rng_key, 2)
-            sample = jax.random.multivariate_normal(
-                sampling_key, *parameters, shape=size, dtype=dtype, method="svd"
-            )
-            rng["jax_state"] = rng_key
-            return (rng, sample)
-
-        return sample_fn
-
-except ImportError:
-    pass
-
-
 class LinearGaussianStateSpaceRV(SymbolicRandomVariable):
     default_output = 1
     _print_name = ("LinearGuassianStateSpace", "\\operatorname{LinearGuassianStateSpace}")
@@ -109,9 +69,9 @@ class _LinearGaussianStateSpace(Continuous):
         H,
         Q,
         steps=None,
-        mode=None,
         sequence_names=None,
         append_x0=True,
+        method="svd",
         **kwargs,
     ):
         # Ignore dims in support shape because they are just passed along to the "observed" and "latent" distributions
@@ -137,9 +97,9 @@ class _LinearGaussianStateSpace(Continuous):
             H,
             Q,
             steps=steps,
-            mode=mode,
             sequence_names=sequence_names,
             append_x0=append_x0,
+            method=method,
             **kwargs,
         )
 
@@ -156,9 +116,9 @@ class _LinearGaussianStateSpace(Continuous):
         H,
         Q,
         steps=None,
-        mode=None,
         sequence_names=None,
         append_x0=True,
+        method="svd",
         **kwargs,
     ):
         steps = get_support_shape_1d(
@@ -172,9 +132,9 @@ class _LinearGaussianStateSpace(Continuous):
 
         return super().dist(
             [a0, P0, c, d, T, Z, R, H, Q, steps],
-            mode=mode,
             sequence_names=sequence_names,
             append_x0=append_x0,
+            method=method,
             **kwargs,
         )
 
@@ -192,9 +152,9 @@ class _LinearGaussianStateSpace(Continuous):
         Q,
         steps,
         size=None,
-        mode=None,
         sequence_names=None,
         append_x0=True,
+        method="svd",
     ):
         if sequence_names is None:
             sequence_names = []
@@ -244,8 +204,12 @@ class _LinearGaussianStateSpace(Continuous):
             k = T.shape[0]
             a = state[:k]
 
-            middle_rng, a_innovation = MvNormalSVD.dist(mu=0, cov=Q, rng=rng).owner.outputs
-            next_rng, y_innovation = MvNormalSVD.dist(mu=0, cov=H, rng=middle_rng).owner.outputs
+            middle_rng, a_innovation = pm.MvNormal.dist(
+                mu=0, cov=Q, rng=rng, method=method
+            ).owner.outputs
+            next_rng, y_innovation = pm.MvNormal.dist(
+                mu=0, cov=H, rng=middle_rng, method=method
+            ).owner.outputs
 
             a_mu = c + T @ a
             a_next = a_mu + R @ a_innovation
@@ -260,8 +224,8 @@ class _LinearGaussianStateSpace(Continuous):
         Z_init = Z_ if Z_ in non_sequences else Z_[0]
         H_init = H_ if H_ in non_sequences else H_[0]
 
-        init_x_ = MvNormalSVD.dist(a0_, P0_, rng=rng)
-        init_y_ = MvNormalSVD.dist(Z_init @ init_x_, H_init, rng=rng)
+        init_x_ = pm.MvNormal.dist(a0_, P0_, rng=rng, method=method)
+        init_y_ = pm.MvNormal.dist(Z_init @ init_x_, H_init, rng=rng, method=method)
 
         init_dist_ = pt.concatenate([init_x_, init_y_], axis=0)
 
@@ -271,7 +235,6 @@ class _LinearGaussianStateSpace(Continuous):
             sequences=None if len(sequences) == 0 else sequences,
             non_sequences=[*non_sequences, rng],
             n_steps=steps,
-            mode=mode,
             strict=True,
         )
 
@@ -315,8 +278,8 @@ class LinearGaussianStateSpace(Continuous):
         steps,
         k_endog=None,
         sequence_names=None,
-        mode=None,
         append_x0=True,
+        method="svd",
         **kwargs,
     ):
         dims = kwargs.pop("dims", None)
@@ -343,9 +306,9 @@ class LinearGaussianStateSpace(Continuous):
             H,
             Q,
             steps=steps,
-            mode=mode,
             sequence_names=sequence_names,
             append_x0=append_x0,
+            method=method,
             **kwargs,
         )
         latent_obs_combined = pt.specify_shape(latent_obs_combined, (steps + int(append_x0), None))
@@ -404,11 +367,11 @@ class SequenceMvNormal(Continuous):
         return super().__new__(cls, *args, **kwargs)
 
     @classmethod
-    def dist(cls, mus, covs, logp, **kwargs):
-        return super().dist([mus, covs, logp], **kwargs)
+    def dist(cls, mus, covs, logp, method="svd", **kwargs):
+        return super().dist([mus, covs, logp], method=method, **kwargs)
 
     @classmethod
-    def rv_op(cls, mus, covs, logp, size=None):
+    def rv_op(cls, mus, covs, logp, method="svd", size=None):
         # Batch dimensions (if any) will be on the far left, but scan requires time to be there instead
         if mus.ndim > 2:
             mus = pt.moveaxis(mus, -2, 0)
@@ -421,7 +384,7 @@ class SequenceMvNormal(Continuous):
         rng = pytensor.shared(np.random.default_rng())
 
         def step(mu, cov, rng):
-            new_rng, mvn = MvNormalSVD.dist(mu=mu, cov=cov, rng=rng).owner.outputs
+            new_rng, mvn = pm.MvNormal.dist(mu=mu, cov=cov, rng=rng, method=method).owner.outputs
             return mvn, {rng: new_rng}
 
         mvn_seq, updates = pytensor.scan(

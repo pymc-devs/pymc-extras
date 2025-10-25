@@ -12,8 +12,8 @@ methods in the current release of PyMC experimental.
    :toctree: generated/
 
    as_model
-   MarginalModel
    marginalize
+   recover_marginals
    model_builder.ModelBuilder
    opt_sample
 
@@ -24,7 +24,10 @@ Inference
 .. autosummary::
    :toctree: generated/
 
+   find_MAP
    fit
+   fit_laplace
+   fit_pathfinder
 
 
 Distributions
@@ -44,6 +47,43 @@ Distributions
    Skellam
    histogram_approximation
 
+Prior
+=====
+
+.. currentmodule:: pymc_extras.prior
+.. autosummary::
+   :toctree: generated/
+
+   create_dim_handler
+   handle_dims
+   Prior
+   register_tensor_transform
+   VariableFactory
+   sample_prior
+   Censored
+   Scaled
+
+Deserialize
+===========
+
+.. currentmodule:: pymc_extras.deserialize
+.. autosummary::
+   :toctree: generated/
+
+   deserialize
+   register_deserialization
+   Deserializer
+
+
+Transforms
+==========
+
+.. currentmodule:: pymc_extras.distributions.transforms
+.. autosummary::
+   :toctree: generated/
+
+   PartialOrder
+
 
 Utils
 =====
@@ -54,6 +94,7 @@ Utils
 
    spline.bspline_interpolation
    prior.prior_from_idata
+   model_equivalence.equivalent_models
 
 
 Statespace Models

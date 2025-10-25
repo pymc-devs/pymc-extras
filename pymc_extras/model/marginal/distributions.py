@@ -1,19 +1,24 @@
+import warnings
+
 from collections.abc import Sequence
 
 import numpy as np
 import pytensor.tensor as pt
 
 from pymc.distributions import Bernoulli, Categorical, DiscreteUniform
+from pymc.distributions.distribution import _support_point, support_point
 from pymc.logprob.abstract import MeasurableOp, _logprob
 from pymc.logprob.basic import conditional_logp, logp
 from pymc.pytensorf import constant_fold
 from pytensor.compile.builders import OpFromGraph
 from pytensor.compile.mode import Mode
-from pytensor.graph import Op, vectorize_graph
+from pytensor.graph import FunctionGraph, Op, vectorize_graph
+from pytensor.graph.basic import equal_computations
 from pytensor.graph.replace import clone_replace, graph_replace
 from pytensor.scan import map as scan_map
 from pytensor.scan import scan
 from pytensor.tensor import TensorVariable
+from pytensor.tensor.random.type import RandomType
 
 from pymc_extras.distributions import DiscreteMarkovChain
 from pymc_extras.utils.ofg import inline_ofg_outputs
@@ -22,8 +27,15 @@ from pymc_extras.utils.ofg import inline_ofg_outputs
 class MarginalRV(OpFromGraph, MeasurableOp):
     """Base class for Marginalized RVs"""
 
-    def __init__(self, *args, dims_connections: tuple[tuple[int | None]], **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        dims_connections: tuple[tuple[int | None], ...],
+        dims: tuple[Variable, ...],
+        **kwargs,
+    ) -> None:
         self.dims_connections = dims_connections
+        self.dims = dims
         super().__init__(*args, **kwargs)
 
     @property
@@ -42,6 +54,74 @@ class MarginalRV(OpFromGraph, MeasurableOp):
                 )
             )
         return tuple(support_axes_vars)
+
+    def __eq__(self, other):
+        # Just to allow easy testing of equivalent models,
+        # This can be removed once https://github.com/pymc-devs/pytensor/issues/1114 is fixed
+        if type(self) is not type(other):
+            return False
+
+        return equal_computations(
+            self.inner_outputs,
+            other.inner_outputs,
+            self.inner_inputs,
+            other.inner_inputs,
+        )
+
+    def __hash__(self):
+        # Just to allow easy testing of equivalent models,
+        # This can be removed once https://github.com/pymc-devs/pytensor/issues/1114 is fixed
+        return hash((type(self), len(self.inner_inputs), len(self.inner_outputs)))
+
+
+@_support_point.register
+def support_point_marginal_rv(op: MarginalRV, rv, *inputs):
+    """Support point for a marginalized RV.
+
+    The support point of a marginalized RV is the support point of the inner RV,
+    conditioned on the marginalized RV taking its support point.
+    """
+    outputs = rv.owner.outputs
+
+    inner_rv = op.inner_outputs[outputs.index(rv)]
+    marginalized_inner_rv, *other_dependent_inner_rvs = (
+        out
+        for out in op.inner_outputs
+        if out is not inner_rv and not isinstance(out.type, RandomType)
+    )
+
+    # Replace references to inner rvs by the dummy variables (including the marginalized RV)
+    # This is necessary because the inner RVs may depend on each other
+    marginalized_inner_rv_dummy = marginalized_inner_rv.clone()
+    other_dependent_inner_rv_to_dummies = {
+        inner_rv: inner_rv.clone() for inner_rv in other_dependent_inner_rvs
+    }
+    inner_rv = clone_replace(
+        inner_rv,
+        replace={marginalized_inner_rv: marginalized_inner_rv_dummy}
+        | other_dependent_inner_rv_to_dummies,
+    )
+
+    # Get support point of inner RV and marginalized RV
+    inner_rv_support_point = support_point(inner_rv)
+    marginalized_inner_rv_support_point = support_point(marginalized_inner_rv)
+
+    replacements = [
+        # Replace the marginalized RV dummy by its support point
+        (marginalized_inner_rv_dummy, marginalized_inner_rv_support_point),
+        # Replace other dependent RVs dummies by the respective outer outputs.
+        # PyMC will replace them by their support points later
+        *(
+            (v, outputs[op.inner_outputs.index(k)])
+            for k, v in other_dependent_inner_rv_to_dummies.items()
+        ),
+        # Replace outer input RVs
+        *zip(op.inner_inputs, inputs),
+    ]
+    fgraph = FunctionGraph(outputs=[inner_rv_support_point], clone=False)
+    fgraph.replace_all(replacements, import_missing=True)
+    [rv_support_point] = fgraph.outputs
+    return rv_support_point
 
 
 class MarginalFiniteDiscreteRV(MarginalRV):
@@ -126,6 +206,33 @@ def align_logp_dims(dims: tuple[tuple[int, None]], logp: TensorVariable) -> Tens
     return logp.transpose(*dims_alignment)
 
 
+def inline_ofg_outputs(op: OpFromGraph, inputs: Sequence[Variable]) -> tuple[Variable]:
+    """Inline the inner graph (outputs) of an OpFromGraph Op.
+
+    Whereas `OpFromGraph` "wraps" a graph inside a single Op, this function "unwraps"
+    the inner graph.
+    """
+    return graph_replace(
+        op.inner_outputs,
+        replace=tuple(zip(op.inner_inputs, inputs)),
+        strict=False,
+    )
+
+
+class NonSeparableLogpWarning(UserWarning):
+    pass
+
+
+def warn_non_separable_logp(values):
+    if len(values) > 1:
+        warnings.warn(
+            "There are multiple dependent variables in a FiniteDiscreteMarginalRV. "
+            f"Their joint logp terms will be assigned to the first value: {values[0]}.",
+            NonSeparableLogpWarning,
+            stacklevel=2,
+        )
+
+
 DUMMY_ZERO = pt.constant(0, name="dummy_zero")
 
 
@@ -187,6 +294,7 @@ def finite_discrete_marginal_rv_logp(op: MarginalFiniteDiscreteRV, values, *inpu
     # Align logp with non-collapsed batch dimensions of first RV
     joint_logp = align_logp_dims(dims=op.dims_connections[0], logp=joint_logp)
 
+    warn_non_separable_logp(values)
     # We have to add dummy logps for the remaining value variables, otherwise PyMC will raise
     dummy_logps = (DUMMY_ZERO,) * (len(values) - 1)
     return joint_logp, *dummy_logps
@@ -260,5 +368,6 @@ def marginal_hmm_logp(op, values, *inputs, **kwargs):
 
     # If there are multiple emission streams, we have to add dummy logps for the remaining value variables. The first
     # return is the joint probability of everything together, but PyMC still expects one logp for each emission stream.
+    warn_non_separable_logp(values)
     dummy_logps = (DUMMY_ZERO,) * (len(values) - 1)
     return joint_logp, *dummy_logps

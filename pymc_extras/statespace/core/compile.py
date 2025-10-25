@@ -30,7 +30,7 @@ def compile_statespace(
 
     inputs = list(pytensor.graph.basic.explicit_graph_inputs(outputs))
 
-    _f = pm.compile_pymc(inputs, outputs, on_unused_input="ignore", **compile_kwargs)
+    _f = pm.compile(inputs, outputs, on_unused_input="ignore", **compile_kwargs)
 
     def f(*, draws=1, **params):
         if isinstance(steps, pt.Variable):

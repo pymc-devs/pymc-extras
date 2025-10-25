@@ -4,8 +4,9 @@ from collections.abc import Sequence
 from itertools import zip_longest
 
 from pymc import SymbolicRandomVariable
-from pytensor.compile import SharedVariable
-from pytensor.graph import Constant, Variable, ancestors
+from pymc.model.fgraph import ModelVar
+from pymc.variational.minibatch_rv import MinibatchRandomVariable
+from pytensor.graph import Variable, ancestors
 from pytensor.graph.basic import io_toposort
 from pytensor.tensor import TensorType, TensorVariable
 from pytensor.tensor.blockwise import Blockwise
@@ -35,13 +36,9 @@ def static_shape_ancestors(vars):
 
 def find_conditional_input_rvs(output_rvs, all_rvs):
     """Find conditionally indepedent input RVs."""
-    blockers = [other_rv for other_rv in all_rvs if other_rv not in output_rvs]
-    blockers += static_shape_ancestors(tuple(all_rvs) + tuple(output_rvs))
-    return [
-        var
-        for var in ancestors(output_rvs, blockers=blockers)
-        if var in blockers or (var.owner is None and not isinstance(var, Constant | SharedVariable))
-    ]
+    other_rvs = [other_rv for other_rv in all_rvs if other_rv not in output_rvs]
+    blockers = other_rvs + static_shape_ancestors(tuple(all_rvs) + tuple(output_rvs))
+    return [var for var in ancestors(output_rvs, blockers=blockers) if var in other_rvs]
 
 
 def is_conditional_dependent(
@@ -140,6 +137,9 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
         if all(dim is None for input_dims in inputs_dims for dim in input_dims):
             # None of the inputs are related to the batch_axes of the input_vars
             continue
+
+        elif isinstance(node.op, ModelVar):
+            var_dims[node.outputs[0]] = inputs_dims[0]
 
         elif isinstance(node.op, DimShuffle):
             [input_dims] = inputs_dims
@@ -313,6 +313,9 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
                 output_dims = start_non_adv_dims + adv_dims + end_non_adv_dims
 
             var_dims[node.outputs[0]] = output_dims
+
+        elif isinstance(node.op, MinibatchRandomVariable):
+            var_dims[node.outputs[0]] = inputs_dims[0]
 
         else:
             raise NotImplementedError(f"Marginalization through operation {node} not supported.")

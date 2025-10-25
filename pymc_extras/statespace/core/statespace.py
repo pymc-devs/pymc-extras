@@ -1,7 +1,8 @@
 import logging
+import warnings
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -14,7 +15,9 @@ from pymc.model import modelcontext
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import RandomState
 from pytensor import Variable, graph_replace
-from pytensor.compile import get_mode
+from rich.box import SIMPLE_HEAD
+from rich.console import Console
+from rich.table import Table
 
 from pymc_extras.statespace.core.representation import PytensorRepresentation
 from pymc_extras.statespace.filters import (
@@ -25,7 +28,6 @@ from pymc_extras.statespace.filters import (
 )
 from pymc_extras.statespace.filters.distributions import (
     LinearGaussianStateSpace,
-    MvNormalSVD,
     SequenceMvNormal,
 )
 from pymc_extras.statespace.filters.utilities import stabilize
@@ -58,7 +60,7 @@ FILTER_FACTORY = {
 def _validate_filter_arg(filter_arg):
     if filter_arg.lower() not in FILTER_OUTPUT_TYPES:
         raise ValueError(
-            f'filter_output should be one of {", ".join(FILTER_OUTPUT_TYPES)}, received {filter_arg}'
+            f"filter_output should be one of {', '.join(FILTER_OUTPUT_TYPES)}, received {filter_arg}"
         )
 
 
@@ -96,6 +98,13 @@ class PyMCStateSpace:
         If true, the model contains measurement error. Needed by post-estimation sampling methods to decide how to
         compute the observation errors. If False, these errors are deterministically zero; if True, they are sampled
         from a multivariate normal.
+
+    mode: str or Mode, optional
+        Pytensor compile mode, used in auxiliary sampling methods such as ``sample_conditional_posterior`` and
+        ``forecast``. The mode does **not** effect calls to ``pm.sample``.
+
+        Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
+        to all sampling methods.
 
     Notes
     -----
@@ -219,15 +228,14 @@ class PyMCStateSpace:
         filter_type: str = "standard",
         verbose: bool = True,
         measurement_error: bool = False,
+        mode: str | None = None,
     ):
-        self._fit_mode: str | None = None
         self._fit_coords: dict[str, Sequence[str]] | None = None
         self._fit_dims: dict[str, Sequence[str]] | None = None
         self._fit_data: pt.TensorVariable | None = None
+        self._fit_exog_data: dict[str, dict] = {}
 
         self._needs_exog_data = None
-        self._exog_names = []
-        self._exog_data_info = {}
         self._name_to_variable = {}
         self._name_to_data = {}
 
@@ -235,6 +243,7 @@ class PyMCStateSpace:
         self.k_states = k_states
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
+        self.mode = mode
 
         # All models contain a state space representation and a Kalman filter
         self.ssm = PytensorRepresentation(k_endog, k_states, k_posdef)
@@ -254,52 +263,71 @@ class PyMCStateSpace:
         self.kalman_smoother = KalmanSmoother()
         self.make_symbolic_graph()
 
-        if verbose:
-            # These are split into separate try-except blocks, because it will be quite rare of models to implement
-            # _print_data_requirements, but we still want to print the prior requirements.
-            try:
-                self._print_prior_requirements()
-            except NotImplementedError:
-                pass
-            try:
-                self._print_data_requirements()
-            except NotImplementedError:
-                pass
+        self.requirement_table = None
+        self._populate_prior_requirements()
+        self._populate_data_requirements()
 
-    def _print_prior_requirements(self) -> None:
+        if verbose and self.requirement_table:
+            console = Console()
+            console.print(self.requirement_table)
+
+    def _populate_prior_requirements(self) -> None:
         """
-        Prints a short report to the terminal about the priors needed for the model, including their names,
+        Add requirements about priors needed for the model to a rich table, including their names,
         shapes, named dimensions, and any parameter constraints.
         """
-        out = ""
-        for param, info in self.param_info.items():
-            out += f'\t{param} -- shape: {info["shape"]}, constraints: {info["constraints"]}, dims: {info["dims"]}\n'
-        out = out.rstrip()
-
-        _log.info(
-            "The following parameters should be assigned priors inside a PyMC "
-            f"model block: \n"
-            f"{out}"
-        )
-
-    def _print_data_requirements(self) -> None:
-        """
-        Prints a short report to the terminal about the data needed for the model, including their names, shapes,
-        and named dimensions.
-        """
-        if not self.data_info:
+        # Check that the param_info class is implemented, and also that it's a dictionary. We can't proceed if either
+        # is not true.
+        try:
+            if not isinstance(self.param_info, dict):
+                return
+        except NotImplementedError:
             return
 
-        out = ""
-        for data, info in self.data_info.items():
-            out += f'\t{data} -- shape: {info["shape"]}, dims: {info["dims"]}\n'
-        out = out.rstrip()
+        if self.requirement_table is None:
+            self._initialize_requirement_table()
 
-        _log.info(
-            "The following Data variables should be assigned to the model inside a PyMC "
-            f"model block: \n"
-            f"{out}"
+        for param, info in self.param_info.items():
+            self.requirement_table.add_row(
+                param, str(info["shape"]), info["constraints"], str(info["dims"])
+            )
+
+    def _populate_data_requirements(self) -> None:
+        """
+        Add requirements about the data needed for the model, including their names, shapes, and named dimensions.
+        """
+        try:
+            if not isinstance(self.data_info, dict):
+                return
+        except NotImplementedError:
+            return
+
+        if self.requirement_table is None:
+            self._initialize_requirement_table()
+        else:
+            self.requirement_table.add_section()
+
+        for data, info in self.data_info.items():
+            self.requirement_table.add_row(data, str(info["shape"]), "pm.Data", str(info["dims"]))
+
+    def _initialize_requirement_table(self) -> None:
+        self.requirement_table = Table(
+            show_header=True,
+            show_edge=True,
+            box=SIMPLE_HEAD,
+            highlight=True,
         )
+
+        self.requirement_table.title = "Model Requirements"
+        self.requirement_table.caption = (
+            "These parameters should be assigned priors inside a PyMC model block before "
+            "calling the build_statespace_graph method."
+        )
+
+        self.requirement_table.add_column("Variable", justify="left")
+        self.requirement_table.add_column("Shape", justify="left")
+        self.requirement_table.add_column("Constraints", justify="left")
+        self.requirement_table.add_column("Dimensions", justify="right")
 
     def _unpack_statespace_with_placeholders(
         self,
@@ -642,7 +670,7 @@ class PyMCStateSpace:
         pymc_mod = modelcontext(None)
         for data_name in self.data_names:
             data = pymc_mod[data_name]
-            self._exog_data_info[data_name] = {
+            self._fit_exog_data[data_name] = {
                 "name": data_name,
                 "value": data.get_value(),
                 "dims": pymc_mod.named_vars_to_dims.get(data_name, None),
@@ -656,7 +684,7 @@ class PyMCStateSpace:
         --------
         .. code:: python
 
-            ss_mod = pmss.BayesianSARIMA(order=(2, 0, 2), verbose=False, stationary_initialization=True)
+            ss_mod = pmss.BayesianSARIMAX(order=(2, 0, 2), verbose=False, stationary_initialization=True)
             with pm.Model():
                  x0 = pm.Normal('x0', size=ss_mod.k_states)
                  ar_params = pm.Normal('ar_params', size=ss_mod.p)
@@ -685,7 +713,7 @@ class PyMCStateSpace:
         with pymc_model:
             for param_name in self.param_names:
                 param = getattr(pymc_model, param_name, None)
-                if param:
+                if param is not None:
                     found_params.append(param.name)
 
         missing_params = list(set(self.param_names) - set(found_params))
@@ -724,7 +752,7 @@ class PyMCStateSpace:
         with pymc_model:
             for data_name in data_names:
                 data = getattr(pymc_model, data_name, None)
-                if data:
+                if data is not None:
                     found_data.append(data.name)
 
         missing_data = list(set(data_names) - set(found_data))
@@ -776,16 +804,16 @@ class PyMCStateSpace:
         states, covs = outputs[:4], outputs[4:]
 
         state_names = [
-            "filtered_state",
-            "predicted_state",
-            "predicted_observed_state",
-            "smoothed_state",
+            "filtered_states",
+            "predicted_states",
+            "predicted_observed_states",
+            "smoothed_states",
         ]
         cov_names = [
-            "filtered_covariance",
-            "predicted_covariance",
-            "predicted_observed_covariance",
-            "smoothed_covariance",
+            "filtered_covariances",
+            "predicted_covariances",
+            "predicted_observed_covariances",
+            "smoothed_covariances",
         ]
 
         with mod:
@@ -798,10 +826,11 @@ class PyMCStateSpace:
         self,
         data: np.ndarray | pd.DataFrame | pt.TensorVariable,
         register_data: bool = True,
-        mode: str | None = None,
         missing_fill_value: float | None = None,
         cov_jitter: float | None = JITTER_DEFAULT,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         save_kalman_filter_outputs_in_idata: bool = False,
+        mode: str | None = None,
     ) -> None:
         """
         Given a parameter vector `theta`, constructs the full computational graph describing the state space model and
@@ -844,10 +873,36 @@ class PyMCStateSpace:
 
                 - The Univariate Filter is more robust than other filters, and can tolerate a lower jitter value
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         save_kalman_filter_outputs_in_idata: bool, optional, default=False
             If True, Kalman Filter outputs will be saved in the model as deterministics. Useful for debugging, but
             should not be necessary for the majority of users.
+
+        mode: str, optional
+            Pytensor mode to use when compiling the graph. This will be saved as a model attribute and used when
+            compiling sampling functions (e.g. ``sample_conditional_prior``).
+
+            .. deprecated:: 0.2.5
+                The `mode` argument is deprecated and will be removed in a future version. Pass ``mode`` to the
+                model constructor, or manually specify ``compile_kwargs`` in sampling functions instead.
+
         """
+        if mode is not None:
+            warnings.warn(
+                "The `mode` argument is deprecated and will be removed in a future version. "
+                "Pass `mode` to the model constructor, or manually specify `compile_kwargs` in sampling functions"
+                " instead.",
+                DeprecationWarning,
+            )
+            self.mode = mode
+
         pm_mod = modelcontext(None)
 
         self._insert_random_variables()
@@ -868,7 +923,6 @@ class PyMCStateSpace:
         filter_outputs = self.kalman_filter.build_graph(
             pt.as_tensor_variable(data),
             *self.unpack_statespace(),
-            mode=mode,
             missing_fill_value=missing_fill_value,
             cov_jitter=cov_jitter,
         )
@@ -879,12 +933,12 @@ class PyMCStateSpace:
         filtered_covariances, predicted_covariances, observed_covariances = covs
         if save_kalman_filter_outputs_in_idata:
             smooth_states, smooth_covariances = self._build_smoother_graph(
-                filtered_states, filtered_covariances, self.unpack_statespace(), mode=mode
+                filtered_states, filtered_covariances, self.unpack_statespace()
             )
             all_kf_outputs = [*states, smooth_states, *covs, smooth_covariances]
             self._register_kalman_filter_outputs_with_pymc_model(all_kf_outputs)
 
-        obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_state"]
+        obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_states"]
         obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
 
         SequenceMvNormal(
@@ -894,11 +948,11 @@ class PyMCStateSpace:
             logp=logp,
             observed=data,
             dims=obs_dims,
+            method=mvn_method,
         )
 
         self._fit_coords = pm_mod.coords.copy()
         self._fit_dims = pm_mod.named_vars_to_dims.copy()
-        self._fit_mode = mode
 
     def _build_smoother_graph(
         self,
@@ -943,7 +997,7 @@ class PyMCStateSpace:
             *_, T, Z, R, H, Q = matrices
 
             smooth_states, smooth_covariances = self.kalman_smoother.build_graph(
-                T, R, Q, filtered_states, filtered_covariances, mode=mode, cov_jitter=cov_jitter
+                T, R, Q, filtered_states, filtered_covariances, cov_jitter=cov_jitter
             )
             smooth_states.name = "smooth_states"
             smooth_covariances.name = "smooth_covariances"
@@ -961,10 +1015,31 @@ class PyMCStateSpace:
         list[pm.Flat]
             A list of pm.Flat variables representing all parameters estimated by the model.
         """
+
+        def infer_variable_shape(name):
+            shape = self._name_to_variable[name].type.shape
+            if not any(dim is None for dim in shape):
+                return shape
+
+            dim_names = self._fit_dims.get(name, None)
+            if dim_names is None:
+                raise ValueError(
+                    f"Could not infer shape for {name}, because it was not given coords during model"
+                    f"fitting"
+                )
+
+            shape_from_coords = tuple([len(self._fit_coords[dim]) for dim in dim_names])
+            return tuple(
+                [
+                    shape[i] if shape[i] is not None else shape_from_coords[i]
+                    for i in range(len(shape))
+                ]
+            )
+
         for name in self.param_names:
             pm.Flat(
                 name,
-                shape=self._name_to_variable[name].type.shape,
+                shape=infer_variable_shape(name),
                 dims=self._fit_dims.get(name, None),
             )
 
@@ -985,6 +1060,9 @@ class PyMCStateSpace:
             provided when the model was built.
         data_dims: str or tuple of str, optional
             Dimension names associated with the model data. If None, defaults to ("time", "obs_state")
+        scenario: dict[str, pd.DataFrame], optional
+            Dictionary of out-of-sample scenario dataframes. If provided, it must have values for all data variables
+            in the model. pm.set_data is used to replace training data with new values.
 
         Returns
         -------
@@ -1003,7 +1081,7 @@ class PyMCStateSpace:
 
         for name in self.data_names:
             if name not in pm_mod:
-                pm.Data(**self._exog_data_info[name])
+                pm.Data(**self._fit_exog_data[name])
 
         self._insert_data_variables()
 
@@ -1037,7 +1115,6 @@ class PyMCStateSpace:
             R,
             H,
             Q,
-            mode=self._fit_mode,
         )
 
         filter_outputs.pop(-1)
@@ -1047,7 +1124,7 @@ class PyMCStateSpace:
         filtered_covariances, predicted_covariances, _ = covariances
 
         [smoothed_states, smoothed_covariances] = self.kalman_smoother.build_graph(
-            T, R, Q, filtered_states, filtered_covariances, mode=self._fit_mode
+            T, R, Q, filtered_states, filtered_covariances
         )
 
         grouped_outputs = [
@@ -1064,6 +1141,7 @@ class PyMCStateSpace:
         group: str,
         random_seed: RandomState | None = None,
         data: pt.TensorLike | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ):
         """
@@ -1085,6 +1163,14 @@ class PyMCStateSpace:
             Observed data on which to condition the model. If not provided, the function will use the data that was
             provided when the model was built.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1099,6 +1185,9 @@ class PyMCStateSpace:
 
         _verify_group(group)
         group_idata = getattr(idata, group)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
 
         with pm.Model(coords=self._fit_coords) as forward_model:
             (
@@ -1136,9 +1225,10 @@ class PyMCStateSpace:
                     covs=cov,
                     logp=dummy_ll,
                     dims=state_dims,
+                    method=mvn_method,
                 )
 
-                obs_mu = (Z @ mu[..., None]).squeeze(-1)
+                obs_mu = d + (Z @ mu[..., None]).squeeze(-1)
                 obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H
 
                 SequenceMvNormal(
@@ -1147,6 +1237,7 @@ class PyMCStateSpace:
                     covs=obs_cov,
                     logp=dummy_ll,
                     dims=obs_dims,
+                    method=mvn_method,
                 )
 
         # TODO: Remove this after pm.Flat initial values are fixed
@@ -1163,8 +1254,8 @@ class PyMCStateSpace:
                     for name in FILTER_OUTPUT_TYPES
                     for suffix in ["", "_observed"]
                 ],
-                compile_kwargs={"mode": get_mode(self._fit_mode)},
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 
@@ -1177,6 +1268,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ):
         """
@@ -1206,6 +1298,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1221,6 +1321,10 @@ class PyMCStateSpace:
               the latent state trajectories: `y[t] = Z @ x[t] + nu[t]`, where `nu ~ N(0, H)`.
         """
         _verify_group(group)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
+
         group_idata = getattr(idata, group)
         dims = None
         temp_coords = self._fit_coords.copy()
@@ -1246,7 +1350,7 @@ class PyMCStateSpace:
             self._insert_random_variables()
 
             for name in self.data_names:
-                pm.Data(**self._exog_data_info[name])
+                pm.Data(**self._fit_exog_data[name])
 
             self._insert_data_variables()
 
@@ -1263,7 +1367,7 @@ class PyMCStateSpace:
                 *matrices,
                 steps=steps,
                 dims=dims,
-                mode=self._fit_mode,
+                method=mvn_method,
                 sequence_names=self.kalman_filter.seq_names,
                 k_endog=self.k_endog,
             )
@@ -1278,15 +1382,19 @@ class PyMCStateSpace:
             idata_unconditional = pm.sample_posterior_predictive(
                 group_idata,
                 var_names=[f"{group}_latent", f"{group}_observed"],
-                compile_kwargs={"mode": self._fit_mode},
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 
         return idata_unconditional.posterior_predictive
 
     def sample_conditional_prior(
-        self, idata: InferenceData, random_seed: RandomState | None = None, **kwargs
+        self,
+        idata: InferenceData,
+        random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        **kwargs,
     ) -> InferenceData:
         """
         Sample from the conditional prior; that is, given parameter draws from the prior distribution,
@@ -1302,6 +1410,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1313,10 +1429,16 @@ class PyMCStateSpace:
              "predicted_prior", and "smoothed_prior".
         """
 
-        return self._sample_conditional(idata, "prior", random_seed, **kwargs)
+        return self._sample_conditional(
+            idata=idata, group="prior", random_seed=random_seed, mvn_method=mvn_method, **kwargs
+        )
 
     def sample_conditional_posterior(
-        self, idata: InferenceData, random_seed: RandomState | None = None, **kwargs
+        self,
+        idata: InferenceData,
+        random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        **kwargs,
     ):
         """
         Sample from the conditional posterior; that is, given parameter draws from the posterior distribution,
@@ -1331,6 +1453,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1342,7 +1472,9 @@ class PyMCStateSpace:
              "predicted_posterior", and "smoothed_posterior".
         """
 
-        return self._sample_conditional(idata, "posterior", random_seed, **kwargs)
+        return self._sample_conditional(
+            idata=idata, group="posterior", random_seed=random_seed, mvn_method=mvn_method, **kwargs
+        )
 
     def sample_unconditional_prior(
         self,
@@ -1350,6 +1482,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -1378,6 +1511,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1394,7 +1535,13 @@ class PyMCStateSpace:
         """
 
         return self._sample_unconditional(
-            idata, "prior", steps, use_data_time_dim, random_seed, **kwargs
+            idata=idata,
+            group="prior",
+            steps=steps,
+            use_data_time_dim=use_data_time_dim,
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            **kwargs,
         )
 
     def sample_unconditional_posterior(
@@ -1403,6 +1550,7 @@ class PyMCStateSpace:
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -1432,6 +1580,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         Returns
         -------
         InferenceData
@@ -1445,11 +1601,17 @@ class PyMCStateSpace:
         """
 
         return self._sample_unconditional(
-            idata, "posterior", steps, use_data_time_dim, random_seed, **kwargs
+            idata=idata,
+            group="posterior",
+            steps=steps,
+            use_data_time_dim=use_data_time_dim,
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            **kwargs,
         )
 
     def sample_statespace_matrices(
-        self, idata, matrix_names: str | list[str] | None, group: str = "posterior"
+        self, idata, matrix_names: str | list[str] | None, group: str = "posterior", **kwargs
     ):
         """
         Draw samples of requested statespace matrices from provided idata
@@ -1466,11 +1628,17 @@ class PyMCStateSpace:
         group: str, one of "posterior" or "prior"
             Whether to sample from priors or posteriors
 
+        kwargs:
+            Additional keyword arguments are passed to ``pymc.sample_posterior_predictive``
+
         Returns
         -------
         idata_matrices: az.InterenceData
         """
         _verify_group(group)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
 
         if matrix_names is None:
             matrix_names = MATRIX_NAMES
@@ -1482,7 +1650,7 @@ class PyMCStateSpace:
             self._insert_random_variables()
 
             for name in self.data_names:
-                pm.Data(**self._exog_data_info[name])
+                pm.Data(**self.data_info[name])
 
             self._insert_data_variables()
             matrices = self.unpack_statespace()
@@ -1502,11 +1670,84 @@ class PyMCStateSpace:
             matrix_idata = pm.sample_posterior_predictive(
                 idata if group == "posterior" else idata.prior,
                 var_names=matrix_names,
-                compile_kwargs={"mode": self._fit_mode},
                 extend_inferencedata=False,
+                compile_kwargs=compile_kwargs,
+                **kwargs,
             )
 
         return matrix_idata
+
+    def sample_filter_outputs(
+        self, idata, filter_output_names: str | list[str] | None, group: str = "posterior", **kwargs
+    ):
+        if isinstance(filter_output_names, str):
+            filter_output_names = [filter_output_names]
+
+        if filter_output_names is None:
+            filter_output_names = list(FILTER_OUTPUT_DIMS.keys())
+        else:
+            unknown_filter_output_names = np.setdiff1d(
+                filter_output_names, list(FILTER_OUTPUT_DIMS.keys())
+            )
+            if unknown_filter_output_names.size > 0:
+                raise ValueError(f"{unknown_filter_output_names} not a valid filter output name!")
+            filter_output_names = [x for x in FILTER_OUTPUT_DIMS.keys() if x in filter_output_names]
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
+
+        with pm.Model(coords=self.coords) as m:
+            self._build_dummy_graph()
+            self._insert_random_variables()
+
+            if self.data_names:
+                for name in self.data_names:
+                    pm.Data(**self._fit_exog_data[name])
+
+            self._insert_data_variables()
+
+            x0, P0, c, d, T, Z, R, H, Q = self.unpack_statespace()
+            data = self._fit_data
+
+            obs_coords = m.coords.get(OBS_STATE_DIM, None)
+
+            data, nan_mask = register_data_with_pymc(
+                data,
+                n_obs=self.ssm.k_endog,
+                obs_coords=obs_coords,
+                register_data=True,
+            )
+
+            filter_outputs = self.kalman_filter.build_graph(
+                data,
+                x0,
+                P0,
+                c,
+                d,
+                T,
+                Z,
+                R,
+                H,
+                Q,
+            )
+
+            smoother_outputs = self.kalman_smoother.build_graph(
+                T, R, Q, filter_outputs[0], filter_outputs[3]
+            )
+
+            filter_outputs = filter_outputs[:-1] + list(smoother_outputs)
+            for output in filter_outputs:
+                if output.name in filter_output_names:
+                    dims = FILTER_OUTPUT_DIMS[output.name]
+                    pm.Deterministic(output.name, output, dims=dims)
+
+        with freeze_dims_and_data(m):
+            return pm.sample_posterior_predictive(
+                idata if group == "posterior" else idata.prior,
+                var_names=filter_output_names,
+                compile_kwargs=compile_kwargs,
+                **kwargs,
+            )
 
     @staticmethod
     def _validate_forecast_args(
@@ -1525,8 +1766,10 @@ class PyMCStateSpace:
                 raise ValueError(
                     "Integer start must be within the range of the data index used to fit the model."
                 )
-        if periods is None and end is None:
-            raise ValueError("Must specify one of either periods or end")
+        if periods is None and end is None and not use_scenario_index:
+            raise ValueError(
+                "Must specify one of either periods or end unless use_scenario_index=True"
+            )
         if periods is not None and end is not None:
             raise ValueError("Must specify exactly one of either periods or end")
         if scenario is None and use_scenario_index:
@@ -1602,7 +1845,7 @@ class PyMCStateSpace:
         }
 
         if self._needs_exog_data and scenario is None:
-            exog_str = ",".join(self._exog_names)
+            exog_str = ",".join(self.data_names)
             suffix = "s" if len(exog_str) > 1 else ""
             raise ValueError(
                 f"This model was fit using exogenous data. Forecasting cannot be performed without "
@@ -1611,7 +1854,7 @@ class PyMCStateSpace:
 
         if isinstance(scenario, dict):
             for name, data in scenario.items():
-                if name not in self._exog_names:
+                if name not in self.data_names:
                     raise ValueError(
                         f"Scenario data provided for variable '{name}', which is not an exogenous variable "
                         f"used to fit the model."
@@ -1652,12 +1895,12 @@ class PyMCStateSpace:
                 # name should only be None on the first non-recursive call. We only arrive to this branch in that case
                 # if a non-dictionary was passed, which in turn should only happen if only a single exogenous data
                 # needs to be set.
-                if len(self._exog_names) > 1:
+                if len(self.data_names) > 1:
                     raise ValueError(
                         "Multiple exogenous variables were used to fit the model. Provide a dictionary of "
                         "scenario data instead."
                     )
-                name = self._exog_names[0]
+                name = self.data_names[0]
 
             # Omit dataframe from this basic shape check so we can give more detailed information about missing columns
             # in the next check
@@ -1859,7 +2102,7 @@ class PyMCStateSpace:
             return scenario
 
         # This was already checked as valid
-        name = self._exog_names[0] if name is None else name
+        name = self.data_names[0] if name is None else name
 
         # Small tidying up in the case we just have a single scenario that's already a dataframe.
         if isinstance(scenario, pd.DataFrame | pd.Series):
@@ -1875,6 +2118,69 @@ class PyMCStateSpace:
 
         return scenario
 
+    def _build_forecast_model(
+        self, time_index, t0, forecast_index, scenario, filter_output, mvn_method
+    ):
+        filter_time_dim = TIME_DIM
+        temp_coords = self._fit_coords.copy()
+
+        dims = None
+        if all([dim in temp_coords for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]]):
+            dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+
+        t0_idx = np.flatnonzero(time_index == t0)[0]
+
+        temp_coords["data_time"] = time_index
+        temp_coords[TIME_DIM] = forecast_index
+
+        mu_dims, cov_dims = None, None
+        if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]]):
+            mu_dims = ["data_time", ALL_STATE_DIM]
+            cov_dims = ["data_time", ALL_STATE_DIM, ALL_STATE_AUX_DIM]
+
+        with pm.Model(coords=temp_coords) as forecast_model:
+            (_, _, *matrices), grouped_outputs = self._kalman_filter_outputs_from_dummy_graph(
+                data_dims=["data_time", OBS_STATE_DIM],
+            )
+
+            group_idx = FILTER_OUTPUT_TYPES.index(filter_output)
+            mu, cov = grouped_outputs[group_idx]
+
+            sub_dict = {
+                data_var: pt.as_tensor_variable(data_var.get_value(), name="data")
+                for data_var in forecast_model.data_vars
+            }
+
+            missing_data_vars = np.setdiff1d(
+                ar1=[*self.data_names, "data"], ar2=[k.name for k, _ in sub_dict.items()]
+            )
+            if missing_data_vars.size > 0:
+                raise ValueError(f"{missing_data_vars} data used for fitting not found!")
+
+            mu_frozen, cov_frozen = graph_replace([mu, cov], replace=sub_dict, strict=True)
+
+            x0 = pm.Deterministic(
+                "x0_slice", mu_frozen[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
+            )
+            P0 = pm.Deterministic(
+                "P0_slice", cov_frozen[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
+            )
+
+            _ = LinearGaussianStateSpace(
+                "forecast",
+                x0,
+                P0,
+                *matrices,
+                steps=len(forecast_index),
+                dims=dims,
+                sequence_names=self.kalman_filter.seq_names,
+                k_endog=self.k_endog,
+                append_x0=False,
+                method=mvn_method,
+            )
+
+        return forecast_model
+
     def forecast(
         self,
         idata: InferenceData,
@@ -1886,6 +2192,7 @@ class PyMCStateSpace:
         filter_output="smoothed",
         random_seed: RandomState | None = None,
         verbose: bool = True,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ) -> InferenceData:
         """
@@ -1942,6 +2249,14 @@ class PyMCStateSpace:
         verbose: bool, default=True
             Whether to print diagnostic information about forecasting.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1958,9 +2273,11 @@ class PyMCStateSpace:
                   the latent state trajectories: `y[t] = Z @ x[t] + nu[t]`, where `nu ~ N(0, H)`.
 
         """
-        filter_time_dim = TIME_DIM
-
         _validate_filter_arg(filter_output)
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
+
         time_index = self._get_fit_time_index()
 
         if start is None and verbose:
@@ -2000,60 +2317,23 @@ class PyMCStateSpace:
             use_scenario_index=use_scenario_index,
         )
         scenario = self._finalize_scenario_initialization(scenario, forecast_index)
-        temp_coords = self._fit_coords.copy()
 
-        dims = None
-        if all([dim in temp_coords for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]]):
-            dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+        forecast_model = self._build_forecast_model(
+            time_index=time_index,
+            t0=t0,
+            forecast_index=forecast_index,
+            scenario=scenario,
+            filter_output=filter_output,
+            mvn_method=mvn_method,
+        )
 
-        t0_idx = np.flatnonzero(time_index == t0)[0]
-
-        temp_coords["data_time"] = time_index
-        temp_coords[TIME_DIM] = forecast_index
-
-        mu_dims, cov_dims = None, None
-        if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]]):
-            mu_dims = ["data_time", ALL_STATE_DIM]
-            cov_dims = ["data_time", ALL_STATE_DIM, ALL_STATE_AUX_DIM]
-
-        with pm.Model(coords=temp_coords) as forecast_model:
-            (_, _, *matrices), grouped_outputs = self._kalman_filter_outputs_from_dummy_graph(
-                data_dims=["data_time", OBS_STATE_DIM],
-            )
-
-            group_idx = FILTER_OUTPUT_TYPES.index(filter_output)
-            mu, cov = grouped_outputs[group_idx]
-
-            x0 = pm.Deterministic(
-                "x0_slice", mu[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
-            )
-            P0 = pm.Deterministic(
-                "P0_slice", cov[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
-            )
-
+        with forecast_model:
             if scenario is not None:
-                sub_dict = {
-                    forecast_model[data_name]: pt.as_tensor_variable(
-                        scenario.get(data_name), name=data_name
-                    )
-                    for data_name in self.data_names
-                }
-
-                matrices = graph_replace(matrices, replace=sub_dict, strict=True)
-                [setattr(matrix, "name", name) for name, matrix in zip(MATRIX_NAMES[2:], matrices)]
-
-            _ = LinearGaussianStateSpace(
-                "forecast",
-                x0,
-                P0,
-                *matrices,
-                steps=len(forecast_index),
-                dims=dims,
-                mode=self._fit_mode,
-                sequence_names=self.kalman_filter.seq_names,
-                k_endog=self.k_endog,
-                append_x0=False,
-            )
+                dummy_obs_data = np.zeros((len(forecast_index), self.k_endog))
+                pm.set_data(
+                    scenario | {"data": dummy_obs_data},
+                    coords={"data_time": np.arange(len(forecast_index))},
+                )
 
         forecast_model.rvs_to_initial_values = {
             k: None for k in forecast_model.rvs_to_initial_values.keys()
@@ -2064,8 +2344,8 @@ class PyMCStateSpace:
             idata_forecast = pm.sample_posterior_predictive(
                 idata,
                 var_names=["forecast_latent", "forecast_observed"],
-                compile_kwargs={"mode": self._fit_mode},
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 
@@ -2081,6 +2361,7 @@ class PyMCStateSpace:
         shock_trajectory: np.ndarray | None = None,
         orthogonalize_shocks: bool = False,
         random_seed: RandomState | None = None,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
     ):
         """
@@ -2132,6 +2413,14 @@ class PyMCStateSpace:
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
+        mvn_method: str, default "svd"
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
+            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
+            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+
+            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
+            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -2143,6 +2432,9 @@ class PyMCStateSpace:
         options = [shock_size, shock_cov, shock_trajectory]
         n_options = sum(x is not None for x in options)
         Q = None  # No covariance matrix needed if a trajectory is provided. Will be overwritten later if needed.
+
+        compile_kwargs = kwargs.pop("compile_kwargs", {})
+        compile_kwargs.setdefault("mode", self.mode)
 
         if n_options > 1:
             raise ValueError("Specify exactly 0 or 1 of shock_size, shock_cov, or shock_trajectory")
@@ -2190,7 +2482,9 @@ class PyMCStateSpace:
             if shock_trajectory is None:
                 shock_trajectory = pt.zeros((n_steps, self.k_posdef))
                 if Q is not None:
-                    init_shock = MvNormalSVD("initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM])
+                    init_shock = pm.MvNormal(
+                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
+                    )
                 else:
                     init_shock = pm.Deterministic(
                         "initial_shock",
@@ -2213,29 +2507,15 @@ class PyMCStateSpace:
                 non_sequences=[c, T, R],
                 n_steps=n_steps,
                 strict=True,
-                mode=self._fit_mode,
             )
 
             pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])
 
-            compile_kwargs = kwargs.get("compile_kwargs", {})
-            if "mode" not in compile_kwargs.keys():
-                compile_kwargs = {"mode": self._fit_mode}
-            else:
-                mode = compile_kwargs.get("mode")
-                if mode is not None and mode != self._fit_mode:
-                    raise ValueError(
-                        f"User provided compile mode ({mode}) does not match the compile mode used to "
-                        f"construct the model ({self._fit_mode})."
-                    )
-
-                compile_kwargs.update({"mode": self._fit_mode})
-
             irf_idata = pm.sample_posterior_predictive(
                 idata,
                 var_names=["irf"],
-                compile_kwargs=compile_kwargs,
                 random_seed=random_seed,
+                compile_kwargs=compile_kwargs,
                 **kwargs,
             )
 

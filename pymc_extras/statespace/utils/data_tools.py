@@ -53,7 +53,7 @@ def _validate_data_shape(data_shape, n_obs, obs_coords=None, check_col_names=Fal
         if len(missing_cols) > 0:
             raise ValueError(
                 "Columns of DataFrame provided as data do not match state names. The following states were"
-                f'not found: {", ".join(missing_cols)}. This may result in unexpected results in complex'
+                f"not found: {', '.join(missing_cols)}. This may result in unexpected results in complex"
                 f"statespace models"
             )
 
@@ -87,12 +87,7 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
     col_names = data.columns
     _validate_data_shape(data.shape, n_obs, obs_coords, check_column_names, col_names)
 
-    if isinstance(data.index, pd.RangeIndex):
-        if obs_coords is not None:
-            warnings.warn(NO_TIME_INDEX_WARNING)
-        return preprocess_numpy_data(data.values, n_obs, obs_coords)
-
-    elif isinstance(data.index, pd.DatetimeIndex):
+    if isinstance(data.index, pd.DatetimeIndex):
         if data.index.freq is None:
             warnings.warn(NO_FREQ_INFO_WARNING)
             data.index.freq = data.index.inferred_freq
@@ -100,10 +95,30 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
         index = data.index
         return data.values, index
 
+    elif isinstance(data.index, pd.RangeIndex):
+        if obs_coords is not None:
+            warnings.warn(NO_TIME_INDEX_WARNING)
+        return preprocess_numpy_data(data.values, n_obs, obs_coords)
+
+    elif isinstance(data.index, pd.MultiIndex):
+        if obs_coords is not None:
+            warnings.warn(NO_TIME_INDEX_WARNING)
+
+        raise NotImplementedError("MultiIndex panel data is not currently supported.")
+
     else:
-        raise IndexError(
-            f"Expected pd.DatetimeIndex or pd.RangeIndex on data, found {type(data.index)}"
-        )
+        if obs_coords is not None:
+            warnings.warn(NO_TIME_INDEX_WARNING)
+
+        index = data.index
+        if not np.issubdtype(index.dtype, np.integer):
+            raise IndexError("Provided index is not an integer index.")
+
+        index_diff = index.to_series().diff().dropna().values
+        if not (index_diff == 1).all():
+            raise IndexError("Provided index is not monotonic increasing.")
+
+        return preprocess_numpy_data(data.values, n_obs, obs_coords)
 
 
 def add_data_to_active_model(values, index, data_dims=None):
@@ -126,9 +141,10 @@ def add_data_to_active_model(values, index, data_dims=None):
 
     # If the data has just one column, we need to specify the shape as (None, 1), or else the JAX backend will
     # raise a broadcasting error.
-    data_shape = None
-    if values.shape[-1] == 1:
+    if values.shape[-1] == 1 or values.ndim == 1:
         data_shape = (None, 1)
+    else:
+        data_shape = (None, values.shape[-1])
 
     data = pm.Data("data", values, dims=data_dims, shape=data_shape)
 

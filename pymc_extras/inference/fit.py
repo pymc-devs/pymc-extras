@@ -11,12 +11,13 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
-from importlib.util import find_spec
+import arviz as az
 
 
-def fit(method, **kwargs):
+def fit(method: str, **kwargs) -> az.InferenceData:
     """
-    Fit a model with an inference algorithm
+    Fit a model with an inference algorithm.
+    See :func:`fit_pathfinder` and :func:`fit_laplace` for more details.
 
     Parameters
     ----------
@@ -24,21 +25,23 @@ def fit(method, **kwargs):
         Which inference method to run.
         Supported: pathfinder or laplace
 
-    kwargs are passed on.
+    kwargs: keyword arguments are passed on to the inference method.
 
     Returns
     -------
-    arviz.InferenceData
+    :class:`~arviz.InferenceData`
     """
     if method == "pathfinder":
-        if find_spec("blackjax") is None:
-            raise RuntimeError("Need BlackJAX to use `pathfinder`")
-
         from pymc_extras.inference.pathfinder import fit_pathfinder
 
         return fit_pathfinder(**kwargs)
 
     if method == "laplace":
-        from pymc_extras.inference.laplace import fit_laplace
+        from pymc_extras.inference import fit_laplace
 
         return fit_laplace(**kwargs)
+
+    if method == "dadvi":
+        from pymc_extras.inference import fit_dadvi
+
+        return fit_dadvi(**kwargs)

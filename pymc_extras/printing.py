@@ -166,7 +166,7 @@ def model_table(
 
         for var in group:
             var_name = var.name
-            sep = f'[b]{" ~" if (var in model.basic_RVs) else " ="}[/b]'
+            sep = f"[b]{' ~' if (var in model.basic_RVs) else ' ='}[/b]"
             var_expr = variable_expression(model, var, truncate_deterministic)
             dims_expr = dims_expression(model, var)
             if dims_expr == "[]":

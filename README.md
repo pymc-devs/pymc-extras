@@ -26,10 +26,9 @@ import pymc as pm
 import pymc_extras as pmx
 
 with pm.Model():
+  alpha = pmx.ParabolicFractal('alpha', b=1, c=1)
 
-    alpha = pmx.ParabolicFractal('alpha', b=1, c=1)
-
-    ...
+  ...
 
 ```
 

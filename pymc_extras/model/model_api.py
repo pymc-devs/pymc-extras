@@ -1,6 +1,9 @@
 from functools import wraps
+from inspect import signature
 
-from pymc import Model
+import pytensor.tensor as pt
+
+from pymc import Data, Model
 
 
 def as_model(*model_args, **model_kwargs):
@@ -8,6 +11,8 @@ def as_model(*model_args, **model_kwargs):
     Decorator to provide context to PyMC models declared in a function.
     This removes all need to think about context managers and lets you separate creating a generative model from using the model.
     Additionally, a coords argument is added to the function so coords can be changed during function invocation
+
+    All parameters are wrapped with a `pm.Data` object if the underlying type of the data supports it.
 
     Adapted from `Rob Zinkov's blog post <https://www.zinkov.com/posts/2023-alternative-frontends-pymc/>`_ and inspired by the `sampled <https://github.com/colcarroll/sampled>`_ decorator for PyMC3.
 
@@ -47,8 +52,19 @@ def as_model(*model_args, **model_kwargs):
         @wraps(f)
         def make_model(*args, **kwargs):
             coords = model_kwargs.pop("coords", {}) | kwargs.pop("coords", {})
+            sig = signature(f)
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+
             with Model(*model_args, coords=coords, **model_kwargs) as m:
-                f(*args, **kwargs)
+                for name, v in ba.arguments.items():
+                    # Only wrap pm.Data around values pytensor can process
+                    try:
+                        _ = pt.as_tensor_variable(v)
+                        ba.arguments[name] = Data(name, v)
+                    except (NotImplementedError, TypeError, ValueError):
+                        pass
+                f(*ba.args, **ba.kwargs)
             return m
 
         return make_model
