@@ -193,7 +193,7 @@ def test_lgss_distribution_with_dims(output_name, ss_mod_me, pymc_model_2):
 def test_lgss_with_time_varying_inputs(output_name, rng):
     X = rng.random(size=(10, 3), dtype=floatX)
     ss_mod = structural.LevelTrendComponent() + structural.RegressionComponent(
-        name="exog", k_exog=3
+        name="exog", state_names=["exog_0", "exog_1", "exog_2"]
     )
     mod = ss_mod.build("data", verbose=False)
 

@@ -21,27 +21,27 @@ def data():
 def test_invalid_order_raises():
     # Order must be length 3
     with pytest.raises(ValueError, match="Order must be a tuple of three strings"):
-        BayesianETS(order=("A", "N"))
+        BayesianETS(order=("A", "N"), endog_names=["y"])
 
         # Order must be strings
     with pytest.raises(ValueError, match="Order must be a tuple of three strings"):
-        BayesianETS(order=(2, 1, 1))
+        BayesianETS(order=(2, 1, 1), endog_names=["y"])
 
     # Only additive errors allowed
     with pytest.raises(ValueError, match="Only additive errors are supported"):
-        BayesianETS(order=("M", "N", "N"))
+        BayesianETS(order=("M", "N", "N"), endog_names=["y"])
 
     # Trend must be A or Ad
     with pytest.raises(ValueError, match="Invalid trend specification"):
-        BayesianETS(order=("A", "P", "N"))
+        BayesianETS(order=("A", "P", "N"), endog_names=["y"])
 
     # Seasonal must be A or N
     with pytest.raises(ValueError, match="Invalid seasonal specification"):
-        BayesianETS(order=("A", "Ad", "M"))
+        BayesianETS(order=("A", "Ad", "M"), endog_names=["y"])
 
     # seasonal_periods must be provided if seasonal is requested
     with pytest.raises(ValueError, match="If seasonal is True, seasonal_periods must be provided."):
-        BayesianETS(order=("A", "Ad", "A"))
+        BayesianETS(order=("A", "Ad", "A"), endog_names=["y"])
 
 
 orders = (
@@ -84,20 +84,20 @@ order_params = (
     "order, expected_flags", zip(orders, order_expected_flags), ids=order_names
 )
 def test_order_flags(order, expected_flags):
-    mod = BayesianETS(order=order, seasonal_periods=4)
+    mod = BayesianETS(order=order, endog_names=["y"], seasonal_periods=4)
     for key, value in expected_flags.items():
         assert getattr(mod, key) == value
 
 
 def test_mode_argument():
     # Mode argument should be passed to the parent class
-    mod = BayesianETS(order=("A", "N", "N"), mode="FAST_RUN")
+    mod = BayesianETS(order=("A", "N", "N"), endog_names=["y"], mode="FAST_RUN")
     assert mod.mode == "FAST_RUN"
 
 
 @pytest.mark.parametrize("order, expected_params", zip(orders, order_params), ids=order_names)
 def test_param_info(order: tuple[str, str, str], expected_params):
-    mod = BayesianETS(order=order, seasonal_periods=4)
+    mod = BayesianETS(order=order, endog_names=["y"], seasonal_periods=4)
 
     all_expected_params = [*expected_params, "sigma_state", "P0"]
     assert all(param in mod.param_names for param in all_expected_params)
@@ -117,6 +117,7 @@ def test_statespace_matrices(
     seasonal_periods = np.random.randint(3, 12)
     mod = BayesianETS(
         order=order,
+        endog_names=["y"],
         seasonal_periods=seasonal_periods,
         measurement_error=True,
         use_transformed_parameterization=use_transformed,
@@ -211,6 +212,7 @@ def test_statespace_matches_statsmodels(rng, order: tuple[str, str, str], params
     data = rng.normal(size=(100,))
     mod = BayesianETS(
         order=order,
+        endog_names=["y"],
         seasonal_periods=seasonal_periods,
         measurement_error=False,
         use_transformed_parameterization=True,
@@ -281,6 +283,7 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
 
     single_mod = BayesianETS(
         order=order,
+        endog_names=["y"],
         seasonal_periods=seasonal_periods,
         measurement_error=False,
         use_transformed_parameterization=True,
@@ -381,6 +384,7 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
 def test_ETS_stationary_initialization():
     mod = BayesianETS(
         order=("A", "Ad", "A"),
+        endog_names=["y"],
         seasonal_periods=4,
         stationary_initialization=True,
         initialization_dampening=0.66,
