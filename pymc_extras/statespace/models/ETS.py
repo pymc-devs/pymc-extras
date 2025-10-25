@@ -9,7 +9,7 @@ from pytensor.compile.mode import Mode
 from pytensor.tensor.slinalg import solve_discrete_lyapunov
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
-from pymc_extras.statespace.models.utilities import make_default_coords
+from pymc_extras.statespace.models.utilities import _validate_endog_names, make_default_coords
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
@@ -261,15 +261,8 @@ class BayesianETS(PyMCStateSpace):
         if self.seasonal and self.seasonal_periods is None:
             raise ValueError("If seasonal is True, seasonal_periods must be provided.")
 
-        if endog_names is None:
-            raise ValueError(
-                "endog_names must be provided as either a string or a list of strings."
-            )
-        else:
-            endog_names = list(endog_names)
-            k_endog = len(endog_names)
-
-        self.endog_names = endog_names
+        k_endog = _validate_endog_names(endog_names)
+        self.endog_names = list(endog_names)
 
         if dense_innovation_covariance and k_endog == 1:
             dense_innovation_covariance = False
