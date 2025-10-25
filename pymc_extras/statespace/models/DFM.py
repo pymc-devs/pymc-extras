@@ -248,11 +248,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
             Therefore, the state vector will include one state per factor and "factor_ar" will not exist.
 
         endog_names : list of str, optional
-            Names of the observed time series. If not provided, default names will be generated as `endog_1`, `endog_2`, ..., `endog_k` based on `k_endog`.
-            At least one of `k_endog` or `endog_names` must be provided.
+            Names of the observed time series.
 
         exog_names : Sequence[str], optional
-            Names of the exogenous variables. If not provided, but `k_exog` is specified, default names will be generated as `exog_1`, `exog_2`, ..., `exog_k`.
+            Names of the exogenous variables.
 
         shared_exog_states: bool, optional
             Whether exogenous latent states are shared across the observed states. If True, there will be only one set of exogenous latent

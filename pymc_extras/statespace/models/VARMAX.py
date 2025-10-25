@@ -116,10 +116,7 @@ class BayesianVARMAX(PyMCStateSpace):
             specified order are included. For restricted models, set zeros directly on the priors.
 
         endog_names: list of str, optional
-            Names of the endogenous variables being modeled. Used to generate names for the state and shock coords. If
-            None, the state names will simply be numbered.
-
-            Exactly one of either ``endog_names`` or ``k_endog`` must be specified.
+            Names of the endogenous variables being modeled. Used to generate names for the state and shock coords.
 
         exog_state_names : list[str] or dict[str, list[str]], optional
             Names of the exogenous state variables. If a list, all endogenous variables will share the same exogenous
