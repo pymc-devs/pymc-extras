@@ -5,7 +5,7 @@ from pymc.distributions.distribution import _support_point
 from pymc.initial_point import PointType
 from pymc.logprob.abstract import MeasurableOp, _logprob
 from pymc.model.core import modelcontext
-from pymc.pytensorf import compile_pymc
+from pymc.pytensorf import compile
 from pymc.step_methods.compound import BlockedStep, Competence, StepMethodState
 from pymc.util import get_value_vars_from_user_vars
 from pytensor import shared
@@ -68,7 +68,7 @@ class ConjugateRVSampler(BlockedStep):
 
         if compile_kwargs is None:
             compile_kwargs = {}
-        self.posterior_fn = compile_pymc(
+        self.posterior_fn = compile(
             model.value_vars,
             posterior_rv,
             random_seed=rng,

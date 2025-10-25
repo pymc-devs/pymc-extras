@@ -4,9 +4,10 @@ from functools import partial
 from pymc.distributions import Beta, Binomial
 from pymc.model.fgraph import ModelFreeRV, ModelValuedVar, model_free_rv
 from pymc.pytensorf import collect_default_updates
-from pytensor.graph.basic import Variable, ancestors
+from pytensor.graph.basic import Variable
 from pytensor.graph.fg import FunctionGraph, Output
 from pytensor.graph.rewriting.basic import node_rewriter
+from pytensor.graph.traversal import ancestors
 from pytensor.tensor.elemwise import DimShuffle
 from pytensor.tensor.subtensor import _sum_grad_over_bcasted_dims as sum_bcasted_dims
 
