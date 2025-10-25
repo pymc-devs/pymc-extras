@@ -24,7 +24,7 @@ from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
 from tests.statespace.test_utilities import load_nile_test_data
 
 pytest.importorskip("jax")
-pytest.importorskip("numpyro")
+pytest.importorskip("nutpie")
 
 
 floatX = pytensor.config.floatX
@@ -78,7 +78,8 @@ def idata(pymc_mod, rng, mock_pymc_sample):
                 tune=1,
                 chains=1,
                 random_seed=rng,
-                nuts_sampler="numpyro",
+                nuts_sampler="nutpie",
+                nuts_sampler_kwargs={"backend": "jax", "gradient_backend": "jax"},
                 progressbar=False,
             )
         with freeze_dims_and_data(pymc_mod):
@@ -101,7 +102,8 @@ def idata_exog(exog_pymc_mod, rng, mock_pymc_sample):
                 tune=1,
                 chains=1,
                 random_seed=rng,
-                nuts_sampler="numpyro",
+                nuts_sampler="nutpie",
+                nuts_sampler_kwargs={"backend": "jax", "gradient_backend": "jax"},
                 progressbar=False,
             )
         with freeze_dims_and_data(pymc_mod):
@@ -123,8 +125,7 @@ def test_no_nans_in_sampling_output(ss_mod, group, matrix, idata):
 @pytest.mark.parametrize("kind", ["conditional", "unconditional"])
 def test_sampling_methods(group, kind, ss_mod, idata, rng):
     f = getattr(ss_mod, f"sample_{kind}_{group}")
-    with pytest.warns(UserWarning, match="The RandomType SharedVariables"):
-        test_idata = f(idata, random_seed=rng)
+    test_idata = f(idata, random_seed=rng)
 
     if kind == "conditional":
         for output in ["filtered", "predicted", "smoothed"]:
@@ -142,10 +143,9 @@ def test_sampling_methods(group, kind, ss_mod, idata, rng):
 def test_forecast(filter_output, ss_mod, idata, rng):
     time_idx = idata.posterior.coords["time"].values
 
-    with pytest.warns(UserWarning, match="The RandomType SharedVariables"):
-        forecast_idata = ss_mod.forecast(
-            idata, start=time_idx[-1], periods=10, filter_output=filter_output, random_seed=rng
-        )
+    forecast_idata = ss_mod.forecast(
+        idata, start=time_idx[-1], periods=10, filter_output=filter_output, random_seed=rng
+    )
 
     assert forecast_idata.coords["time"].values.shape == (10,)
     assert forecast_idata.forecast_latent.dims == ("chain", "draw", "time", "state")

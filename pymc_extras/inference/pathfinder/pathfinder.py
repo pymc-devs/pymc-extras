@@ -22,7 +22,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum, auto
-from typing import Literal, TypeAlias
+from typing import Literal, Self, TypeAlias
 
 import arviz as az
 import filelock
@@ -59,9 +59,6 @@ from rich.padding import Padding
 from rich.progress import BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.table import Table
 from rich.text import Text
-
-# TODO: change to typing.Self after Python versions greater than 3.10
-from typing_extensions import Self
 
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 from pymc_extras.inference.pathfinder.importance_sampling import (
@@ -533,7 +530,7 @@ def bfgs_sample_sparse(
 
     # qr_input: (L, N, 2J)
     qr_input = inv_sqrt_alpha_diag @ beta
-    (Q, R), _ = pytensor.scan(fn=pt.nlinalg.qr, sequences=[qr_input], allow_gc=False)
+    (Q, R), _ = pytensor.scan(fn=pt.linalg.qr, sequences=[qr_input], allow_gc=False)
 
     IdN = pt.eye(R.shape[1])[None, ...]
     IdN += IdN * REGULARISATION_TERM

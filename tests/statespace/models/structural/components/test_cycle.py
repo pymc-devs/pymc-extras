@@ -3,7 +3,7 @@ import pytensor
 
 from numpy.testing import assert_allclose
 from pytensor import config
-from pytensor.graph.basic import explicit_graph_inputs
+from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
 
 from pymc_extras.statespace.models import structural as st
