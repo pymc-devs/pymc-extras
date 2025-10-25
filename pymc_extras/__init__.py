@@ -24,6 +24,7 @@ from pymc_extras.model.marginal.marginal_model import (
     recover_marginals,
 )
 from pymc_extras.model.model_api import as_model
+from pymc_extras.sampling.mcmc import opt_sample
 
 _log = logging.getLogger("pmx")
 

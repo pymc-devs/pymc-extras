@@ -10,18 +10,19 @@ from pymc.distributions.distribution import _support_point, support_point
 from pymc.logprob.abstract import MeasurableOp, _logprob
 from pymc.logprob.basic import conditional_logp, logp
 from pymc.pytensorf import constant_fold
-from pytensor import Variable
 from pytensor.compile.builders import OpFromGraph
 from pytensor.compile.mode import Mode
 from pytensor.graph import FunctionGraph, Op, vectorize_graph
 from pytensor.graph.basic import equal_computations
 from pytensor.graph.replace import clone_replace, graph_replace
+from pytensor.graph.type import Variable
 from pytensor.scan import map as scan_map
 from pytensor.scan import scan
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.random.type import RandomType
 
 from pymc_extras.distributions import DiscreteMarkovChain
+from pymc_extras.utils.ofg import inline_ofg_outputs
 
 
 class MarginalRV(OpFromGraph, MeasurableOp):
@@ -204,19 +205,6 @@ def align_logp_dims(dims: tuple[tuple[int, None]], logp: TensorVariable) -> Tens
     """Align the logp with the order specified in dims."""
     dims_alignment = [dim for dim in dims if dim is not None]
     return logp.transpose(*dims_alignment)
-
-
-def inline_ofg_outputs(op: OpFromGraph, inputs: Sequence[Variable]) -> tuple[Variable]:
-    """Inline the inner graph (outputs) of an OpFromGraph Op.
-
-    Whereas `OpFromGraph` "wraps" a graph inside a single Op, this function "unwraps"
-    the inner graph.
-    """
-    return graph_replace(
-        op.inner_outputs,
-        replace=tuple(zip(op.inner_inputs, inputs)),
-        strict=False,
-    )
 
 
 class NonSeparableLogpWarning(UserWarning):
