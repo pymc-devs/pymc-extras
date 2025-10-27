@@ -35,7 +35,7 @@ def test_AR1(rng):
     true_theta = 0.95
     # true standard deviation of the innovation:
     true_sigma = 2.0
-    # true process mean:
+    # true process mean: #
     true_center = 0.0
 
     for t in range(1, T):
