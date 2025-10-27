@@ -1,3 +1,6 @@
+from collections.abc import Callable
+from functools import cache
+
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
@@ -31,28 +34,24 @@ ATOL = 1e-6 if floatX.endswith("64") else 1e-3
 RTOL = 1e-6 if floatX.endswith("64") else 1e-3
 
 
-@pytest.fixture(scope="session")
-def f_standard():
-    standard_inout = initialize_filter(StandardFilter())
-    f_standard = pytensor.function(*standard_inout, on_unused_input="ignore")
-    return f_standard
+@cache
+def get_filter_function(filter_name: str) -> Callable:
+    """
+    Compile and return a filter function given its name, caching the result to make tests as fast as possible
+    """
+    match filter_name:
+        case "StandardFilter":
+            filter_inout = initialize_filter(StandardFilter())
+        case "CholeskyFilter":
+            filter_inout = initialize_filter(SquareRootFilter())
+        case "UnivariateFilter":
+            filter_inout = initialize_filter(UnivariateFilter())
+        case _:
+            raise ValueError(f"Unknown filter name: {filter_name}")
 
+    filter_func = pytensor.function(*filter_inout, on_unused_input="ignore")
+    return filter_func
 
-@pytest.fixture(scope="session")
-def f_cholesky():
-    cholesky_inout = initialize_filter(SquareRootFilter())
-    f_cholesky = pytensor.function(*cholesky_inout, on_unused_input="ignore")
-    return f_cholesky
-
-
-@pytest.fixture(scope="session")
-def f_univariate():
-    univariate_inout = initialize_filter(UnivariateFilter())
-    f_univariate = pytensor.function(*univariate_inout, on_unused_input="ignore")
-    return f_univariate
-
-
-filter_funcs = [f_standard, f_cholesky, f_univariate]
 
 filter_names = [
     "StandardFilter",
@@ -79,11 +78,11 @@ def test_base_class_update_raises():
         filter.update(*inputs)
 
 
-@pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)
-def test_output_shapes_one_state_one_observed(filter_func, rng):
+@pytest.mark.parametrize("filter_name", filter_names)
+def test_output_shapes_one_state_one_observed(filter_name, rng):
     p, m, r, n = 1, 1, 1, 10
     inputs = make_test_inputs(p, m, r, n, rng)
-    outputs = filter_func(*inputs)
+    outputs = get_filter_function(filter_name)(*inputs)
 
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
@@ -92,12 +91,12 @@ def test_output_shapes_one_state_one_observed(filter_func, rng):
         ), f"Shape of {name} does not match expected"
 
 
-@pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)
-def test_output_shapes_when_all_states_are_stochastic(filter_func, rng):
+@pytest.mark.parametrize("filter_name", filter_names)
+def test_output_shapes_when_all_states_are_stochastic(filter_name, rng):
     p, m, r, n = 1, 2, 2, 10
     inputs = make_test_inputs(p, m, r, n, rng)
 
-    outputs = filter_func(*inputs)
+    outputs = get_filter_function(filter_name)(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
         assert (
@@ -105,12 +104,12 @@ def test_output_shapes_when_all_states_are_stochastic(filter_func, rng):
         ), f"Shape of {name} does not match expected"
 
 
-@pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)
-def test_output_shapes_when_some_states_are_deterministic(filter_func, rng):
+@pytest.mark.parametrize("filter_name", filter_names)
+def test_output_shapes_when_some_states_are_deterministic(filter_name, rng):
     p, m, r, n = 1, 5, 2, 10
     inputs = make_test_inputs(p, m, r, n, rng)
 
-    outputs = filter_func(*inputs)
+    outputs = get_filter_function(filter_name)(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
         assert (
@@ -180,12 +179,12 @@ def test_output_shapes_with_time_varying_matrices(f_standard_nd, rng):
         ), f"Shape of {name} does not match expected"
 
 
-@pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)
-def test_output_with_deterministic_observation_equation(filter_func, rng):
+@pytest.mark.parametrize("filter_name", filter_names)
+def test_output_with_deterministic_observation_equation(filter_name, rng):
     p, m, r, n = 1, 5, 1, 10
     inputs = make_test_inputs(p, m, r, n, rng)
 
-    outputs = filter_func(*inputs)
+    outputs = get_filter_function(filter_name)(*inputs)
 
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
@@ -194,14 +193,12 @@ def test_output_with_deterministic_observation_equation(filter_func, rng):
         ), f"Shape of {name} does not match expected"
 
 
-@pytest.mark.parametrize(
-    ("filter_func", "filter_name"), zip(filter_funcs, filter_names), ids=filter_names
-)
-def test_output_with_multiple_observed(filter_func, filter_name, rng):
+@pytest.mark.parametrize("filter_name", filter_names)
+def test_output_with_multiple_observed(filter_name, rng):
     p, m, r, n = 5, 5, 1, 10
     inputs = make_test_inputs(p, m, r, n, rng)
 
-    outputs = filter_func(*inputs)
+    outputs = get_filter_function(filter_name)(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
         assert (
@@ -209,15 +206,13 @@ def test_output_with_multiple_observed(filter_func, filter_name, rng):
         ), f"Shape of {name} does not match expected"
 
 
-@pytest.mark.parametrize(
-    ("filter_func", "filter_name"), zip(filter_funcs, filter_names), ids=filter_names
-)
+@pytest.mark.parametrize("filter_name", filter_names)
 @pytest.mark.parametrize("p", [1, 5], ids=["univariate (p=1)", "multivariate (p=5)"])
-def test_missing_data(filter_func, filter_name, p, rng):
+def test_missing_data(filter_name, p, rng):
     m, r, n = 5, 1, 10
     inputs = make_test_inputs(p, m, r, n, rng, missing_data=1)
 
-    outputs = filter_func(*inputs)
+    outputs = get_filter_function(filter_name)(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
         assert (
@@ -225,12 +220,12 @@ def test_missing_data(filter_func, filter_name, p, rng):
         ), f"Shape of {name} does not match expected"
 
 
-@pytest.mark.parametrize("filter_func", filter_funcs, ids=filter_names)
+@pytest.mark.parametrize("filter_name", filter_names)
 @pytest.mark.parametrize("output_idx", [(0, 2), (3, 5)], ids=["smoothed_states", "smoothed_covs"])
-def test_last_smoother_is_last_filtered(filter_func, output_idx, rng):
+def test_last_smoother_is_last_filtered(filter_name, output_idx, rng):
     p, m, r, n = 1, 5, 1, 10
     inputs = make_test_inputs(p, m, r, n, rng)
-    outputs = filter_func(*inputs)
+    outputs = get_filter_function(filter_name)(*inputs)
 
     filtered = outputs[output_idx[0]]
     smoothed = outputs[output_idx[1]]
@@ -238,17 +233,15 @@ def test_last_smoother_is_last_filtered(filter_func, output_idx, rng):
     assert_allclose(filtered[-1], smoothed[-1])
 
 
-@pytest.mark.parametrize(
-    "filter_func, filter_name", zip(filter_funcs, filter_names), ids=filter_names
-)
+@pytest.mark.parametrize("filter_name", filter_names)
 @pytest.mark.parametrize("n_missing", [0, 5], ids=["n_missing=0", "n_missing=5"])
 @pytest.mark.skipif(floatX == "float32", reason="Tests are too sensitive for float32")
-def test_filters_match_statsmodel_output(filter_func, filter_name, n_missing, rng):
+def test_filters_match_statsmodel_output(filter_name, n_missing, rng):
     fit_sm_mod, [data, a0, P0, c, d, T, Z, R, H, Q] = nile_test_test_helper(rng, n_missing)
     if filter_name == "CholeskyFilter":
         P0 = np.linalg.cholesky(P0)
     inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
-    outputs = filter_func(*inputs)
+    outputs = get_filter_function(filter_name)(*inputs)
 
     for output_idx, name in enumerate(output_names):
         ref_val = get_sm_state_from_output_name(fit_sm_mod, name)
@@ -283,12 +276,10 @@ def test_filters_match_statsmodel_output(filter_func, filter_name, n_missing, rn
             )
 
 
-@pytest.mark.parametrize(
-    "filter_func, filter_name", zip(filter_funcs[:-1], filter_names[:-1]), ids=filter_names[:-1]
-)
+@pytest.mark.parametrize("filter_name", filter_names)
 @pytest.mark.parametrize("n_missing", [0, 5], ids=["n_missing=0", "n_missing=5"])
 @pytest.mark.parametrize("obs_noise", [True, False])
-def test_all_covariance_matrices_are_PSD(filter_func, filter_name, n_missing, obs_noise, rng):
+def test_all_covariance_matrices_are_PSD(filter_name, n_missing, obs_noise, rng):
     if (floatX == "float32") & (filter_name == "UnivariateFilter"):
         # TODO: These tests all pass locally for me with float32 but they fail on the CI, so i'm just disabling them.
         pytest.skip("Univariate filter not stable at half precision without measurement error")
@@ -299,7 +290,7 @@ def test_all_covariance_matrices_are_PSD(filter_func, filter_name, n_missing, ob
 
     H *= int(obs_noise)
     inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
-    outputs = filter_func(*inputs)
+    outputs = get_filter_function(filter_name)(*inputs)
 
     for output_idx, name in zip([3, 4, 5], output_names[3:-2]):
         cov_stack = outputs[output_idx]
