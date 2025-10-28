@@ -106,9 +106,6 @@ filterwarnings =[
 
     # Preliz needs to update for pytensor > 2.35
    'ignore:.*`pytensor\.graph\.basic\.ancestors`.*`pytensor\.graph\.traversal\.ancestors`.*:FutureWarning:^preliz(\.|$)',
-
-    # OpenMP library warning on windows CI
-  'ignore::RuntimeWarning:threadpoolctl'
 ]
 
 [tool.coverage.report]
