@@ -4,8 +4,8 @@ from pymc.model.core import Model
 from pymc.model.fgraph import fgraph_from_model
 from pytensor import Variable
 from pytensor.compile import SharedVariable
-from pytensor.graph import Constant, graph_inputs
-from pytensor.graph.basic import equal_computations
+from pytensor.graph.basic import Constant, equal_computations
+from pytensor.graph.traversal import graph_inputs
 from pytensor.tensor.random.type import RandomType
 
 

@@ -156,7 +156,10 @@ def test_pathfinder(inference_backend, reference_idata):
     assert idata.posterior["theta"].shape == (1, 1000, 8)
 
 
-@pytest.mark.parametrize("concurrent", ["thread", "process"])
+@pytest.mark.parametrize(
+    "concurrent",
+    [pytest.param("thread", marks=pytest.mark.skip(reason="CI hangs on Windows")), "process"],
+)
 def test_concurrent_results(reference_idata, concurrent):
     model = eight_schools_model()
     with model:

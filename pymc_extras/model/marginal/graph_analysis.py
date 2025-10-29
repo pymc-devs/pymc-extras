@@ -6,8 +6,8 @@ from itertools import zip_longest
 from pymc import SymbolicRandomVariable
 from pymc.model.fgraph import ModelVar
 from pymc.variational.minibatch_rv import MinibatchRandomVariable
-from pytensor.graph import Variable, ancestors
-from pytensor.graph.basic import io_toposort
+from pytensor.graph.basic import Variable
+from pytensor.graph.traversal import ancestors, io_toposort
 from pytensor.tensor import TensorType, TensorVariable
 from pytensor.tensor.blockwise import Blockwise
 from pytensor.tensor.elemwise import CAReduce, DimShuffle, Elemwise

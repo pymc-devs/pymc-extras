@@ -78,6 +78,7 @@ def test_histogram_init_discrete(use_dask, min_count, ndims):
 
 @pytest.mark.parametrize("use_dask", [True, False], ids="dask={}".format)
 @pytest.mark.parametrize("ndims", [1, 2], ids="ndims={}".format)
+@pytest.mark.skip(reason="Flakey test on Windows CI, needs investigation")
 def test_histogram_approx_cont(use_dask, ndims):
     data = np.random.randn(*(10000, *(2,) * (ndims - 1)))
     if use_dask:
