@@ -9,7 +9,7 @@ from pytensor.compile.mode import Mode
 from pytensor.tensor.slinalg import solve_discrete_lyapunov
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
-from pymc_extras.statespace.models.utilities import _validate_endog_names, make_default_coords
+from pymc_extras.statespace.models.utilities import make_default_coords, validate_names
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
@@ -152,7 +152,7 @@ class BayesianVARMAX(PyMCStateSpace):
 
         """
 
-        k_endog = _validate_endog_names(endog_names)
+        k_endog = validate_names(endog_names, var_name="endog_names", optional=False)
 
         needs_exog_data = False
 

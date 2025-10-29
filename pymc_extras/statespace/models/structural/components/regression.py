@@ -3,6 +3,7 @@ import numpy as np
 from pytensor import tensor as pt
 
 from pymc_extras.statespace.models.structural.core import Component
+from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import TIME_DIM
 
 
@@ -107,7 +108,6 @@ class RegressionComponent(Component):
 
     def __init__(
         self,
-        # k_exog: int | None = None,
         name: str | None = "regression",
         state_names: list[str] | None = None,
         observed_state_names: list[str] | None = None,
@@ -120,7 +120,7 @@ class RegressionComponent(Component):
             observed_state_names = ["data"]
 
         self.innovations = innovations
-        k_exog = self._handle_input_data(state_names, name)
+        k_exog = self._handle_input_data(state_names)
 
         k_states = k_exog
         k_endog = len(observed_state_names)
@@ -140,17 +140,8 @@ class RegressionComponent(Component):
             obs_state_idxs=np.ones(k_states),
         )
 
-    @staticmethod
-    def _get_state_names(state_names: list[str] | None, name: str):
-        if state_names is None:
-            raise ValueError("Must specify state_names")
-        else:
-            k_exog = len(state_names)
-
-        return k_exog, state_names
-
-    def _handle_input_data(self, state_names: list[str] | None, name) -> int:
-        k_exog, state_names = self._get_state_names(state_names, name)
+    def _handle_input_data(self, state_names: list[str] | None) -> int:
+        k_exog = validate_names(state_names, var_name="state_names", optional=False)
         self.state_names = state_names
 
         return k_exog

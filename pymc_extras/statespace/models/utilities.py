@@ -672,9 +672,9 @@ def get_exog_dims_from_idata(exog_name, idata):
     return exog_dims
 
 
-def _validate_endog_names(endog_names) -> int:
-    if endog_names is None:
-        raise ValueError("Must specify endog_names")
-    else:
-        k_endog = len(endog_names)
-    return k_endog
+def validate_names(names: list[str], var_name: str, optional: bool = True) -> int | None:
+    if names is None:
+        if optional:
+            return None
+        raise ValueError(f"Must specify {var_name}")
+    return len(names)

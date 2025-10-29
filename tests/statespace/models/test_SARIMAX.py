@@ -422,9 +422,6 @@ def test_invalid_order_raises(order, name):
         BayesianSARIMAX(order=(p, 0, q), seasonal_order=(P, 0, Q, 4))
 
 
-@pytest.mark.filterwarnings(
-    "ignore::RuntimeWarning"
-)  # Needed this due to RuntimeWarning: divide by zero encountered in matmul
 def test_SARIMA_with_exogenous(rng, mock_sample):
     # Note something odd is happening with stationary_initialization where the matrix is not singular
     ss_mod = BayesianSARIMAX(

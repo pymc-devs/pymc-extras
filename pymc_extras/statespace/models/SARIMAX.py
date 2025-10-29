@@ -12,6 +12,7 @@ from pymc_extras.statespace.models.utilities import (
     make_default_coords,
     make_harvey_state_names,
     make_SARIMA_transition_matrix,
+    validate_names,
 )
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
@@ -207,10 +208,7 @@ class BayesianSARIMAX(PyMCStateSpace):
         if seasonal_order is None:
             seasonal_order = (0, 0, 0, 0)
 
-        if exog_state_names is None:
-            k_exog = 0
-        else:
-            k_exog = len(exog_state_names)
+        k_exog = validate_names(exog_state_names, var_name="exog_state_names", optional=True) or 0
 
         self.exog_state_names = exog_state_names
         self.k_exog = k_exog
