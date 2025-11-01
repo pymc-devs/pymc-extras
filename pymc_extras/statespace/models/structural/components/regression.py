@@ -13,10 +13,6 @@ class RegressionComponent(Component):
 
     Parameters
     ----------
-    k_exog : int | None, default None
-        Number of exogenous variables to include in the regression. Must be specified if
-        state_names is not provided.
-
     name : str | None, default "regression"
         A name for this regression component. Used to label dimensions and coordinates.
 
