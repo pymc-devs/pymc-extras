@@ -261,7 +261,8 @@ class BayesianETS(PyMCStateSpace):
         if self.seasonal and self.seasonal_periods is None:
             raise ValueError("If seasonal is True, seasonal_periods must be provided.")
 
-        k_endog = validate_names(endog_names, var_name="endog_names", optional=False)
+        validate_names(endog_names, var_name="endog_names", optional=False)
+        k_endog = len(endog_names)
         self.endog_names = list(endog_names)
 
         if dense_innovation_covariance and k_endog == 1:

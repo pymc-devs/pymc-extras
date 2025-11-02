@@ -116,7 +116,9 @@ class RegressionComponent(Component):
             observed_state_names = ["data"]
 
         self.innovations = innovations
-        k_exog = self._handle_input_data(state_names)
+        validate_names(state_names, var_name="state_names", optional=False)
+        k_exog = len(state_names)
+        self.state_names = state_names
 
         k_states = k_exog
         k_endog = len(observed_state_names)
@@ -135,12 +137,6 @@ class RegressionComponent(Component):
             exog_names=[f"data_{name}"],
             obs_state_idxs=np.ones(k_states),
         )
-
-    def _handle_input_data(self, state_names: list[str] | None) -> int:
-        k_exog = validate_names(state_names, var_name="state_names", optional=False)
-        self.state_names = state_names
-
-        return k_exog
 
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog

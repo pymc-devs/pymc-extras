@@ -423,11 +423,10 @@ def test_invalid_order_raises(order, name):
 
 
 def test_SARIMA_with_exogenous(rng, mock_sample):
-    # Note something odd is happening with stationary_initialization where the matrix is not singular
     ss_mod = BayesianSARIMAX(
         order=(3, 0, 1),
         seasonal_order=(1, 0, 0, 12),
-        stationary_initialization=False,
+        stationary_initialization=True,
         exog_state_names=["exogenous_0", "exogenous_1"],
     )
 
@@ -447,9 +446,6 @@ def test_SARIMA_with_exogenous(rng, mock_sample):
 
     with pm.Model(coords=ss_mod.coords) as pymc_mod:
         pm.Data("exogenous_data", data_val, dims=["time", "exogenous"])
-
-        x0 = pm.Deterministic("x0", pt.ones(15), dims=["state"])
-        P0 = pm.Deterministic("P0", pt.eye(15), dims=["state", "state_aux"])
 
         ar_params = pm.Normal("ar_params", dims=["lag_ar"])
         ma_params = pm.Normal("ma_params", dims=["lag_ma"])

@@ -152,7 +152,8 @@ class BayesianVARMAX(PyMCStateSpace):
 
         """
 
-        k_endog = validate_names(endog_names, var_name="endog_names", optional=False)
+        validate_names(endog_names, var_name="endog_names", optional=False)
+        k_endog = len(endog_names)
 
         needs_exog_data = False
 

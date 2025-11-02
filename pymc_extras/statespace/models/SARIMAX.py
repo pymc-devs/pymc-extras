@@ -208,7 +208,10 @@ class BayesianSARIMAX(PyMCStateSpace):
         if seasonal_order is None:
             seasonal_order = (0, 0, 0, 0)
 
-        k_exog = validate_names(exog_state_names, var_name="exog_state_names", optional=True) or 0
+        validate_names(
+            exog_state_names, var_name="exog_state_names", optional=True
+        )  # Not sure if this adds anything
+        k_exog = len(exog_state_names) if exog_state_names is not None else 0
 
         self.exog_state_names = exog_state_names
         self.k_exog = k_exog

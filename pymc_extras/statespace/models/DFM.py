@@ -279,7 +279,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         """
 
-        k_endog = validate_names(endog_names, var_name="endog_names", optional=False)
+        validate_names(endog_names, var_name="endog_names", optional=False)
+        k_endog = len(endog_names)
         self.endog_names = endog_names
         self.k_endog = k_endog
         self.k_factors = k_factors
@@ -291,7 +292,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
         if exog_names is not None:
             self.shared_exog_states = shared_exog_states
             self.exog_innovations = exog_innovations
-            k_exog = validate_names(exog_names, var_name="exog_names", optional=True) or 0
+            validate_names(
+                exog_names, var_name="exog_names", optional=True
+            )  # Not sure if this adds anything
+            k_exog = len(exog_names)
             self.k_exog = k_exog
             self.exog_names = exog_names
         else:
