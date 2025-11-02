@@ -423,7 +423,12 @@ def test_invalid_order_raises(order, name):
 
 
 def test_SARIMA_with_exogenous(rng, mock_sample):
-    ss_mod = BayesianSARIMAX(order=(3, 0, 1), seasonal_order=(1, 0, 0, 12), k_exog=2)
+    ss_mod = BayesianSARIMAX(
+        order=(3, 0, 1),
+        seasonal_order=(1, 0, 0, 12),
+        stationary_initialization=True,
+        exog_state_names=["exogenous_0", "exogenous_1"],
+    )
 
     assert ss_mod.param_dims["beta_exog"] == ("exogenous",)
     assert ss_mod.data_names == ["exogenous_data"]
