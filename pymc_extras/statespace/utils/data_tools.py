@@ -35,7 +35,9 @@ def get_data_dims(data):
     return data_dims
 
 
-def _validate_data_shape(data_shape, n_obs, obs_coords=None, check_col_names=False, col_names=None):
+def _validate_data_shape(
+    data_shape, n_obs, obs_coords=None, check_col_names=False, col_names=None
+):
     if col_names is None:
         col_names = []
 
@@ -121,7 +123,28 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
         return preprocess_numpy_data(data.values, n_obs, obs_coords)
 
 
-def add_data_to_active_model(values, index, data_dims=None):
+def add_data_to_active_model(values, index, data_dims=None, name="data"):
+    """
+    Add data to the active PyMC model.
+
+    Parameters
+    ----------
+    values : array-like
+        The data values to add
+    index : array-like
+        The time index for the data
+    data_dims : list of str, optional
+        The dimensions for the data. Defaults to [TIME_DIM, OBS_STATE_DIM]
+    name : str, optional
+        The name for the data variable in the PyMC model. Defaults to "data".
+        When using multiple state space models, this should be prefixed with the model name
+        to avoid naming conflicts.
+
+    Returns
+    -------
+    data : pm.Data
+        The PyMC Data variable
+    """
     pymc_mod = modelcontext(None)
     if data_dims is None:
         data_dims = [TIME_DIM, OBS_STATE_DIM]
@@ -146,7 +169,7 @@ def add_data_to_active_model(values, index, data_dims=None):
     else:
         data_shape = (None, values.shape[-1])
 
-    data = pm.Data("data", values, dims=data_dims, shape=data_shape)
+    data = pm.Data(name, values, dims=data_dims, shape=data_shape)
 
     return data
 
@@ -178,8 +201,42 @@ def mask_missing_values_in_data(values, missing_fill_value=None):
 
 
 def register_data_with_pymc(
-    data, n_obs, obs_coords, register_data=True, missing_fill_value=None, data_dims=None
+    data,
+    n_obs,
+    obs_coords,
+    register_data=True,
+    missing_fill_value=None,
+    data_dims=None,
+    data_name="data",
 ):
+    """
+    Register data with the active PyMC model.
+
+    Parameters
+    ----------
+    data : pytensor.TensorVariable, numpy.ndarray, pandas.DataFrame, or pandas.Series
+        The data to register
+    n_obs : int
+        Number of observed variables
+    obs_coords : list
+        Coordinates for the observations
+    register_data : bool, optional
+        Whether to register the data with PyMC. Defaults to True.
+    missing_fill_value : float, optional
+        Value to use for missing data. Defaults to MISSING_FILL.
+    data_dims : list of str, optional
+        Dimensions for the data variable
+    data_name : str, optional
+        Name for the data variable in the PyMC model. Defaults to "data".
+        When using multiple state space models, this should be prefixed with the model name.
+
+    Returns
+    -------
+    data : pm.Data or pytensor.shared
+        The registered data variable
+    nan_mask : numpy.ndarray
+        Boolean mask indicating missing values
+    """
     if isinstance(data, pt.TensorVariable | TensorSharedVariable):
         values, index = preprocess_tensor_data(data, n_obs, obs_coords)
     elif isinstance(data, np.ndarray):
@@ -187,12 +244,14 @@ def register_data_with_pymc(
     elif isinstance(data, pd.DataFrame | pd.Series):
         values, index = preprocess_pandas_data(data, n_obs, obs_coords)
     else:
-        raise ValueError("Data should be one of pytensor tensor, numpy array, or pandas dataframe")
+        raise ValueError(
+            "Data should be one of pytensor tensor, numpy array, or pandas dataframe"
+        )
 
     data, nan_mask = mask_missing_values_in_data(values, missing_fill_value)
 
     if register_data:
-        data = add_data_to_active_model(data, index, data_dims)
+        data = add_data_to_active_model(data, index, data_dims, name=data_name)
     else:
-        data = pytensor.shared(data, name="data")
+        data = pytensor.shared(data, name=data_name)
     return data, nan_mask
