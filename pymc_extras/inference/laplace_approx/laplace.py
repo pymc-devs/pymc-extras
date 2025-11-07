@@ -226,9 +226,9 @@ def model_to_laplace_approx(
             else:
                 dims = (*batch_dims, *[f"{name}_dim_{i}" for i in range(batched_rv.ndim - 2)])
                 initval = initial_point.get(name, None)
-                dim_shapes = initval.shape if initval is not None else batched_rv.type.shape[2:]
+                dim_shapes = initval.shape if initval is not None else batched_rv.shape.eval()[2:]
                 laplace_model.add_coords(
-                    {name: np.arange(shape) for name, shape in zip(dims[2:], dim_shapes)}
+                    {name: pt.arange(shape) for name, shape in zip(dims[2:], dim_shapes)}
                 )
 
             pm.Deterministic(name, batched_rv, dims=dims)

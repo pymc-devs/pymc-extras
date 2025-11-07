@@ -193,6 +193,44 @@ def test_fit_laplace_ragged_coords(rng):
     assert (idata["posterior"].beta.sel(feature=1).to_numpy() > 0).all()
 
 
+def test_fit_laplace_no_data_or_deterministic_dims(rng):
+    coords = {"city": ["A", "B", "C"], "feature": [0, 1], "obs_idx": np.arange(100)}
+    with pm.Model(coords=coords) as ragged_dim_model:
+        X = pm.Data("X", np.ones((100, 2)))
+        beta = pm.Normal(
+            "beta", mu=[[-100.0, 100.0], [-100.0, 100.0], [-100.0, 100.0]], dims=["city", "feature"]
+        )
+        mu = pm.Deterministic("mu", (X[:, None, :] * beta[None]).sum(axis=-1))
+        sigma = pm.Normal("sigma", mu=1.5, sigma=0.5, dims=["city"])
+
+        obs = pm.Normal(
+            "obs",
+            mu=mu,
+            sigma=sigma,
+            observed=rng.normal(loc=3, scale=1.5, size=(100, 3)),
+            dims=["obs_idx", "city"],
+        )
+
+        idata = fit_laplace(
+            optimize_method="Newton-CG",
+            progressbar=False,
+            use_grad=True,
+            use_hessp=True,
+        )
+
+    # These should have been dropped when the laplace idata was created
+    assert "laplace_approximation" not in list(idata.posterior.data_vars.keys())
+    assert "unpacked_var_names" not in list(idata.posterior.coords.keys())
+
+    assert idata["posterior"].beta.shape[-2:] == (3, 2)
+    assert idata["posterior"].sigma.shape[-1:] == (3,)
+
+    # Check that everything got unraveled correctly -- feature 0 should be strictly negative, feature 1
+    # strictly positive
+    assert (idata["posterior"].beta.sel(feature=0).to_numpy() < 0).all()
+    assert (idata["posterior"].beta.sel(feature=1).to_numpy() > 0).all()
+
+
 def test_model_with_nonstandard_dimensionality(rng):
     y_obs = np.concatenate(
         [rng.normal(-1, 2, size=150), rng.normal(3, 1, size=350), rng.normal(5, 4, size=50)]
