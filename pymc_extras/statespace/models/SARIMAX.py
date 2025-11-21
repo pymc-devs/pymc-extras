@@ -12,6 +12,7 @@ from pymc_extras.statespace.models.utilities import (
     make_default_coords,
     make_harvey_state_names,
     make_SARIMA_transition_matrix,
+    validate_names,
 )
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
@@ -132,7 +133,6 @@ class BayesianSARIMAX(PyMCStateSpace):
         order: tuple[int, int, int],
         seasonal_order: tuple[int, int, int, int] | None = None,
         exog_state_names: list[str] | None = None,
-        k_exog: int | None = None,
         stationary_initialization: bool = True,
         filter_type: str = "standard",
         state_structure: str = "fast",
@@ -165,10 +165,6 @@ class BayesianSARIMAX(PyMCStateSpace):
 
         exog_state_names : list[str], optional
             Names of the exogenous state variables.
-
-        k_exog : int, optional
-            Number of exogenous variables. If provided, must match the length of
-            `exog_state_names`.
 
         stationary_initialization : bool, default True
             If true, the initial state and initial state covariance will not be assigned priors. Instead, their steady
@@ -212,18 +208,10 @@ class BayesianSARIMAX(PyMCStateSpace):
         if seasonal_order is None:
             seasonal_order = (0, 0, 0, 0)
 
-        if exog_state_names is None and k_exog is not None:
-            exog_state_names = [f"exogenous_{i}" for i in range(k_exog)]
-        elif exog_state_names is not None and k_exog is None:
-            k_exog = len(exog_state_names)
-        elif exog_state_names is not None and k_exog is not None:
-            if len(exog_state_names) != k_exog:
-                raise ValueError(
-                    f"Based on provided inputs, expected exog_state_names to have {k_exog} elements, but "
-                    f"found {len(exog_state_names)}"
-                )
-        else:
-            k_exog = 0
+        validate_names(
+            exog_state_names, var_name="exog_state_names", optional=True
+        )  # Not sure if this adds anything
+        k_exog = len(exog_state_names) if exog_state_names is not None else 0
 
         self.exog_state_names = exog_state_names
         self.k_exog = k_exog

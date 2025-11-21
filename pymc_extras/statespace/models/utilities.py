@@ -670,3 +670,10 @@ def get_exog_dims_from_idata(exog_name, idata):
         exog_dims = None
 
     return exog_dims
+
+
+def validate_names(names: list[str], var_name: str, optional: bool = True) -> None:
+    if names is None:
+        if optional:
+            return None
+        raise ValueError(f"Must specify {var_name}")

@@ -67,9 +67,13 @@ def _unconstrained_vector_to_constrained_rvs(model):
     unconstrained_vector.name = "unconstrained_vector"
 
     # Redo the names list to ensure it is sorted to match the return order
-    names = [*constrained_names, *unconstrained_names]
+    constrained_rvs_and_names = [(rv, name) for rv, name in zip(constrained_rvs, constrained_names)]
+    value_rvs_and_names = [
+        (rv, name) for rv, name in zip(value_rvs, names) for name in unconstrained_names
+    ]
+    # names = [*constrained_names, *unconstrained_names]
 
-    return names, constrained_rvs, value_rvs, unconstrained_vector
+    return constrained_rvs_and_names, value_rvs_and_names, unconstrained_vector
 
 
 def model_to_laplace_approx(
@@ -81,8 +85,11 @@ def model_to_laplace_approx(
 
     # temp_chain and temp_draw are a hack to allow sampling from the Laplace approximation. We only have one mu and cov,
     # so we add batch dims (which correspond to chains and draws). But the names "chain" and "draw" are reserved.
-    names, constrained_rvs, value_rvs, unconstrained_vector = (
-        _unconstrained_vector_to_constrained_rvs(model)
+
+    # The model was frozen during the find_MAP procedure. To ensure we're operating on the same model, freeze it again.
+    frozen_model = freeze_dims_and_data(model)
+    constrained_rvs_and_names, _, unconstrained_vector = _unconstrained_vector_to_constrained_rvs(
+        frozen_model
     )
 
     coords = model.coords | {
@@ -103,12 +110,13 @@ def model_to_laplace_approx(
         )
 
         cast_to_var = partial(type_cast, Variable)
+        constrained_rvs, constrained_names = zip(*constrained_rvs_and_names)
         batched_rvs = vectorize_graph(
             type_cast(list[Variable], constrained_rvs),
             replace={cast_to_var(unconstrained_vector): cast_to_var(laplace_approximation)},
         )
 
-        for name, batched_rv in zip(names, batched_rvs):
+        for name, batched_rv in zip(constrained_names, batched_rvs):
             batch_dims = ("temp_chain", "temp_draw")
             if batched_rv.ndim == 2:
                 dims = batch_dims
@@ -184,6 +192,7 @@ def fit_laplace(
     jitter_rvs: list[pt.TensorVariable] | None = None,
     progressbar: bool = True,
     include_transformed: bool = True,
+    freeze_model: bool = True,
     gradient_backend: GradientBackend = "pytensor",
     chains: int = 2,
     draws: int = 500,
@@ -227,6 +236,10 @@ def fit_laplace(
     include_transformed: bool, default True
         Whether to include transformed variables in the output. If True, transformed variables will be included in the
         output InferenceData object. If False, only the original variables will be included.
+    freeze_model: bool, optional
+        If True, freeze_dims_and_data will be called on the model before compiling the loss functions. This is
+        sometimes necessary for JAX, and can sometimes improve performance by allowing constant folding. Defaults to
+        True.
     gradient_backend: str, default "pytensor"
         The backend to use for gradient computations. Must be one of "pytensor" or "jax".
     chains: int, default: 2
@@ -275,6 +288,9 @@ def fit_laplace(
     optimizer_kwargs = {} if optimizer_kwargs is None else optimizer_kwargs
     model = pm.modelcontext(model) if model is None else model
 
+    if freeze_model:
+        model = freeze_dims_and_data(model)
+
     idata = find_MAP(
         method=optimize_method,
         model=model,
@@ -286,6 +302,7 @@ def fit_laplace(
         jitter_rvs=jitter_rvs,
         progressbar=progressbar,
         include_transformed=include_transformed,
+        freeze_model=False,
         gradient_backend=gradient_backend,
         compile_kwargs=compile_kwargs,
         compute_hessian=True,

@@ -73,12 +73,13 @@ def test_fit_laplace_basic(mode, gradient_backend: GradientBackend):
     assert idata.fit["mean_vector"].shape == (len(vars),)
     assert idata.fit["covariance_matrix"].shape == (len(vars), len(vars))
 
-    bda_map = [y.mean(), np.log(y.std())]
-    bda_cov = np.array([[y.var() / n, 0], [0, 1 / (2 * n)]])
+    bda_map = [np.log(y.std()), y.mean()]
+    bda_cov = np.array([[1 / (2 * n), 0], [0, y.var() / n]])
 
-    np.testing.assert_allclose(idata.posterior["mu"].mean(), bda_map[0], atol=1)
-    np.testing.assert_allclose(idata.posterior["logsigma"].mean(), bda_map[1], rtol=1e-3)
+    np.testing.assert_allclose(idata.posterior["logsigma"].mean(), bda_map[0], rtol=1e-3)
+    np.testing.assert_allclose(idata.posterior["mu"].mean(), bda_map[1], atol=1)
 
+    np.testing.assert_allclose(idata.fit["mean_vector"].values, bda_map, atol=1, rtol=1e-3)
     np.testing.assert_allclose(idata.fit["covariance_matrix"].values, bda_cov, rtol=1e-3, atol=1e-3)
 
 
@@ -137,12 +138,12 @@ def test_fit_laplace_coords(include_transformed, rng):
     )
 
     assert idata.fit.rows.values.tolist() == [
-        "mu[A]",
-        "mu[B]",
-        "mu[C]",
         "sigma_log__[A]",
         "sigma_log__[B]",
         "sigma_log__[C]",
+        "mu[A]",
+        "mu[B]",
+        "mu[C]",
     ]
 
     assert hasattr(idata, "unconstrained_posterior") == include_transformed

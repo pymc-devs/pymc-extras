@@ -138,7 +138,7 @@ class TestSubgraphBatchDimConnection:
         with pytest.raises(ValueError, match="Use of known dimensions"):
             subgraph_batch_dim_connection(inp, [invalid_out])
 
-        out = (inp[:, :, None, None] + pt.zeros((2, 3))) @ pt.ones((2, 3))
+        out = (inp[:, :, None, None] + pt.zeros((2, 3))) @ pt.ones((3, 2))
         [dims] = subgraph_batch_dim_connection(inp, [out])
         assert dims == (0, 1, None, None)
 
