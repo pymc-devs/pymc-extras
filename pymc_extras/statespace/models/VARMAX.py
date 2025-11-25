@@ -9,7 +9,7 @@ from pytensor.compile.mode import Mode
 from pytensor.tensor.slinalg import solve_discrete_lyapunov
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
-from pymc_extras.statespace.models.utilities import make_default_coords
+from pymc_extras.statespace.models.utilities import make_default_coords, validate_names
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
@@ -99,9 +99,7 @@ class BayesianVARMAX(PyMCStateSpace):
         self,
         order: tuple[int, int],
         endog_names: list[str] | None = None,
-        k_endog: int | None = None,
         exog_state_names: list[str] | dict[str, list[str]] | None = None,
-        k_exog: int | dict[str, int] | None = None,
         stationary_initialization: bool = False,
         filter_type: str = "standard",
         measurement_error: bool = False,
@@ -118,22 +116,13 @@ class BayesianVARMAX(PyMCStateSpace):
             specified order are included. For restricted models, set zeros directly on the priors.
 
         endog_names: list of str, optional
-            Names of the endogenous variables being modeled. Used to generate names for the state and shock coords. If
-            None, the state names will simply be numbered.
-
-            Exactly one of either ``endog_names`` or ``k_endog`` must be specified.
+            Names of the endogenous variables being modeled. Used to generate names for the state and shock coords.
 
         exog_state_names : list[str] or dict[str, list[str]], optional
             Names of the exogenous state variables. If a list, all endogenous variables will share the same exogenous
             variables. If a dict, keys should be the names of the endogenous variables, and values should be lists of the
             exogenous variable names for that endogenous variable. Endogenous variables not included in the dict will
             be assumed to have no exogenous variables. If None, no exogenous variables will be included.
-
-        k_exog : int or dict[str, int], optional
-            Number of exogenous variables. If an int, all endogenous variables will share the same number of exogenous
-            variables. If a dict, keys should be the names of the endogenous variables, and values should be the number of
-            exogenous variables for that endogenous variable. Endogenous variables not included in the dict will be
-            assumed to have no exogenous variables. If None, no exogenous variables will be included.
 
         stationary_initialization: bool, default False
             If true, the initial state and initial state covariance will not be assigned priors. Instead, their steady
@@ -162,62 +151,23 @@ class BayesianVARMAX(PyMCStateSpace):
             to all sampling methods.
 
         """
-        if (endog_names is None) and (k_endog is None):
-            raise ValueError("Must specify either endog_names or k_endog")
-        if (endog_names is not None) and (k_endog is None):
-            k_endog = len(endog_names)
-        if (endog_names is None) and (k_endog is not None):
-            endog_names = [f"observed_{i}" for i in range(k_endog)]
-        if (endog_names is not None) and (k_endog is not None):
-            if len(endog_names) != k_endog:
-                raise ValueError("Length of provided endog_names does not match provided k_endog")
+
+        validate_names(endog_names, var_name="endog_names", optional=False)
+        k_endog = len(endog_names)
 
         needs_exog_data = False
 
-        if k_exog is not None and not isinstance(k_exog, int | dict):
-            raise ValueError("If not None, k_exog must be either an int or a dict")
         if exog_state_names is not None and not isinstance(exog_state_names, list | dict):
             raise ValueError("If not None, exog_state_names must be either a list or a dict")
 
-        if k_exog is not None and exog_state_names is not None:
-            if isinstance(k_exog, int) and isinstance(exog_state_names, list):
-                if len(exog_state_names) != k_exog:
-                    raise ValueError("Length of exog_state_names does not match provided k_exog")
-            elif isinstance(k_exog, int) and isinstance(exog_state_names, dict):
-                raise ValueError(
-                    "If k_exog is an int, exog_state_names must be a list of the same length (or None)"
-                )
-            elif isinstance(k_exog, dict) and isinstance(exog_state_names, list):
-                raise ValueError(
-                    "If k_exog is a dict, exog_state_names must be a dict as well (or None)"
-                )
-            elif isinstance(k_exog, dict) and isinstance(exog_state_names, dict):
-                if set(k_exog.keys()) != set(exog_state_names.keys()):
-                    raise ValueError("Keys of k_exog and exog_state_names dicts must match")
-                if not all(
-                    len(names) == k for names, k in zip(exog_state_names.values(), k_exog.values())
-                ):
-                    raise ValueError(
-                        "If both k_endog and exog_state_names are provided, lengths of exog_state_names "
-                        "lists must match corresponding values in k_exog"
-                    )
-            needs_exog_data = True
-
-        if k_exog is not None and exog_state_names is None:
-            if isinstance(k_exog, int):
-                exog_state_names = [f"exogenous_{i}" for i in range(k_exog)]
-            elif isinstance(k_exog, dict):
-                exog_state_names = {
-                    name: [f"{name}_exogenous_{i}" for i in range(k)] for name, k in k_exog.items()
-                }
-            needs_exog_data = True
-
-        if k_exog is None and exog_state_names is not None:
+        if exog_state_names is not None:
             if isinstance(exog_state_names, list):
                 k_exog = len(exog_state_names)
             elif isinstance(exog_state_names, dict):
                 k_exog = {name: len(names) for name, names in exog_state_names.items()}
             needs_exog_data = True
+        else:
+            k_exog = None
 
         # If exog_state_names is a dict but 1) all endog variables are among the keys, and 2) all values are the same
         # then we can drop back to the list case.

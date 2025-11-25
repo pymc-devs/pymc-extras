@@ -3,6 +3,7 @@ import numpy as np
 from pytensor import tensor as pt
 
 from pymc_extras.statespace.models.structural.core import Component
+from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import TIME_DIM
 
 
@@ -12,10 +13,6 @@ class RegressionComponent(Component):
 
     Parameters
     ----------
-    k_exog : int | None, default None
-        Number of exogenous variables to include in the regression. Must be specified if
-        state_names is not provided.
-
     name : str | None, default "regression"
         A name for this regression component. Used to label dimensions and coordinates.
 
@@ -107,7 +104,6 @@ class RegressionComponent(Component):
 
     def __init__(
         self,
-        k_exog: int | None = None,
         name: str | None = "regression",
         state_names: list[str] | None = None,
         observed_state_names: list[str] | None = None,
@@ -120,7 +116,9 @@ class RegressionComponent(Component):
             observed_state_names = ["data"]
 
         self.innovations = innovations
-        k_exog = self._handle_input_data(k_exog, state_names, name)
+        validate_names(state_names, var_name="state_names", optional=False)
+        k_exog = len(state_names)
+        self.state_names = state_names
 
         k_states = k_exog
         k_endog = len(observed_state_names)
@@ -139,26 +137,6 @@ class RegressionComponent(Component):
             exog_names=[f"data_{name}"],
             obs_state_idxs=np.ones(k_states),
         )
-
-    @staticmethod
-    def _get_state_names(k_exog: int | None, state_names: list[str] | None, name: str):
-        if k_exog is None and state_names is None:
-            raise ValueError("Must specify at least one of k_exog or state_names")
-        if state_names is not None and k_exog is not None:
-            if len(state_names) != k_exog:
-                raise ValueError(f"Expected {k_exog} state names, found {len(state_names)}")
-        elif k_exog is None:
-            k_exog = len(state_names)
-        else:
-            state_names = [f"{name}_{i + 1}" for i in range(k_exog)]
-
-        return k_exog, state_names
-
-    def _handle_input_data(self, k_exog: int, state_names: list[str] | None, name) -> int:
-        k_exog, state_names = self._get_state_names(k_exog, state_names, name)
-        self.state_names = state_names
-
-        return k_exog
 
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog

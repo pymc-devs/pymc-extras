@@ -10,7 +10,7 @@ import statsmodels.api as sm
 
 from numpy.testing import assert_allclose, assert_array_less
 from pymc.testing import mock_sample_setup_and_teardown
-from pytensor.graph.basic import explicit_graph_inputs
+from pytensor.graph.traversal import explicit_graph_inputs
 
 from pymc_extras.statespace import BayesianSARIMAX
 from pymc_extras.statespace.models.utilities import (
@@ -423,7 +423,12 @@ def test_invalid_order_raises(order, name):
 
 
 def test_SARIMA_with_exogenous(rng, mock_sample):
-    ss_mod = BayesianSARIMAX(order=(3, 0, 1), seasonal_order=(1, 0, 0, 12), k_exog=2)
+    ss_mod = BayesianSARIMAX(
+        order=(3, 0, 1),
+        seasonal_order=(1, 0, 0, 12),
+        stationary_initialization=True,
+        exog_state_names=["exogenous_0", "exogenous_1"],
+    )
 
     assert ss_mod.param_dims["beta_exog"] == ("exogenous",)
     assert ss_mod.data_names == ["exogenous_data"]
@@ -432,15 +437,7 @@ def test_SARIMA_with_exogenous(rng, mock_sample):
     obs_intercept = ss_mod.ssm["obs_intercept"]
     assert obs_intercept.type.shape == (None, ss_mod.k_endog)
 
-    intercept_fn = pytensor.function(
-        inputs=list(explicit_graph_inputs(obs_intercept)), outputs=obs_intercept
-    )
     data_val = rng.normal(size=(100, 2)).astype(floatX)
-    beta_val = rng.normal(size=(2,)).astype(floatX)
-
-    intercept_val = intercept_fn(data_val, beta_val)
-    np.testing.assert_allclose(intercept_val, intercept_fn(data_val, beta_val))
-
     data_df = pd.DataFrame(
         rng.normal(size=(100, 1)),
         index=pd.date_range(start="2020-01-01", periods=100, freq="D"),

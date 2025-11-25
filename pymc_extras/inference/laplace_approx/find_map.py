@@ -168,6 +168,7 @@ def find_MAP(
     jitter_rvs: list[TensorVariable] | None = None,
     progressbar: bool = True,
     include_transformed: bool = True,
+    freeze_model: bool = True,
     gradient_backend: GradientBackend = "pytensor",
     compile_kwargs: dict | None = None,
     compute_hessian: bool = False,
@@ -210,6 +211,10 @@ def find_MAP(
         Whether to display a progress bar during optimization. Defaults to True.
     include_transformed: bool, optional
         Whether to include transformed variable values in the returned dictionary. Defaults to True.
+    freeze_model: bool, optional
+        If True, freeze_dims_and_data will be called on the model before compiling the loss functions. This is
+        sometimes necessary for JAX, and can sometimes improve performance by allowing constant folding. Defaults to
+        True.
     gradient_backend: str, default "pytensor"
         Which backend to use to compute gradients. Must be one of "pytensor" or "jax".
     compute_hessian: bool
@@ -229,11 +234,13 @@ def find_MAP(
         Results of Maximum A Posteriori (MAP) estimation, including the optimized point, inverse Hessian, transformed
         latent variables, and optimizer results.
     """
-    model = pm.modelcontext(model) if model is None else model
-    frozen_model = freeze_dims_and_data(model)
     compile_kwargs = {} if compile_kwargs is None else compile_kwargs
+    model = pm.modelcontext(model) if model is None else model
 
-    initial_params = _make_initial_point(frozen_model, initvals, random_seed, jitter_rvs)
+    if freeze_model:
+        model = freeze_dims_and_data(model)
+
+    initial_params = _make_initial_point(model, initvals, random_seed, jitter_rvs)
 
     do_basinhopping = method == "basinhopping"
     minimizer_kwargs = optimizer_kwargs.pop("minimizer_kwargs", {})
@@ -251,8 +258,8 @@ def find_MAP(
     )
 
     f_fused, f_hessp = scipy_optimize_funcs_from_loss(
-        loss=-frozen_model.logp(),
-        inputs=frozen_model.continuous_value_vars + frozen_model.discrete_value_vars,
+        loss=-model.logp(),
+        inputs=model.continuous_value_vars + model.discrete_value_vars,
         initial_point_dict=DictToArrayBijection.rmap(initial_params),
         use_grad=use_grad,
         use_hess=use_hess,
@@ -316,12 +323,10 @@ def find_MAP(
     }
 
     idata = map_results_to_inference_data(
-        map_point=optimized_point, model=frozen_model, include_transformed=include_transformed
+        map_point=optimized_point, model=model, include_transformed=include_transformed
     )
 
-    idata = add_fit_to_inference_data(
-        idata=idata, mu=raveled_optimized, H_inv=H_inv, model=frozen_model
-    )
+    idata = add_fit_to_inference_data(idata=idata, mu=raveled_optimized, H_inv=H_inv, model=model)
 
     idata = add_optimizer_result_to_inference_data(
         idata=idata, result=optimizer_result, method=method, mu=raveled_optimized, model=model

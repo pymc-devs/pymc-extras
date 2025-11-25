@@ -1,8 +1,6 @@
 import pytensor
 import pytensor.tensor as pt
 
-from pytensor.tensor.nlinalg import matrix_dot
-
 from pymc_extras.statespace.filters.utilities import (
     quad_form_sym,
     split_vars_into_seq_and_nonseq,
@@ -105,7 +103,7 @@ class KalmanSmoother:
         a_hat, P_hat = self.predict(a, P, T, R, Q)
 
         # Use pinv, otherwise P_hat is singular when there is missing data
-        smoother_gain = matrix_dot(pt.linalg.pinv(P_hat, hermitian=True), T, P).T
+        smoother_gain = (pt.linalg.pinv(P_hat, hermitian=True) @ T @ P).mT
         a_smooth_next = a + smoother_gain @ (a_smooth - a_hat)
 
         P_smooth_next = P + quad_form_sym(smoother_gain, P_smooth - P_hat)

@@ -34,8 +34,8 @@ keywords = [
 license = {file = "LICENSE"}
 dynamic = ["version"]  # specify the version in the __init__.py file
 dependencies = [
-  "pymc>=5.24.1",
-  "pytensor>=2.31.4",
+  "pymc>=5.26.1",
+  "pytensor>=2.35.1",
   "scikit-learn",
   "better-optimize>=0.1.5",
   "pydantic>=2.0.0",
@@ -104,9 +104,11 @@ filterwarnings =[
     # JAX issues an over-eager warning if os.fork() is called when the JAX module is loaded, even if JAX isn't being used
     'ignore:os\.fork\(\) was called\.:RuntimeWarning',
 
-    # Silence warning emitted by pytensor when BLAS is not available
-    "ignore:\\n?Found Intel OpenMP \\('libiomp'\\) and LLVM OpenMP \\('libomp'\\).*:RuntimeWarning",
-    'ignore:PyTensor could not link to a BLAS installation:UserWarning'
+    # Preliz needs to update for pytensor > 2.35
+   'ignore:.*`pytensor\.graph\.basic\.ancestors`.*`pytensor\.graph\.traversal\.ancestors`.*:FutureWarning:^preliz(\.|$)',
+
+    # OpenMP library warning on windows CI
+  'ignore::RuntimeWarning:threadpoolctl'
 ]
 
 [tool.coverage.report]
@@ -118,7 +120,7 @@ exclude_lines = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.format]
 docstring-code-format = true

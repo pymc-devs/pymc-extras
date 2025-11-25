@@ -93,7 +93,7 @@ def ss_mod_no_me():
     return ss_mod
 
 
-@pytest.mark.parametrize("kfilter", filter_names, ids=filter_names)
+@pytest.mark.parametrize("kfilter", filter_names)
 def test_loglike_vectors_agree(kfilter, pymc_model):
     # TODO: This test might be flakey, I've gotten random failures
     ss_mod = structural.LevelTrendComponent(order=2).build(
@@ -193,7 +193,7 @@ def test_lgss_distribution_with_dims(output_name, ss_mod_me, pymc_model_2):
 def test_lgss_with_time_varying_inputs(output_name, rng):
     X = rng.random(size=(10, 3), dtype=floatX)
     ss_mod = structural.LevelTrendComponent() + structural.RegressionComponent(
-        name="exog", k_exog=3
+        name="exog", state_names=["exog_0", "exog_1", "exog_2"]
     )
     mod = ss_mod.build("data", verbose=False)
 
