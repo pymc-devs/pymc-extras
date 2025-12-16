@@ -16,6 +16,7 @@
 import logging
 import re
 
+from collections.abc import Callable
 from functools import partial
 from typing import Literal
 from typing import cast as type_cast
@@ -27,6 +28,7 @@ import pytensor.tensor as pt
 import xarray as xr
 
 from better_optimize.constants import minimize_method
+from numpy.typing import ArrayLike
 from pymc.blocking import DictToArrayBijection
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.pytensorf import join_nonshared_inputs
@@ -34,8 +36,6 @@ from pymc.util import get_default_varnames
 from pytensor.graph import vectorize_graph
 from pytensor.tensor.type import Variable
 from pytensor.tensor.variable import TensorVariable
-from numpy.typing import ArrayLike
-from collections.abc import Callable
 
 from pymc_extras.inference.laplace_approx.find_map import (
     _compute_inverse_hessian,
