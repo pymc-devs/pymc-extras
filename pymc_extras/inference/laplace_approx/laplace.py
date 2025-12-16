@@ -24,6 +24,7 @@ from typing import cast as type_cast
 import arviz as az
 import numpy as np
 import pymc as pm
+import pytensor
 import pytensor.tensor as pt
 import xarray as xr
 
@@ -34,8 +35,9 @@ from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.pytensorf import join_nonshared_inputs
 from pymc.util import get_default_varnames
 from pytensor.graph import vectorize_graph
+from pytensor.tensor import TensorVariable
+from pytensor.tensor.optimize import minimize
 from pytensor.tensor.type import Variable
-from pytensor.tensor.variable import TensorVariable
 
 from pymc_extras.inference.laplace_approx.find_map import (
     _compute_inverse_hessian,
