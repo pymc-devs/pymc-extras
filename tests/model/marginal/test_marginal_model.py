@@ -837,7 +837,9 @@ class TestRecoverMarginals:
             )
             idata = InferenceData(posterior=dict_to_dataset(prior))
 
-        idata = recover_marginals(marginal_m, idata, return_samples=True)
+        with marginal_m:
+            idata = recover_marginals(idata, return_samples=True)
+
         post = idata.posterior
         assert "k" in post
         assert "lp_k" in post
@@ -881,7 +883,8 @@ class TestRecoverMarginals:
                 posterior=dict_to_dataset({k: np.expand_dims(prior[k], axis=0) for k in prior})
             )
 
-        idata = recover_marginals(marginal_m, idata, return_samples=True)
+        with marginal_m:
+            idata = recover_marginals(idata, return_samples=True)
         post = idata.posterior
         assert post.idx.dims == ("chain", "draw", "year")
         assert post.lp_idx.dims == ("chain", "draw", "year", "lp_idx_dim")
@@ -907,7 +910,7 @@ class TestRecoverMarginals:
                 posterior=dict_to_dataset({k: np.expand_dims(prior[k], axis=0) for k in prior})
             )
 
-        idata = recover_marginals(marginal_m, idata, return_samples=True)
+            idata = recover_marginals(idata, return_samples=True)
         post = idata.posterior
         assert post["y"].shape == (1, 20, 2, 3)
         assert post["idx"].shape == (1, 20, 3, 2)
@@ -933,7 +936,7 @@ class TestRecoverMarginals:
             )
             idata = InferenceData(posterior=dict_to_dataset(prior))
 
-        idata = recover_marginals(marginal_m, idata, return_samples=True)
+            idata = recover_marginals(idata, return_samples=True)
         post = idata.posterior
         assert "idx" in post
         assert "lp_idx" in post

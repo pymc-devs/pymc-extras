@@ -11,7 +11,7 @@ from pymc.backends.arviz import coords_and_dims_for_inferencedata, dataset_to_po
 from pymc.distributions.discrete import Bernoulli, Categorical, DiscreteUniform
 from pymc.distributions.transforms import Chain
 from pymc.logprob.transforms import IntervalTransform
-from pymc.model import Model
+from pymc.model import Model, modelcontext
 from pymc.model.fgraph import (
     ModelFreeRV,
     ModelValuedVar,
@@ -337,8 +337,8 @@ def transform_posterior_pts(model, posterior_pts):
 
 
 def recover_marginals(
-    model: Model,
     idata: InferenceData,
+    model: Model | None = None,
     var_names: Sequence[str] | None = None,
     return_samples: bool = True,
     extend_inferencedata: bool = True,
@@ -389,6 +389,11 @@ def recover_marginals(
 
 
     """
+    if isinstance(idata, Model):
+        raise TypeError("The first argument of `recover_marginals` must be an idata")
+
+    model = modelcontext(model)
+
     unmarginal_model = unmarginalize(model)
 
     # Find the names of the marginalized variables
