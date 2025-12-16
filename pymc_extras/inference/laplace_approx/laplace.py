@@ -33,6 +33,9 @@ from pymc.pytensorf import join_nonshared_inputs
 from pymc.util import get_default_varnames
 from pytensor.graph import vectorize_graph
 from pytensor.tensor.type import Variable
+from pytensor.tensor.variable import TensorVariable
+from numpy.typing import ArrayLike
+from collections.abc import Callable
 
 from pymc_extras.inference.laplace_approx.find_map import (
     _compute_inverse_hessian,
