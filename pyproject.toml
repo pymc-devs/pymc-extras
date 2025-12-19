@@ -105,10 +105,13 @@ filterwarnings =[
     'ignore:os\.fork\(\) was called\.:RuntimeWarning',
 
     # Preliz needs to update for pytensor > 2.35
-   'ignore:.*`pytensor\.graph\.basic\.ancestors`.*`pytensor\.graph\.traversal\.ancestors`.*:FutureWarning:^preliz(\.|$)',
+    'ignore:.*`pytensor\.graph\.basic\.ancestors`.*`pytensor\.graph\.traversal\.ancestors`.*:FutureWarning:^preliz(\.|$)',
 
     # OpenMP library warning on windows CI
-  'ignore::RuntimeWarning:threadpoolctl'
+    'ignore::RuntimeWarning:threadpoolctl',
+
+    # ArviZ warning related to 1.0 release
+    'ignore:\nArviZ is undergoing a major refactor.*:FutureWarning'
 ]
 
 [tool.coverage.report]
