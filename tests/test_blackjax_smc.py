@@ -75,9 +75,6 @@ def fast_model():
     return m
 
 
-@pytest.mark.xfail(
-    reason="TODO: fix AttributeError: 'TemperedSMCState' object has no attribute 'lmbda'"
-)
 @pytest.mark.parametrize(
     "kernel, check_for_integration_steps, inner_kernel_params",
     [
