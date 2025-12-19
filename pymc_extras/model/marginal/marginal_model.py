@@ -338,6 +338,7 @@ def transform_posterior_pts(model, posterior_pts):
 
 def recover_marginals(
     idata: InferenceData,
+    *,
     model: Model | None = None,
     var_names: Sequence[str] | None = None,
     return_samples: bool = True,
@@ -389,8 +390,12 @@ def recover_marginals(
 
 
     """
+    # Temporary error message for helping with migration
+    # Will be removed in a future release
     if isinstance(idata, Model):
-        raise TypeError("The first argument of `recover_marginals` must be an idata")
+        raise TypeError(
+            "The order of arguments of `recover_marginals` changed. The first input must be an idata"
+        )
 
     model = modelcontext(model)
 
