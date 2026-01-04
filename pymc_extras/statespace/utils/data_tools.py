@@ -35,9 +35,7 @@ def get_data_dims(data):
     return data_dims
 
 
-def _validate_data_shape(
-    data_shape, n_obs, obs_coords=None, check_col_names=False, col_names=None
-):
+def _validate_data_shape(data_shape, n_obs, obs_coords=None, check_col_names=False, col_names=None):
     if col_names is None:
         col_names = []
 
@@ -244,9 +242,7 @@ def register_data_with_pymc(
     elif isinstance(data, pd.DataFrame | pd.Series):
         values, index = preprocess_pandas_data(data, n_obs, obs_coords)
     else:
-        raise ValueError(
-            "Data should be one of pytensor tensor, numpy array, or pandas dataframe"
-        )
+        raise ValueError("Data should be one of pytensor tensor, numpy array, or pandas dataframe")
 
     data, nan_mask = mask_missing_values_in_data(values, missing_fill_value)
 
