@@ -13,7 +13,6 @@
 #   limitations under the License.
 import numpy as np
 import pymc as pm
-import pytensor
 import pytensor.tensor as pt
 import pytest
 import scipy.stats
@@ -28,7 +27,7 @@ from pymc.testing import (
     check_logp,
     discrete_random_tester,
 )
-from pytensor import config
+from pytensor import config, function
 
 from pymc_extras.distributions import (
     BetaNegativeBinomial,
@@ -73,7 +72,7 @@ class TestGeneralizedPoisson:
         value = pt.vector("value", dtype="int64")
 
         logp = pm.logp(GeneralizedPoisson.dist(mu, lam), value)
-        logp_fn = pytensor.function([value, mu, lam], logp)
+        logp_fn = function([value, mu, lam], logp)
 
         test_value = np.array([0, 1, 2, 30])
         for test_mu in (0.01, 0.1, 0.9, 1, 1.5, 20, 100):
@@ -86,7 +85,7 @@ class TestGeneralizedPoisson:
         # Check out-of-bounds values
         value = pt.scalar("value")
         logp = pm.logp(GeneralizedPoisson.dist(mu, lam), value)
-        logp_fn = pytensor.function([value, mu, lam], logp)
+        logp_fn = function([value, mu, lam], logp)
 
         logp_fn(-1, mu=5, lam=0) == -np.inf
         logp_fn(9, mu=5, lam=-1) == -np.inf
@@ -161,7 +160,7 @@ class TestBetaNegativeBinomial:
         """
         alpha, beta, r, value = pt.scalars("alpha", "beta", "r", "value")
         logp = pm.logp(BetaNegativeBinomial.dist(alpha, beta, r), value)
-        logp_fn = pytensor.function([value, alpha, beta, r], logp)
+        logp_fn = function([value, alpha, beta, r], logp)
 
         tests = [
             # 1, 1, 1
