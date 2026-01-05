@@ -35,6 +35,10 @@ from pymc_extras.distributions import (
     Skellam,
 )
 
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Numba will use object mode to run generalized_poisson_rv:UserWarning"
+)
+
 
 class TestGeneralizedPoisson:
     class TestRandomVariable(BaseTestDistributionRandom):

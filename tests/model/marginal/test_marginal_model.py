@@ -26,6 +26,12 @@ from pymc_extras.model.marginal.marginal_model import (
 )
 from pymc_extras.utils.model_equivalence import equivalent_models
 
+# FIXME: A Blockwise of Reshape should be rewritten into a Reshape, as it's rather inneficient
+# This shows up in `test_one_to_many_unaligned_marginalized_rvs`
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Numba will use object mode to run Blockwise{Reshapep*:UserWarning"
+)
+
 
 def test_basic_marginalized_rv():
     data = [2] * 5

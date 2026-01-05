@@ -25,6 +25,10 @@ from pymc_extras.inference.laplace_approx.laplace import (
     get_conditional_gaussian_approximation,
 )
 
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Numba will use object mode to run MinimizeOp:UserWarning"
+)
+
 
 @pytest.fixture(scope="session")
 def rng():
