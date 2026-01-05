@@ -148,10 +148,9 @@ class BaseFilter(ABC):
         R,
         H,
         Q,
-        return_updates=False,
         missing_fill_value=None,
         cov_jitter=None,
-    ) -> list[TensorVariable] | tuple[list[TensorVariable], dict]:
+    ) -> list[TensorVariable]:
         """
         Construct the computation graph for the Kalman filter. See [1] for details.
 
@@ -211,20 +210,17 @@ class BaseFilter(ABC):
         if len(sequences) > 0:
             sequences = self.add_check_on_time_varying_shapes(data, sequences)
 
-        results, updates = pytensor.scan(
+        results = pytensor.scan(
             self.kalman_step,
             sequences=[data, *sequences],
             outputs_info=[None, a0, None, None, P0, None, None],
             non_sequences=non_sequences,
             name="forward_kalman_pass",
             strict=False,
+            return_updates=False,
         )
 
-        filter_results = self._postprocess_scan_results(results, a0, P0, n=data.type.shape[0])
-
-        if return_updates:
-            return filter_results, updates
-        return filter_results
+        return self._postprocess_scan_results(results, a0, P0, n=data.type.shape[0])
 
     def _postprocess_scan_results(self, results, a0, P0, n) -> list[TensorVariable]:
         """
@@ -786,11 +782,12 @@ class UnivariateFilter(BaseFilter):
         H_masked = W.dot(H)
         y_masked = pt.set_subtensor(y[nan_mask], 0.0)
 
-        result, updates = pytensor.scan(
+        result = pytensor.scan(
             self._univariate_inner_filter_step,
             sequences=[y_masked, Z_masked, d, pt.diag(H_masked), nan_mask],
             outputs_info=[a, P, None, None, None],
             name="univariate_inner_scan",
+            return_updates=False,
         )
 
         a_filtered, P_filtered, obs_mu, obs_cov, ll_inner = result
