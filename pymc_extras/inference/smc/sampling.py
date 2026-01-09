@@ -238,7 +238,7 @@ class SMCDiagnostics(NamedTuple):
     def update_diagnosis(i, history, info, state):
         le, lli, ancestors, weights_evolution = history
         return SMCDiagnostics(
-            le.at[i].set(state.lmbda),
+            le.at[i].set(state.tempering_param),
             lli.at[i].set(info.log_likelihood_increment),
             ancestors.at[i].set(info.ancestors),
             weights_evolution.at[i].set(state.weights),
@@ -265,7 +265,7 @@ def inference_loop(rng_key, initial_state, kernel, iterations_to_diagnose, n_par
 
     def cond(carry):
         i, state, _, _ = carry
-        return state.lmbda < 1
+        return state.tempering_param < 1
 
     def one_step(carry):
         i, state, k, previous_info = carry

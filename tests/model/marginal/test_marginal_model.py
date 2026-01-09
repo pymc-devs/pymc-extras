@@ -26,6 +26,12 @@ from pymc_extras.model.marginal.marginal_model import (
 )
 from pymc_extras.utils.model_equivalence import equivalent_models
 
+# FIXME: A Blockwise of Reshape should be rewritten into a Reshape, as it's rather inneficient
+# This shows up in `test_one_to_many_unaligned_marginalized_rvs`
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Numba will use object mode to run Blockwise{Reshapep*:UserWarning"
+)
+
 
 def test_basic_marginalized_rv():
     data = [2] * 5
@@ -816,7 +822,8 @@ def test_unmarginalize():
 
 
 class TestRecoverMarginals:
-    def test_basic(self):
+    @pytest.mark.parametrize("explicit_model", (True, False))
+    def test_basic(self, explicit_model):
         with Model() as m:
             sigma = pm.HalfNormal("sigma")
             p = np.array([0.5, 0.2, 0.3])
@@ -837,7 +844,12 @@ class TestRecoverMarginals:
             )
             idata = InferenceData(posterior=dict_to_dataset(prior))
 
-        idata = recover_marginals(marginal_m, idata, return_samples=True)
+        if explicit_model:
+            idata = recover_marginals(idata, model=marginal_m, return_samples=True)
+        else:
+            with marginal_m:
+                idata = recover_marginals(idata, return_samples=True)
+
         post = idata.posterior
         assert "k" in post
         assert "lp_k" in post
@@ -881,7 +893,8 @@ class TestRecoverMarginals:
                 posterior=dict_to_dataset({k: np.expand_dims(prior[k], axis=0) for k in prior})
             )
 
-        idata = recover_marginals(marginal_m, idata, return_samples=True)
+        with marginal_m:
+            idata = recover_marginals(idata, return_samples=True)
         post = idata.posterior
         assert post.idx.dims == ("chain", "draw", "year")
         assert post.lp_idx.dims == ("chain", "draw", "year", "lp_idx_dim")
@@ -907,7 +920,7 @@ class TestRecoverMarginals:
                 posterior=dict_to_dataset({k: np.expand_dims(prior[k], axis=0) for k in prior})
             )
 
-        idata = recover_marginals(marginal_m, idata, return_samples=True)
+            idata = recover_marginals(idata, return_samples=True)
         post = idata.posterior
         assert post["y"].shape == (1, 20, 2, 3)
         assert post["idx"].shape == (1, 20, 3, 2)
@@ -933,7 +946,7 @@ class TestRecoverMarginals:
             )
             idata = InferenceData(posterior=dict_to_dataset(prior))
 
-        idata = recover_marginals(marginal_m, idata, return_samples=True)
+            idata = recover_marginals(idata, return_samples=True)
         post = idata.posterior
         assert "idx" in post
         assert "lp_idx" in post

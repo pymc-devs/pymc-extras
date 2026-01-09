@@ -197,10 +197,9 @@ class _LinearGaussianStateSpace(Continuous):
         n_seq = len(sequence_names)
 
         def step_fn(*args):
-            seqs, state, non_seqs = args[:n_seq], args[n_seq], args[n_seq + 1 :]
-            non_seqs, rng = non_seqs[:-1], non_seqs[-1]
+            seqs, (rng, state, *non_seqs) = args[:n_seq], args[n_seq:]
 
-            c, d, T, Z, R, H, Q = sort_args(seqs + non_seqs)
+            c, d, T, Z, R, H, Q = sort_args((*seqs, *non_seqs))
             k = T.shape[0]
             a = state[:k]
 
@@ -219,7 +218,7 @@ class _LinearGaussianStateSpace(Continuous):
 
             next_state = pt.concatenate([a_next, y_next], axis=0)
 
-            return next_state, {rng: next_rng}
+            return next_rng, next_state
 
         Z_init = Z_ if Z_ in non_sequences else Z_[0]
         H_init = H_ if H_ in non_sequences else H_[0]
@@ -229,13 +228,14 @@ class _LinearGaussianStateSpace(Continuous):
 
         init_dist_ = pt.concatenate([init_x_, init_y_], axis=0)
 
-        statespace, updates = pytensor.scan(
+        ss_rng, statespace = pytensor.scan(
             step_fn,
-            outputs_info=[init_dist_],
+            outputs_info=[rng, init_dist_],
             sequences=None if len(sequences) == 0 else sequences,
-            non_sequences=[*non_sequences, rng],
+            non_sequences=[*non_sequences],
             n_steps=steps,
             strict=True,
+            return_updates=False,
         )
 
         if append_x0:
@@ -245,7 +245,6 @@ class _LinearGaussianStateSpace(Continuous):
             statespace_ = statespace
             statespace_ = pt.specify_shape(statespace_, (steps, None))
 
-        (ss_rng,) = tuple(updates.values())
         linear_gaussian_ss_op = LinearGaussianStateSpaceRV(
             inputs=[a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_, steps, rng],
             outputs=[ss_rng, statespace_],
@@ -385,18 +384,21 @@ class SequenceMvNormal(Continuous):
 
         def step(mu, cov, rng):
             new_rng, mvn = pm.MvNormal.dist(mu=mu, cov=cov, rng=rng, method=method).owner.outputs
-            return mvn, {rng: new_rng}
+            return new_rng, mvn
 
-        mvn_seq, updates = pytensor.scan(
-            step, sequences=[mus_, covs_], non_sequences=[rng], strict=True, n_steps=mus_.shape[0]
+        seq_mvn_rng, mvn_seq = pytensor.scan(
+            step,
+            sequences=[mus_, covs_],
+            outputs_info=[rng, None],
+            strict=True,
+            n_steps=mus_.shape[0],
+            return_updates=False,
         )
         mvn_seq = pt.specify_shape(mvn_seq, mus.type.shape)
 
         # Move time axis back to position -2 so batches are on the left
         if mvn_seq.ndim > 2:
             mvn_seq = pt.moveaxis(mvn_seq, 0, -2)
-
-        (seq_mvn_rng,) = tuple(updates.values())
 
         mvn_seq_op = KalmanFilterRV(
             inputs=[mus_, covs_, logp_, rng], outputs=[seq_mvn_rng, mvn_seq], ndim_supp=2

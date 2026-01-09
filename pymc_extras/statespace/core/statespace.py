@@ -2500,13 +2500,14 @@ class PyMCStateSpace:
                 next_x = c + T @ x + R @ shock
                 return next_x
 
-            irf, updates = pytensor.scan(
+            irf = pytensor.scan(
                 irf_step,
                 sequences=[shock_trajectory],
                 outputs_info=[x0],
                 non_sequences=[c, T, R],
                 n_steps=n_steps,
                 strict=True,
+                return_updates=False,
             )
 
             pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])

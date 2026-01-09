@@ -3,8 +3,8 @@ channels:
 - conda-forge
 - nodefaults
 dependencies:
-  - pymc>=5.26.1
-  - pytensor>=2.35.1
+  - pymc>=5.27.0
+  - pytensor>=2.36.3
   - scikit-learn
   - better-optimize>=0.1.5
   - dask<2025.1.1

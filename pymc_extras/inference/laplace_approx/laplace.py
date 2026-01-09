@@ -14,6 +14,7 @@
 
 
 import logging
+import re
 
 from collections.abc import Callable
 from functools import partial
@@ -49,6 +50,58 @@ from pymc_extras.inference.laplace_approx.scipy_interface import (
 )
 
 _log = logging.getLogger(__name__)
+
+
+def _reset_laplace_dim_idx(idata: az.InferenceData) -> az.InferenceData:
+    """
+    Because `fit_laplace` adds the (temp_chain, temp_draw) dimensions,
+    any variables without explicitly assigned dimensions receive
+    automatically generated indices that are shifted by two during
+    InferenceData creation.
+
+    This helper function corrects that shift by subtracting 2 from the
+    automatically detected dimension indices of the form
+    `<varname>_dim_<idx>`, restoring them to the indices they would have
+    had if the (temp_chain, temp_draw) dimensions were not added.
+
+    Only affects auto-assigned dimensions in `idata.posterior`.
+    """
+
+    pattern = re.compile(r"^(?P<base>.+)_dim_(?P<idx>\d+)$")
+
+    dim_renames = {}
+    var_renames = {}
+
+    for dim in idata.posterior.dims:
+        match = pattern.match(dim)
+        if match is None:
+            continue
+
+        base = match.group("base")
+        idx = int(match.group("idx"))
+
+        # Guard against invalid or unintended renames
+        if idx < 2:
+            raise ValueError(
+                f"Cannot reset Laplace dimension index for '{dim}': "
+                f"index {idx} would become negative."
+            )
+
+        new_dim = f"{base}_dim_{idx - 2}"
+
+        dim_renames[dim] = new_dim
+
+        # Only rename variables if they actually exist
+        if dim in idata.posterior.variables:
+            var_renames[dim] = new_dim
+
+    if dim_renames:
+        idata.posterior = idata.posterior.rename_dims(dim_renames)
+
+    if var_renames:
+        idata.posterior = idata.posterior.rename_vars(var_renames)
+
+    return idata
 
 
 def get_conditional_gaussian_approximation(
@@ -224,12 +277,8 @@ def model_to_laplace_approx(
             elif name in model.named_vars_to_dims:
                 dims = (*batch_dims, *model.named_vars_to_dims[name])
             else:
-                dims = (*batch_dims, *[f"{name}_dim_{i}" for i in range(batched_rv.ndim - 2)])
-                initval = initial_point.get(name, None)
-                dim_shapes = initval.shape if initval is not None else batched_rv.type.shape[2:]
-                laplace_model.add_coords(
-                    {name: np.arange(shape) for name, shape in zip(dims[2:], dim_shapes)}
-                )
+                n_dim = batched_rv.ndim - 2  # (temp_chain, temp_draw) are always first 2 dims
+                dims = (*batch_dims,) + (None,) * n_dim
 
             pm.Deterministic(name, batched_rv, dims=dims)
 
@@ -467,5 +516,7 @@ def fit_laplace(
         idata.posterior = new_posterior.drop_vars(
             ["laplace_approximation", "unpacked_variable_names"]
         )
+
+        idata = _reset_laplace_dim_idx(idata)
 
     return idata
