@@ -25,6 +25,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
+        linker: [cvm, numba]
         python-version: ["3.11"]
         test-subset:
           - tests/model
@@ -37,7 +38,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       TEST_SUBSET: ${{ matrix.test-subset }}
-      PYTENSOR_FLAGS: gcc__cxxflags='-march=native'
+      PYTENSOR_FLAGS: linker=${{ matrix.linker }}
     defaults:
       run:
         shell: bash -leo pipefail {0}
@@ -69,6 +70,7 @@ jobs:
     strategy:
       matrix:
         os: [windows-latest]
+        linker: [cvm, numba]
         python-version: ["3.12"]
         test-subset:
           - tests/model
@@ -81,7 +83,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       TEST_SUBSET: ${{ matrix.test-subset }}
-      PYTENSOR_FLAGS: gcc__cxxflags='-march=core2'
+      PYTENSOR_FLAGS: linker=${{ matrix.linker }}
     defaults:
       run:
         shell: cmd /C call {0}

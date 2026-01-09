@@ -34,8 +34,8 @@ keywords = [
 license = {file = "LICENSE"}
 dynamic = ["version"]  # specify the version in the __init__.py file
 dependencies = [
-  "pymc>=5.26.1",
-  "pytensor>=2.35.1",
+  "pymc>=5.27.0",
+  "pytensor>=2.36.3",
   "scikit-learn",
   "better-optimize>=0.1.5",
   "pydantic>=2.0.0",
@@ -111,7 +111,11 @@ filterwarnings =[
     'ignore::RuntimeWarning:threadpoolctl',
 
     # ArviZ warning related to 1.0 release
-    'ignore:\nArviZ is undergoing a major refactor.*:FutureWarning'
+    'ignore:\nArviZ is undergoing a major refactor.*:FutureWarning',
+
+    # Numba warnings that are filtered by PyTensor but re-introduced by pytest
+    'ignore::numba.core.errors.NumbaPerformanceWarning',
+    'ignore:.*Cannot cache compiled function.*:numba.core.errors.NumbaWarning',
 ]
 
 [tool.coverage.report]

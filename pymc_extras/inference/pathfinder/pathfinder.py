@@ -278,12 +278,13 @@ def alpha_recover(
     z = pt.diff(g, axis=0)
     alpha_l_init = pt.ones(N)
 
-    alpha, _ = pytensor.scan(
+    alpha = pytensor.scan(
         fn=compute_alpha_l,
         outputs_info=alpha_l_init,
         sequences=[s, z],
         n_steps=Lp1 - 1,
         allow_gc=False,
+        return_updates=False,
     )
 
     # assert np.all(alpha.eval() > 0), "alpha cannot be negative"
@@ -334,11 +335,12 @@ def inverse_hessian_factors(
             return pt.set_subtensor(chi_l[j_last], diff_l)
 
         chi_init = pt.zeros((J, N))
-        chi_mat, _ = pytensor.scan(
+        chi_mat = pytensor.scan(
             fn=chi_update,
             outputs_info=chi_init,
             sequences=[diff],
             allow_gc=False,
+            return_updates=False,
         )
 
         chi_mat = pt.matrix_transpose(chi_mat)
@@ -377,14 +379,14 @@ def inverse_hessian_factors(
     eta = pt.diagonal(E, axis1=-2, axis2=-1)
 
     # beta: (L, N, 2J)
-    alpha_diag, _ = pytensor.scan(lambda a: pt.diag(a), sequences=[alpha])
+    alpha_diag = pytensor.scan(lambda a: pt.diag(a), sequences=[alpha], return_updates=False)
     beta = pt.concatenate([alpha_diag @ Z, S], axis=-1)
 
     # more performant and numerically precise to use solve than inverse: https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.linalg.inv.html
 
     # E_inv: (L, J, J)
     E_inv = pt.slinalg.solve_triangular(E, Ij, check_finite=False)
-    eta_diag, _ = pytensor.scan(pt.diag, sequences=[eta])
+    eta_diag = pytensor.scan(pt.diag, sequences=[eta], return_updates=False)
 
     # block_dd: (L, J, J)
     block_dd = (
@@ -530,7 +532,9 @@ def bfgs_sample_sparse(
 
     # qr_input: (L, N, 2J)
     qr_input = inv_sqrt_alpha_diag @ beta
-    (Q, R), _ = pytensor.scan(fn=pt.linalg.qr, sequences=[qr_input], allow_gc=False)
+    Q, R = pytensor.scan(
+        fn=pt.linalg.qr, sequences=[qr_input], allow_gc=False, return_updates=False
+    )
 
     IdN = pt.eye(R.shape[1])[None, ...]
     IdN += IdN * REGULARISATION_TERM
@@ -623,10 +627,11 @@ def bfgs_sample(
 
     L, N, JJ = beta.shape
 
-    (alpha_diag, inv_sqrt_alpha_diag, sqrt_alpha_diag), _ = pytensor.scan(
+    alpha_diag, inv_sqrt_alpha_diag, sqrt_alpha_diag = pytensor.scan(
         lambda a: [pt.diag(a), pt.diag(pt.sqrt(1.0 / a)), pt.diag(pt.sqrt(a))],
         sequences=[alpha],
         allow_gc=False,
+        return_updates=False,
     )
 
     u = pt.random.normal(size=(L, num_samples, N))
