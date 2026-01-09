@@ -100,11 +100,7 @@ def test_fit_dadvi_coords(include_transformed, rng):
     if include_transformed:
         assert "unconstrained_posterior" in idata
         assert "sigma_log__" in idata.unconstrained_posterior
-
-        # FIXME: The automatic coordinate inference used in MAP/Laplace doesn't work in DADVI yet, so city is not
-        #  propagated to the unconstrained_posterior group.
-        with pytest.raises(AssertionError):
-            assert "city" in idata.unconstrained_posterior.coords
+        assert "city" in idata.unconstrained_posterior.coords
 
 
 def test_fit_dadvi_ragged_coords(rng):
