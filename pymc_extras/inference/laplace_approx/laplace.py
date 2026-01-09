@@ -14,12 +14,9 @@
 
 
 import logging
-import re
 
 from collections.abc import Callable
-from functools import partial
 from typing import Literal
-from typing import cast as type_cast
 
 import arviz as az
 import numpy as np
@@ -28,16 +25,18 @@ import pytensor
 import pytensor.tensor as pt
 import xarray as xr
 
+from arviz import dict_to_dataset
 from better_optimize.constants import minimize_method
 from numpy.typing import ArrayLike
+from pymc import Model
+from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.blocking import DictToArrayBijection
 from pymc.model.transform.optimization import freeze_dims_and_data
-from pymc.pytensorf import join_nonshared_inputs
-from pymc.util import get_default_varnames
+from pymc.util import get_untransformed_name, is_transformed_name
 from pytensor.graph import vectorize_graph
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.optimize import minimize
-from pytensor.tensor.type import Variable
+from xarray import Dataset
 
 from pymc_extras.inference.laplace_approx.find_map import (
     _compute_inverse_hessian,
@@ -50,58 +49,6 @@ from pymc_extras.inference.laplace_approx.scipy_interface import (
 )
 
 _log = logging.getLogger(__name__)
-
-
-def _reset_laplace_dim_idx(idata: az.InferenceData) -> az.InferenceData:
-    """
-    Because `fit_laplace` adds the (temp_chain, temp_draw) dimensions,
-    any variables without explicitly assigned dimensions receive
-    automatically generated indices that are shifted by two during
-    InferenceData creation.
-
-    This helper function corrects that shift by subtracting 2 from the
-    automatically detected dimension indices of the form
-    `<varname>_dim_<idx>`, restoring them to the indices they would have
-    had if the (temp_chain, temp_draw) dimensions were not added.
-
-    Only affects auto-assigned dimensions in `idata.posterior`.
-    """
-
-    pattern = re.compile(r"^(?P<base>.+)_dim_(?P<idx>\d+)$")
-
-    dim_renames = {}
-    var_renames = {}
-
-    for dim in idata.posterior.dims:
-        match = pattern.match(dim)
-        if match is None:
-            continue
-
-        base = match.group("base")
-        idx = int(match.group("idx"))
-
-        # Guard against invalid or unintended renames
-        if idx < 2:
-            raise ValueError(
-                f"Cannot reset Laplace dimension index for '{dim}': "
-                f"index {idx} would become negative."
-            )
-
-        new_dim = f"{base}_dim_{idx - 2}"
-
-        dim_renames[dim] = new_dim
-
-        # Only rename variables if they actually exist
-        if dim in idata.posterior.variables:
-            var_renames[dim] = new_dim
-
-    if dim_renames:
-        idata.posterior = idata.posterior.rename_dims(dim_renames)
-
-    if var_renames:
-        idata.posterior = idata.posterior.rename_vars(var_renames)
-
-    return idata
 
 
 def get_conditional_gaussian_approximation(
@@ -200,134 +147,177 @@ def get_conditional_gaussian_approximation(
     return pytensor.function(args, [x0, conditional_gaussian_approx])
 
 
-def _unconstrained_vector_to_constrained_rvs(model):
-    outputs = get_default_varnames(model.unobserved_value_vars, include_transformed=True)
-    constrained_names = [
-        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=False)
-    ]
-    names = [x.name for x in outputs]
+def unpack_last_axis(packed_input, packed_shapes):
+    if len(packed_shapes) == 1:
+        # Single case currently fails in unpack
+        return [pt.split_dims(packed_input, packed_shapes[0], axis=-1)]
 
-    unconstrained_names = [name for name in names if name not in constrained_names]
-
-    new_outputs, unconstrained_vector = join_nonshared_inputs(
-        model.initial_point(),
-        inputs=model.value_vars,
-        outputs=outputs,
-    )
-
-    constrained_rvs = [x for x, name in zip(new_outputs, names) if name in constrained_names]
-    value_rvs = [x for x in new_outputs if x not in constrained_rvs]
-
-    unconstrained_vector.name = "unconstrained_vector"
-
-    # Redo the names list to ensure it is sorted to match the return order
-    constrained_rvs_and_names = [(rv, name) for rv, name in zip(constrained_rvs, constrained_names)]
-    value_rvs_and_names = [
-        (rv, name) for rv, name in zip(value_rvs, names) for name in unconstrained_names
-    ]
-    # names = [*constrained_names, *unconstrained_names]
-
-    return constrained_rvs_and_names, value_rvs_and_names, unconstrained_vector
+    keep_axes = tuple(range(packed_input.ndim))[:-1]
+    return pt.unpack(packed_input, axes=keep_axes, packed_shapes=packed_shapes)
 
 
-def model_to_laplace_approx(
-    model: pm.Model, unpacked_variable_names: list[str], chains: int = 1, draws: int = 500
-):
+def draws_from_laplace_approx(
+    *,
+    mean,
+    covariance=None,
+    standard_deviation=None,
+    chains: int,
+    draws: int,
+    model: Model,
+    vectorize_draws: bool = True,
+    return_unconstrained: bool = True,
+    random_seed=None,
+    compile_kwargs: dict | None = None,
+) -> tuple[Dataset, Dataset | None]:
+    """
+    Generate draws from the Laplace approximation of the posterior.
+
+    Parameters
+    ----------
+    mean : np.ndarray
+        The mean of the Laplace approximation (MAP estimate).
+    covariance : np.ndarray, optional
+        The covariance matrix of the Laplace approximation.
+        Mutually exclusive with `standard_deviation`.
+    standard_deviation : np.ndarray, optional
+        The standard deviation of the Laplace approximation (diagonal approximation).
+        Mutually exclusive with `covariance`.
+    chains : int
+        The number of chains to simulate.
+    draws : int
+        The number of draws per chain.
+    model : pm.Model
+        The PyMC model.
+    vectorize_draws : bool, default True
+        Whether to vectorize the draws.
+    return_unconstrained : bool, default True
+        Whether to return the unconstrained draws in addition to the constrained ones.
+    random_seed : int, optional
+        Random seed for reproducibility.
+    compile_kwargs: dict, optional
+        Optional compile kwargs
+
+    Returns
+    -------
+    tuple[Dataset, Dataset | None]
+        A tuple containing the constrained draws (trace) and optionally the unconstrained draws.
+
+    Raises
+    ------
+    ValueError
+        If neither `covariance` nor `standard_deviation` is provided,
+        or if both are provided.
+    """
+    # This function assumes that mean/covariance/standard_deviation are aligned with model.initial_point()
+    if covariance is None and standard_deviation is None:
+        raise ValueError("Must specify either covariance or standard_deviation")
+    if covariance is not None and standard_deviation is not None:
+        raise ValueError("Cannot specify both covariance and standard_deviation")
+    if compile_kwargs is None:
+        compile_kwargs = {}
+    total_draws = chains * draws
+
     initial_point = model.initial_point()
-    raveled_vars = DictToArrayBijection.map(initial_point)
-    raveled_shape = raveled_vars.data.shape[0]
+    n = int(np.sum([np.prod(v.shape) for v in initial_point.values()]))
+    assert mean.shape == (n,)
+    if covariance is not None:
+        assert covariance.shape == (n, n)
+    elif standard_deviation is not None:
+        assert standard_deviation.shape == (n,)
 
-    # temp_chain and temp_draw are a hack to allow sampling from the Laplace approximation. We only have one mu and cov,
-    # so we add batch dims (which correspond to chains and draws). But the names "chain" and "draw" are reserved.
+    vars_to_sample = [v for v in model.free_RVs + model.deterministics]
+    var_names = [v.name for v in vars_to_sample]
 
-    # The model was frozen during the find_MAP procedure. To ensure we're operating on the same model, freeze it again.
-    frozen_model = freeze_dims_and_data(model)
-    constrained_rvs_and_names, _, unconstrained_vector = _unconstrained_vector_to_constrained_rvs(
-        frozen_model
+    orig_constrained_vars = model.value_vars
+    orig_outputs = model.replace_rvs_by_values(vars_to_sample)
+    if return_unconstrained:
+        orig_outputs.extend(model.value_vars)
+
+    mu_pt = pt.vector("mu", shape=(n,), dtype=mean.dtype)
+    size = (total_draws,) if vectorize_draws else ()
+    if covariance is not None:
+        sigma_pt = pt.matrix("cov", shape=(n, n), dtype=covariance.dtype)
+        laplace_approximation = pm.MvNormal.dist(mu=mu_pt, cov=sigma_pt, size=size, method="svd")
+    else:
+        sigma_pt = pt.vector("sigma", shape=(n,), dtype=standard_deviation.dtype)
+        laplace_approximation = pm.Normal.dist(mu=mu_pt, sigma=sigma_pt, size=(*size, n))
+
+    constrained_vars = unpack_last_axis(
+        laplace_approximation,
+        [initial_point[v.name].shape for v in orig_constrained_vars],
+    )
+    outputs = vectorize_graph(
+        orig_outputs, replace=dict(zip(orig_constrained_vars, constrained_vars))
     )
 
-    coords = model.coords | {
-        "temp_chain": np.arange(chains),
-        "temp_draw": np.arange(draws),
-        "unpacked_variable_names": unpacked_variable_names,
+    fn = pm.pytensorf.compile(
+        [mu_pt, sigma_pt],
+        outputs,
+        random_seed=random_seed,
+        trust_input=True,
+        **compile_kwargs,
+    )
+    sigma = covariance if covariance is not None else standard_deviation
+    if vectorize_draws:
+        output_buffers = fn(mean, sigma)
+    else:
+        # Take one draw to find the shape of the outputs
+        output_buffers = []
+        for out_draw in fn(mean, sigma):
+            output_buffer = np.empty((total_draws, *out_draw.shape), dtype=out_draw.dtype)
+            output_buffer[0] = out_draw
+            output_buffers.append(output_buffer)
+        # Fill one draws at a time
+        for i in range(1, total_draws):
+            for out_buffer, out_draw in zip(output_buffers, fn(mean, sigma)):
+                out_buffer[i] = out_draw
+
+    model_coords, model_dims = coords_and_dims_for_inferencedata(model)
+    posterior = {
+        var_name: out_buffer.reshape((chains, draws, *out_buffer.shape[1:]))
+        for var_name, out_buffer in zip(var_names, output_buffers, strict=not return_unconstrained)
     }
+    posterior_dataset = dict_to_dataset(posterior, coords=model_coords, dims=model_dims, library=pm)
+    unconstrained_posterior_dataset = None
 
-    with pm.Model(coords=coords, model=None) as laplace_model:
-        mu = pm.Flat("mean_vector", shape=(raveled_shape,))
-        cov = pm.Flat("covariance_matrix", shape=(raveled_shape, raveled_shape))
-        laplace_approximation = pm.MvNormal(
-            "laplace_approximation",
-            mu=mu,
-            cov=cov,
-            dims=["temp_chain", "temp_draw", "unpacked_variable_names"],
-            method="svd",
+    if return_unconstrained:
+        unconstrained_posterior = {
+            var.name: out_buffer.reshape((chains, draws, *out_buffer.shape[1:]))
+            for var, out_buffer in zip(
+                model.value_vars, output_buffers[len(posterior) :], strict=True
+            )
+        }
+        # Attempt to map constrained dims to unconstrained dims
+        for var_name, var_draws in unconstrained_posterior.items():
+            if not is_transformed_name(var_name):
+                # constrained == unconstrained, dims already shared
+                continue
+            constrained_dims = model_dims.get(get_untransformed_name(var_name))
+            if constrained_dims is None or (len(constrained_dims) != (var_draws.ndim - 2)):
+                continue
+            # Reuse dims from constrained variable if they match in length with unconstrained draws
+            inferred_dims = []
+            for i, (constrained_dim, unconstrained_dim_length) in enumerate(
+                zip(constrained_dims, var_draws.shape[2:], strict=True)
+            ):
+                if model_coords.get(constrained_dim) is not None and (
+                    len(model_coords[constrained_dim]) == unconstrained_dim_length
+                ):
+                    # Assume coordinates map. This could be fooled, by e.g., having a transform that reverses values
+                    inferred_dims.append(constrained_dim)
+                else:
+                    # Size mismatch (e.g., Simplex), make no assumption about mapping
+                    inferred_dims.append(f"{var_name}_dim_{i}")
+            model_dims[var_name] = inferred_dims
+
+        unconstrained_posterior_dataset = dict_to_dataset(
+            unconstrained_posterior,
+            coords=model_coords,
+            dims=model_dims,
+            library=pm,
         )
 
-        cast_to_var = partial(type_cast, Variable)
-        constrained_rvs, constrained_names = zip(*constrained_rvs_and_names)
-        batched_rvs = vectorize_graph(
-            type_cast(list[Variable], constrained_rvs),
-            replace={cast_to_var(unconstrained_vector): cast_to_var(laplace_approximation)},
-        )
-
-        for name, batched_rv in zip(constrained_names, batched_rvs):
-            batch_dims = ("temp_chain", "temp_draw")
-            if batched_rv.ndim == 2:
-                dims = batch_dims
-            elif name in model.named_vars_to_dims:
-                dims = (*batch_dims, *model.named_vars_to_dims[name])
-            else:
-                n_dim = batched_rv.ndim - 2  # (temp_chain, temp_draw) are always first 2 dims
-                dims = (*batch_dims,) + (None,) * n_dim
-
-            pm.Deterministic(name, batched_rv, dims=dims)
-
-    return laplace_model
-
-
-def unstack_laplace_draws(laplace_data, model, chains=2, draws=500):
-    """
-    The `model_to_laplace_approx` function returns a model with a single MvNormal distribution, draws from which are
-    in the unconstrained variable space. These might be interesting to the user, but since they come back stacked in a
-    single vector, it's not easy to work with.
-
-    This function unpacks each component of the vector into its own DataArray, with the appropriate dimensions and
-    coordinates, where possible.
-    """
-    initial_point = DictToArrayBijection.map(model.initial_point())
-
-    cursor = 0
-    unstacked_laplace_draws = {}
-    coords = model.coords | {"chain": range(chains), "draw": range(draws)}
-
-    # There are corner cases where the value_vars will not have the same dimensions as the random variable (e.g.
-    # simplex transform of a Dirichlet). In these cases, we don't try to guess what the labels should be, and just
-    # add an arviz-style default dim and label.
-    for rv, (name, shape, size, dtype) in zip(model.free_RVs, initial_point.point_map_info):
-        rv_dims = []
-        for i, dim in enumerate(
-            model.named_vars_to_dims.get(rv.name, [f"{name}_dim_{i}" for i in range(len(shape))])
-        ):
-            if coords.get(dim) and shape[i] == len(coords[dim]):
-                rv_dims.append(dim)
-            else:
-                rv_dims.append(f"{name}_dim_{i}")
-                coords[f"{name}_dim_{i}"] = np.arange(shape[i])
-
-        dims = ("chain", "draw", *rv_dims)
-
-        values = (
-            laplace_data[..., cursor : cursor + size].reshape((chains, draws, *shape)).astype(dtype)
-        )
-        unstacked_laplace_draws[name] = xr.DataArray(
-            values, dims=dims, coords={dim: list(coords[dim]) for dim in dims}
-        )
-
-        cursor += size
-
-    unstacked_laplace_draws = xr.Dataset(unstacked_laplace_draws)
-
-    return unstacked_laplace_draws
+    return posterior_dataset, unconstrained_posterior_dataset
 
 
 def fit_laplace(
@@ -346,6 +336,7 @@ def fit_laplace(
     gradient_backend: GradientBackend = "pytensor",
     chains: int = 2,
     draws: int = 500,
+    vectorize_draws: bool = True,
     optimizer_kwargs: dict | None = None,
     compile_kwargs: dict | None = None,
 ) -> az.InferenceData:
@@ -402,6 +393,8 @@ def fit_laplace(
         Additional keyword arguments to pass to the ``scipy.optimize`` function being used. Unless
         ``method = "basinhopping"``, ``scipy.optimize.minimize`` will be used. For ``basinhopping``,
         ``scipy.optimize.basinhopping`` will be used. See the documentation of these functions for details.
+    vectorize_draws: bool, default True
+        Whether to natively vectorize the random function or take one at a time in a python loop.
     compile_kwargs: dict, optional
         Additional keyword arguments to pass to pytensor.function.
 
@@ -459,11 +452,10 @@ def fit_laplace(
         **optimizer_kwargs,
     )
 
-    unpacked_variable_names = idata.fit["mean_vector"].coords["rows"].values.tolist()
-
     if "covariance_matrix" not in idata.fit:
         # The user didn't use `use_hess` or `use_hessp` (or an optimization method that returns an inverse Hessian), so
         # we have to go back and compute the Hessian at the MAP point now.
+        unpacked_variable_names = idata.fit["mean_vector"].coords["rows"].values.tolist()
         frozen_model = freeze_dims_and_data(model)
         initial_params = _make_initial_point(frozen_model, initvals, random_seed, jitter_rvs)
 
@@ -492,31 +484,17 @@ def fit_laplace(
             coords={"rows": unpacked_variable_names, "columns": unpacked_variable_names},
         )
 
-    with model_to_laplace_approx(model, unpacked_variable_names, chains, draws) as laplace_model:
-        new_posterior = (
-            pm.sample_posterior_predictive(
-                idata.fit.expand_dims(chain=[0], draw=[0]),
-                extend_inferencedata=False,
-                random_seed=random_seed,
-                var_names=[
-                    "laplace_approximation",
-                    *[x.name for x in laplace_model.deterministics],
-                ],
-            )
-            .posterior_predictive.squeeze(["chain", "draw"])
-            .drop_vars(["chain", "draw"])
-            .rename({"temp_chain": "chain", "temp_draw": "draw"})
-        )
-
-        if include_transformed:
-            idata.unconstrained_posterior = unstack_laplace_draws(
-                new_posterior.laplace_approximation.values, model, chains=chains, draws=draws
-            )
-
-        idata.posterior = new_posterior.drop_vars(
-            ["laplace_approximation", "unpacked_variable_names"]
-        )
-
-        idata = _reset_laplace_dim_idx(idata)
-
+    # We override the posterior/unconstrained_posterior from find_MAP
+    idata.posterior, unconstrained_posterior = draws_from_laplace_approx(
+        mean=idata.fit["mean_vector"].values,
+        covariance=idata.fit["covariance_matrix"].values,
+        chains=chains,
+        draws=draws,
+        return_unconstrained=include_transformed,
+        model=model,
+        vectorize_draws=vectorize_draws,
+        random_seed=random_seed,
+    )
+    if include_transformed:
+        idata.unconstrained_posterior = unconstrained_posterior
     return idata
