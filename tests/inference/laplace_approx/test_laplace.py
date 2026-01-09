@@ -63,7 +63,6 @@ def test_fit_laplace_basic(mode, gradient_backend: GradientBackend, vectorize_dr
             optimize_method="trust-ncg",
             draws=draws,
             random_seed=173300,
-            chains=1,
             compile_kwargs={"mode": mode},
             gradient_backend=gradient_backend,
             optimizer_kwargs=dict(tol=1e-20),
@@ -98,7 +97,6 @@ def test_fit_laplace_outside_model_context():
         optimize_method="L-BFGS-B",
         use_grad=True,
         progressbar=False,
-        chains=1,
         vectorize_draws=False,
         draws=100,
     )
@@ -129,7 +127,6 @@ def test_fit_laplace_coords(include_transformed, rng):
         idata = pmx.fit(
             method="laplace",
             optimize_method="trust-ncg",
-            chains=1,
             draws=1000,
             optimizer_kwargs=dict(tol=1e-20),
             include_transformed=include_transformed,
@@ -159,10 +156,10 @@ def test_fit_laplace_coords(include_transformed, rng):
 
 
 @pytest.mark.parametrize(
-    "chains, draws, use_dims",
-    [(1, 500, False), (1, 500, True), (2, 1000, False), (2, 1000, True)],
+    "draws, use_dims",
+    [(500, False), (500, True), (1000, False), (1000, True)],
 )
-def test_fit_laplace_ragged_coords(chains, draws, use_dims, rng):
+def test_fit_laplace_ragged_coords(draws, use_dims, rng):
     coords = {"city": ["A", "B", "C"], "feature": [0, 1], "obs_idx": np.arange(100)}
     with pm.Model(coords=coords) as ragged_dim_model:
         X = pm.Data("X", np.ones((100, 2)), dims=["obs_idx", "feature"] if use_dims else None)
@@ -189,7 +186,6 @@ def test_fit_laplace_ragged_coords(chains, draws, use_dims, rng):
             progressbar=False,
             use_grad=True,
             use_hessp=True,
-            chains=chains,
             draws=draws,
         )
 
@@ -199,7 +195,7 @@ def test_fit_laplace_ragged_coords(chains, draws, use_dims, rng):
 
     assert idata["posterior"].beta.shape[-2:] == (3, 2)
     assert idata["posterior"].sigma.shape[-1:] == (3,)
-    assert idata["posterior"].chain.shape[0] == chains
+    assert idata["posterior"].chain.shape[0] == 1
     assert idata["posterior"].draw.shape[0] == draws
 
     # Check that everything got unraveled correctly -- feature 0 should be strictly negative, feature 1
@@ -298,7 +294,7 @@ def test_laplace_nonscalar_rv_without_dims():
 
         idata = pmx.fit_laplace(progressbar=False)
 
-    assert idata.posterior["x"].shape == (2, 500, 2, 3)
+    assert idata.posterior["x"].shape == (1, 500, 2, 3)
     assert all(f"x_dim_{i}" in idata.posterior.coords for i in range(2))
     assert idata.fit.rows.values.tolist() == [
         "x_loc[A]",

@@ -191,7 +191,6 @@ def fit_dadvi(
     posterior, unconstrained_posterior = draws_from_laplace_approx(
         mean=opt_means,
         standard_deviation=np.exp(opt_log_sds),
-        chains=1,
         draws=n_draws,
         model=model,
         vectorize_draws=False,

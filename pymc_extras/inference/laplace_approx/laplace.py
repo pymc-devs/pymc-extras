@@ -161,7 +161,6 @@ def draws_from_laplace_approx(
     mean,
     covariance=None,
     standard_deviation=None,
-    chains: int,
     draws: int,
     model: Model,
     vectorize_draws: bool = True,
@@ -182,10 +181,8 @@ def draws_from_laplace_approx(
     standard_deviation : np.ndarray, optional
         The standard deviation of the Laplace approximation (diagonal approximation).
         Mutually exclusive with `covariance`.
-    chains : int
-        The number of chains to simulate.
     draws : int
-        The number of draws per chain.
+        The number of draws.
     model : pm.Model
         The PyMC model.
     vectorize_draws : bool, default True
@@ -215,7 +212,6 @@ def draws_from_laplace_approx(
         raise ValueError("Cannot specify both covariance and standard_deviation")
     if compile_kwargs is None:
         compile_kwargs = {}
-    total_draws = chains * draws
 
     initial_point = model.initial_point()
     n = int(np.sum([np.prod(v.shape) for v in initial_point.values()]))
@@ -234,7 +230,7 @@ def draws_from_laplace_approx(
         orig_outputs.extend(model.value_vars)
 
     mu_pt = pt.vector("mu", shape=(n,), dtype=mean.dtype)
-    size = (total_draws,) if vectorize_draws else ()
+    size = (draws,) if vectorize_draws else ()
     if covariance is not None:
         sigma_pt = pt.matrix("cov", shape=(n, n), dtype=covariance.dtype)
         laplace_approximation = pm.MvNormal.dist(mu=mu_pt, cov=sigma_pt, size=size, method="svd")
@@ -264,25 +260,27 @@ def draws_from_laplace_approx(
         # Take one draw to find the shape of the outputs
         output_buffers = []
         for out_draw in fn(mean, sigma):
-            output_buffer = np.empty((total_draws, *out_draw.shape), dtype=out_draw.dtype)
+            output_buffer = np.empty((draws, *out_draw.shape), dtype=out_draw.dtype)
             output_buffer[0] = out_draw
             output_buffers.append(output_buffer)
         # Fill one draws at a time
-        for i in range(1, total_draws):
+        for i in range(1, draws):
             for out_buffer, out_draw in zip(output_buffers, fn(mean, sigma)):
                 out_buffer[i] = out_draw
 
     model_coords, model_dims = coords_and_dims_for_inferencedata(model)
     posterior = {
-        var_name: out_buffer.reshape((chains, draws, *out_buffer.shape[1:]))
-        for var_name, out_buffer in zip(var_names, output_buffers, strict=not return_unconstrained)
+        var_name: out_buffer[None]
+        for var_name, out_buffer in (
+            zip(var_names, output_buffers, strict=not return_unconstrained)
+        )
     }
     posterior_dataset = dict_to_dataset(posterior, coords=model_coords, dims=model_dims, library=pm)
     unconstrained_posterior_dataset = None
 
     if return_unconstrained:
         unconstrained_posterior = {
-            var.name: out_buffer.reshape((chains, draws, *out_buffer.shape[1:]))
+            var.name: out_buffer[None]
             for var, out_buffer in zip(
                 model.value_vars, output_buffers[len(posterior) :], strict=True
             )
@@ -334,7 +332,7 @@ def fit_laplace(
     include_transformed: bool = True,
     freeze_model: bool = True,
     gradient_backend: GradientBackend = "pytensor",
-    chains: int = 2,
+    chains: None | int = None,
     draws: int = 500,
     vectorize_draws: bool = True,
     optimizer_kwargs: dict | None = None,
@@ -383,12 +381,8 @@ def fit_laplace(
         True.
     gradient_backend: str, default "pytensor"
         The backend to use for gradient computations. Must be one of "pytensor" or "jax".
-    chains: int, default: 2
-        The number of chain dimensions to sample. Note that this is *not* the number of chains to run in parallel,
-        because the Laplace approximation is not an MCMC method. This argument exists to ensure that outputs are
-        compatible with the ArviZ library.
     draws: int, default: 500
-        The number of samples to draw from the approximated posterior. Totals samples will be chains * draws.
+        The number of samples to draw from the approximated posterior.
     optimizer_kwargs
         Additional keyword arguments to pass to the ``scipy.optimize`` function being used. Unless
         ``method = "basinhopping"``, ``scipy.optimize.minimize`` will be used. For ``basinhopping``,
@@ -427,6 +421,12 @@ def fit_laplace(
           will forward the call to 'fit_laplace'.
 
     """
+    if chains is not None:
+        raise ValueError(
+            "chains argument has been deprecated. "
+            "The behavior can be recreated by unstacking draws into multiple chains after fitting"
+        )
+
     compile_kwargs = {} if compile_kwargs is None else compile_kwargs
     optimizer_kwargs = {} if optimizer_kwargs is None else optimizer_kwargs
     model = pm.modelcontext(model) if model is None else model
@@ -488,7 +488,6 @@ def fit_laplace(
     idata.posterior, unconstrained_posterior = draws_from_laplace_approx(
         mean=idata.fit["mean_vector"].values,
         covariance=idata.fit["covariance_matrix"].values,
-        chains=chains,
         draws=draws,
         return_unconstrained=include_transformed,
         model=model,
