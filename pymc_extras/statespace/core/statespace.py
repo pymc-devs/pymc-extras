@@ -106,6 +106,11 @@ class PyMCStateSpace:
         Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
         to all sampling methods.
 
+    name : str, optional
+        A name for this state space model instance. If provided, all variables registered in the PyMC model
+        will be prefixed with this name (e.g., "model1_x0", "model1_P0"). This allows multiple state space
+        models to coexist in a single PyMC model without variable name conflicts. Default is None.
+
     Notes
     -----
     Based on the statsmodels statespace implementation https://github.com/statsmodels/statsmodels/blob/main/statsmodels/tsa/statespace/representation.py,
@@ -229,6 +234,7 @@ class PyMCStateSpace:
         verbose: bool = True,
         measurement_error: bool = False,
         mode: str | None = None,
+        name: str | None = None,
     ):
         self._fit_coords: dict[str, Sequence[str]] | None = None
         self._fit_dims: dict[str, Sequence[str]] | None = None
@@ -244,6 +250,7 @@ class PyMCStateSpace:
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
         self.mode = mode
+        self.name = name
 
         # All models contain a state space representation and a Kalman filter
         self.ssm = PytensorRepresentation(k_endog, k_states, k_posdef)
@@ -270,6 +277,24 @@ class PyMCStateSpace:
         if verbose and self.requirement_table:
             console = Console()
             console.print(self.requirement_table)
+
+    def _prefix_name(self, var_name: str) -> str:
+        """
+        Add the model name as a prefix to a variable name if the model has a name.
+
+        Parameters
+        ----------
+        var_name : str
+            The base variable name
+
+        Returns
+        -------
+        str
+            The prefixed variable name if self.name is set, otherwise the original name
+        """
+        if self.name is None:
+            return var_name
+        return f"{self.name}_{var_name}"
 
     def _populate_prior_requirements(self) -> None:
         """
@@ -484,6 +509,53 @@ class PyMCStateSpace:
         """
         raise NotImplementedError("The add_default_priors property has not been implemented!")
 
+    def register_variable(self, name: str, variable: pt.TensorVariable) -> None:
+        """
+        Register an existing pytensor variable in the _name_to_variable dictionary
+
+        Parameters
+        ----------
+        name : str
+            The name of the variable. Must be the name of a model parameter.
+        variable : pytensor.TensorVariable
+            The pytensor variable to register. This should be an existing variable, not a symbolic placeholder.
+
+        Notes
+        -----
+        This method is used to register pre-existing pytensor variables (e.g., those passed to the model constructor)
+        in the internal ``_name_to_variable`` dictionary. This is different from ``make_and_register_variable``, which
+        creates new symbolic placeholders.
+
+        The registered variable will be used in the ``_insert_random_variables`` method via ``pytensor.graph_replace``
+        to substitute the variable into the computational graph.
+
+        An error is raised if the provided name has already been registered, or if the name is not present in the
+        ``param_names`` property.
+
+        Examples
+        --------
+        >>> class MyModel(PyMCStateSpace):
+        ...     def __init__(self, A, B, name=None):
+        ...         super().__init__(k_states=1, k_posdef=1, name=name)
+        ...         self.A = A
+        ...         self.B = B
+        ...         self.register_variable("A", self.A)
+        ...         self.register_variable("B", self.B)
+        """
+        if name not in self.param_names:
+            raise ValueError(
+                f"{name} is not a model parameter. Valid parameter names are: {self.param_names}"
+            )
+
+        if name in self._name_to_variable.keys():
+            raise ValueError(
+                f"{name} is already a registered variable with shape "
+                f"{self._name_to_variable[name].type.shape}"
+            )
+
+        # Store with the unprefixed name as the key - prefixing happens when looking up in PyMC model
+        self._name_to_variable[name] = variable
+
     def make_and_register_variable(
         self, name, shape: int | tuple[int, ...] | None = None, dtype=floatX
     ) -> pt.TensorVariable:
@@ -513,6 +585,8 @@ class PyMCStateSpace:
 
         An error is raised if the provided name has already been registered, or if the name is not present in the
         ``param_names`` property.
+
+        If the model has a name, the variable will be registered with a prefixed name in the internal dictionary.
         """
         if name not in self.param_names:
             raise ValueError(
@@ -527,6 +601,7 @@ class PyMCStateSpace:
             )
 
         placeholder = pt.tensor(name, shape=shape, dtype=dtype)
+        # Store with the unprefixed name as the key - prefixing happens when looking up in PyMC model
         self._name_to_variable[name] = placeholder
         return placeholder
 
@@ -552,6 +627,8 @@ class PyMCStateSpace:
 
         An error is raised if the provided name has already been registered, or if the name is not present in the
         ``data_names`` property.
+
+        If the model has a name, the data variable will be registered with a prefixed name in the internal dictionary.
         """
         if name not in self.data_names:
             raise ValueError(
@@ -566,6 +643,7 @@ class PyMCStateSpace:
             )
 
         placeholder = pt.tensor(name, shape=shape, dtype=dtype)
+        # Store with the unprefixed name as the key - prefixing happens when looking up in PyMC model
         self._name_to_data[name] = placeholder
         return placeholder
 
@@ -712,16 +790,26 @@ class PyMCStateSpace:
         found_params = []
         with pymc_model:
             for param_name in self.param_names:
-                param = getattr(pymc_model, param_name, None)
+                # Look for the parameter with the prefixed name in the PyMC model
+                prefixed_name = self._prefix_name(param_name)
+                param = getattr(pymc_model, prefixed_name, None)
                 if param is not None:
-                    found_params.append(param.name)
+                    found_params.append(param_name)
 
         missing_params = list(set(self.param_names) - set(found_params))
         if len(missing_params) > 0:
-            raise ValueError(
-                "The following required model parameters were not found in the PyMC model: "
-                + ", ".join(missing_params)
-            )
+            # Include information about the prefix in error message
+            if self.name is not None:
+                missing_prefixed = [self._prefix_name(p) for p in missing_params]
+                raise ValueError(
+                    f"The following required model parameters were not found in the PyMC model "
+                    f"(model name: '{self.name}'): " + ", ".join(missing_prefixed)
+                )
+            else:
+                raise ValueError(
+                    "The following required model parameters were not found in the PyMC model: "
+                    + ", ".join(missing_params)
+                )
 
         excess_params = list(set(found_params) - set(self.param_names))
         if len(excess_params) > 0:
@@ -732,7 +820,10 @@ class PyMCStateSpace:
 
         matrices = list(self._unpack_statespace_with_placeholders())
 
-        replacement_dict = {var: pymc_model[name] for name, var in self._name_to_variable.items()}
+        # Build replacement dict using prefixed names to look up in PyMC model
+        replacement_dict = {
+            var: pymc_model[self._prefix_name(name)] for name, var in self._name_to_variable.items()
+        }
         self.subbed_ssm = graph_replace(matrices, replace=replacement_dict, strict=True)
 
     def _insert_data_variables(self):
@@ -751,18 +842,31 @@ class PyMCStateSpace:
         found_data = []
         with pymc_model:
             for data_name in data_names:
-                data = getattr(pymc_model, data_name, None)
+                # Look for the data variable with the prefixed name in the PyMC model
+                prefixed_name = self._prefix_name(data_name)
+                data = getattr(pymc_model, prefixed_name, None)
                 if data is not None:
-                    found_data.append(data.name)
+                    found_data.append(data_name)
 
         missing_data = list(set(data_names) - set(found_data))
         if len(missing_data) > 0:
-            raise ValueError(
-                "The following required exogenous data were not found in the PyMC model: "
-                + ", ".join(missing_data)
-            )
+            # Include information about the prefix in error message
+            if self.name is not None:
+                missing_prefixed = [self._prefix_name(d) for d in missing_data]
+                raise ValueError(
+                    f"The following required exogenous data were not found in the PyMC model "
+                    f"(model name: '{self.name}'): " + ", ".join(missing_prefixed)
+                )
+            else:
+                raise ValueError(
+                    "The following required exogenous data were not found in the PyMC model: "
+                    + ", ".join(missing_data)
+                )
 
-        replacement_dict = {data: pymc_model[name] for name, data in self._name_to_data.items()}
+        # Build replacement dict using prefixed names to look up in PyMC model
+        replacement_dict = {
+            data: pymc_model[self._prefix_name(name)] for name, data in self._name_to_data.items()
+        }
         self.subbed_ssm = graph_replace(self.subbed_ssm, replace=replacement_dict, strict=True)
 
     def _register_matrices_with_pymc_model(self) -> list[pt.TensorVariable]:
@@ -782,22 +886,25 @@ class PyMCStateSpace:
         registered_matrices = []
         for i, (matrix, name) in enumerate(zip(matrices, MATRIX_NAMES)):
             time_varying_ndim = 2 if name in VECTOR_VALUED else 3
-            if not getattr(pm_mod, name, None):
+            # Use the prefixed name when checking/registering in PyMC model
+            prefixed_name = self._prefix_name(name)
+            if not getattr(pm_mod, prefixed_name, None):
                 shape, dims = self._get_matrix_shape_and_dims(name)
                 has_dims = dims is not None
 
                 if matrix.ndim == time_varying_ndim and has_dims:
                     dims = (TIME_DIM, *dims)
 
-                x = pm.Deterministic(name, matrix, dims=dims)
+                x = pm.Deterministic(prefixed_name, matrix, dims=dims)
                 registered_matrices.append(x)
             else:
                 registered_matrices.append(matrices[i])
 
         return registered_matrices
 
-    @staticmethod
-    def _register_kalman_filter_outputs_with_pymc_model(outputs: tuple[pt.TensorVariable]) -> None:
+    def _register_kalman_filter_outputs_with_pymc_model(
+        self, outputs: tuple[pt.TensorVariable]
+    ) -> None:
         mod = modelcontext(None)
         coords = mod.coords
 
@@ -820,7 +927,9 @@ class PyMCStateSpace:
             for var, name in zip(states + covs, state_names + cov_names):
                 dim_names = FILTER_OUTPUT_DIMS.get(name, None)
                 dims = tuple([dim if dim in coords.keys() else None for dim in dim_names])
-                pm.Deterministic(name, var, dims=dims)
+                # Use the prefixed name when registering in PyMC model
+                prefixed_name = self._prefix_name(name)
+                pm.Deterministic(prefixed_name, var, dims=dims)
 
     def build_statespace_graph(
         self,
@@ -918,6 +1027,7 @@ class PyMCStateSpace:
             obs_coords=obs_coords,
             register_data=register_data,
             missing_fill_value=missing_fill_value,
+            data_name=self._prefix_name("data"),
         )
 
         filter_outputs = self.kalman_filter.build_graph(
@@ -942,7 +1052,7 @@ class PyMCStateSpace:
         obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
 
         SequenceMvNormal(
-            "obs",
+            self._prefix_name("obs"),
             mus=observed_states,
             covs=observed_covariances,
             logp=logp,
@@ -1102,6 +1212,7 @@ class PyMCStateSpace:
             obs_coords=obs_coords,
             data_dims=data_dims,
             register_data=True,
+            data_name=self._prefix_name("data"),
         )
 
         filter_outputs = self.kalman_filter.build_graph(
@@ -1220,7 +1331,7 @@ class PyMCStateSpace:
                 )
 
                 SequenceMvNormal(
-                    f"{name}_{group}",
+                    self._prefix_name(f"{name}_{group}"),
                     mus=mu,
                     covs=cov,
                     logp=dummy_ll,
@@ -1232,7 +1343,7 @@ class PyMCStateSpace:
                 obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H
 
                 SequenceMvNormal(
-                    f"{name}_{group}_observed",
+                    self._prefix_name(f"{name}_{group}_observed"),
                     mus=obs_mu,
                     covs=obs_cov,
                     logp=dummy_ll,
@@ -1247,13 +1358,14 @@ class PyMCStateSpace:
 
         frozen_model = freeze_dims_and_data(forward_model)
         with frozen_model:
+            var_names_to_sample = [
+                self._prefix_name(f"{name}_{group}{suffix}")
+                for name in FILTER_OUTPUT_TYPES
+                for suffix in ["", "_observed"]
+            ]
             idata_conditional = pm.sample_posterior_predictive(
                 group_idata,
-                var_names=[
-                    f"{name}_{group}{suffix}"
-                    for name in FILTER_OUTPUT_TYPES
-                    for suffix in ["", "_observed"]
-                ],
+                var_names=var_names_to_sample,
                 random_seed=random_seed,
                 compile_kwargs=compile_kwargs,
                 **kwargs,
@@ -1358,12 +1470,13 @@ class PyMCStateSpace:
 
             if not self.measurement_error:
                 H_jittered = pm.Deterministic(
-                    "H_jittered", pt.specify_shape(stabilize(H), (self.k_endog, self.k_endog))
+                    self._prefix_name("H_jittered"),
+                    pt.specify_shape(stabilize(H), (self.k_endog, self.k_endog)),
                 )
                 matrices = [x0, P0, c, d, T, Z, R, H_jittered, Q]
 
             LinearGaussianStateSpace(
-                group,
+                self._prefix_name(group),
                 *matrices,
                 steps=steps,
                 dims=dims,
@@ -1379,9 +1492,13 @@ class PyMCStateSpace:
         frozen_model = freeze_dims_and_data(forward_model)
 
         with frozen_model:
+            var_names_to_sample = [
+                self._prefix_name(f"{group}_latent"),
+                self._prefix_name(f"{group}_observed"),
+            ]
             idata_unconditional = pm.sample_posterior_predictive(
                 group_idata,
-                var_names=[f"{group}_latent", f"{group}_observed"],
+                var_names=var_names_to_sample,
                 random_seed=random_seed,
                 compile_kwargs=compile_kwargs,
                 **kwargs,
@@ -1430,7 +1547,11 @@ class PyMCStateSpace:
         """
 
         return self._sample_conditional(
-            idata=idata, group="prior", random_seed=random_seed, mvn_method=mvn_method, **kwargs
+            idata=idata,
+            group="prior",
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            **kwargs,
         )
 
     def sample_conditional_posterior(
@@ -1473,7 +1594,11 @@ class PyMCStateSpace:
         """
 
         return self._sample_conditional(
-            idata=idata, group="posterior", random_seed=random_seed, mvn_method=mvn_method, **kwargs
+            idata=idata,
+            group="posterior",
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            **kwargs,
         )
 
     def sample_unconditional_prior(
@@ -1611,7 +1736,11 @@ class PyMCStateSpace:
         )
 
     def sample_statespace_matrices(
-        self, idata, matrix_names: str | list[str] | None, group: str = "posterior", **kwargs
+        self,
+        idata,
+        matrix_names: str | list[str] | None,
+        group: str = "posterior",
+        **kwargs,
     ):
         """
         Draw samples of requested statespace matrices from provided idata
@@ -1678,7 +1807,11 @@ class PyMCStateSpace:
         return matrix_idata
 
     def sample_filter_outputs(
-        self, idata, filter_output_names: str | list[str] | None, group: str = "posterior", **kwargs
+        self,
+        idata,
+        filter_output_names: str | list[str] | None,
+        group: str = "posterior",
+        **kwargs,
     ):
         if isinstance(filter_output_names, str):
             filter_output_names = [filter_output_names]
@@ -1716,6 +1849,7 @@ class PyMCStateSpace:
                 n_obs=self.ssm.k_endog,
                 obs_coords=obs_coords,
                 register_data=True,
+                data_name=self._prefix_name("data"),
             )
 
             filter_outputs = self.kalman_filter.build_graph(
@@ -1811,7 +1945,7 @@ class PyMCStateSpace:
 
     def _validate_scenario_data(
         self,
-        scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
+        scenario: (pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None),
         name: str | None = None,
         verbose=True,
     ):
@@ -2076,7 +2210,7 @@ class PyMCStateSpace:
 
     def _finalize_scenario_initialization(
         self,
-        scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
+        scenario: (pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None),
         forecast_index: pd.RangeIndex | pd.DatetimeIndex,
         name=None,
     ):
@@ -2152,7 +2286,8 @@ class PyMCStateSpace:
             }
 
             missing_data_vars = np.setdiff1d(
-                ar1=[*self.data_names, "data"], ar2=[k.name for k, _ in sub_dict.items()]
+                ar1=[*self.data_names, "data"],
+                ar2=[k.name for k, _ in sub_dict.items()],
             )
             if missing_data_vars.size > 0:
                 raise ValueError(f"{missing_data_vars} data used for fitting not found!")
@@ -2160,14 +2295,18 @@ class PyMCStateSpace:
             mu_frozen, cov_frozen = graph_replace([mu, cov], replace=sub_dict, strict=True)
 
             x0 = pm.Deterministic(
-                "x0_slice", mu_frozen[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
+                self._prefix_name("x0_slice"),
+                mu_frozen[t0_idx],
+                dims=mu_dims[1:] if mu_dims is not None else None,
             )
             P0 = pm.Deterministic(
-                "P0_slice", cov_frozen[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
+                self._prefix_name("P0_slice"),
+                cov_frozen[t0_idx],
+                dims=cov_dims[1:] if cov_dims is not None else None,
             )
 
             _ = LinearGaussianStateSpace(
-                "forecast",
+                self._prefix_name("forecast"),
                 x0,
                 P0,
                 *matrices,
@@ -2187,7 +2326,7 @@ class PyMCStateSpace:
         start: int | pd.Timestamp | None = None,
         periods: int | None = None,
         end: int | pd.Timestamp = None,
-        scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None = None,
+        scenario: (pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None) = None,
         use_scenario_index: bool = False,
         filter_output="smoothed",
         random_seed: RandomState | None = None,
@@ -2341,9 +2480,13 @@ class PyMCStateSpace:
         frozen_model = freeze_dims_and_data(forecast_model)
 
         with frozen_model:
+            var_names_to_sample = [
+                self._prefix_name("forecast_latent"),
+                self._prefix_name("forecast_observed"),
+            ]
             idata_forecast = pm.sample_posterior_predictive(
                 idata,
-                var_names=["forecast_latent", "forecast_observed"],
+                var_names=var_names_to_sample,
                 random_seed=random_seed,
                 compile_kwargs=compile_kwargs,
                 **kwargs,
@@ -2468,7 +2611,11 @@ class PyMCStateSpace:
             self._insert_random_variables()
 
             P0, _, c, d, T, Z, R, H, post_Q = self.unpack_statespace()
-            x0 = pm.Deterministic("x0_new", pt.zeros(self.k_states), dims=[ALL_STATE_DIM])
+            x0 = pm.Deterministic(
+                self._prefix_name("x0_new"),
+                pt.zeros(self.k_states),
+                dims=[ALL_STATE_DIM],
+            )
 
             if use_posterior_cov:
                 Q = post_Q
@@ -2483,11 +2630,15 @@ class PyMCStateSpace:
                 shock_trajectory = pt.zeros((n_steps, self.k_posdef))
                 if Q is not None:
                     init_shock = pm.MvNormal(
-                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
+                        self._prefix_name("initial_shock"),
+                        mu=0,
+                        cov=Q,
+                        dims=[SHOCK_DIM],
+                        method=mvn_method,
                     )
                 else:
                     init_shock = pm.Deterministic(
-                        "initial_shock",
+                        self._prefix_name("initial_shock"),
                         pt.as_tensor_variable(np.atleast_1d(shock_size)),
                         dims=[SHOCK_DIM],
                     )
@@ -2510,11 +2661,11 @@ class PyMCStateSpace:
                 return_updates=False,
             )
 
-            pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])
+            pm.Deterministic(self._prefix_name("irf"), irf, dims=[TIME_DIM, ALL_STATE_DIM])
 
             irf_idata = pm.sample_posterior_predictive(
                 idata,
-                var_names=["irf"],
+                var_names=[self._prefix_name("irf")],
                 random_seed=random_seed,
                 compile_kwargs=compile_kwargs,
                 **kwargs,

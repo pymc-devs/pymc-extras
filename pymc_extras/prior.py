@@ -821,6 +821,7 @@ class Prior:
 
             def transform(var):
                 return pm.Deterministic(name, self.pytensor_transform(var), dims=self.dims)
+
         else:
             var_name = name
 
@@ -1575,9 +1576,9 @@ def __getattr__(name: str):
         samples = dist.sample_prior(coords={"channel": ["C1", "C2", "C3"]})
 
     """
-    # Protect against doctest
-    if name == "__wrapped__":
-        return
+    # Protect against Sphinx/RTD introspection of dunder attributes
+    if name.startswith("__") and name.endswith("__"):
+        raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
     _get_pymc_distribution(name)
     return partial(Prior, distribution=name)
