@@ -1575,9 +1575,9 @@ def __getattr__(name: str):
         samples = dist.sample_prior(coords={"channel": ["C1", "C2", "C3"]})
 
     """
-    # Protect against doctest
-    if name == "__wrapped__":
-        return
+    # Ignore Python internal attributes needed for introspection
+    if name.startswith("__"):
+        raise AttributeError(name)
 
     _get_pymc_distribution(name)
     return partial(Prior, distribution=name)
