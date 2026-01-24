@@ -424,7 +424,7 @@ def create_structural_model_and_equivalent_statsmodel(
             sm_init[f"ar.L{i + 1}"] = 0
             sm_params[f"ar.L{i + 1}"] = rho
 
-        comp = st.AutoregressiveComponent(name="ar", order=autoregressive)
+        comp = st.Autoregressive(name="ar", order=autoregressive)
         components.append(comp)
 
     if exog is not None:

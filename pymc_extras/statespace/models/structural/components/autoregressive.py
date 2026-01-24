@@ -239,6 +239,3 @@ class Autoregressive(Component):
 
         cov_idx = ("state_cov", *np.diag_indices(k_posdef))
         self.ssm[cov_idx] = sigma_ar**2
-
-
-AutoregressiveComponent = Autoregressive

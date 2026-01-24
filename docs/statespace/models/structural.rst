@@ -7,7 +7,7 @@ Structural Components
    :toctree: generated
 
    LevelTrendComponent
-   AutoregressiveComponent
+   Autoregressive
    TimeSeasonality
    FrequencySeasonality
    MeasurementError
