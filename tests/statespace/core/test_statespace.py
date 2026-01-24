@@ -18,7 +18,6 @@ from pytensor.graph.traversal import graph_inputs
 
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
-from pymc_extras.statespace.models.utilities import make_default_coords
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_NAMES,
     MATRIX_NAMES,
@@ -82,10 +81,6 @@ def ss_mod():
         @property
         def shock_names(self):
             return ["a"]
-
-        @property
-        def coords(self):
-            return make_default_coords(self)
 
         def make_symbolic_graph(self):
             rho = self.make_and_register_variable("rho", ())
@@ -438,14 +433,6 @@ def test_unpack_matrices(rng):
         assert_allclose(np.zeros_like(x), fast_eval(y))
 
 
-def test_param_names_raises_on_base_class():
-    mod = make_statespace_mod(
-        k_endog=1, k_states=5, k_posdef=1, filter_type="standard", verbose=False
-    )
-    with pytest.raises(NotImplementedError):
-        x = mod.param_names
-
-
 def test_base_class_raises():
     with pytest.raises(NotImplementedError):
         mod = PyMCStateSpace(
@@ -543,10 +530,6 @@ def test_sample_conditional_with_time_varying():
         @property
         def param_names(self) -> list[str]:
             return ["sigma_cov"]
-
-        @property
-        def coords(self) -> dict[str, Sequence[str]]:
-            return make_default_coords(self)
 
         @property
         def state_names(self) -> list[str]:

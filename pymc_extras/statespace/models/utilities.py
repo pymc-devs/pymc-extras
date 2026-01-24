@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import cast as type_cast
 
 import numpy as np
@@ -6,29 +7,10 @@ import pytensor.tensor as pt
 from pytensor.tensor import TensorVariable
 
 from pymc_extras.statespace.utils.constants import (
-    ALL_STATE_AUX_DIM,
-    ALL_STATE_DIM,
     LONG_MATRIX_NAMES,
     MATRIX_NAMES,
-    OBS_STATE_AUX_DIM,
-    OBS_STATE_DIM,
-    SHOCK_AUX_DIM,
-    SHOCK_DIM,
     VECTOR_VALUED,
 )
-
-
-def make_default_coords(ss_mod):
-    coords = {
-        ALL_STATE_DIM: ss_mod.state_names,
-        ALL_STATE_AUX_DIM: ss_mod.state_names,
-        OBS_STATE_DIM: ss_mod.observed_states,
-        OBS_STATE_AUX_DIM: ss_mod.observed_states,
-        SHOCK_DIM: ss_mod.shock_names,
-        SHOCK_AUX_DIM: ss_mod.shock_names,
-    }
-
-    return coords
 
 
 def cleanup_states(states: list[str]) -> list[str]:
@@ -672,8 +654,11 @@ def get_exog_dims_from_idata(exog_name, idata):
     return exog_dims
 
 
-def validate_names(names: list[str], var_name: str, optional: bool = True) -> None:
+def validate_names(names: Sequence[str] | None, var_name: str, optional: bool = True) -> None:
     if names is None:
         if optional:
             return None
+
         raise ValueError(f"Must specify {var_name}")
+
+    return None
