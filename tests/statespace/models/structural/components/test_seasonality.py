@@ -27,7 +27,7 @@ def test_time_seasonality(s, d, innovations, remove_first_state, rng):
     def random_word(rng):
         return "".join(rng.choice(list("abcdefghijklmnopqrstuvwxyz")) for _ in range(5))
 
-    state_names = [random_word(rng) for _ in range(s * d)]
+    state_names = tuple(random_word(rng) for _ in range(s * d))
     mod = st.TimeSeasonality(
         season_length=s,
         duration=d,
@@ -51,6 +51,7 @@ def test_time_seasonality(s, d, innovations, remove_first_state, rng):
     # Check coords
     mod = mod.build(verbose=False)
     _assert_basic_coords_correct(mod)
+
     test_slice = slice(d, None) if remove_first_state else slice(None)
     assert mod.coords["state_season"] == state_names[test_slice]
 
@@ -79,8 +80,8 @@ def test_time_seasonality_multiple_observed(rng, d, remove_first_state):
         for i in range(int(remove_first_state), s)
         for j in range(d)
     ]
-    assert mod.state_names == expected_states
-    assert mod.shock_names == ["season[data_1]", "season[data_2]"]
+    assert mod.state_names == tuple(expected_states)
+    assert mod.shock_names == ("season[data_1]", "season[data_2]")
 
     x0[0, 0] = 1
     x0[1, 0] = 2.0
@@ -163,14 +164,14 @@ def test_time_seasonality_shared_states():
     assert mod.k_states == 3
     assert mod.k_posdef == 1
 
-    assert mod.coords["state_season"] == ["season_1", "season_2", "season_3"]
+    assert mod.coords["state_season"] == ("season_1", "season_2", "season_3")
 
-    assert mod.state_names == [
+    assert mod.state_names == (
         "season_1[season_shared]",
         "season_2[season_shared]",
         "season_3[season_shared]",
-    ]
-    assert mod.shock_names == ["season[shared]"]
+    )
+    assert mod.shock_names == ("season[shared]",)
 
     Z, T, R = pytensor.function(
         [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
@@ -210,10 +211,10 @@ def test_add_mixed_shared_not_shared_time_seasonality():
     assert mod.k_states == 7
     assert mod.k_posdef == 1
 
-    assert mod.coords["state_shared"] == ["season_1", "season_2", "season_3"]
-    assert mod.coords["state_individual"] == ["season_2", "season_3"]
+    assert mod.coords["state_shared"] == ("season_1", "season_2", "season_3")
+    assert mod.coords["state_individual"] == ("season_2", "season_3")
 
-    assert mod.state_names == [
+    assert mod.state_names == (
         "season_1[shared_shared]",
         "season_2[shared_shared]",
         "season_3[shared_shared]",
@@ -221,7 +222,7 @@ def test_add_mixed_shared_not_shared_time_seasonality():
         "season_3[data_1]",
         "season_2[data_2]",
         "season_3[data_2]",
-    ]
+    )
 
     Z, T, R = pytensor.function(
         [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
@@ -283,21 +284,26 @@ def test_add_two_time_seasonality_different_observed(rng, d1, d2):
     assert_pattern_repeats(y[:, 0], 3 * d1, atol=ATOL, rtol=RTOL)
     assert_pattern_repeats(y[:, 1], 5 * d2, atol=ATOL, rtol=RTOL)
 
-    assert mod.state_names == [
-        item
-        for sublist in [
-            [f"state_0_{j}[data_1]" for j in range(d1)],
-            [f"state_1_{j}[data_1]" for j in range(d1)],
-            [f"state_2_{j}[data_1]" for j in range(d1)],
-            [f"state_1_{j}[data_2]" for j in range(d2)],
-            [f"state_2_{j}[data_2]" for j in range(d2)],
-            [f"state_3_{j}[data_2]" for j in range(d2)],
-            [f"state_4_{j}[data_2]" for j in range(d2)],
+    assert mod.state_names == tuple(
+        [
+            item
+            for sublist in [
+                [f"state_0_{j}[data_1]" for j in range(d1)],
+                [f"state_1_{j}[data_1]" for j in range(d1)],
+                [f"state_2_{j}[data_1]" for j in range(d1)],
+                [f"state_1_{j}[data_2]" for j in range(d2)],
+                [f"state_2_{j}[data_2]" for j in range(d2)],
+                [f"state_3_{j}[data_2]" for j in range(d2)],
+                [f"state_4_{j}[data_2]" for j in range(d2)],
+            ]
+            for item in sublist
         ]
-        for item in sublist
-    ]
+    )
 
-    assert mod.shock_names == ["season1[data_1]", "season2[data_2]"]
+    assert mod.shock_names == (
+        "season1[data_1]",
+        "season2[data_2]",
+    )
 
     x0, *_, T = mod._unpack_statespace_with_placeholders()[:5]
     input_vars = explicit_graph_inputs([x0, T])
@@ -345,8 +351,8 @@ def get_shift_factor(s):
 @pytest.mark.parametrize("s", [5, 10, 25, 25.2])
 def test_frequency_seasonality(n, s, rng):
     mod = st.FrequencySeasonality(season_length=s, n=n, name="season")
-    assert mod.param_info["sigma_season"]["shape"] == ()  # scalar for univariate
-    assert mod.param_info["sigma_season"]["dims"] is None
+    assert mod.param_info["sigma_season"].shape == ()  # scalar for univariate
+    assert mod.param_info["sigma_season"].dims is None
     assert len(mod.coords["state_season"]) == mod.n_coefs
 
     x0 = rng.normal(size=mod.n_coefs).astype(config.floatX)
@@ -360,6 +366,7 @@ def test_frequency_seasonality(n, s, rng):
     # check coords
     mod = mod.build(verbose=False)
     _assert_basic_coords_correct(mod)
+
     if n is None:
         n = int(s // 2)
     states = [f"{f}_{i}_season" for i in range(n) for f in ["Cos", "Sin"]]
@@ -367,7 +374,7 @@ def test_frequency_seasonality(n, s, rng):
     # remove last state when model is completely saturated
     if s / n == 2.0:
         states.pop()
-    assert mod.coords["state_season"] == states
+    assert mod.coords["state_season"] == tuple(states)
 
 
 def test_frequency_seasonality_multiple_observed(rng):
@@ -380,11 +387,11 @@ def test_frequency_seasonality_multiple_observed(rng):
         innovations=True,
         observed_state_names=observed_state_names,
     )
-    assert mod.param_info["params_season"]["shape"] == (mod.k_endog, mod.n_coefs)
-    assert mod.param_info["params_season"]["dims"] == ("endog_season", "state_season")
-    assert mod.param_dims["sigma_season"] == ("endog_season",)
+    assert mod.param_info["params_season"].shape == (mod.k_endog, mod.n_coefs)
+    assert mod.param_info["params_season"].dims == ("endog_season", "state_season")
+    assert mod.param_info["sigma_season"].dims == ("endog_season",)
 
-    expected_state_names = [
+    expected_state_names = (
         "Cos_0_season[data_1]",
         "Sin_0_season[data_1]",
         "Cos_1_season[data_1]",
@@ -393,9 +400,9 @@ def test_frequency_seasonality_multiple_observed(rng):
         "Sin_0_season[data_2]",
         "Cos_1_season[data_2]",
         "Sin_1_season[data_2]",
-    ]
+    )
     assert mod.state_names == expected_state_names
-    assert mod.shock_names == [
+    assert mod.shock_names == (
         "Cos_0_season[data_1]",
         "Sin_0_season[data_1]",
         "Cos_1_season[data_1]",
@@ -404,7 +411,7 @@ def test_frequency_seasonality_multiple_observed(rng):
         "Sin_0_season[data_2]",
         "Cos_1_season[data_2]",
         "Sin_1_season[data_2]",
-    ]
+    )
 
     x0 = np.zeros((2, 3), dtype=config.floatX)
     x0[0, 0] = 1.0
@@ -417,11 +424,11 @@ def test_frequency_seasonality_multiple_observed(rng):
     assert_pattern_repeats(y[:, 1], 4, atol=ATOL, rtol=RTOL)
 
     mod = mod.build(verbose=False)
-    assert list(mod.coords["state_season"]) == [
+    assert mod.coords["state_season"] == (
         "Cos_0_season",
         "Sin_0_season",
         "Cos_1_season",
-    ]
+    )
 
     x0_sym, *_, T_sym, Z_sym, R_sym, _, Q_sym = mod._unpack_statespace_with_placeholders()
     input_vars = explicit_graph_inputs([x0_sym, T_sym, Z_sym, R_sym, Q_sym])
@@ -488,10 +495,16 @@ def test_frequency_seasonality_multivariate_shared_states():
     assert mod.k_states == 2
     assert mod.k_posdef == 2
 
-    assert mod.state_names == ["Cos_0_season[shared]", "Sin_0_season[shared]"]
-    assert mod.shock_names == ["Cos_0_season[shared]", "Sin_0_season[shared]"]
+    assert mod.state_names == (
+        "Cos_0_season[shared]",
+        "Sin_0_season[shared]",
+    )
+    assert mod.shock_names == (
+        "Cos_0_season[shared]",
+        "Sin_0_season[shared]",
+    )
 
-    assert mod.coords["state_season"] == ["Cos_0_season", "Sin_0_season"]
+    assert mod.coords["state_season"] == ("Cos_0_season", "Sin_0_season")
 
     Z, T, R = pytensor.function(
         [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
@@ -538,23 +551,23 @@ def test_add_two_frequency_seasonality_different_observed(rng):
     assert_pattern_repeats(y[:, 0], 4, atol=ATOL, rtol=RTOL)
     assert_pattern_repeats(y[:, 1], 6, atol=ATOL, rtol=RTOL)
 
-    assert mod.state_names == [
+    assert mod.state_names == (
         "Cos_0_freq1[data_1]",
         "Sin_0_freq1[data_1]",
         "Cos_1_freq1[data_1]",
         "Sin_1_freq1[data_1]",
         "Cos_0_freq2[data_2]",
         "Sin_0_freq2[data_2]",
-    ]
+    )
 
-    assert mod.shock_names == [
+    assert mod.shock_names == (
         "Cos_0_freq1[data_1]",
         "Sin_0_freq1[data_1]",
         "Cos_1_freq1[data_1]",
         "Sin_1_freq1[data_1]",
         "Cos_0_freq2[data_2]",
         "Sin_0_freq2[data_2]",
-    ]
+    )
 
     x0, *_, T = mod._unpack_statespace_with_placeholders()[:5]
     input_vars = explicit_graph_inputs([x0, T])
@@ -619,15 +632,15 @@ def test_add_frequency_seasonality_shared_and_not_shared():
     assert mod.k_states == 10
     assert mod.k_posdef == 10
 
-    assert mod.coords["state_shared_season"] == [
+    assert mod.coords["state_shared_season"] == (
         "Cos_0_shared_season",
         "Sin_0_shared_season",
-    ]
-    assert mod.coords["state_individual_season"] == [
+    )
+    assert mod.coords["state_individual_season"] == (
         "Cos_0_individual_season",
         "Sin_0_individual_season",
         "Cos_1_individual_season",
-    ]
+    )
 
 
 @pytest.mark.parametrize(
@@ -637,42 +650,48 @@ def test_add_frequency_seasonality_shared_and_not_shared():
             "name": "single_endog_non_saturated",
             "season_length": 12,
             "n": 2,
-            "observed_state_names": ["data1"],
+            "observed_state_names": ("data1",),
             "expected_shape": (4,),
         },
         {
             "name": "single_endog_saturated",
             "season_length": 12,
             "n": 6,
-            "observed_state_names": ["data1"],
+            "observed_state_names": ("data1",),
             "expected_shape": (11,),
         },
         {
             "name": "multiple_endog_non_saturated",
             "season_length": 12,
             "n": 2,
-            "observed_state_names": ["data1", "data2"],
+            "observed_state_names": (
+                "data1",
+                "data2",
+            ),
             "expected_shape": (2, 4),
         },
         {
             "name": "multiple_endog_saturated",
             "season_length": 12,
             "n": 6,
-            "observed_state_names": ["data1", "data2"],
+            "observed_state_names": (
+                "data1",
+                "data2",
+            ),
             "expected_shape": (2, 11),
         },
         {
             "name": "small_n",
             "season_length": 12,
             "n": 1,
-            "observed_state_names": ["data1"],
+            "observed_state_names": ("data1",),
             "expected_shape": (2,),
         },
         {
             "name": "many_endog",
             "season_length": 12,
             "n": 2,
-            "observed_state_names": ["data1", "data2", "data3", "data4"],
+            "observed_state_names": ("data1", "data2", "data3", "data4"),
             "expected_shape": (4, 4),
         },
     ],
@@ -690,12 +709,14 @@ def test_frequency_seasonality_coordinates(test_case):
     season.populate_component_properties()
 
     # assert parameter shape
-    assert season.param_info[f"params_{model_name}"]["shape"] == test_case["expected_shape"]
+    assert season.param_info[f"params_{model_name}"].shape == test_case["expected_shape"]
 
     # generate expected state names based on actual model name
-    expected_state_names = [
-        f"{f}_{i}_{model_name}" for i in range(test_case["n"]) for f in ["Cos", "Sin"]
-    ][: test_case["expected_shape"][-1]]
+    expected_state_names = tuple(
+        [f"{f}_{i}_{model_name}" for i in range(test_case["n"]) for f in ["Cos", "Sin"]][
+            : test_case["expected_shape"][-1]
+        ]
+    )
 
     # assert coordinate structure
     if len(test_case["observed_state_names"]) == 1:
@@ -707,7 +728,7 @@ def test_frequency_seasonality_coordinates(test_case):
         assert season.coords[f"state_{model_name}"] == expected_state_names
 
     # Check coords match the expected shape
-    param_shape = season.param_info[f"params_{model_name}"]["shape"]
+    param_shape = season.param_info[f"params_{model_name}"].shape
     state_coords = season.coords[f"state_{model_name}"]
     endog_coords = season.coords.get(f"endog_{model_name}")
 

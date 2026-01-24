@@ -1,6 +1,3 @@
-from collections.abc import Sequence
-from typing import Any
-
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
@@ -8,8 +5,15 @@ import pytensor.tensor as pt
 from pytensor.compile.mode import Mode
 from pytensor.tensor.slinalg import solve_discrete_lyapunov
 
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    Data,
+    Parameter,
+    Shock,
+    State,
+)
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
-from pymc_extras.statespace.models.utilities import make_default_coords, validate_names
+from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
@@ -212,110 +216,96 @@ class BayesianVARMAX(PyMCStateSpace):
             "sigma_obs": k_endog * self.measurement_error,
         }
 
-    @property
-    def param_names(self):
-        names = ["x0", "P0", "ar_params", "ma_params", "state_cov", "sigma_obs"]
-        if self.stationary_initialization:
-            names.remove("P0")
-            names.remove("x0")
-        if not self.measurement_error:
-            names.remove("sigma_obs")
-        if self.p == 0:
-            names.remove("ar_params")
-        if self.q == 0:
-            names.remove("ma_params")
+    def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
+        k_endog = self.k_endog
+        k_states = self.k_states
+        k_posdef = self.k_posdef
 
-        # Add exogenous regression coefficents rather than remove, since we might have to handle
-        # several (if self.exog_state_names is a dict)
-        if isinstance(self.exog_state_names, list):
-            names.append("beta_exog")
-        elif isinstance(self.exog_state_names, dict):
-            names.extend([f"beta_{name}" for name in self.exog_state_names.keys()])
+        parameters = []
 
-        return names
+        if not self.stationary_initialization:
+            parameters.append(
+                Parameter(
+                    name="x0",
+                    shape=(k_states,),
+                    dims=(ALL_STATE_DIM,),
+                    constraints=None,
+                )
+            )
+            parameters.append(
+                Parameter(
+                    name="P0",
+                    shape=(k_states, k_states),
+                    dims=(ALL_STATE_DIM, ALL_STATE_AUX_DIM),
+                    constraints="Positive Semi-definite",
+                )
+            )
 
-    @property
-    def param_info(self) -> dict[str, dict[str, Any]]:
-        info = {
-            "x0": {
-                "shape": (self.k_states,),
-                "constraints": None,
-            },
-            "P0": {
-                "shape": (self.k_states, self.k_states),
-                "constraints": "Positive Semi-definite",
-            },
-            "sigma_obs": {
-                "shape": (self.k_endog, self.k_endog),
-                "constraints": "Positive Semi-definite",
-            },
-            "state_cov": {
-                "shape": (self.k_posdef, self.k_posdef),
-                "constraints": "Positive Semi-definite",
-            },
-            "ar_params": {
-                "shape": (self.k_endog, self.p, self.k_endog),
-                "constraints": "None",
-            },
-            "ma_params": {
-                "shape": (self.k_endog, self.q, self.k_endog),
-                "constraints": "None",
-            },
-        }
+        if self.p > 0:
+            parameters.append(
+                Parameter(
+                    name="ar_params",
+                    shape=(k_endog, self.p, k_endog),
+                    dims=(OBS_STATE_DIM, AR_PARAM_DIM, OBS_STATE_AUX_DIM),
+                    constraints=None,
+                )
+            )
 
+        if self.q > 0:
+            parameters.append(
+                Parameter(
+                    name="ma_params",
+                    shape=(k_endog, self.q, k_endog),
+                    dims=(OBS_STATE_DIM, MA_PARAM_DIM, OBS_STATE_AUX_DIM),
+                    constraints=None,
+                )
+            )
+
+        parameters.append(
+            Parameter(
+                name="state_cov",
+                shape=(k_posdef, k_posdef),
+                dims=(SHOCK_DIM, SHOCK_AUX_DIM),
+                constraints="Positive Semi-definite",
+            )
+        )
+
+        if self.measurement_error:
+            parameters.append(
+                Parameter(
+                    name="sigma_obs",
+                    shape=(k_endog,),
+                    dims=(OBS_STATE_DIM,),
+                    constraints="Positive",
+                )
+            )
+
+        # Handle exogenous parameters
         if isinstance(self.exog_state_names, list):
             k_exog = len(self.exog_state_names)
-            info["beta_exog"] = {
-                "shape": (self.k_endog, k_exog),
-                "constraints": "None",
-            }
-
+            parameters.append(
+                Parameter(
+                    name="beta_exog",
+                    shape=(k_endog, k_exog),
+                    dims=(OBS_STATE_DIM, EXOG_STATE_DIM),
+                    constraints=None,
+                )
+            )
         elif isinstance(self.exog_state_names, dict):
             for name, exog_names in self.exog_state_names.items():
                 k_exog = len(exog_names)
-                info[f"beta_{name}"] = {
-                    "shape": (k_exog,),
-                    "constraints": "None",
-                }
+                parameters.append(
+                    Parameter(
+                        name=f"beta_{name}",
+                        shape=(k_exog,),
+                        dims=(f"{EXOG_STATE_DIM}_{name}",),
+                        constraints=None,
+                    )
+                )
 
-        for name in self.param_names:
-            info[name]["dims"] = self.param_dims[name]
+        return tuple(parameters)
 
-        return {name: info[name] for name in self.param_names}
-
-    @property
-    def data_info(self) -> dict[str, dict[str, Any]]:
-        info = {}
-
-        if isinstance(self.exog_state_names, list):
-            info = {
-                "exogenous_data": {
-                    "dims": (TIME_DIM, EXOG_STATE_DIM),
-                    "shape": (None, self.k_exog),
-                }
-            }
-
-        elif isinstance(self.exog_state_names, dict):
-            info = {
-                f"{endog_state}_exogenous_data": {
-                    "dims": (TIME_DIM, f"{EXOG_STATE_DIM}_{endog_state}"),
-                    "shape": (None, len(exog_names)),
-                }
-                for endog_state, exog_names in self.exog_state_names.items()
-            }
-
-        return info
-
-    @property
-    def data_names(self) -> list[str]:
-        if isinstance(self.exog_state_names, list):
-            return ["exogenous_data"]
-        elif isinstance(self.exog_state_names, dict):
-            return [f"{endog_state}_exogenous_data" for endog_state in self.exog_state_names.keys()]
-        return []
-
-    @property
-    def state_names(self):
+    def set_states(self) -> State | tuple[State, ...] | None:
         state_names = self.endog_names.copy()
         state_names += [
             f"L{i + 1}_{state}" for i in range(self.p - 1) for state in self.endog_names
@@ -324,66 +314,65 @@ class BayesianVARMAX(PyMCStateSpace):
             f"L{i + 1}_{state}_innov" for i in range(self.q) for state in self.endog_names
         ]
 
-        return state_names
+        hidden_states = [State(name=name, observed=False) for name in state_names]
 
-    @property
-    def observed_states(self):
-        return self.endog_names
+        # The first k_endog states are observed
+        observed_states = [State(name=name, observed=True) for name in self.endog_names]
 
-    @property
-    def shock_names(self):
-        return self.endog_names
+        return *hidden_states, *observed_states
+
+    def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
+        return tuple(Shock(name=name) for name in self.endog_names)
+
+    def set_data_info(self) -> tuple[Data, ...] | None:
+        data = []
+
+        if isinstance(self.exog_state_names, list):
+            k_exog = len(self.exog_state_names)
+            data.append(
+                Data(
+                    name="exogenous_data",
+                    shape=(None, k_exog),
+                    dims=(TIME_DIM, EXOG_STATE_DIM),
+                    is_exogenous=True,
+                )
+            )
+        elif isinstance(self.exog_state_names, dict):
+            for endog_state, exog_names in self.exog_state_names.items():
+                k_exog = len(exog_names)
+                data.append(
+                    Data(
+                        name=f"{endog_state}_exogenous_data",
+                        shape=(None, k_exog),
+                        dims=(TIME_DIM, f"{EXOG_STATE_DIM}_{endog_state}"),
+                        is_exogenous=True,
+                    )
+                )
+
+        return tuple(data)
+
+    def set_coords(self) -> Coord | tuple[Coord, ...] | None:
+        coords = list(self.default_coords())
+
+        # AR/MA param coords
+        if self.p > 0:
+            coords.append(Coord(dimension=AR_PARAM_DIM, labels=tuple(range(1, self.p + 1))))
+
+        if self.q > 0:
+            coords.append(Coord(dimension=MA_PARAM_DIM, labels=tuple(range(1, self.q + 1))))
+
+        # Exogenous coords
+        if isinstance(self.exog_state_names, list):
+            coords.append(Coord(dimension=EXOG_STATE_DIM, labels=tuple(self.exog_state_names)))
+        elif isinstance(self.exog_state_names, dict):
+            for name, exog_names in self.exog_state_names.items():
+                coords.append(Coord(dimension=f"{EXOG_STATE_DIM}_{name}", labels=tuple(exog_names)))
+
+        return tuple(coords)
 
     @property
     def default_priors(self):
         raise NotImplementedError
-
-    @property
-    def coords(self) -> dict[str, Sequence]:
-        coords = make_default_coords(self)
-        if self.p > 0:
-            coords.update({AR_PARAM_DIM: list(range(1, self.p + 1))})
-        if self.q > 0:
-            coords.update({MA_PARAM_DIM: list(range(1, self.q + 1))})
-
-        if isinstance(self.exog_state_names, list):
-            coords[EXOG_STATE_DIM] = self.exog_state_names
-        elif isinstance(self.exog_state_names, dict):
-            for name, exog_names in self.exog_state_names.items():
-                coords[f"{EXOG_STATE_DIM}_{name}"] = exog_names
-
-        return coords
-
-    @property
-    def param_dims(self):
-        coord_map = {
-            "x0": (ALL_STATE_DIM,),
-            "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
-            "sigma_obs": (OBS_STATE_DIM,),
-            "state_cov": (SHOCK_DIM, SHOCK_AUX_DIM),
-            "ar_params": (OBS_STATE_DIM, AR_PARAM_DIM, OBS_STATE_AUX_DIM),
-            "ma_params": (OBS_STATE_DIM, MA_PARAM_DIM, OBS_STATE_AUX_DIM),
-        }
-
-        if not self.measurement_error:
-            del coord_map["sigma_obs"]
-        if self.p == 0:
-            del coord_map["ar_params"]
-        if self.q == 0:
-            del coord_map["ma_params"]
-        if self.stationary_initialization:
-            del coord_map["P0"]
-            del coord_map["x0"]
-
-        if isinstance(self.exog_state_names, list):
-            coord_map["beta_exog"] = (OBS_STATE_DIM, EXOG_STATE_DIM)
-        elif isinstance(self.exog_state_names, dict):
-            # If each state has its own exogenous variables, each parameter needs it own dim, since we expect the
-            # dim labels to all be different (otherwise we'd be in the list case).
-            for name in self.exog_state_names.keys():
-                coord_map[f"beta_{name}"] = (f"{EXOG_STATE_DIM}_{name}",)
-
-        return coord_map
 
     def add_default_priors(self):
         raise NotImplementedError

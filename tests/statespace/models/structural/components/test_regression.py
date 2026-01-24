@@ -66,7 +66,7 @@ class TestRegressionComponent:
 
         mod = mod.build(verbose=False)
         _assert_basic_coords_correct(mod)
-        assert mod.coords["state_exog"] == ["feature_1", "feature_2"]
+        assert mod.coords["state_exog"] == ("feature_1", "feature_2")
 
         if innovations:
             # Check that sigma_beta parameter is included
@@ -125,7 +125,7 @@ class TestMultivariateRegression:
             assert_allclose(x[0, 2:], params["beta_exog"][1], atol=ATOL, rtol=RTOL)
 
         mod = mod.build(verbose=False)
-        assert mod.coords["state_exog"] == ["feature_1", "feature_2"]
+        assert mod.coords["state_exog"] == ("feature_1", "feature_2")
 
         Z = mod.ssm["design"].eval({"data_exog": regression_data})
         vec_block_diag = np.vectorize(block_diag, signature="(n,m),(o,p)->(q,r)")
@@ -164,8 +164,8 @@ class TestMultipleRegressionComponents:
         )
 
         mod = (reg1 + reg2).build(verbose=False)
-        assert mod.coords["state_exog1"] == ["a", "b"]
-        assert mod.coords["state_exog2"] == ["c"]
+        assert mod.coords["state_exog1"] == ("a", "b")
+        assert mod.coords["state_exog2"] == ("c",)
 
         Z = mod.ssm["design"].eval(
             {
@@ -249,14 +249,12 @@ def test_regression_multiple_shared_construction():
     assert mod.k_states == 1
     assert mod.k_posdef == 1
 
-    assert mod.coords["state_regression"] == ["A"]
-    assert mod.coords["endog_regression"] == ["data_1", "data_2"]
+    assert mod.coords["state_regression"] == ("A",)
+    assert mod.coords["endog_regression"] == ("data_1", "data_2")
 
-    assert mod.state_names == [
-        "A[regression_shared]",
-    ]
+    assert mod.state_names == ("A[regression_shared]",)
 
-    assert mod.shock_names == ["A_shared"]
+    assert mod.shock_names == ("A_shared",)
 
     data = np.random.standard_normal(size=(10, 1))
     Z = mod.ssm["design"].eval({"data_regression": data})
@@ -293,6 +291,7 @@ def test_regression_multiple_shared_observed(rng):
     np.testing.assert_allclose(y[:, 0], y[:, 2])
 
 
+@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_regression_mixed_shared_and_not_shared():
     mod_1 = st.RegressionComponent(
         name="individual",
@@ -312,8 +311,8 @@ def test_regression_mixed_shared_and_not_shared():
     assert mod.k_states == 4
     assert mod.k_posdef == 4
 
-    assert mod.state_names == ["A[data_1]", "A[data_2]", "B[joint_shared]", "C[joint_shared]"]
-    assert mod.shock_names == ["A", "B_shared", "C_shared"]
+    assert mod.state_names == ("A[data_1]", "A[data_2]", "B[joint_shared]", "C[joint_shared]")
+    assert mod.shock_names == ("A", "B_shared", "C_shared")
 
     data_joint = np.random.standard_normal(size=(10, 2))
     data_individual = np.random.standard_normal(size=(10, 1))

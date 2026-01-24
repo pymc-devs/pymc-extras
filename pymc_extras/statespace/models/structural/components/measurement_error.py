@@ -1,5 +1,9 @@
 import numpy as np
 
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    Parameter,
+)
 from pymc_extras.statespace.models.structural.core import Component
 
 
@@ -118,29 +122,35 @@ class MeasurementError(Component):
             k_posdef,
             measurement_error=True,
             combine_hidden_states=False,
-            observed_state_names=observed_state_names,
+            base_observed_state_names=observed_state_names,
             share_states=share_states,
         )
 
-    def populate_component_properties(self):
+    def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
         k_endog = self.k_endog
         k_endog_effective = 1 if self.share_states else k_endog
 
-        self.param_names = [f"sigma_{self.name}"]
-        self.param_dims = {}
-        self.coords = {}
+        sigma_param = Parameter(
+            name=f"sigma_{self.name}",
+            shape=(k_endog_effective,) if k_endog_effective > 1 else (),
+            dims=(f"endog_{self.name}",) if k_endog_effective > 1 else None,
+            constraints="Positive",
+        )
+
+        return (sigma_param,)
+
+    def set_coords(self) -> Coord | tuple[Coord, ...] | None:
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+        observed_state_names = self.base_observed_state_names
+
+        coords_container = []
 
         if k_endog_effective > 1:
-            self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
-            self.coords[f"endog_{self.name}"] = self.observed_state_names
+            endog_coord = Coord(dimension=f"endog_{self.name}", labels=observed_state_names)
+            coords_container.append(endog_coord)
 
-        self.param_info = {
-            f"sigma_{self.name}": {
-                "shape": (k_endog_effective,) if k_endog_effective > 1 else (),
-                "constraints": "Positive",
-                "dims": (f"endog_{self.name}",) if k_endog_effective > 1 else None,
-            }
-        }
+        return tuple(coords_container) if coords_container else None
 
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog

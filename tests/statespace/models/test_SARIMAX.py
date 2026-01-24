@@ -435,8 +435,8 @@ def test_SARIMA_with_exogenous(rng, mock_sample):
     )
 
     assert ss_mod.param_dims["beta_exog"] == ("exogenous",)
-    assert ss_mod.data_names == ["exogenous_data"]
-    assert ss_mod.coords["exogenous"] == ["exogenous_0", "exogenous_1"]
+    assert ss_mod.data_names == ("exogenous_data",)
+    assert ss_mod.coords["exogenous"] == ("exogenous_0", "exogenous_1")
 
     obs_intercept = ss_mod.ssm["obs_intercept"]
     assert obs_intercept.type.shape == (None, ss_mod.k_endog)
