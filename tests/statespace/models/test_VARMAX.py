@@ -212,9 +212,9 @@ class TestVARMAXWithExogenous:
         )
         assert mod.k_exog == 2
         assert mod.exog_state_names == ["foo", "bar"]
-        assert mod.data_names == ["exogenous_data"]
+        assert mod.data_names == ("exogenous_data",)
         assert mod.param_dims["beta_exog"] == ("observed_state", "exogenous")
-        assert mod.coords["exogenous"] == ["foo", "bar"]
+        assert mod.coords["exogenous"] == ("foo", "bar")
         assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
         assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
 
@@ -229,9 +229,9 @@ class TestVARMAXWithExogenous:
         )
         assert mod.k_exog == 2
         assert mod.exog_state_names == ["a", "b"]
-        assert mod.data_names == ["exogenous_data"]
+        assert mod.data_names == ("exogenous_data",)
         assert mod.param_dims["beta_exog"] == ("observed_state", "exogenous")
-        assert mod.coords["exogenous"] == ["a", "b"]
+        assert mod.coords["exogenous"] == ("a", "b")
         assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
         assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
 
@@ -247,11 +247,11 @@ class TestVARMAXWithExogenous:
         )
         assert mod.k_exog == {"observed_0": 2, "observed_1": 1, "observed_2": 0}
         assert mod.exog_state_names == exog_state_names
-        assert mod.data_names == [
+        assert mod.data_names == (
             "observed_0_exogenous_data",
             "observed_1_exogenous_data",
             "observed_2_exogenous_data",
-        ]
+        )
         assert mod.param_dims["beta_observed_0"] == ("exogenous_observed_0",)
         assert mod.param_dims["beta_observed_1"] == ("exogenous_observed_1",)
         assert (
@@ -260,9 +260,9 @@ class TestVARMAXWithExogenous:
             or mod.param_info.get("beta_observed_2", {}).get("shape", (0,))[0] == 0
         )
 
-        assert mod.coords["exogenous_observed_0"] == ["a", "b"]
-        assert mod.coords["exogenous_observed_1"] == ["c"]
-        assert "exogenous_observed_2" in mod.coords and mod.coords["exogenous_observed_2"] == []
+        assert mod.coords["exogenous_observed_0"] == ("a", "b")
+        assert mod.coords["exogenous_observed_1"] == ("c",)
+        assert "exogenous_observed_2" in mod.coords and mod.coords["exogenous_observed_2"] == ()
 
         assert mod.param_info["beta_observed_0"]["shape"] == (2,)
         assert mod.param_info["beta_observed_0"]["dims"] == ("exogenous_observed_0",)
@@ -286,9 +286,9 @@ class TestVARMAXWithExogenous:
 
         assert mod.k_exog == 2
         assert mod.exog_state_names == ["a", "b"]
-        assert mod.data_names == ["exogenous_data"]
+        assert mod.data_names == ("exogenous_data",)
         assert mod.param_dims["beta_exog"] == ("observed_state", "exogenous")
-        assert mod.coords["exogenous"] == ["a", "b"]
+        assert mod.coords["exogenous"] == ("a", "b")
         assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
         assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
 
