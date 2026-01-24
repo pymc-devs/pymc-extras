@@ -21,8 +21,7 @@ def test_level_trend_model(rng):
 
     # Check coords
     mod = mod.build(verbose=False)
-    _assert_basic_coords_correct(mod)
-    assert mod.coords["state_level_trend"] == ["level", "trend"]
+    assert mod.coords["state_level_trend"] == ("level", "trend")
 
 
 def test_level_trend_multiple_observed_construction():
@@ -34,18 +33,18 @@ def test_level_trend_multiple_observed_construction():
     assert mod.k_states == 6
     assert mod.k_posdef == 3
 
-    assert mod.coords["state_level_trend"] == ["level", "trend"]
-    assert mod.coords["endog_level_trend"] == ["data_1", "data_2", "data_3"]
+    assert mod.coords["state_level_trend"] == ("level", "trend")
+    assert mod.coords["endog_level_trend"] == ("data_1", "data_2", "data_3")
 
-    assert mod.state_names == [
+    assert mod.state_names == (
         "level[data_1]",
         "trend[data_1]",
         "level[data_2]",
         "trend[data_2]",
         "level[data_3]",
         "trend[data_3]",
-    ]
-    assert mod.shock_names == ["level[data_1]", "level[data_2]", "level[data_3]"]
+    )
+    assert mod.shock_names == ("level[data_1]", "level[data_2]", "level[data_3]")
 
     Z, T, R = pytensor.function(
         [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
@@ -96,19 +95,20 @@ def test_level_trend_multiple_shared_construction():
         order=2, innovations_order=1, observed_state_names=["data_1", "data_2"], share_states=True
     )
     mod = mod.build(verbose=False)
+    _assert_basic_coords_correct(mod)
 
     assert mod.k_endog == 2
     assert mod.k_states == 2
     assert mod.k_posdef == 1
 
-    assert mod.coords["state_level_trend"] == ["level", "trend"]
-    assert mod.coords["endog_level_trend"] == ["data_1", "data_2"]
+    assert mod.coords["state_level_trend"] == ("level", "trend")
+    assert mod.coords["endog_level_trend"] == ("data_1", "data_2")
 
-    assert mod.state_names == [
+    assert mod.state_names == (
         "level[level_trend_shared]",
         "trend[level_trend_shared]",
-    ]
-    assert mod.shock_names == ["level[level_trend_shared]"]
+    )
+    assert mod.shock_names == ("level[level_trend_shared]",)
 
     Z, T, R = pytensor.function(
         [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
@@ -166,11 +166,18 @@ def test_add_level_trend_with_different_observed():
     assert mod.k_states == 3
     assert mod.k_posdef == 2
 
-    assert mod.coords["state_ll"] == ["level", "trend"]
-    assert mod.coords["state_grw"] == ["level"]
+    assert mod.coords["state_ll"] == ("level", "trend")
+    assert mod.coords["state_grw"] == ("level",)
 
-    assert mod.state_names == ["level[data_1]", "trend[data_1]", "level[data_2]"]
-    assert mod.shock_names == ["trend[data_1]", "level[data_2]"]
+    assert mod.state_names == (
+        "level[data_1]",
+        "trend[data_1]",
+        "level[data_2]",
+    )
+    assert mod.shock_names == (
+        "trend[data_1]",
+        "level[data_2]",
+    )
 
     Z, T, R = pytensor.function(
         [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
@@ -230,21 +237,21 @@ def test_mixed_shared_and_not_shared():
     assert mod.k_states == 6
     assert mod.k_posdef == 4
 
-    assert mod.state_names == [
+    assert mod.state_names == (
         "level[data_1]",
         "trend[data_1]",
         "level[data_2]",
         "trend[data_2]",
         "level[joint_shared]",
         "trend[joint_shared]",
-    ]
+    )
 
-    assert mod.shock_names == [
+    assert mod.shock_names == (
         "trend[data_1]",
         "trend[data_2]",
         "level[joint_shared]",
         "trend[joint_shared]",
-    ]
+    )
 
     Z, T, R = pytensor.function(
         [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"

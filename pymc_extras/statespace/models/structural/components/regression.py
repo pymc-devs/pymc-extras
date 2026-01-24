@@ -2,6 +2,13 @@ import numpy as np
 
 from pytensor import tensor as pt
 
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    Data,
+    Parameter,
+    Shock,
+    State,
+)
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import TIME_DIM
@@ -118,7 +125,6 @@ class RegressionComponent(Component):
         self.innovations = innovations
         validate_names(state_names, var_name="state_names", optional=False)
         k_exog = len(state_names)
-        self.state_names = state_names
 
         k_states = k_exog
         k_endog = len(observed_state_names)
@@ -129,14 +135,93 @@ class RegressionComponent(Component):
             k_endog=k_endog,
             k_states=k_states * k_endog if not share_states else k_states,
             k_posdef=k_posdef * k_endog if not share_states else k_posdef,
-            state_names=self.state_names,
+            base_state_names=state_names,
             share_states=share_states,
-            observed_state_names=observed_state_names,
+            base_observed_state_names=observed_state_names,
             measurement_error=False,
             combine_hidden_states=False,
-            exog_names=[f"data_{name}"],
             obs_state_idxs=np.ones(k_states),
         )
+
+    def set_states(self) -> State | tuple[State, ...] | None:
+        base_names = self.base_state_names
+        observed_state_names = self.base_observed_state_names
+
+        if self.share_states:
+            state_names = [f"{name}[{self.name}_shared]" for name in base_names]
+        else:
+            state_names = [
+                f"{name}[{obs_name}]" for obs_name in observed_state_names for name in base_names
+            ]
+
+        hidden_states = [State(name=name, observed=False, shared=True) for name in state_names]
+        observed_states = [
+            State(name=name, observed=True, shared=False) for name in observed_state_names
+        ]
+        return *hidden_states, *observed_states
+
+    def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+        k_states = self.k_states // k_endog_effective
+
+        beta_parameter = Parameter(
+            name=f"beta_{self.name}",
+            shape=(k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,),
+            dims=(
+                (f"endog_{self.name}", f"state_{self.name}")
+                if k_endog_effective > 1
+                else (f"state_{self.name}",)
+            ),
+            constraints=None,
+        )
+
+        params_container = [beta_parameter]
+
+        if self.innovations:
+            sigma_parameter = Parameter(
+                name=f"sigma_beta_{self.name}",
+                shape=(k_states,),
+                dims=(f"state_{self.name}",),
+                constraints="Positive",
+            )
+
+            params_container.append(sigma_parameter)
+
+        return tuple(params_container)
+
+    def set_data_info(self) -> Data | tuple[Data, ...] | None:
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+        k_states = self.k_states // k_endog_effective
+
+        data_prop = Data(
+            name=f"data_{self.name}",
+            shape=(None, k_states),
+            dims=(TIME_DIM, f"state_{self.name}"),
+            is_exogenous=True,
+        )
+        return (data_prop,)
+
+    def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
+        base_names = self.base_state_names
+
+        if self.share_states:
+            shock_names = [f"{state_name}_shared" for state_name in base_names]
+        else:
+            shock_names = base_names
+
+        return tuple(Shock(name=name) for name in shock_names)
+
+    def set_coords(self) -> tuple[Coord, ...] | None:
+        regression_state_coord = Coord(
+            dimension=f"state_{self.name}", labels=tuple(self.base_state_names)
+        )
+        endogenous_state_coord = Coord(
+            dimension=f"endog_{self.name}", labels=self.observed_state_names
+        )
+
+        return regression_state_coord, endogenous_state_coord
 
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog
@@ -171,65 +256,3 @@ class RegressionComponent(Component):
             )
             row_idx, col_idx = np.diag_indices(self.k_states)
             self.ssm["state_cov", row_idx, col_idx] = sigma_beta.ravel() ** 2
-
-    def populate_component_properties(self) -> None:
-        k_endog = self.k_endog
-        k_endog_effective = 1 if self.share_states else k_endog
-
-        k_states = self.k_states // k_endog_effective
-
-        if self.share_states:
-            self.shock_names = [f"{state_name}_shared" for state_name in self.state_names]
-        else:
-            self.shock_names = self.state_names
-
-        self.param_names = [f"beta_{self.name}"]
-        self.data_names = [f"data_{self.name}"]
-        self.param_dims = {
-            f"beta_{self.name}": (f"endog_{self.name}", f"state_{self.name}")
-            if k_endog_effective > 1
-            else (f"state_{self.name}",)
-        }
-
-        base_names = self.state_names
-
-        if self.share_states:
-            self.state_names = [f"{name}[{self.name}_shared]" for name in base_names]
-        else:
-            self.state_names = [
-                f"{name}[{obs_name}]"
-                for obs_name in self.observed_state_names
-                for name in base_names
-            ]
-
-        self.param_info = {
-            f"beta_{self.name}": {
-                "shape": (k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,),
-                "constraints": None,
-                "dims": (f"endog_{self.name}", f"state_{self.name}")
-                if k_endog_effective > 1
-                else (f"state_{self.name}",),
-            },
-        }
-
-        self.data_info = {
-            f"data_{self.name}": {
-                "shape": (None, k_states),
-                "dims": (TIME_DIM, f"state_{self.name}"),
-            },
-        }
-        self.coords = {
-            f"state_{self.name}": base_names,
-            f"endog_{self.name}": self.observed_state_names,
-        }
-
-        if self.innovations:
-            self.param_names += [f"sigma_beta_{self.name}"]
-            self.param_dims[f"sigma_beta_{self.name}"] = (f"state_{self.name}",)
-            self.param_info[f"sigma_beta_{self.name}"] = {
-                "shape": (k_states,),
-                "constraints": "Positive",
-                "dims": (f"state_{self.name}",)
-                if k_endog_effective == 1
-                else (f"endog_{self.name}", f"state_{self.name}"),
-            }

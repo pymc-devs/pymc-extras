@@ -1,6 +1,12 @@
 import numpy as np
 import pytensor.tensor as pt
 
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    Parameter,
+    Shock,
+    State,
+)
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import order_to_mask
 from pymc_extras.statespace.utils.constants import POSITION_DERIVATIVE_NAMES
@@ -145,6 +151,7 @@ class LevelTrendComponent(Component):
                 f"lower order model, explicitly omit the zeros."
             )
         k_states = max_state
+        state_names = POSITION_DERIVATIVE_NAMES[:max_state]
 
         if isinstance(innovations_order, int):
             n = innovations_order
@@ -164,7 +171,8 @@ class LevelTrendComponent(Component):
             k_endog=k_endog,
             k_states=k_states * k_endog if not share_states else k_states,
             k_posdef=k_posdef * k_endog if not share_states else k_posdef,
-            observed_state_names=observed_state_names,
+            base_state_names=state_names,
+            base_observed_state_names=observed_state_names,
             measurement_error=False,
             combine_hidden_states=False,
             obs_state_idxs=np.tile(
@@ -173,71 +181,102 @@ class LevelTrendComponent(Component):
             share_states=share_states,
         )
 
-    def populate_component_properties(self):
+    def set_states(self) -> State | tuple[State, ...] | None:
+        observed_state_names = self.base_observed_state_names
+
+        if self.share_states:
+            state_names = [f"{name}[{self.name}_shared]" for name in self.base_state_names]
+        else:
+            state_names = [
+                f"{name}[{obs_name}]"
+                for obs_name in observed_state_names
+                for name in self.base_state_names
+            ]
+
+        hidden_states = [State(name=name, observed=False, shared=True) for name in state_names]
+        observed_states = [
+            State(name=name, observed=True, shared=False) for name in observed_state_names
+        ]
+        return *hidden_states, *observed_states
+
+    def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
         k_endog = self.k_endog
         k_endog_effective = 1 if self.share_states else k_endog
 
         k_states = self.k_states // k_endog_effective
         k_posdef = self.k_posdef // k_endog_effective
 
-        name_slice = POSITION_DERIVATIVE_NAMES[:k_states]
-        self.param_names = [f"initial_{self.name}"]
-        base_names = [name for name, mask in zip(name_slice, self._order_mask) if mask]
-
-        if self.share_states:
-            self.state_names = [f"{name}[{self.name}_shared]" for name in base_names]
-        else:
-            self.state_names = [
-                f"{name}[{obs_name}]"
-                for obs_name in self.observed_state_names
-                for name in base_names
-            ]
-
-        self.param_dims = {f"initial_{self.name}": (f"state_{self.name}",)}
-        self.coords = {f"state_{self.name}": base_names}
-
-        if k_endog > 1:
-            self.coords[f"endog_{self.name}"] = self.observed_state_names
-
-        if k_endog_effective > 1:
-            self.param_dims[f"state_{self.name}"] = (
-                f"endog_{self.name}",
-                f"state_{self.name}",
-            )
-            self.param_dims = {f"initial_{self.name}": (f"endog_{self.name}", f"state_{self.name}")}
-
-        shape = (k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,)
-        self.param_info = {f"initial_{self.name}": {"shape": shape, "constraints": None}}
+        initial_param = Parameter(
+            name=f"initial_{self.name}",
+            shape=(k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,),
+            dims=(f"endog_{self.name}", f"state_{self.name}")
+            if k_endog_effective > 1
+            else (f"state_{self.name}",),
+            constraints=None,
+        )
 
         if self.k_posdef > 0:
-            self.param_names += [f"sigma_{self.name}"]
+            sigma_param = Parameter(
+                name=f"sigma_{self.name}",
+                shape=(k_posdef,) if k_endog_effective == 1 else (k_endog_effective, k_posdef),
+                dims=(f"shock_{self.name}",)
+                if k_endog_effective == 1
+                else (f"endog_{self.name}", f"shock_{self.name}"),
+                constraints="Positive",
+            )
+            return initial_param, sigma_param
+        else:
+            return (initial_param,)
 
+    def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+        k_states = self.k_states // k_endog_effective
+        name_slice = POSITION_DERIVATIVE_NAMES[:k_states]
+
+        if self.k_posdef > 0:
             base_shock_names = [
                 name for name, mask in zip(name_slice, self.innovations_order) if mask
             ]
 
             if self.share_states:
-                self.shock_names = [f"{name}[{self.name}_shared]" for name in base_shock_names]
+                shock_names = [f"{name}[{self.name}_shared]" for name in base_shock_names]
             else:
-                self.shock_names = [
+                shock_names = [
                     f"{name}[{obs_name}]"
                     for obs_name in self.observed_state_names
                     for name in base_shock_names
                 ]
 
-            self.param_dims[f"sigma_{self.name}"] = (
-                (f"shock_{self.name}",)
-                if k_endog_effective == 1
-                else (f"endog_{self.name}", f"shock_{self.name}")
-            )
-            self.coords[f"shock_{self.name}"] = base_shock_names
-            self.param_info[f"sigma_{self.name}"] = {
-                "shape": (k_posdef,) if k_endog_effective == 1 else (k_endog_effective, k_posdef),
-                "constraints": "Positive",
-            }
+            return tuple(Shock(name=name) for name in shock_names)
+        return None
 
-        for name in self.param_names:
-            self.param_info[name]["dims"] = self.param_dims[name]
+    def set_coords(self) -> Coord | tuple[Coord, ...] | None:
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+        k_states = self.k_states // k_endog_effective
+        name_slice = POSITION_DERIVATIVE_NAMES[:k_states]
+
+        base_names = [name for name, mask in zip(name_slice, self._order_mask) if mask]
+
+        base_shock_names = [name for name, mask in zip(name_slice, self.innovations_order) if mask]
+
+        state_coord = Coord(dimension=f"state_{self.name}", labels=tuple(base_names))
+
+        coords_container = [state_coord]
+
+        if k_endog > 1:
+            endog_coord = Coord(
+                dimension=f"endog_{self.name}",
+                labels=self.observed_state_names,
+            )
+            coords_container.append(endog_coord)
+
+        if self.k_posdef > 0:
+            shock_coord = Coord(dimension=f"shock_{self.name}", labels=tuple(base_shock_names))
+            coords_container.append(shock_coord)
+
+        return tuple(coords_container)
 
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog

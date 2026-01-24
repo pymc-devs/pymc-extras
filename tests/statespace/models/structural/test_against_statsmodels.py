@@ -127,7 +127,7 @@ def _assert_coords_correct(coords, expected_coords):
 
     _assert_keys_match(coords, expected_coords)
     for dim, labels in expected_coords.items():
-        assert labels == coords[dim], f"labels on dimension {dim} do not match"
+        assert tuple(labels) == coords[dim], f"labels on dimension {dim} do not match"
 
 
 def _assert_params_info_correct(param_info, coords, param_dims):
