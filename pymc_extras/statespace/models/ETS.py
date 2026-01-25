@@ -5,7 +5,7 @@ import pytensor.tensor as pt
 
 from pytensor import graph_replace
 from pytensor.compile.mode import Mode
-from pytensor.tensor.slinalg import solve_discrete_lyapunov
+from pytensor.tensor.linalg import solve_discrete_lyapunov
 
 from pymc_extras.statespace.core.properties import (
     Coord,
