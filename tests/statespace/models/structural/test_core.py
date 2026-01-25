@@ -85,7 +85,7 @@ def test_extract_components_from_idata(rng):
 
     ll = st.LevelTrendComponent()
     season = st.FrequencySeasonality(name="seasonal", season_length=12, n=2, innovations=False)
-    reg = st.RegressionComponent(state_names=["a", "b"], name="exog")
+    reg = st.Regression(state_names=["a", "b"], name="exog")
     me = st.MeasurementError("obs")
     mod = (ll + season + reg + me).build(verbose=False)
 
@@ -125,7 +125,7 @@ def test_extract_multiple_observed(rng):
     season = st.FrequencySeasonality(
         name="seasonal", observed_state_names=["data_1"], season_length=12, n=2, innovations=False
     )
-    reg = st.RegressionComponent(
+    reg = st.Regression(
         state_names=["a", "b"], name="exog", observed_state_names=["data_2", "data_3"]
     )
     ar = st.Autoregressive(observed_state_names=["data_1", "data_2"], order=3)

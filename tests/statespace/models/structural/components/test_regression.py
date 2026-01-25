@@ -39,13 +39,13 @@ def time_series_data(rng):
     return data, y
 
 
-class TestRegressionComponent:
+class TestRegression:
     """Test basic regression component functionality."""
 
     @pytest.mark.parametrize("innovations", [False, True])
     def test_exogenous_component(self, rng, regression_data, innovations):
         """Test basic regression component with and without innovations."""
-        mod = st.RegressionComponent(
+        mod = st.Regression(
             state_names=["feature_1", "feature_2"], name="exog", innovations=innovations
         )
 
@@ -75,7 +75,7 @@ class TestRegressionComponent:
     @pytest.mark.parametrize("innovations", [False, True])
     def test_adding_exogenous_component(self, rng, regression_data, innovations):
         """Test adding regression component to other components."""
-        reg = st.RegressionComponent(state_names=["a", "b"], name="exog", innovations=innovations)
+        reg = st.Regression(state_names=["a", "b"], name="exog", innovations=innovations)
         ll = st.LevelTrendComponent(name="level")
         seasonal = st.FrequencySeasonality(name="annual", season_length=12, n=4)
         mod = reg + ll + seasonal
@@ -98,7 +98,7 @@ class TestMultivariateRegression:
         """Test multivariate regression with and without innovations."""
         from scipy.linalg import block_diag
 
-        mod = st.RegressionComponent(
+        mod = st.Regression(
             state_names=["feature_1", "feature_2"],
             name="exog",
             observed_state_names=["data_1", "data_2"],
@@ -140,7 +140,7 @@ class TestMultivariateRegression:
             assert "sigma_beta_exog" in mod.param_names
 
 
-class TestMultipleRegressionComponents:
+class TestMultipleRegressions:
     """Test multiple regression components functionality."""
 
     @pytest.mark.parametrize("innovations", [False, True])
@@ -150,13 +150,13 @@ class TestMultipleRegressionComponents:
         """Test adding multiple regression components with and without innovations."""
         from scipy.linalg import block_diag
 
-        reg1 = st.RegressionComponent(
+        reg1 = st.Regression(
             state_names=["a", "b"],
             name="exog1",
             observed_state_names=["data_1", "data_2"],
             innovations=innovations,
         )
-        reg2 = st.RegressionComponent(
+        reg2 = st.Regression(
             state_names=["c"],
             name="exog2",
             observed_state_names=["data_3"],
@@ -208,7 +208,7 @@ class TestPyMCIntegration:
         """Test PyMC integration with and without innovations."""
         data, y = time_series_data
 
-        reg = st.RegressionComponent(state_names=["a", "b"], name="exog", innovations=innovations)
+        reg = st.Regression(state_names=["a", "b"], name="exog", innovations=innovations)
         mod = reg.build(verbose=False)
 
         with pm.Model(coords=mod.coords) as m:
@@ -237,7 +237,7 @@ class TestPyMCIntegration:
 
 
 def test_regression_multiple_shared_construction():
-    rc = st.RegressionComponent(
+    rc = st.Regression(
         state_names=["A"],
         observed_state_names=["data_1", "data_2"],
         innovations=True,
@@ -276,7 +276,7 @@ def test_regression_multiple_shared_construction():
 
 
 def test_regression_multiple_shared_observed(rng):
-    mod = st.RegressionComponent(
+    mod = st.Regression(
         state_names=["A"],
         observed_state_names=["data_1", "data_2", "data_3"],
         innovations=False,
@@ -293,12 +293,12 @@ def test_regression_multiple_shared_observed(rng):
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
 def test_regression_mixed_shared_and_not_shared():
-    mod_1 = st.RegressionComponent(
+    mod_1 = st.Regression(
         name="individual",
         state_names=["A"],
         observed_state_names=["data_1", "data_2"],
     )
-    mod_2 = st.RegressionComponent(
+    mod_2 = st.Regression(
         name="joint",
         state_names=["B", "C"],
         observed_state_names=["data_1", "data_2"],

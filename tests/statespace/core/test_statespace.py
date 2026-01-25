@@ -175,7 +175,7 @@ def exog_data_mv(rng):
 @pytest.fixture(scope="session")
 def exog_ss_mod(exog_data):
     level_trend = st.LevelTrendComponent(name="trend", order=1, innovations_order=[0])
-    exog = st.RegressionComponent(
+    exog = st.Regression(
         name="exog",  # Name of this exogenous variable component
         innovations=False,  # Typically fixed effect (no stochastic evolution)
         state_names=exog_data[["x1"]].columns.tolist(),  # Only one exogenous variable now
@@ -190,7 +190,7 @@ def exog_ss_mod_mv(exog_data_mv):
     level_trend = st.LevelTrendComponent(
         name="trend", order=1, innovations_order=[0], observed_state_names=["y1", "y2"]
     )
-    exog = st.RegressionComponent(
+    exog = st.Regression(
         name="exog",  # Name of this exogenous variable component
         innovations=False,  # Typically fixed effect (no stochastic evolution)
         state_names=exog_data_mv[["x1"]].columns.tolist(),  # Only one exogenous variable now
@@ -206,7 +206,7 @@ def ss_mod_multi_component(rng):
     ll = st.LevelTrendComponent(
         name="trend", order=2, innovations_order=1, observed_state_names=["y1", "y2"]
     )
-    exog = st.RegressionComponent(
+    exog = st.Regression(
         name="exog",
         innovations=True,
         state_names=["x1"],

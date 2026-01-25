@@ -440,7 +440,7 @@ def create_structural_model_and_equivalent_statsmodel(
         for i, beta in enumerate(betas):
             sm_params[f"beta.x{i + 1}"] = beta
             sm_init[f"beta.x{i + 1}"] = beta
-        comp = st.RegressionComponent(name="exog", state_names=names)
+        comp = st.Regression(name="exog", state_names=names)
         components.append(comp)
 
     st_mod = components.pop(0)

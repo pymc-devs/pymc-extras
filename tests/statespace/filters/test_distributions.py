@@ -192,7 +192,7 @@ def test_lgss_distribution_with_dims(output_name, ss_mod_me, pymc_model_2):
 @pytest.mark.parametrize("output_name", ["states_latent", "states_observed"])
 def test_lgss_with_time_varying_inputs(output_name, rng):
     X = rng.random(size=(10, 3), dtype=floatX)
-    ss_mod = structural.LevelTrendComponent() + structural.RegressionComponent(
+    ss_mod = structural.LevelTrendComponent() + structural.Regression(
         name="exog", state_names=["exog_0", "exog_1", "exog_2"]
     )
     mod = ss_mod.build("data", verbose=False)

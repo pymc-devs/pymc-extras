@@ -504,7 +504,7 @@ class Component:
     LevelTrendComponent : Component for modeling level and trend.
     TimeSeasonality : Component for seasonal effects.
     Cycle : Component for cyclical effects.
-    RegressionComponent : Component for regression effects.
+    Regression : Component for regression effects.
     """
 
     def __init__(

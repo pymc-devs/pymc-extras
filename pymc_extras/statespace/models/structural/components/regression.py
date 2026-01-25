@@ -14,7 +14,7 @@ from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import TIME_DIM
 
 
-class RegressionComponent(Component):
+class Regression(Component):
     r"""
     Regression component for exogenous variables in a structural time series model
 
@@ -72,7 +72,7 @@ class RegressionComponent(Component):
         import pytensor.tensor as pt
 
         trend = st.LevelTrendComponent(order=1, innovations_order=1)
-        regression = st.RegressionComponent(k_exog=2, state_names=['intercept', 'slope'])
+        regression = st.Regression(k_exog=2, state_names=['intercept', 'slope'])
         ss_mod = (trend + regression).build()
 
         with pm.Model(coords=ss_mod.coords) as model:
@@ -92,7 +92,7 @@ class RegressionComponent(Component):
 
     .. code:: python
 
-        regression = st.RegressionComponent(
+        regression = st.Regression(
             k_exog=2,
             state_names=['price_effect', 'income_effect'],
             observed_state_names=['sales', 'revenue'],
