@@ -180,7 +180,7 @@ def test_sequence_type_component_arguments(arg_type):
     state_names = list("ABCDEFG")
     components = [
         st.LevelTrendComponent,
-        partial(st.CycleComponent, cycle_length=12),
+        partial(st.Cycle, cycle_length=12),
         st.Autoregressive,
         partial(st.FrequencySeasonality, season_length=12),
         partial(st.TimeSeasonality, season_length=12),

@@ -13,7 +13,7 @@ from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
 
 
-class CycleComponent(Component):
+class Cycle(Component):
     r"""
     A component for modeling longer-term cyclical effects
 
@@ -70,7 +70,7 @@ class CycleComponent(Component):
     effects, such as business cycles, and that the seasonal component be used for shorter term effects, such as
     weekly or monthly seasonality.
 
-    Unlike a FrequencySeasonality component, the length of a CycleComponent can be estimated.
+    Unlike a FrequencySeasonality component, the length of a Cycle can be estimated.
 
     **Multivariate Support:**
     For multivariate time series with k endogenous variables, the component creates:
@@ -96,7 +96,7 @@ class CycleComponent(Component):
 
         # Build the structural model
         grw = st.LevelTrendComponent(order=1, innovations_order=1)
-        cycle = st.CycleComponent(
+        cycle = st.Cycle(
             "business_cycle", cycle_length=12, estimate_cycle_length=False, innovations=True, dampen=True
         )
         ss_mod = (grw + cycle).build()
@@ -123,7 +123,7 @@ class CycleComponent(Component):
     .. code:: python
 
         # Multivariate cycle component
-        cycle = st.CycleComponent(
+        cycle = st.Cycle(
             name='business_cycle',
             cycle_length=12,
             estimate_cycle_length=False,

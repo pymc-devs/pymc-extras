@@ -103,7 +103,7 @@ class StructuralTimeSeries(PyMCStateSpace):
     Component : Base class for structural time series components.
     LevelTrendComponent : Component for modeling level and trend.
     TimeSeasonality : Component for seasonal effects.
-    CycleComponent : Component for cyclical effects.
+    Cycle : Component for cyclical effects.
     Autoregressive : Component for autoregressive dynamics.
 
     References
@@ -503,7 +503,7 @@ class Component:
     StructuralTimeSeries : The complete model class that combines components.
     LevelTrendComponent : Component for modeling level and trend.
     TimeSeasonality : Component for seasonal effects.
-    CycleComponent : Component for cyclical effects.
+    Cycle : Component for cyclical effects.
     RegressionComponent : Component for regression effects.
     """
 

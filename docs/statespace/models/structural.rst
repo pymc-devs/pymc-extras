@@ -11,4 +11,4 @@ Structural Components
    TimeSeasonality
    FrequencySeasonality
    MeasurementError
-   CycleComponent
+   Cycle

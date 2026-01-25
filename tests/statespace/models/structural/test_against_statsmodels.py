@@ -394,7 +394,7 @@ def create_structural_model_and_equivalent_statsmodel(
             params["dampening_factor_cycle"] = rho
             sm_params["damping.cycle"] = rho
 
-        comp = st.CycleComponent(
+        comp = st.Cycle(
             name="cycle",
             dampen=damped_cycle,
             innovations=stochastic_cycle,
