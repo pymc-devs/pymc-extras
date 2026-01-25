@@ -385,7 +385,7 @@ def inverse_hessian_factors(
     # more performant and numerically precise to use solve than inverse: https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.linalg.inv.html
 
     # E_inv: (L, J, J)
-    E_inv = pt.slinalg.solve_triangular(E, Ij, check_finite=False)
+    E_inv = pt.linalg.solve_triangular(E, Ij, check_finite=False)
     eta_diag = pytensor.scan(pt.diag, sequences=[eta], return_updates=False)
 
     # block_dd: (L, J, J)

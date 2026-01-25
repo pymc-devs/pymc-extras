@@ -1,7 +1,7 @@
 import numpy as np
 
 from pytensor import tensor as pt
-from pytensor.tensor.slinalg import block_diag
+from pytensor.tensor.linalg import block_diag
 
 from pymc_extras.statespace.core.properties import (
     Coord,

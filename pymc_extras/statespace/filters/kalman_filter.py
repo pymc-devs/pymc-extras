@@ -8,7 +8,7 @@ from pymc.pytensorf import constant_fold
 from pytensor.graph.basic import Variable
 from pytensor.raise_op import Assert
 from pytensor.tensor import TensorVariable
-from pytensor.tensor.slinalg import solve_triangular
+from pytensor.tensor.linalg import solve_triangular
 
 from pymc_extras.statespace.filters.utilities import (
     quad_form_sym,
