@@ -153,7 +153,7 @@ def unpack_last_axis(packed_input, packed_shapes):
         return [pt.split_dims(packed_input, packed_shapes[0], axis=-1)]
 
     keep_axes = tuple(range(packed_input.ndim))[:-1]
-    return pt.unpack(packed_input, axes=keep_axes, packed_shapes=packed_shapes)
+    return pt.unpack(packed_input, keep_axes=keep_axes, packed_shapes=packed_shapes)
 
 
 def draws_from_laplace_approx(
