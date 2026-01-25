@@ -211,7 +211,7 @@ def ss_mod_multi_component(rng):
         innovations=True,
         state_names=["x1"],
     )
-    ar = st.AutoregressiveComponent(observed_state_names=["y1"])
+    ar = st.Autoregressive(observed_state_names=["y1"])
     cycle = st.CycleComponent(cycle_length=2, observed_state_names=["y1", "y2"], innovations=True)
     season = st.TimeSeasonality(season_length=2, observed_state_names=["y1"], innovations=True)
 

@@ -13,7 +13,7 @@ from tests.statespace.test_utilities import simulate_from_numpy_model
 
 @pytest.mark.parametrize("order", [1, 2, [1, 0, 1]], ids=["AR1", "AR2", "AR(1,0,1)"])
 def test_autoregressive_model(order, rng):
-    ar = st.AutoregressiveComponent(order=order).build(verbose=False)
+    ar = st.Autoregressive(order=order).build(verbose=False)
 
     lags = np.arange(len(order) if isinstance(order, list) else order, dtype="int") + 1
     if isinstance(order, list):
@@ -22,7 +22,7 @@ def test_autoregressive_model(order, rng):
 
 
 def test_autoregressive_multiple_observed_build(rng):
-    ar = st.AutoregressiveComponent(order=3, name="ar", observed_state_names=["data_1", "data_2"])
+    ar = st.Autoregressive(order=3, name="ar", observed_state_names=["data_1", "data_2"])
     mod = ar.build(verbose=False)
     _assert_basic_coords_correct(mod)
 
@@ -91,7 +91,7 @@ def test_autoregressive_multiple_observed_build(rng):
 
 
 def test_autoregressive_multiple_observed_shared():
-    ar = st.AutoregressiveComponent(
+    ar = st.Autoregressive(
         order=1,
         name="latent",
         observed_state_names=["data_1", "data_2", "data_3"],
@@ -118,7 +118,7 @@ def test_autoregressive_multiple_observed_shared():
 
 
 def test_autoregressive_multiple_observed_data(rng):
-    ar = st.AutoregressiveComponent(order=1, observed_state_names=["data_1", "data_2", "data_3"])
+    ar = st.Autoregressive(order=1, observed_state_names=["data_1", "data_2", "data_3"])
     mod = ar.build(verbose=False)
 
     params = {
@@ -135,8 +135,8 @@ def test_autoregressive_multiple_observed_data(rng):
 
 
 def test_add_autoregressive_different_observed():
-    mod_1 = st.AutoregressiveComponent(order=1, name="ar1", observed_state_names=["data_1"])
-    mod_2 = st.AutoregressiveComponent(name="ar6", order=6, observed_state_names=["data_2"])
+    mod_1 = st.Autoregressive(order=1, name="ar1", observed_state_names=["data_1"])
+    mod_2 = st.Autoregressive(name="ar6", order=6, observed_state_names=["data_2"])
 
     mod = (mod_1 + mod_2).build(verbose=False)
 
@@ -162,7 +162,7 @@ def test_add_autoregressive_different_observed():
 
 
 def test_autoregressive_shared_and_not_shared():
-    shared = st.AutoregressiveComponent(
+    shared = st.Autoregressive(
         order=3,
         name="shared_ar",
         observed_state_names=["data_1", "data_2", "data_3"],
@@ -174,7 +174,7 @@ def test_autoregressive_shared_and_not_shared():
     assert not any(dim.startswith("endog_") for dim in shared.param_info["params_shared_ar"].dims)
     assert shared.param_info["sigma_shared_ar"].dims is None
 
-    individual = st.AutoregressiveComponent(
+    individual = st.Autoregressive(
         order=3,
         name="individual_ar",
         observed_state_names=["data_1", "data_2", "data_3"],

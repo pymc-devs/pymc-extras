@@ -1,5 +1,5 @@
 from pymc_extras.statespace.models.structural.components.autoregressive import (
-    AutoregressiveComponent,
+    Autoregressive,
 )
 from pymc_extras.statespace.models.structural.components.cycle import CycleComponent
 from pymc_extras.statespace.models.structural.components.level_trend import LevelTrendComponent
@@ -11,7 +11,7 @@ from pymc_extras.statespace.models.structural.components.seasonality import (
 )
 
 __all__ = [
-    "AutoregressiveComponent",
+    "Autoregressive",
     "CycleComponent",
     "FrequencySeasonality",
     "LevelTrendComponent",

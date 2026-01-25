@@ -104,7 +104,7 @@ class StructuralTimeSeries(PyMCStateSpace):
     LevelTrendComponent : Component for modeling level and trend.
     TimeSeasonality : Component for seasonal effects.
     CycleComponent : Component for cyclical effects.
-    AutoregressiveComponent : Component for autoregressive dynamics.
+    Autoregressive : Component for autoregressive dynamics.
 
     References
     ----------

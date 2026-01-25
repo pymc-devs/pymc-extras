@@ -11,7 +11,7 @@ from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import order_to_mask
 
 
-class AutoregressiveComponent(Component):
+class Autoregressive(Component):
     r"""
     Autoregressive timeseries component
 
@@ -64,7 +64,7 @@ class AutoregressiveComponent(Component):
         import pytensor.tensor as pt
 
         trend = st.LevelTrendComponent(order=1, innovations_order=0)
-        ar = st.AutoregressiveComponent(2)
+        ar = st.Autoregressive(2)
         ss_mod = (trend + ar).build()
 
         with pm.Model(coords=ss_mod.coords) as model:

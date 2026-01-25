@@ -128,7 +128,7 @@ def test_extract_multiple_observed(rng):
     reg = st.RegressionComponent(
         state_names=["a", "b"], name="exog", observed_state_names=["data_2", "data_3"]
     )
-    ar = st.AutoregressiveComponent(observed_state_names=["data_1", "data_2"], order=3)
+    ar = st.Autoregressive(observed_state_names=["data_1", "data_2"], order=3)
     me = st.MeasurementError("obs", observed_state_names=["data_1", "data_3"])
     mod = (ll + season + reg + ar + me).build(verbose=True)
 
@@ -181,7 +181,7 @@ def test_sequence_type_component_arguments(arg_type):
     components = [
         st.LevelTrendComponent,
         partial(st.CycleComponent, cycle_length=12),
-        st.AutoregressiveComponent,
+        st.Autoregressive,
         partial(st.FrequencySeasonality, season_length=12),
         partial(st.TimeSeasonality, season_length=12),
         st.MeasurementError,
