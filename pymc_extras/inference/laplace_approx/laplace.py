@@ -137,7 +137,7 @@ def get_conditional_gaussian_approximation(
     hess = pytensor.graph.replace.graph_replace(hess, {x: x0})
 
     # Full log(p(x | y, params)) using the Laplace approximation (up to a constant)
-    _, logdetQ = pt.nlinalg.slogdet(Q)
+    _, logdetQ = pt.linalg.slogdet(Q)
     conditional_gaussian_approx = (
         -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x0) + 0.5 * logdetQ
     )
