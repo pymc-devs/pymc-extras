@@ -122,13 +122,13 @@ def pymc_mod(ss_mod):
 
 @pytest.fixture(scope="session")
 def ss_mod_no_exog(rng):
-    ll = st.LevelTrendComponent(name="trend", order=2, innovations_order=1)
+    ll = st.LevelTrend(name="trend", order=2, innovations_order=1)
     return ll.build()
 
 
 @pytest.fixture(scope="session")
 def ss_mod_no_exog_mv(rng):
-    ll = st.LevelTrendComponent(
+    ll = st.LevelTrend(
         name="trend", order=2, innovations_order=1, observed_state_names=["y1", "y2"]
     )
     return ll.build()
@@ -136,7 +136,7 @@ def ss_mod_no_exog_mv(rng):
 
 @pytest.fixture(scope="session")
 def ss_mod_no_exog_dt(rng):
-    ll = st.LevelTrendComponent(name="trend", order=2, innovations_order=1)
+    ll = st.LevelTrend(name="trend", order=2, innovations_order=1)
     return ll.build()
 
 
@@ -174,7 +174,7 @@ def exog_data_mv(rng):
 
 @pytest.fixture(scope="session")
 def exog_ss_mod(exog_data):
-    level_trend = st.LevelTrendComponent(name="trend", order=1, innovations_order=[0])
+    level_trend = st.LevelTrend(name="trend", order=1, innovations_order=[0])
     exog = st.Regression(
         name="exog",  # Name of this exogenous variable component
         innovations=False,  # Typically fixed effect (no stochastic evolution)
@@ -187,7 +187,7 @@ def exog_ss_mod(exog_data):
 
 @pytest.fixture(scope="session")
 def exog_ss_mod_mv(exog_data_mv):
-    level_trend = st.LevelTrendComponent(
+    level_trend = st.LevelTrend(
         name="trend", order=1, innovations_order=[0], observed_state_names=["y1", "y2"]
     )
     exog = st.Regression(
@@ -203,7 +203,7 @@ def exog_ss_mod_mv(exog_data_mv):
 
 @pytest.fixture(scope="session")
 def ss_mod_multi_component(rng):
-    ll = st.LevelTrendComponent(
+    ll = st.LevelTrend(
         name="trend", order=2, innovations_order=1, observed_state_names=["y1", "y2"]
     )
     exog = st.Regression(
@@ -450,7 +450,7 @@ def test_update_raises_if_missing_variables(ss_mod):
 
 def test_build_statespace_graph_warns_if_data_has_nans():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrendComponent(name="trend", order=1, innovations_order=0).build(verbose=False)
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))
@@ -463,7 +463,7 @@ def test_build_statespace_graph_warns_if_data_has_nans():
 
 def test_build_statespace_graph_raises_if_data_has_missing_fill():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrendComponent(name="trend", order=1, innovations_order=0).build(verbose=False)
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))

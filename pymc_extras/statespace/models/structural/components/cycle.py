@@ -95,7 +95,7 @@ class Cycle(Component):
         data = np.random.normal(size=(100, 1))
 
         # Build the structural model
-        grw = st.LevelTrendComponent(order=1, innovations_order=1)
+        grw = st.LevelTrend(order=1, innovations_order=1)
         cycle = st.Cycle(
             "business_cycle", cycle_length=12, estimate_cycle_length=False, innovations=True, dampen=True
         )

@@ -76,7 +76,7 @@ class TestRegression:
     def test_adding_exogenous_component(self, rng, regression_data, innovations):
         """Test adding regression component to other components."""
         reg = st.Regression(state_names=["a", "b"], name="exog", innovations=innovations)
-        ll = st.LevelTrendComponent(name="level")
+        ll = st.LevelTrend(name="level")
         seasonal = st.FrequencySeasonality(name="annual", season_length=12, n=4)
         mod = reg + ll + seasonal
 

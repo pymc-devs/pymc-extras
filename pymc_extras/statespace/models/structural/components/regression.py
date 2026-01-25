@@ -71,7 +71,7 @@ class Regression(Component):
         import pymc as pm
         import pytensor.tensor as pt
 
-        trend = st.LevelTrendComponent(order=1, innovations_order=1)
+        trend = st.LevelTrend(order=1, innovations_order=1)
         regression = st.Regression(k_exog=2, state_names=['intercept', 'slope'])
         ss_mod = (trend + regression).build()
 

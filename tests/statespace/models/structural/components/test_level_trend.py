@@ -13,7 +13,7 @@ RTOL = 0 if config.floatX.endswith("64") else 1e-6
 
 
 def test_level_trend_model(rng):
-    mod = st.LevelTrendComponent(order=2, innovations_order=0)
+    mod = st.LevelTrend(order=2, innovations_order=0)
     params = {"initial_level_trend": [0.0, 1.0]}
     x, y = simulate_from_numpy_model(mod, rng, params)
 
@@ -25,7 +25,7 @@ def test_level_trend_model(rng):
 
 
 def test_level_trend_multiple_observed_construction():
-    mod = st.LevelTrendComponent(
+    mod = st.LevelTrend(
         order=2, innovations_order=1, observed_state_names=["data_1", "data_2", "data_3"]
     )
     mod = mod.build(verbose=False)
@@ -91,7 +91,7 @@ def test_level_trend_multiple_observed_construction():
 
 
 def test_level_trend_multiple_shared_construction():
-    mod = st.LevelTrendComponent(
+    mod = st.LevelTrend(
         order=2, innovations_order=1, observed_state_names=["data_1", "data_2"], share_states=True
     )
     mod = mod.build(verbose=False)
@@ -130,7 +130,7 @@ def test_level_trend_multiple_shared_construction():
 
 
 def test_level_trend_multiple_observed(rng):
-    mod = st.LevelTrendComponent(
+    mod = st.LevelTrend(
         order=2, innovations_order=0, observed_state_names=["data_1", "data_2", "data_3"]
     )
     params = {"initial_level_trend": np.array([[0.0, 1.0], [0.0, 2.0], [0.0, 3.0]])}
@@ -141,7 +141,7 @@ def test_level_trend_multiple_observed(rng):
 
 
 def test_level_trend_multiple_shared_observed(rng):
-    mod = st.LevelTrendComponent(
+    mod = st.LevelTrend(
         order=2,
         innovations_order=0,
         observed_state_names=["data_1", "data_2", "data_3"],
@@ -154,10 +154,10 @@ def test_level_trend_multiple_shared_observed(rng):
 
 
 def test_add_level_trend_with_different_observed():
-    mod_1 = st.LevelTrendComponent(
+    mod_1 = st.LevelTrend(
         name="ll", order=2, innovations_order=[0, 1], observed_state_names=["data_1"]
     )
-    mod_2 = st.LevelTrendComponent(
+    mod_2 = st.LevelTrend(
         name="grw", order=1, innovations_order=[1], observed_state_names=["data_2"]
     )
 
@@ -217,13 +217,13 @@ def test_add_level_trend_with_different_observed():
 
 
 def test_mixed_shared_and_not_shared():
-    mod_1 = st.LevelTrendComponent(
+    mod_1 = st.LevelTrend(
         name="individual",
         order=2,
         innovations_order=[0, 1],
         observed_state_names=["data_1", "data_2"],
     )
-    mod_2 = st.LevelTrendComponent(
+    mod_2 = st.LevelTrend(
         name="joint",
         order=2,
         innovations_order=[1, 1],

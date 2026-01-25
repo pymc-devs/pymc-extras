@@ -8,7 +8,7 @@ from tests.statespace.models.structural.conftest import _assert_basic_coords_cor
 
 
 def test_measurement_error(rng):
-    mod = st.MeasurementError("obs") + st.LevelTrendComponent(order=2)
+    mod = st.MeasurementError("obs") + st.LevelTrend(order=2)
     mod = mod.build(verbose=False)
 
     assert "sigma_obs" in mod.param_names
@@ -75,7 +75,7 @@ def test_measurement_error_shared_and_not_shared():
 
 
 def test_build_with_measurement_error_subset():
-    ll = st.LevelTrendComponent(order=2, observed_state_names=["data_1", "data_2", "data_3"])
+    ll = st.LevelTrend(order=2, observed_state_names=["data_1", "data_2", "data_3"])
     me = st.MeasurementError("obs", observed_state_names=["data_1", "data_3"])
     mod = (ll + me).build()
 

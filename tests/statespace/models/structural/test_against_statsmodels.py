@@ -288,7 +288,7 @@ def create_structural_model_and_equivalent_statsmodel(
             sigma = sigma_level_value.pop(0)
             sm_params["sigma2.trend"] = sigma
 
-        comp = st.LevelTrendComponent(
+        comp = st.LevelTrend(
             name="level", order=level_trend_order, innovations_order=level_trend_innov_order
         )
         components.append(comp)

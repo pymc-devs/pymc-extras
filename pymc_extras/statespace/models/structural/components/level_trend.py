@@ -12,7 +12,7 @@ from pymc_extras.statespace.models.structural.utils import order_to_mask
 from pymc_extras.statespace.utils.constants import POSITION_DERIVATIVE_NAMES
 
 
-class LevelTrendComponent(Component):
+class LevelTrend(Component):
     r"""
     Level and trend component of a structural time series model
 

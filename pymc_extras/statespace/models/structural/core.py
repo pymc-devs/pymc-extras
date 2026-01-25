@@ -78,7 +78,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         import pymc as pm
         import pytensor.tensor as pt
 
-        trend = st.LevelTrendComponent(order=2, innovations_order=1)
+        trend = st.LevelTrend(order=2, innovations_order=1)
         seasonal = st.TimeSeasonality(season_length=12, innovations=True)
         error = st.MeasurementError()
 
@@ -101,7 +101,7 @@ class StructuralTimeSeries(PyMCStateSpace):
     See Also
     --------
     Component : Base class for structural time series components.
-    LevelTrendComponent : Component for modeling level and trend.
+    LevelTrend : Component for modeling level and trend.
     TimeSeasonality : Component for seasonal effects.
     Cycle : Component for cyclical effects.
     Autoregressive : Component for autoregressive dynamics.
@@ -492,7 +492,7 @@ class Component:
 
         from pymc_extras.statespace import structural as st
 
-        trend = st.LevelTrendComponent(order=2, innovations_order=1)
+        trend = st.LevelTrend(order=2, innovations_order=1)
         seasonal = st.TimeSeasonality(season_length=12, innovations=True)
         model = (trend + seasonal).build()
 
@@ -501,7 +501,7 @@ class Component:
     See Also
     --------
     StructuralTimeSeries : The complete model class that combines components.
-    LevelTrendComponent : Component for modeling level and trend.
+    LevelTrend : Component for modeling level and trend.
     TimeSeasonality : Component for seasonal effects.
     Cycle : Component for cyclical effects.
     Regression : Component for regression effects.

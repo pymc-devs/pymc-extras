@@ -53,7 +53,7 @@ class MeasurementError(Component):
         import pymc as pm
         import pytensor.tensor as pt
 
-        trend = st.LevelTrendComponent(order=2, innovations_order=1)
+        trend = st.LevelTrend(order=2, innovations_order=1)
         error = st.MeasurementError()
 
         ss_mod = (trend + error).build()
@@ -83,7 +83,7 @@ class MeasurementError(Component):
 
     .. code:: python
 
-        trend = st.LevelTrendComponent(order=2, innovations_order=1)
+        trend = st.LevelTrend(order=2, innovations_order=1)
         seasonal = st.TimeSeasonality(season_length=12, innovations=True)
         error = st.MeasurementError()
 

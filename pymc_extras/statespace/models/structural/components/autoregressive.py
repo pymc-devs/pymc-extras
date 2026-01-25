@@ -63,7 +63,7 @@ class Autoregressive(Component):
         import pymc as pm
         import pytensor.tensor as pt
 
-        trend = st.LevelTrendComponent(order=1, innovations_order=0)
+        trend = st.LevelTrend(order=1, innovations_order=0)
         ar = st.Autoregressive(2)
         ss_mod = (trend + ar).build()
 
