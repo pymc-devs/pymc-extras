@@ -4,7 +4,7 @@ channels:
 - nodefaults
 dependencies:
   - pymc>=5.27.1
-  - pytensor>=2.36.3
+  - pytensor>=2.37.0
   - scikit-learn
   - better-optimize>=0.1.5
   - dask<2025.1.1
