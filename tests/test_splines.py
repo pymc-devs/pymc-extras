@@ -17,29 +17,13 @@ import numpy as np
 import pytensor.tensor as pt
 import pytest
 
-from numba import TypingError
-from pytensor.compile import get_default_mode
-from pytensor.link.numba import NumbaLinker
 from pytensor.sparse import SparseTensorType
 
 import pymc_extras as pmx
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
-@pytest.mark.parametrize(
-    "sparse",
-    [
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                condition=isinstance(get_default_mode().linker, NumbaLinker),
-                reason="numba backend does not yet support sparse variables",
-                raises=TypingError,
-            ),
-        ),
-        False,
-    ],
-)
+@pytest.mark.parametrize("sparse", [True, False])
 def test_spline_construction(dtype, sparse):
     x = np.linspace(0, 1, 20, dtype=dtype)
     np_out = pmx.utils.spline.numpy_bspline_basis(x, 10, 3)
