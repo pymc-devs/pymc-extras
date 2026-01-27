@@ -29,7 +29,7 @@ def load_nile_test_data():
 
     nile = pd.read_csv("tests/statespace/_data/nile.csv", dtype={"x": floatX})
     major, minor, rev = map(int, version("pandas").split("."))
-    if major >= 2 and minor >= 2 and rev >= 0:
+    if major >= 3 or (major >= 2 and minor >= 2 and rev >= 0):
         freq_str = "YS-JAN"
     else:
         freq_str = "AS-JAN"
@@ -153,7 +153,8 @@ def nile_test_test_helper(rng, n_missing=0):
     R = np.eye(2, dtype=floatX)
     Z = np.array([[1.0, 0.0]], dtype=floatX)
 
-    data = load_nile_test_data().values
+    # In pandas > 3.0, the array stored in .values is a read-only pointer, so we need to copy it
+    data = load_nile_test_data().values.copy()
     if n_missing > 0:
         data = add_missing_data(data, n_missing, rng)
 
