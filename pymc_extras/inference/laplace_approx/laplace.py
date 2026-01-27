@@ -137,7 +137,7 @@ def get_conditional_gaussian_approximation(
     hess = pytensor.graph.replace.graph_replace(hess, {x: x0})
 
     # Full log(p(x | y, params)) using the Laplace approximation (up to a constant)
-    _, logdetQ = pt.nlinalg.slogdet(Q)
+    _, logdetQ = pt.linalg.slogdet(Q)
     conditional_gaussian_approx = (
         -0.5 * x.T @ (-hess + Q) @ x + x.T @ (Q @ mu + jac - hess @ x0) + 0.5 * logdetQ
     )
@@ -153,7 +153,7 @@ def unpack_last_axis(packed_input, packed_shapes):
         return [pt.split_dims(packed_input, packed_shapes[0], axis=-1)]
 
     keep_axes = tuple(range(packed_input.ndim))[:-1]
-    return pt.unpack(packed_input, axes=keep_axes, packed_shapes=packed_shapes)
+    return pt.unpack(packed_input, keep_axes=keep_axes, packed_shapes=packed_shapes)
 
 
 def draws_from_laplace_approx(

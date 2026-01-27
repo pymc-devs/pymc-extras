@@ -34,8 +34,8 @@ keywords = [
 license = {file = "LICENSE"}
 dynamic = ["version"]  # specify the version in the __init__.py file
 dependencies = [
-  "pymc>=5.27.0",
-  "pytensor>=2.36.3",
+  "pymc>=5.27.1",
+  "pytensor>=2.37.0",
   "scikit-learn",
   "better-optimize>=0.1.5",
   "pydantic>=2.0.0",
