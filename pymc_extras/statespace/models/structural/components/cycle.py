@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 
 from pytensor import tensor as pt
@@ -348,3 +350,15 @@ class Cycle(Component):
         else:
             # explicitly set state cov to 0 when no innovations
             self.ssm["state_cov", :, :] = pt.zeros((self.k_posdef, self.k_posdef))
+
+
+def __getattr__(name: str):
+    if name == "CycleComponent":
+        warnings.warn(
+            "CycleComponent is deprecated and will be removed in a future release. "
+            "Use Cycle instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return Cycle
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

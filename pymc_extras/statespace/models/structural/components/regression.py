@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 
 from pytensor import tensor as pt
@@ -256,3 +258,15 @@ class Regression(Component):
             )
             row_idx, col_idx = np.diag_indices(self.k_states)
             self.ssm["state_cov", row_idx, col_idx] = sigma_beta.ravel() ** 2
+
+
+def __getattr__(name: str):
+    if name == "RegressionComponent":
+        warnings.warn(
+            "RegressionComponent is deprecated and will be removed in a future release. "
+            "Use Regression instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return Regression
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytensor.tensor as pt
 
@@ -326,3 +328,15 @@ class LevelTrend(Component):
             diag_idx = np.diag_indices(k_posdef * k_endog_effective)
             idx = np.s_["state_cov", diag_idx[0], diag_idx[1]]
             self.ssm[idx] = (sigma_trend**2).ravel()
+
+
+def __getattr__(name: str):
+    if name == "LevelTrendComponent":
+        warnings.warn(
+            "LevelTrendComponent is deprecated and will be removed in a future release. "
+            "Use LevelTrend instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return LevelTrend
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
