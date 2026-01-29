@@ -19,7 +19,7 @@ RTOL = 0 if floatX.endswith("64") else 1e-6
 
 
 def test_add_components():
-    ll = st.LevelTrendComponent(order=2)
+    ll = st.LevelTrend(order=2)
     se = st.TimeSeasonality(name="seasonal", season_length=12)
     mod = ll + se
 
@@ -67,7 +67,7 @@ def test_add_components():
 
 
 def test_add_components_multiple_observed():
-    ll = st.LevelTrendComponent(order=2, observed_state_names=["data_1", "data_2"])
+    ll = st.LevelTrend(order=2, observed_state_names=["data_1", "data_2"])
     me = st.MeasurementError(name="obs", observed_state_names=["data_1", "data_2"])
 
     mod = (ll + me).build()
@@ -83,9 +83,9 @@ def test_extract_components_from_idata(rng):
 
     y = pd.DataFrame(rng.normal(size=(100, 1)), columns=["data"], index=time_idx)
 
-    ll = st.LevelTrendComponent()
+    ll = st.LevelTrend()
     season = st.FrequencySeasonality(name="seasonal", season_length=12, n=2, innovations=False)
-    reg = st.RegressionComponent(state_names=["a", "b"], name="exog")
+    reg = st.Regression(state_names=["a", "b"], name="exog")
     me = st.MeasurementError("obs")
     mod = (ll + season + reg + me).build(verbose=False)
 
@@ -121,11 +121,11 @@ def test_extract_multiple_observed(rng):
         rng.normal(size=(100, 3)), columns=["data_1", "data_2", "data_3"], index=time_idx
     )
 
-    ll = st.LevelTrendComponent(name="trend", observed_state_names=["data_1", "data_2"])
+    ll = st.LevelTrend(name="trend", observed_state_names=["data_1", "data_2"])
     season = st.FrequencySeasonality(
         name="seasonal", observed_state_names=["data_1"], season_length=12, n=2, innovations=False
     )
-    reg = st.RegressionComponent(
+    reg = st.Regression(
         state_names=["a", "b"], name="exog", observed_state_names=["data_2", "data_3"]
     )
     ar = st.Autoregressive(observed_state_names=["data_1", "data_2"], order=3)
@@ -179,8 +179,8 @@ def test_extract_multiple_observed(rng):
 def test_sequence_type_component_arguments(arg_type):
     state_names = list("ABCDEFG")
     components = [
-        st.LevelTrendComponent,
-        partial(st.CycleComponent, cycle_length=12),
+        st.LevelTrend,
+        partial(st.Cycle, cycle_length=12),
         st.Autoregressive,
         partial(st.FrequencySeasonality, season_length=12),
         partial(st.TimeSeasonality, season_length=12),

@@ -210,7 +210,7 @@ class TimeSeasonality(Component):
         state_names = pd.date_range('1900-01-01', '1900-12-31', freq='MS').month_name().tolist()
 
         # Build the structural model
-        grw = st.LevelTrendComponent(order=1, innovations_order=1)
+        grw = st.LevelTrend(order=1, innovations_order=1)
         annual_season = st.TimeSeasonality(
             season_length=12, name="annual", state_names=state_names, innovations=False
         )

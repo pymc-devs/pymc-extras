@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytensor.tensor as pt
 
@@ -63,7 +65,7 @@ class Autoregressive(Component):
         import pymc as pm
         import pytensor.tensor as pt
 
-        trend = st.LevelTrendComponent(order=1, innovations_order=0)
+        trend = st.LevelTrend(order=1, innovations_order=0)
         ar = st.Autoregressive(2)
         ss_mod = (trend + ar).build()
 
@@ -239,3 +241,15 @@ class Autoregressive(Component):
 
         cov_idx = ("state_cov", *np.diag_indices(k_posdef))
         self.ssm[cov_idx] = sigma_ar**2
+
+
+def __getattr__(name: str):
+    if name == "AutoregressiveComponent":
+        warnings.warn(
+            "AutoregressiveComponent is deprecated and will be removed in a future release. "
+            "Use Autoregressive instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return Autoregressive
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

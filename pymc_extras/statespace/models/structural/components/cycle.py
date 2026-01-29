@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 
 from pytensor import tensor as pt
@@ -13,7 +15,7 @@ from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
 
 
-class CycleComponent(Component):
+class Cycle(Component):
     r"""
     A component for modeling longer-term cyclical effects
 
@@ -70,7 +72,7 @@ class CycleComponent(Component):
     effects, such as business cycles, and that the seasonal component be used for shorter term effects, such as
     weekly or monthly seasonality.
 
-    Unlike a FrequencySeasonality component, the length of a CycleComponent can be estimated.
+    Unlike a FrequencySeasonality component, the length of a Cycle can be estimated.
 
     **Multivariate Support:**
     For multivariate time series with k endogenous variables, the component creates:
@@ -95,8 +97,8 @@ class CycleComponent(Component):
         data = np.random.normal(size=(100, 1))
 
         # Build the structural model
-        grw = st.LevelTrendComponent(order=1, innovations_order=1)
-        cycle = st.CycleComponent(
+        grw = st.LevelTrend(order=1, innovations_order=1)
+        cycle = st.Cycle(
             "business_cycle", cycle_length=12, estimate_cycle_length=False, innovations=True, dampen=True
         )
         ss_mod = (grw + cycle).build()
@@ -123,7 +125,7 @@ class CycleComponent(Component):
     .. code:: python
 
         # Multivariate cycle component
-        cycle = st.CycleComponent(
+        cycle = st.Cycle(
             name='business_cycle',
             cycle_length=12,
             estimate_cycle_length=False,
@@ -348,3 +350,15 @@ class CycleComponent(Component):
         else:
             # explicitly set state cov to 0 when no innovations
             self.ssm["state_cov", :, :] = pt.zeros((self.k_posdef, self.k_posdef))
+
+
+def __getattr__(name: str):
+    if name == "CycleComponent":
+        warnings.warn(
+            "CycleComponent is deprecated and will be removed in a future release. "
+            "Use Cycle instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return Cycle
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -19,9 +19,7 @@ cycle_test_vals = zip([None, None, 3, 5, 10], [False, True, True, False, False])
 
 
 def test_cycle_component_deterministic(rng):
-    cycle = st.CycleComponent(
-        name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False
-    )
+    cycle = st.Cycle(name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False)
     params = {"params_cycle": np.array([1.0, 1.0], dtype=config.floatX)}
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=12 * 12)
 
@@ -29,7 +27,7 @@ def test_cycle_component_deterministic(rng):
 
 
 def test_cycle_component_with_dampening(rng):
-    cycle = st.CycleComponent(
+    cycle = st.Cycle(
         name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False, dampen=True
     )
     params = {
@@ -43,9 +41,7 @@ def test_cycle_component_with_dampening(rng):
 
 
 def test_cycle_component_with_innovations_and_cycle_length(rng):
-    cycle = st.CycleComponent(
-        name="cycle", estimate_cycle_length=True, innovations=True, dampen=True
-    )
+    cycle = st.Cycle(name="cycle", estimate_cycle_length=True, innovations=True, dampen=True)
     params = {
         "params_cycle": np.array([1.0, 1.0], dtype=config.floatX),
         "length_cycle": 12.0,
@@ -60,7 +56,7 @@ def test_cycle_component_with_innovations_and_cycle_length(rng):
 
 def test_cycle_multivariate_deterministic(rng):
     """Test multivariate cycle component with deterministic cycles."""
-    cycle = st.CycleComponent(
+    cycle = st.Cycle(
         name="cycle",
         cycle_length=12,
         estimate_cycle_length=False,
@@ -111,7 +107,7 @@ def test_cycle_multivariate_deterministic(rng):
 
 
 def test_multivariate_cycle_with_shared(rng):
-    cycle = st.CycleComponent(
+    cycle = st.Cycle(
         name="cycle",
         cycle_length=12,
         estimate_cycle_length=False,
@@ -136,7 +132,7 @@ def test_multivariate_cycle_with_shared(rng):
 
 def test_cycle_multivariate_with_dampening(rng):
     """Test multivariate cycle component with dampening."""
-    cycle = st.CycleComponent(
+    cycle = st.Cycle(
         name="cycle",
         cycle_length=12,
         estimate_cycle_length=False,
@@ -165,7 +161,7 @@ def test_cycle_multivariate_with_dampening(rng):
 
 def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
     """Test multivariate cycle component with innovations and estimated cycle length."""
-    cycle = st.CycleComponent(
+    cycle = st.Cycle(
         name="cycle",
         estimate_cycle_length=True,
         innovations=True,
@@ -248,18 +244,18 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
 
 def test_add_multivariate_cycle_components_with_different_observed():
     """
-    Test adding two multivariate CycleComponents with different observed_state_names.
-    Ensures that combining two multivariate CycleComponents with different observed state names
+    Test adding two multivariate Cycles with different observed_state_names.
+    Ensures that combining two multivariate Cycles with different observed state names
     results in the correct block-diagonal state space matrices and state naming.
     """
-    cycle1 = st.CycleComponent(
+    cycle1 = st.Cycle(
         name="cycle1",
         cycle_length=12,
         estimate_cycle_length=False,
         innovations=False,
         observed_state_names=["a1", "a2"],
     )
-    cycle2 = st.CycleComponent(
+    cycle2 = st.Cycle(
         name="cycle2",
         cycle_length=6,
         estimate_cycle_length=False,
@@ -328,7 +324,7 @@ def test_add_multivariate_cycle_components_with_different_observed():
 
 
 def test_add_multivariate_shared_and_not_shared():
-    cycle_shared = st.CycleComponent(
+    cycle_shared = st.Cycle(
         name="shared_cycle",
         cycle_length=12,
         estimate_cycle_length=False,
@@ -336,7 +332,7 @@ def test_add_multivariate_shared_and_not_shared():
         observed_state_names=["gdp", "inflation", "unemployment"],
         share_states=True,
     )
-    cycle_individual = st.CycleComponent(
+    cycle_individual = st.Cycle(
         name="individual_cycle",
         estimate_cycle_length=True,
         innovations=False,

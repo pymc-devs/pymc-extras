@@ -288,7 +288,7 @@ def create_structural_model_and_equivalent_statsmodel(
             sigma = sigma_level_value.pop(0)
             sm_params["sigma2.trend"] = sigma
 
-        comp = st.LevelTrendComponent(
+        comp = st.LevelTrend(
             name="level", order=level_trend_order, innovations_order=level_trend_innov_order
         )
         components.append(comp)
@@ -394,7 +394,7 @@ def create_structural_model_and_equivalent_statsmodel(
             params["dampening_factor_cycle"] = rho
             sm_params["damping.cycle"] = rho
 
-        comp = st.CycleComponent(
+        comp = st.Cycle(
             name="cycle",
             dampen=damped_cycle,
             innovations=stochastic_cycle,
@@ -440,7 +440,7 @@ def create_structural_model_and_equivalent_statsmodel(
         for i, beta in enumerate(betas):
             sm_params[f"beta.x{i + 1}"] = beta
             sm_init[f"beta.x{i + 1}"] = beta
-        comp = st.RegressionComponent(name="exog", state_names=names)
+        comp = st.Regression(name="exog", state_names=names)
         components.append(comp)
 
     st_mod = components.pop(0)
