@@ -27,6 +27,44 @@ from pytensor.tensor.random.type import RandomType
 from pymc_extras.distributions import DiscreteMarkovChain
 
 
+class GradientBlocker(Op):
+    """
+    An Op that forwards its input unchanged but blocks gradient computation.
+
+    This is used to prevent gradient flow through operations like MinimizeOp
+    that don't have properly defined gradients. Unlike disconnected_grad,
+    this Op returns grad_undefined which ensures NullType gradients.
+    """
+
+    __props__ = ()
+    itypes = None  # Will be set dynamically
+    otypes = None  # Will be set dynamically
+
+    def make_node(self, x):
+        from pytensor.graph.basic import Apply
+
+        # Ensure x is a tensor variable
+        x = pt.as_tensor_variable(x)
+        return Apply(self, [x], [x.type()])
+
+    def perform(self, node, inputs, outputs):
+        # inputs[0] is a numpy array at runtime
+        outputs[0][0] = np.asarray(inputs[0])
+
+    def grad(self, inputs, output_grads):
+        from pytensor.gradient import grad_undefined
+
+        return [grad_undefined(self, 0, inputs[0])]
+
+    def infer_shape(self, fgraph, node, input_shapes):
+        return input_shapes
+
+
+def block_gradient(x):
+    """Block gradient computation through tensor x by returning grad_undefined."""
+    return GradientBlocker()(x)
+
+
 class MarginalRV(OpFromGraph, MeasurableOp):
     """Base class for Marginalized RVs"""
 
@@ -463,8 +501,17 @@ def get_laplace_approx(
     """
     # Maximize log(p(x | y, params)) wrt x to find mode x0
     # This step is currently bottlenecking the logp calculation.
+    #
+    # IMPORTANT: We use clone_replace to create a copy of the logp_objective graph.
+    # This prevents graph_replace (called later to substitute x with x0) from
+    # modifying the MinimizeOp's inputs, which would create a new MinimizeOp node
+    # in the final graph and cause gradient computation issues.
+    from pytensor.graph.replace import clone_replace
+
+    logp_objective_clone = clone_replace(logp_objective)
+
     x0, _ = minimize(
-        objective=-logp_objective,  # logp(x | y, params) = logp(y | x, params) + logp(x | params) + const (const omitted during minimization)
+        objective=-logp_objective_clone,  # logp(x | y, params) = logp(y | x, params) + logp(x | params) + const (const omitted during minimization)
         x=x,
         use_vectorized_jac=True,
         **minimizer_kwargs,
@@ -473,15 +520,33 @@ def get_laplace_approx(
     # Set minimizer initialisation to be random
     x0 = pytensor.graph.replace.graph_replace(x0, {x: x0_init})
 
+    # Block gradients through the minimize operation using our custom Op.
+    # The optimization result x0 should be treated as a fixed point for gradient computation.
+    # Without this, NUTS sampling fails because PyTensor cannot backpropagate through MinimizeOp.
+    # We use block_gradient (which returns grad_undefined/NullType) instead of disconnected_grad
+    # because MinimizeOp's gradient handling doesn't work well with DisconnectedType.
+    x0 = block_gradient(x0)
+
     # This step is also expensive (but not as much as minimize). Could be made more efficient by recycling hessian from the minimizer step, however that requires a bespoke algorithm described in Rasmussen & Williams
     # since the general optimisation scheme maximises logp(x | y, params) rather than logp(y | x, params), and thus the hessian that comes out of methods
     # like L-BFGS-B is in fact not the hessian of logp(y | x, params)
+
+    # Compute the Hessian as a function of x
     hess = pytensor.gradient.hessian(log_likelihood, x)
 
+    # Evaluate the Hessian at x0 and block gradients through the MinimizeOp.
+    # This is crucial: without blocking, gradient computation through the Hessian
+    # would try to backpropagate through MinimizeOp, causing assertion errors.
+    hess_at_x0 = pytensor.graph.replace.graph_replace(hess, {x: x0})
+    hess_at_x0 = block_gradient(hess_at_x0)
+
     # Evaluate logp of Laplace approx of logp(x | y, params) at some point x
-    tau = Q - hess
+    # Note: we use hess_at_x0 (disconnected) instead of hess
+    tau = Q - hess_at_x0
     mu = x0
-    log_laplace_approx, _ = _precision_mv_normal_logp(x, mu, tau)
+    # Use x0 directly as the evaluation point, since the marginal likelihood formula is:
+    # log p(y | params) = log p(y, x0 | params) - log p_G(x0 | y, params)
+    log_laplace_approx, _ = _precision_mv_normal_logp(x0, mu, tau)
 
     return x0, log_laplace_approx
 
@@ -549,4 +614,10 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
 
     # logp(y | params) = logp(y | x, params) + logp(x | params) - logp(x | y, params)
     marginal_likelihood = logp - log_laplace_approx
+
+    # Block gradients through x0 AGAIN before the final graph_replace.
+    # This ensures that when marginalized_vv is replaced with x0 throughout the graph,
+    # no gradient paths through MinimizeOp are created.
+    x0 = block_gradient(x0)
+
     return pytensor.graph.replace.graph_replace(marginal_likelihood, {marginalized_vv: x0})
