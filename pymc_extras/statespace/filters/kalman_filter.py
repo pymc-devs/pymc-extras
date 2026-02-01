@@ -8,7 +8,7 @@ from pymc.pytensorf import constant_fold
 from pytensor.graph.basic import Variable
 from pytensor.raise_op import Assert
 from pytensor.tensor import TensorVariable
-from pytensor.tensor.slinalg import solve_triangular
+from pytensor.tensor.linalg import solve_triangular
 
 from pymc_extras.statespace.filters.utilities import (
     quad_form_sym,
@@ -148,10 +148,9 @@ class BaseFilter(ABC):
         R,
         H,
         Q,
-        return_updates=False,
         missing_fill_value=None,
         cov_jitter=None,
-    ) -> list[TensorVariable] | tuple[list[TensorVariable], dict]:
+    ) -> list[TensorVariable]:
         """
         Construct the computation graph for the Kalman filter. See [1] for details.
 
@@ -211,20 +210,17 @@ class BaseFilter(ABC):
         if len(sequences) > 0:
             sequences = self.add_check_on_time_varying_shapes(data, sequences)
 
-        results, updates = pytensor.scan(
+        results = pytensor.scan(
             self.kalman_step,
             sequences=[data, *sequences],
             outputs_info=[None, a0, None, None, P0, None, None],
             non_sequences=non_sequences,
             name="forward_kalman_pass",
             strict=False,
+            return_updates=False,
         )
 
-        filter_results = self._postprocess_scan_results(results, a0, P0, n=data.type.shape[0])
-
-        if return_updates:
-            return filter_results, updates
-        return filter_results
+        return self._postprocess_scan_results(results, a0, P0, n=data.type.shape[0])
 
     def _postprocess_scan_results(self, results, a0, P0, n) -> list[TensorVariable]:
         """
@@ -652,7 +648,9 @@ class SquareRootFilter(BaseFilter):
         y_hat = Z.dot(a) + d
         v = y - y_hat
 
-        H_chol = pytensor.ifelse(pt.all(pt.eq(H, 0.0)), H, pt.linalg.cholesky(H, lower=True))
+        H_chol = pytensor.ifelse(
+            pt.all(pt.eq(H, 0.0)), H, pt.linalg.cholesky(H, lower=True, on_error="nan")
+        )
 
         # The following notation comes from https://ipnpr.jpl.nasa.gov/progress_report/42-233/42-233A.pdf
         # Construct upper-triangular block matrix A = [[chol(H), Z @ L_pred],
@@ -694,8 +692,10 @@ class SquareRootFilter(BaseFilter):
             """
             return [a, P_chol, pt.zeros(())]
 
+        degenerate = pt.eq(all_nan_flag, 1.0)
+        F_chol = pytensor.ifelse(degenerate, pt.eye(*F_chol.shape), F_chol)
         [a_filtered, P_chol_filtered, ll] = pytensor.ifelse(
-            pt.eq(all_nan_flag, 1.0),
+            degenerate,
             compute_degenerate(P_chol_filtered, F_chol, K_F_chol, v),
             compute_non_degenerate(P_chol_filtered, F_chol, K_F_chol, v),
         )
@@ -786,11 +786,12 @@ class UnivariateFilter(BaseFilter):
         H_masked = W.dot(H)
         y_masked = pt.set_subtensor(y[nan_mask], 0.0)
 
-        result, updates = pytensor.scan(
+        result = pytensor.scan(
             self._univariate_inner_filter_step,
             sequences=[y_masked, Z_masked, d, pt.diag(H_masked), nan_mask],
             outputs_info=[a, P, None, None, None],
             name="univariate_inner_scan",
+            return_updates=False,
         )
 
         a_filtered, P_filtered, obs_mu, obs_cov, ll_inner = result

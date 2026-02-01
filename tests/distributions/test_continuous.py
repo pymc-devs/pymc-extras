@@ -36,6 +36,10 @@ from pymc.testing import (
 # the distributions to be tested
 from pymc_extras.distributions import Chi, GenExtreme, Maxwell
 
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Numba will use object mode to run Generalized Extreme Value:UserWarning"
+)
+
 
 class TestGenExtremeClass:
     """

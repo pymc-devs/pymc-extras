@@ -1,12 +1,19 @@
+import warnings
+
 import numpy as np
 import pytensor.tensor as pt
 
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    Parameter,
+    Shock,
+    State,
+)
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import order_to_mask
-from pymc_extras.statespace.utils.constants import AR_PARAM_DIM
 
 
-class AutoregressiveComponent(Component):
+class Autoregressive(Component):
     r"""
     Autoregressive timeseries component
 
@@ -58,8 +65,8 @@ class AutoregressiveComponent(Component):
         import pymc as pm
         import pytensor.tensor as pt
 
-        trend = st.LevelTrendComponent(order=1, innovations_order=0)
-        ar = st.AutoregressiveComponent(2)
+        trend = st.LevelTrend(order=1, innovations_order=0)
+        ar = st.Autoregressive(2)
         ss_mod = (trend + ar).build()
 
         with pm.Model(coords=ss_mod.coords) as model:
@@ -94,6 +101,8 @@ class AutoregressiveComponent(Component):
         self.order = order
         self.ar_lags = ar_lags
 
+        state_names = [f"L{i + 1}_{name}" for i in range(k_states)]
+
         super().__init__(
             name=name,
             k_endog=k_endog,
@@ -101,61 +110,82 @@ class AutoregressiveComponent(Component):
             k_posdef=k_posdef,
             measurement_error=True,
             combine_hidden_states=True,
-            observed_state_names=observed_state_names,
+            base_observed_state_names=observed_state_names,
+            base_state_names=state_names,
             obs_state_idxs=np.tile(np.r_[[1.0], np.zeros(k_states - 1)], k_endog_effective),
             share_states=share_states,
         )
 
-    def populate_component_properties(self):
+    def set_states(self) -> State | tuple[State, ...] | None:
+        base_names = self.base_state_names
+        observed_state_names = self.base_observed_state_names
+
+        if self.share_states:
+            state_names = [f"{name}[shared]" for name in base_names]
+        else:
+            state_names = [
+                f"{name}[{state_name}]"
+                for state_name in observed_state_names
+                for name in base_names
+            ]
+
+        hidden_states = [State(name=name, observed=False, shared=True) for name in state_names]
+        observed_states = [
+            State(name=name, observed=True, shared=False) for name in observed_state_names
+        ]
+        return *hidden_states, *observed_states
+
+    def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
         k_endog = self.k_endog
         k_endog_effective = 1 if self.share_states else k_endog
 
         k_states = self.k_states // k_endog_effective  # this is also the number of AR lags
-        base_names = [f"L{i + 1}_{self.name}" for i in range(k_states)]
 
-        if self.share_states:
-            self.state_names = [f"{name}[shared]" for name in base_names]
-            self.shock_names = [f"{self.name}[shared]"]
-        else:
-            self.state_names = [
-                f"{name}[{state_name}]"
-                for state_name in self.observed_state_names
-                for name in base_names
-            ]
-            self.shock_names = [
-                f"{self.name}[{obs_name}]" for obs_name in self.observed_state_names
-            ]
-
-        self.param_names = [f"params_{self.name}", f"sigma_{self.name}"]
-        self.param_dims = {f"params_{self.name}": (f"lag_{self.name}",)}
-        self.coords = {f"lag_{self.name}": self.ar_lags.tolist()}
-
-        if k_endog_effective > 1:
-            self.param_dims[f"params_{self.name}"] = (
+        ar_param = Parameter(
+            name=f"params_{self.name}",
+            shape=(k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,),
+            dims=(f"lag_{self.name}",)
+            if k_endog_effective == 1
+            else (
                 f"endog_{self.name}",
                 f"lag_{self.name}",
-            )
-            self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
+            ),
+            constraints=None,
+        )
 
-            self.coords[f"endog_{self.name}"] = self.observed_state_names
+        sigma_param = Parameter(
+            name=f"sigma_{self.name}",
+            shape=(k_endog_effective,) if k_endog_effective > 1 else (),
+            dims=(f"endog_{self.name}",) if k_endog_effective > 1 else None,
+            constraints="Positive",
+        )
 
-        self.param_info = {
-            f"params_{self.name}": {
-                "shape": (k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,),
-                "constraints": None,
-                "dims": (AR_PARAM_DIM,)
-                if k_endog_effective == 1
-                else (
-                    f"endog_{self.name}",
-                    f"lag_{self.name}",
-                ),
-            },
-            f"sigma_{self.name}": {
-                "shape": (k_endog_effective,) if k_endog_effective > 1 else (),
-                "constraints": "Positive",
-                "dims": (f"endog_{self.name}",) if k_endog_effective > 1 else None,
-            },
-        }
+        return ar_param, sigma_param
+
+    def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
+        observed_state_names = self.observed_state_names
+
+        if self.share_states:
+            shock_names = [f"{self.name}[shared]"]
+        else:
+            shock_names = [f"{self.name}[{obs_name}]" for obs_name in observed_state_names]
+
+        return tuple(Shock(name=name) for name in shock_names)
+
+    def set_coords(self) -> Coord | tuple[Coord, ...] | None:
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+        observed_state_names = self.observed_state_names
+
+        lag_coord = Coord(dimension=f"lag_{self.name}", labels=self.ar_lags.tolist())
+
+        coord_container = [lag_coord]
+
+        if k_endog_effective > 1:
+            endog_coord = Coord(dimension=f"endog_{self.name}", labels=observed_state_names)
+            coord_container.append(endog_coord)
+
+        return tuple(coord_container)
 
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog
@@ -211,3 +241,15 @@ class AutoregressiveComponent(Component):
 
         cov_idx = ("state_cov", *np.diag_indices(k_posdef))
         self.ssm[cov_idx] = sigma_ar**2
+
+
+def __getattr__(name: str):
+    if name == "AutoregressiveComponent":
+        warnings.warn(
+            "AutoregressiveComponent is deprecated and will be removed in a future release. "
+            "Use Autoregressive instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return Autoregressive
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

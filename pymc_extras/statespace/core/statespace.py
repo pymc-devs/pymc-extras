@@ -19,6 +19,22 @@ from rich.box import SIMPLE_HEAD
 from rich.console import Console
 from rich.table import Table
 
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    CoordInfo,
+    Data,
+    DataInfo,
+    Parameter,
+    ParameterInfo,
+    Shock,
+    ShockInfo,
+    State,
+    StateInfo,
+    SymbolicData,
+    SymbolicDataInfo,
+    SymbolicVariable,
+    SymbolicVariableInfo,
+)
 from pymc_extras.statespace.core.representation import PytensorRepresentation
 from pymc_extras.statespace.filters import (
     KalmanSmoother,
@@ -67,6 +83,22 @@ def _validate_filter_arg(filter_arg):
 def _verify_group(group):
     if group not in ["prior", "posterior"]:
         raise ValueError(f'Argument "group" must be one of "prior" or "posterior", found {group}')
+
+
+def _validate_property(props, property_name, expected_type):
+    if isinstance(props, expected_type) or props is None:
+        return
+    elif not isinstance(props, tuple | list):
+        raise TypeError(
+            f"The {property_name} property must be a {expected_type.__name__} or a "
+            f"list/tuple of {expected_type.__name__} instances."
+        )
+
+    if not all(isinstance(prop, expected_type) for prop in props):
+        raise TypeError(
+            f"All elements of the {property_name} property must be instances of "
+            f"{expected_type.__name__}."
+        )
 
 
 class PyMCStateSpace:
@@ -236,14 +268,16 @@ class PyMCStateSpace:
         self._fit_exog_data: dict[str, dict] = {}
 
         self._needs_exog_data = None
-        self._name_to_variable = {}
-        self._name_to_data = {}
+        self._tensor_variable_info = SymbolicVariableInfo()
+        self._tensor_data_info = SymbolicDataInfo()
 
         self.k_endog = k_endog
         self.k_states = k_states
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
         self.mode = mode
+
+        self._populate_properties()
 
         # All models contain a state space representation and a Kalman filter
         self.ssm = PytensorRepresentation(k_endog, k_states, k_posdef)
@@ -271,17 +305,107 @@ class PyMCStateSpace:
             console = Console()
             console.print(self.requirement_table)
 
+    def _populate_properties(self) -> None:
+        self._set_parameters()
+        self._set_states()
+        self._set_shocks()
+        self._set_coords()
+        self._set_data_info()
+
+    def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
+        """
+        Provides parameter metadata to the model.
+
+        Optional. Default implementation sets an empty ParameterInfo.
+        Child classes can override to define model parameters.
+        """
+        return
+
+    def _set_parameters(self) -> None:
+        param_list = self.set_parameters()
+        self._param_info = ParameterInfo(parameters=param_list)
+
+    def set_states(self) -> State | tuple[State, ...] | None:
+        """
+        Provide state metadata to the model.
+
+        Optional. Default implementation creates generic state names (state_0, state_1, ...).
+        Child classes can override to provide meaningful state names.
+        """
+        hidden_states = [
+            State(name=f"hidden_state_{name}", observed=False) for name in range(self.k_states or 0)
+        ]
+        observed_states = [
+            State(name=f"observed_state_{name}", observed=True) for name in range(self.k_endog or 0)
+        ]
+        return *hidden_states, *observed_states
+
+    def _set_states(self) -> None:
+        states = self.set_states()
+        _validate_property(states, "states", State)
+
+        if isinstance(states, State):
+            states = (states,)
+
+        self._state_info = StateInfo(states=states)
+
+    def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
+        """
+        Provide shock metadata to the model.
+
+        Optional. Default implementation creates generic shock names (shock_0, shock_1, ...).
+        Child classes can override to provide meaningful shock names.
+        """
+        return tuple(Shock(name=f"shock_{i}") for i in range(self.k_posdef))
+
+    def _set_shocks(self) -> None:
+        shocks = self.set_shocks()
+        _validate_property(shocks, "shocks", Shock)
+        if isinstance(shocks, Shock):
+            shocks = (shocks,)
+        self._shock_info = ShockInfo(shocks=shocks)
+
+    def default_coords(self) -> tuple[Coord, ...]:
+        return CoordInfo.default_coords_from_model(self).items
+
+    def set_coords(self) -> Coord | tuple[Coord, ...] | None:
+        """
+        Provide coordinates to the model.
+
+        Optional. Default implementation sets an empty CoordInfo.
+        Child classes can override to provide model-specific coordinates.
+        """
+        return self.default_coords()
+
+    def _set_coords(self) -> None:
+        coords = self.set_coords()
+        _validate_property(coords, "coords", Coord)
+        if isinstance(coords, Coord):
+            coords = (coords,)
+        self._coords_info = CoordInfo(coords=coords)
+
+    def set_data_info(self) -> Data | tuple[Data, ...] | None:
+        """
+        Provide data_info metadata to the model.
+
+        Optional. Default implementation sets an empty DataInfo.
+        Child classes can override if the model requires exogenous data.
+        """
+        return
+
+    def _set_data_info(self) -> None:
+        data_info = self.set_data_info()
+        _validate_property(data_info, "data_info", Data)
+        if isinstance(data_info, Data):
+            data_info = (data_info,)
+        self._data_info = DataInfo(data=data_info)
+
     def _populate_prior_requirements(self) -> None:
         """
         Add requirements about priors needed for the model to a rich table, including their names,
         shapes, named dimensions, and any parameter constraints.
         """
-        # Check that the param_info class is implemented, and also that it's a dictionary. We can't proceed if either
-        # is not true.
-        try:
-            if not isinstance(self.param_info, dict):
-                return
-        except NotImplementedError:
+        if not self.param_info:
             return
 
         if self.requirement_table is None:
@@ -296,10 +420,7 @@ class PyMCStateSpace:
         """
         Add requirements about the data needed for the model, including their names, shapes, and named dimensions.
         """
-        try:
-            if not isinstance(self.data_info, dict):
-                return
-        except NotImplementedError:
+        if not self.data_info:
             return
 
         if self.requirement_table is None:
@@ -374,24 +495,24 @@ class PyMCStateSpace:
         return self.subbed_ssm
 
     @property
-    def param_names(self) -> list[str]:
+    def param_names(self) -> tuple[str, ...]:
         """
         Names of model parameters
 
         A list of all parameters expected by the model. Each parameter will be sought inside the active PyMC model
         context when ``build_statespace_graph`` is invoked.
         """
-        raise NotImplementedError("The param_names property has not been implemented!")
+        return self._param_info.names
 
     @property
-    def data_names(self) -> list[str]:
+    def data_names(self) -> tuple[str, ...]:
         """
         Names of data variables expected by the model.
 
         This does not include the observed data series, which is automatically handled by PyMC. This property only
         needs to be implemented for models that expect exogenous data.
         """
-        return []
+        return self._data_info.exogenous_names
 
     @property
     def param_info(self) -> dict[str, dict[str, Any]]:
@@ -406,7 +527,7 @@ class PyMCStateSpace:
               positive semi-definite, etc)
             * key: "dims", value: tuple of strings
         """
-        raise NotImplementedError("The params_info property has not been implemented!")
+        return self._param_info.to_dict()
 
     @property
     def data_info(self) -> dict[str, dict[str, Any]]:
@@ -419,31 +540,30 @@ class PyMCStateSpace:
             * key: "shape", value: a tuple of integers
             * key: "dims", value: tuple of strings
         """
-        raise NotImplementedError("The data_info property has not been implemented!")
+        return self._data_info.to_dict()
 
     @property
-    def state_names(self) -> list[str]:
+    def state_names(self) -> tuple[str, ...]:
         """
         A k_states length list of strings, associated with the model's hidden states
 
         """
-
-        raise NotImplementedError("The state_names property has not been implemented!")
+        return self._state_info.unobserved_state_names
 
     @property
-    def observed_states(self) -> list[str]:
+    def observed_states(self) -> tuple[str, ...]:
         """
         A k_endog length list of strings, associated with the model's observed states
         """
-        raise NotImplementedError("The observed_states property has not been implemented!")
+        return self._state_info.observed_state_names
 
     @property
-    def shock_names(self) -> list[str]:
+    def shock_names(self) -> tuple[str, ...]:
         """
         A k_posdef length list of strings, associated with the model's shock processes
 
         """
-        raise NotImplementedError("The shock_names property has not been implemented!")
+        return self._shock_info.names
 
     @property
     def default_priors(self) -> dict[str, Callable]:
@@ -464,10 +584,10 @@ class PyMCStateSpace:
         should come from the default names defined in ``statespace.utils.constants`` for them to be detected by
         sampling methods.
         """
-        raise NotImplementedError("The coords property has not been implemented!")
+        return self._coords_info.to_dict()
 
     @property
-    def param_dims(self) -> dict[str, Sequence[str]]:
+    def param_dims(self) -> dict[str, tuple[str, ...]]:
         """
         Dictionary of named dimensions for each model parameter
 
@@ -475,8 +595,17 @@ class PyMCStateSpace:
         PyMC random variable. Dimensions should come from the default names defined in ``statespace.utils.constants``
         for them to be detected by sampling methods.
 
+        Note: Scalar parameters (with dims=None) are not included in this dictionary.
         """
-        raise NotImplementedError("The param_dims property has not been implemented!")
+        return {param.name: param.dims for param in self._param_info if param.dims is not None}
+
+    @property
+    def _name_to_variable(self):
+        return self._tensor_variable_info.to_dict()
+
+    @property
+    def _name_to_data(self):
+        return self._tensor_data_info.to_dict()
 
     def add_default_priors(self) -> None:
         """
@@ -520,14 +649,15 @@ class PyMCStateSpace:
                 f"parameters."
             )
 
-        if name in self._name_to_variable.keys():
+        if name in self._tensor_variable_info:
             raise ValueError(
                 f"{name} is already a registered placeholder variable with shape "
-                f"{self._name_to_variable[name].type.shape}"
+                f"{self._tensor_variable_info[name].type.shape}"
             )
 
         placeholder = pt.tensor(name, shape=shape, dtype=dtype)
-        self._name_to_variable[name] = placeholder
+        tensor_var = SymbolicVariable(name=name, symbolic_variable=placeholder)
+        self._tensor_variable_info = self._tensor_variable_info.add(tensor_var)
         return placeholder
 
     def make_and_register_data(
@@ -559,14 +689,15 @@ class PyMCStateSpace:
                 f"parameters."
             )
 
-        if name in self._name_to_data.keys():
+        if name in self._tensor_data_info:
             raise ValueError(
                 f"{name} is already a registered placeholder variable with shape "
-                f"{self._name_to_data[name].type.shape}"
+                f"{self._tensor_data_info[name].type.shape}"
             )
 
         placeholder = pt.tensor(name, shape=shape, dtype=dtype)
-        self._name_to_data[name] = placeholder
+        tensor_data = SymbolicData(name=name, symbolic_data=placeholder)
+        self._tensor_data_info = self._tensor_data_info.add(tensor_data)
         return placeholder
 
     def make_symbolic_graph(self) -> None:
@@ -741,10 +872,8 @@ class PyMCStateSpace:
 
         Only used when models require exogenous data. The observed data is not added to the model using this method!
         """
-
-        try:
-            data_names = self.data_names
-        except NotImplementedError:
+        data_names = self.data_names
+        if not data_names:
             return
 
         pymc_model = modelcontext(None)
@@ -2080,10 +2209,10 @@ class PyMCStateSpace:
         forecast_index: pd.RangeIndex | pd.DatetimeIndex,
         name=None,
     ):
-        try:
-            var_to_dims = {key: info["dims"][1:] for key, info in self.data_info.items()}
-        except NotImplementedError:
+        if not self.data_info:
             return scenario
+
+        var_to_dims = {key: info["dims"][1:] for key, info in self.data_info.items()}
 
         if any(len(dims) > 1 for dims in var_to_dims.values()):
             raise NotImplementedError(">2d exogenous data is not yet supported.")
@@ -2500,13 +2629,14 @@ class PyMCStateSpace:
                 next_x = c + T @ x + R @ shock
                 return next_x
 
-            irf, updates = pytensor.scan(
+            irf = pytensor.scan(
                 irf_step,
                 sequences=[shock_trajectory],
                 outputs_info=[x0],
                 non_sequences=[c, T, R],
                 n_steps=n_steps,
                 strict=True,
+                return_updates=False,
             )
 
             pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])

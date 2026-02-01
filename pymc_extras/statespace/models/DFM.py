@@ -1,11 +1,17 @@
 from collections.abc import Sequence
-from typing import Any
 
 import pytensor
 import pytensor.tensor as pt
 
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    Data,
+    Parameter,
+    Shock,
+    State,
+)
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
-from pymc_extras.statespace.models.utilities import make_default_coords, validate_names
+from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
@@ -247,10 +253,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
             and are modeled as a white noise process, i.e., :math:`f_t = \varepsilon_{f,t}`.
             Therefore, the state vector will include one state per factor and "factor_ar" will not exist.
 
-        endog_names : list of str, optional
+        endog_names : Sequence of str, optional
             Names of the observed time series.
 
-        exog_names : Sequence[str], optional
+        exog_names : Sequence of str, optional
             Names of the exogenous variables.
 
         shared_exog_states: bool, optional
@@ -281,7 +287,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         validate_names(endog_names, var_name="endog_names", optional=False)
         k_endog = len(endog_names)
-        self.endog_names = endog_names
+        self.endog_names = tuple(endog_names)
         self.k_endog = k_endog
         self.k_factors = k_factors
         self.factor_order = factor_order
@@ -322,9 +328,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         # Typically, the latent factors introduce k_factors shocks.
         # If error_order > 0 and errors are modeled jointly or separately, add appropriate count.
         k_posdef = k_factors + (k_endog if error_order > 0 else 0) + self.k_exog_states
-        # k_posdef = (k_factors + (k_endog if error_order > 0 else 0) + self.k_exog_states if self.exog_innovations else 0)
 
-        # Initialize the PyMCStateSpace base class.
         super().__init__(
             k_endog=k_endog,
             k_states=k_states,
@@ -333,99 +337,134 @@ class BayesianDynamicFactor(PyMCStateSpace):
             measurement_error=measurement_error,
         )
 
-    @property
-    def param_names(self):
-        names = [
-            "x0",
-            "P0",
-            "factor_loadings",
-            "factor_ar",
-            "error_ar",
-            "error_sigma",
-            "error_cov",
-            "sigma_obs",
-            "beta",
-            "beta_sigma",
-        ]
+    def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
+        parameters = []
 
-        # Handle cases where parameters should be excluded based on model settings
-        if self.factor_order == 0:
-            names.remove("factor_ar")
-        if self.error_order == 0:
-            names.remove("error_ar")
-        if self.error_cov_type in ["scalar", "diagonal"]:
-            names.remove("error_cov")
-        if self.error_cov_type == "unstructured":
-            names.remove("error_sigma")
-        if not self.measurement_error:
-            names.remove("sigma_obs")
-        if not self.exog_flag:
-            names.remove("beta")
-            names.remove("beta_sigma")
-        if self.exog_flag and not self.exog_innovations:
-            names.remove("beta_sigma")
+        k_endog = self.k_endog
+        k_states = self.k_states
 
-        return names
+        # x0 - initial state
+        parameters.append(
+            Parameter(
+                name="x0",
+                shape=(k_states,),
+                dims=(ALL_STATE_DIM,),
+                constraints=None,
+            )
+        )
 
-    @property
-    def param_info(self) -> dict[str, dict[str, Any]]:
-        info = {
-            "x0": {
-                "shape": (self.k_states,),
-                "constraints": None,
-            },
-            "P0": {
-                "shape": (self.k_states, self.k_states),
-                "constraints": "Positive Semi-definite",
-            },
-            "factor_loadings": {
-                "shape": (self.k_endog, self.k_factors),
-                "constraints": None,
-            },
-            "factor_ar": {
-                "shape": (self.k_factors, self.factor_order * self.k_factors),
-                "constraints": None,
-            },
-            "error_ar": {
-                "shape": (
-                    self.k_endog,
-                    self.error_order * self.k_endog if self.error_var else self.error_order,
-                ),
-                "constraints": None,
-            },
-            "error_sigma": {
-                "shape": (self.k_endog,) if self.error_cov_type == "diagonal" else (),
-                "constraints": "Positive",
-            },
-            "error_cov": {
-                "shape": (self.k_endog, self.k_endog),
-                "constraints": "Positive Semi-definite",
-            },
-            "sigma_obs": {
-                "shape": (self.k_endog,),
-                "constraints": "Positive",
-            },
-            "beta": {
-                "shape": (self.k_exog_states,),
-                "constraints": None,
-            },
-            "beta_sigma": {
-                "shape": (self.k_exog_states,),
-                "constraints": "Positive",
-            },
-        }
+        # P0 - initial covariance
+        parameters.append(
+            Parameter(
+                name="P0",
+                shape=(k_states, k_states),
+                dims=(ALL_STATE_DIM, ALL_STATE_AUX_DIM),
+                constraints="Positive Semi-definite",
+            )
+        )
 
-        for name in self.param_names:
-            info[name]["dims"] = self.param_dims[name]
+        # factor_loadings
+        parameters.append(
+            Parameter(
+                name="factor_loadings",
+                shape=(k_endog, self.k_factors),
+                dims=(OBS_STATE_DIM, FACTOR_DIM),
+                constraints=None,
+            )
+        )
 
-        return {name: info[name] for name in self.param_names}
+        # factor_ar - only if factor_order > 0
+        if self.factor_order > 0:
+            parameters.append(
+                Parameter(
+                    name="factor_ar",
+                    shape=(self.k_factors, self.factor_order * self.k_factors),
+                    dims=(FACTOR_DIM, AR_PARAM_DIM),
+                    constraints=None,
+                )
+            )
 
-    @property
-    def state_names(self) -> list[str]:
-        """
-        Returns the names of the hidden states: first factor states (with lags),
-        idiosyncratic error states (with lags), then exogenous states.
-        """
+        # error_ar - only if error_order > 0
+        if self.error_order > 0:
+            error_ar_shape = (
+                (k_endog, self.error_order * k_endog)
+                if self.error_var
+                else (k_endog, self.error_order)
+            )
+            parameters.append(
+                Parameter(
+                    name="error_ar",
+                    shape=error_ar_shape,
+                    dims=(OBS_STATE_DIM, ERROR_AR_PARAM_DIM),
+                    constraints=None,
+                )
+            )
+
+        # error_sigma or error_cov depending on error_cov_type
+        if self.error_cov_type == "scalar":
+            parameters.append(
+                Parameter(
+                    name="error_sigma",
+                    shape=(),
+                    dims=(),
+                    constraints="Positive",
+                )
+            )
+        elif self.error_cov_type == "diagonal":
+            parameters.append(
+                Parameter(
+                    name="error_sigma",
+                    shape=(k_endog,),
+                    dims=(OBS_STATE_DIM,),
+                    constraints="Positive",
+                )
+            )
+        elif self.error_cov_type == "unstructured":
+            parameters.append(
+                Parameter(
+                    name="error_cov",
+                    shape=(k_endog, k_endog),
+                    dims=(OBS_STATE_DIM, OBS_STATE_AUX_DIM),
+                    constraints="Positive Semi-definite",
+                )
+            )
+
+        # sigma_obs - only if measurement_error
+        if self.measurement_error:
+            parameters.append(
+                Parameter(
+                    name="sigma_obs",
+                    shape=(k_endog,),
+                    dims=(OBS_STATE_DIM,),
+                    constraints="Positive",
+                )
+            )
+
+        # beta - only if exog_flag
+        if self.exog_flag:
+            parameters.append(
+                Parameter(
+                    name="beta",
+                    shape=(self.k_exog_states,),
+                    dims=(EXOG_STATE_DIM,),
+                    constraints=None,
+                )
+            )
+
+            # beta_sigma - only if exog_innovations
+            if self.exog_innovations:
+                parameters.append(
+                    Parameter(
+                        name="beta_sigma",
+                        shape=(self.k_exog_states,),
+                        dims=(EXOG_STATE_DIM,),
+                        constraints="Positive",
+                    )
+                )
+
+        return tuple(parameters)
+
+    def set_states(self) -> State | tuple[State, ...] | None:
         names = [
             f"L{lag}.factor_{i}"
             for i in range(self.k_factors)
@@ -446,37 +485,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
                     for exog_name in self.exog_names
                     for endog_name in self.endog_names
                 )
-        return names
 
-    @property
-    def observed_states(self) -> list[str]:
-        """
-        Returns the names of the observed states (i.e., the endogenous variables).
-        """
-        return self.endog_names
+        return tuple(State(name=name, observed=False, shared=False) for name in names)
 
-    @property
-    def coords(self) -> dict[str, Sequence]:
-        coords = make_default_coords(self)
-
-        coords[FACTOR_DIM] = [f"factor_{i+1}" for i in range(self.k_factors)]
-
-        if self.factor_order > 0:
-            coords[AR_PARAM_DIM] = list(range(1, (self.factor_order * self.k_factors) + 1))
-
-        if self.error_order > 0:
-            if self.error_var:
-                coords[ERROR_AR_PARAM_DIM] = list(range(1, (self.error_order * self.k_endog) + 1))
-            else:
-                coords[ERROR_AR_PARAM_DIM] = list(range(1, self.error_order + 1))
-
-        if self.exog_flag:
-            coords[EXOG_STATE_DIM] = list(range(1, self.k_exog_states + 1))
-
-        return coords
-
-    @property
-    def shock_names(self) -> list[str]:
+    def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
         shock_names = [f"factor_shock_{i}" for i in range(self.k_factors)]
 
         if self.error_order > 0:
@@ -492,56 +504,57 @@ class BayesianDynamicFactor(PyMCStateSpace):
                     for j in range(self.k_endog)
                 )
 
-        return shock_names
+        return tuple(Shock(name=name) for name in shock_names)
 
-    @property
-    def param_dims(self):
-        coord_map = {
-            "x0": (ALL_STATE_DIM,),
-            "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
-            "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
-        }
+    def set_data_info(self) -> Data | tuple[Data, ...] | None:
+        data = []
+
+        if self.exog_flag:
+            data.append(
+                Data(
+                    name="exog_data",
+                    shape=(None, self.k_exog),
+                    dims=(TIME_DIM, EXOG_STATE_DIM),
+                    is_exogenous=True,
+                )
+            )
+
+        return tuple(data)
+
+    def set_coords(self) -> Coord | tuple[Coord, ...] | None:
+        k_endog = self.k_endog
+        coords = list(self.default_coords())
+
+        # Factor coords
+        factor_labels = tuple(f"factor_{i+1}" for i in range(self.k_factors))
+        coords.append(Coord(dimension=FACTOR_DIM, labels=factor_labels))
+
+        # AR param coords for factors
         if self.factor_order > 0:
-            coord_map["factor_ar"] = (FACTOR_DIM, AR_PARAM_DIM)
+            ar_labels = tuple(range(1, (self.factor_order * self.k_factors) + 1))
+            coords.append(Coord(dimension=AR_PARAM_DIM, labels=ar_labels))
 
+        # AR param coords for errors
         if self.error_order > 0:
-            coord_map["error_ar"] = (OBS_STATE_DIM, ERROR_AR_PARAM_DIM)
+            if self.error_var:
+                error_ar_labels = tuple(range(1, (self.error_order * k_endog) + 1))
+            else:
+                error_ar_labels = tuple(range(1, self.error_order + 1))
+            coords.append(Coord(dimension=ERROR_AR_PARAM_DIM, labels=error_ar_labels))
 
-        if self.error_cov_type in ["scalar"]:
-            coord_map["error_sigma"] = ()
-
-        elif self.error_cov_type in ["diagonal"]:
-            coord_map["error_sigma"] = (OBS_STATE_DIM,)
-
-        if self.error_cov_type == "unstructured":
-            coord_map["error_cov"] = (OBS_STATE_DIM, OBS_STATE_AUX_DIM)
-
-        if self.measurement_error:
-            coord_map["sigma_obs"] = (OBS_STATE_DIM,)
-
+        # Exogenous coords
         if self.exog_flag:
-            coord_map["beta"] = (EXOG_STATE_DIM,)
-            if self.exog_innovations:
-                coord_map["beta_sigma"] = (EXOG_STATE_DIM,)
+            exog_labels = tuple(range(1, self.k_exog_states + 1))
+            coords.append(Coord(dimension=EXOG_STATE_DIM, labels=exog_labels))
 
-        return coord_map
+        return tuple(coords)
 
     @property
-    def data_info(self):
-        if self.exog_flag:
-            return {
-                "exog_data": {
-                    "shape": (None, self.k_exog),
-                    "dims": (TIME_DIM, EXOG_STATE_DIM),
-                },
-            }
-        return {}
-
-    @property
-    def data_names(self):
-        if self.exog_flag:
-            return ["exog_data"]
-        return []
+    def observed_states(self) -> tuple[str, ...]:
+        """
+        Returns the names of the observed states (i.e., the endogenous variables).
+        """
+        return self.endog_names
 
     def make_symbolic_graph(self):
         if not self.exog_flag:

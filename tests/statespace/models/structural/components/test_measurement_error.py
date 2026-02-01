@@ -8,30 +8,36 @@ from tests.statespace.models.structural.conftest import _assert_basic_coords_cor
 
 
 def test_measurement_error(rng):
-    mod = st.MeasurementError("obs") + st.LevelTrendComponent(order=2)
+    mod = st.MeasurementError("obs") + st.LevelTrend(order=2)
     mod = mod.build(verbose=False)
 
-    _assert_basic_coords_correct(mod)
     assert "sigma_obs" in mod.param_names
 
 
 def test_measurement_error_multiple_observed():
     mod = st.MeasurementError("obs", observed_state_names=["data_1", "data_2"])
     assert mod.k_endog == 2
-    assert mod.coords["endog_obs"] == ["data_1", "data_2"]
-    assert mod.param_dims["sigma_obs"] == ("endog_obs",)
+    assert mod.coords["endog_obs"] == (
+        "data_1",
+        "data_2",
+    )
+    assert mod.param_info["sigma_obs"].dims == ("endog_obs",)
 
 
 def test_measurement_error_share_states():
     mod = st.MeasurementError("obs", observed_state_names=["data_1", "data_2"], share_states=True)
-    mod.build(verbose=False)
+    mod = mod.build(verbose=False)
+    _assert_basic_coords_correct(mod)
 
     assert mod.k_endog == 2
-    assert mod.param_names == ["sigma_obs", "P0"]
+    assert mod.param_names == (
+        "sigma_obs",
+        "P0",
+    )
     assert "endog_obs" not in mod.coords
 
     # Check that the parameter is shared across the observed states
-    assert mod.param_info["sigma_obs"]["shape"] == ()
+    assert mod._param_info["sigma_obs"].shape == ()
 
     outputs = mod.ssm["obs_cov"]
 
@@ -47,11 +53,18 @@ def test_measurement_error_shared_and_not_shared():
     mod = (shared + individual).build(verbose=False)
 
     assert mod.k_endog == 2
-    assert mod.param_names == ["sigma_error_shared", "sigma_error_individual", "P0"]
-    assert mod.coords["endog_error_individual"] == ["data_1", "data_2"]
+    assert mod.param_names == (
+        "sigma_error_shared",
+        "sigma_error_individual",
+        "P0",
+    )
+    assert mod.coords["endog_error_individual"] == (
+        "data_1",
+        "data_2",
+    )
 
-    assert mod.param_info["sigma_error_shared"]["shape"] == ()
-    assert mod.param_info["sigma_error_individual"]["shape"] == (2,)
+    assert mod._param_info["sigma_error_shared"].shape == ()
+    assert mod._param_info["sigma_error_individual"].shape == (2,)
 
     outputs = mod.ssm["obs_cov"]
 
@@ -62,7 +75,7 @@ def test_measurement_error_shared_and_not_shared():
 
 
 def test_build_with_measurement_error_subset():
-    ll = st.LevelTrendComponent(order=2, observed_state_names=["data_1", "data_2", "data_3"])
+    ll = st.LevelTrend(order=2, observed_state_names=["data_1", "data_2", "data_3"])
     me = st.MeasurementError("obs", observed_state_names=["data_1", "data_3"])
     mod = (ll + me).build()
 

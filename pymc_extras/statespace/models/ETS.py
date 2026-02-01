@@ -1,15 +1,20 @@
 from collections.abc import Sequence
-from typing import Any
 
 import numpy as np
 import pytensor.tensor as pt
 
 from pytensor import graph_replace
 from pytensor.compile.mode import Mode
-from pytensor.tensor.slinalg import solve_discrete_lyapunov
+from pytensor.tensor.linalg import solve_discrete_lyapunov
 
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    Parameter,
+    Shock,
+    State,
+)
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
-from pymc_extras.statespace.models.utilities import make_default_coords, validate_names
+from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
@@ -138,7 +143,7 @@ class BayesianETS(PyMCStateSpace):
         or 'N'.
         If provided, the model will be initialized from the given order, and the `trend`, `damped_trend`, and `seasonal`
         arguments will be ignored.
-    endog_names: str or list of str
+    endog_names: str or Sequence of str
         Names associated with observed states. If a list, the length should be equal to the number of time series
         to be estimated.
     trend: bool
@@ -209,7 +214,7 @@ class BayesianETS(PyMCStateSpace):
     def __init__(
         self,
         order: tuple[str, str, str] | None = None,
-        endog_names: str | list[str] | None = None,
+        endog_names: str | Sequence[str] | None = None,
         trend: bool = True,
         damped_trend: bool = False,
         seasonal: bool = False,
@@ -263,7 +268,9 @@ class BayesianETS(PyMCStateSpace):
 
         validate_names(endog_names, var_name="endog_names", optional=False)
         k_endog = len(endog_names)
-        self.endog_names = list(endog_names)
+        self.endog_names = (
+            tuple(endog_names) if not isinstance(endog_names, str) else (endog_names,)
+        )
 
         if dense_innovation_covariance and k_endog == 1:
             dense_innovation_covariance = False
@@ -288,169 +295,190 @@ class BayesianETS(PyMCStateSpace):
             mode=mode,
         )
 
-    @property
-    def param_names(self):
-        names = [
-            "initial_level",
-            "initial_trend",
-            "initial_seasonal",
-            "P0",
-            "alpha",
-            "beta",
-            "gamma",
-            "phi",
-            "sigma_state",
-            "state_cov",
-            "sigma_obs",
-        ]
-        if not self.trend:
-            names.remove("initial_trend")
-            names.remove("beta")
-        if not self.damped_trend:
-            names.remove("phi")
-        if not self.seasonal:
-            names.remove("initial_seasonal")
-            names.remove("gamma")
-        if not self.measurement_error:
-            names.remove("sigma_obs")
+    def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
+        k_endog = self.k_endog
+        k_states = self.k_states
+        k_posdef = self.k_posdef
 
-        if self.dense_innovation_covariance:
-            names.remove("sigma_state")
-        else:
-            names.remove("state_cov")
+        parameters = []
 
-        if self.stationary_initialization:
-            names.remove("P0")
-
-        return names
-
-    @property
-    def param_info(self) -> dict[str, dict[str, Any]]:
-        info = {
-            "P0": {
-                "shape": (self.k_states, self.k_states),
-                "constraints": "Positive Semi-definite",
-            },
-            "initial_level": {
-                "shape": None if self.k_endog == 1 else (self.k_endog,),
-                "constraints": None,
-            },
-            "initial_trend": {
-                "shape": None if self.k_endog == 1 else (self.k_endog,),
-                "constraints": None,
-            },
-            "initial_seasonal": {"shape": (self.seasonal_periods,), "constraints": None},
-            "sigma_obs": {
-                "shape": None if self.k_endog == 1 else (self.k_endog,),
-                "constraints": "Positive",
-            },
-            "sigma_state": {
-                "shape": None if self.k_posdef == 1 else (self.k_posdef,),
-                "constraints": "Positive",
-            },
-            "alpha": {
-                "shape": None if self.k_endog == 1 else (self.k_endog,),
-                "constraints": "0 < alpha < 1",
-            },
-            "beta": {
-                "shape": None if self.k_endog == 1 else (self.k_endog,),
-                "constraints": "0 < beta < 1"
-                if not self.use_transformed_parameterization
-                else "0 < beta < alpha",
-            },
-            "gamma": {
-                "shape": None if self.k_endog == 1 else (self.k_endog,),
-                "constraints": "0 < gamma< 1"
-                if not self.use_transformed_parameterization
-                else "0 < gamma < (1 - alpha)",
-            },
-            "phi": {
-                "shape": None if self.k_endog == 1 else (self.k_endog,),
-                "constraints": "0 < phi < 1",
-            },
-        }
-
-        if self.dense_innovation_covariance:
-            del info["sigma_state"]
-            info["state_cov"] = {
-                "shape": (self.k_posdef, self.k_posdef),
-                "constraints": "Positive Semi-definite",
-            }
-
-        for name in self.param_names:
-            info[name]["dims"] = self.param_dims.get(name, None)
-
-        return {name: info[name] for name in self.param_names}
-
-    @property
-    def state_names(self):
-        states = ["innovation", "level"]
-        if self.trend:
-            states += ["trend"]
-        if self.seasonal:
-            states += ["seasonality"]
-            states += [f"L{i}.season" for i in range(1, self.seasonal_periods)]
-
-        if self.k_endog > 1:
-            states = [f"{name}_{state}" for name in self.endog_names for state in states]
-
-        return states
-
-    @property
-    def observed_states(self):
-        return self.endog_names
-
-    @property
-    def shock_names(self):
-        return (
-            ["innovation"]
-            if self.k_endog == 1
-            else [f"{name}_innovation" for name in self.endog_names]
+        # Initial level - always present
+        parameters.append(
+            Parameter(
+                name="initial_level",
+                shape=() if k_endog == 1 else (k_endog,),
+                dims=None if k_endog == 1 else (OBS_STATE_DIM,),
+                constraints=None,
+            )
         )
 
-    @property
-    def param_dims(self):
-        coord_map = {
-            "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
-            "sigma_obs": (OBS_STATE_DIM,),
-            "sigma_state": (OBS_STATE_DIM,),
-            "initial_level": (OBS_STATE_DIM,),
-            "initial_trend": (OBS_STATE_DIM,),
-            "initial_seasonal": (ETS_SEASONAL_DIM,),
-            "seasonal_param": (ETS_SEASONAL_DIM,),
-        }
+        # Initial trend - only if trend is enabled
+        if self.trend:
+            parameters.append(
+                Parameter(
+                    name="initial_trend",
+                    shape=() if k_endog == 1 else (k_endog,),
+                    dims=None if k_endog == 1 else (OBS_STATE_DIM,),
+                    constraints=None,
+                )
+            )
 
-        if self.dense_innovation_covariance:
-            del coord_map["sigma_state"]
-            coord_map["state_cov"] = (OBS_STATE_DIM, OBS_STATE_AUX_DIM)
-
-        if self.k_endog == 1:
-            coord_map["sigma_state"] = None
-            coord_map["sigma_obs"] = None
-            coord_map["initial_level"] = None
-            coord_map["initial_trend"] = None
-        else:
-            coord_map["alpha"] = (OBS_STATE_DIM,)
-            coord_map["beta"] = (OBS_STATE_DIM,)
-            coord_map["gamma"] = (OBS_STATE_DIM,)
-            coord_map["phi"] = (OBS_STATE_DIM,)
-            coord_map["initial_seasonal"] = (OBS_STATE_DIM, ETS_SEASONAL_DIM)
-            coord_map["seasonal_param"] = (OBS_STATE_DIM, ETS_SEASONAL_DIM)
-
-        if not self.measurement_error:
-            del coord_map["sigma_obs"]
-        if not self.seasonal:
-            del coord_map["seasonal_param"]
-
-        return coord_map
-
-    @property
-    def coords(self) -> dict[str, Sequence]:
-        coords = make_default_coords(self)
+        # Initial seasonal - only if seasonal is enabled
         if self.seasonal:
-            coords.update({ETS_SEASONAL_DIM: list(range(1, self.seasonal_periods + 1))})
+            parameters.append(
+                Parameter(
+                    name="initial_seasonal",
+                    shape=(self.seasonal_periods,)
+                    if k_endog == 1
+                    else (k_endog, self.seasonal_periods),
+                    dims=(ETS_SEASONAL_DIM,) if k_endog == 1 else (OBS_STATE_DIM, ETS_SEASONAL_DIM),
+                    constraints=None,
+                )
+            )
 
-        return coords
+        # P0 - only if not stationary initialization
+        if not self.stationary_initialization:
+            parameters.append(
+                Parameter(
+                    name="P0",
+                    shape=(k_states, k_states),
+                    dims=(ALL_STATE_DIM, ALL_STATE_AUX_DIM),
+                    constraints="Positive Semi-definite",
+                )
+            )
+
+        # Alpha - always present
+        parameters.append(
+            Parameter(
+                name="alpha",
+                shape=() if k_endog == 1 else (k_endog,),
+                dims=None if k_endog == 1 else (OBS_STATE_DIM,),
+                constraints="0 < alpha < 1",
+            )
+        )
+
+        # Beta - only if trend is enabled
+        if self.trend:
+            beta_constraint = (
+                "0 < beta < alpha" if self.use_transformed_parameterization else "0 < beta < 1"
+            )
+            parameters.append(
+                Parameter(
+                    name="beta",
+                    shape=() if k_endog == 1 else (k_endog,),
+                    dims=None if k_endog == 1 else (OBS_STATE_DIM,),
+                    constraints=beta_constraint,
+                )
+            )
+
+        # Gamma - only if seasonal is enabled
+        if self.seasonal:
+            gamma_constraint = (
+                "0 < gamma < (1 - alpha)"
+                if self.use_transformed_parameterization
+                else "0 < gamma < 1"
+            )
+            parameters.append(
+                Parameter(
+                    name="gamma",
+                    shape=() if k_endog == 1 else (k_endog,),
+                    dims=None if k_endog == 1 else (OBS_STATE_DIM,),
+                    constraints=gamma_constraint,
+                )
+            )
+
+        # Phi - only if damped trend is enabled
+        if self.damped_trend:
+            parameters.append(
+                Parameter(
+                    name="phi",
+                    shape=() if k_endog == 1 else (k_endog,),
+                    dims=None if k_endog == 1 else (OBS_STATE_DIM,),
+                    constraints="0 < phi < 1",
+                )
+            )
+
+        # State covariance
+        if self.dense_innovation_covariance:
+            parameters.append(
+                Parameter(
+                    name="state_cov",
+                    shape=(k_posdef, k_posdef),
+                    dims=(OBS_STATE_DIM, OBS_STATE_AUX_DIM),
+                    constraints="Positive Semi-definite",
+                )
+            )
+        else:
+            parameters.append(
+                Parameter(
+                    name="sigma_state",
+                    shape=() if k_posdef == 1 else (k_posdef,),
+                    dims=None if k_posdef == 1 else (OBS_STATE_DIM,),
+                    constraints="Positive",
+                )
+            )
+
+        # Observation covariance - only if measurement error is enabled
+        if self.measurement_error:
+            parameters.append(
+                Parameter(
+                    name="sigma_obs",
+                    shape=() if k_endog == 1 else (k_endog,),
+                    dims=None if k_endog == 1 else (OBS_STATE_DIM,),
+                    constraints="Positive",
+                )
+            )
+
+        return tuple(parameters)
+
+    def set_states(self) -> State | tuple[State, ...] | None:
+        k_endog = self.k_endog
+
+        base_states = ["innovation", "level"]
+        if self.trend:
+            base_states.append("trend")
+        if self.seasonal:
+            base_states.append("seasonality")
+            base_states += [f"L{i}.season" for i in range(1, self.seasonal_periods)]
+
+        if k_endog > 1:
+            state_names = [f"{name}_{state}" for name in self.endog_names for state in base_states]
+        else:
+            state_names = base_states
+
+        # First state for each endog is the innovation (observed), rest are hidden
+        states = []
+        states_per_endog = len(base_states)
+        for i, name in enumerate(state_names):
+            # innovation states are "observed" in the sense they directly affect the observation
+            is_observed = (i % states_per_endog) == 0
+            states.append(State(name=name, observed=is_observed, shared=False))
+
+        return tuple(states)
+
+    def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
+        k_endog = self.k_endog
+
+        if k_endog == 1:
+            shock_names = ["innovation"]
+        else:
+            shock_names = [f"{name}_innovation" for name in self.endog_names]
+
+        return tuple(Shock(name=name) for name in shock_names)
+
+    def set_coords(self) -> Coord | tuple[Coord, ...] | None:
+        coords = list(self.default_coords())
+
+        # Seasonal coords
+        if self.seasonal:
+            coords.append(
+                Coord(
+                    dimension=ETS_SEASONAL_DIM,
+                    labels=tuple(range(1, self.seasonal_periods + 1)),
+                )
+            )
+
+        return tuple(coords)
 
     def _stationary_initialization(self, T_stationary):
         # Solve for matrix quadratic for P0

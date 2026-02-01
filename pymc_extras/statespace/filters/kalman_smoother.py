@@ -76,16 +76,16 @@ class KalmanSmoother:
         self.seq_names = seq_names
         self.non_seq_names = non_seq_names
 
-        smoother_result, updates = pytensor.scan(
+        smoothed_states, smoothed_covariances = pytensor.scan(
             self.smoother_step,
             sequences=[filtered_states[:-1], filtered_covariances[:-1], *sequences],
             outputs_info=[a_last, P_last],
             non_sequences=non_sequences,
             go_backwards=True,
             name="kalman_smoother",
+            return_updates=False,
         )
 
-        smoothed_states, smoothed_covariances = smoother_result
         smoothed_states = pt.concatenate(
             [smoothed_states[::-1], pt.expand_dims(a_last, axis=(0,))], axis=0
         )

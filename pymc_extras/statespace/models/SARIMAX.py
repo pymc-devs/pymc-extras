@@ -1,15 +1,20 @@
 from collections.abc import Sequence
-from typing import Any
 
 import numpy as np
 import pytensor.tensor as pt
 
 from pytensor.compile.mode import Mode
-from pytensor.tensor.slinalg import solve_discrete_lyapunov
+from pytensor.tensor.linalg import solve_discrete_lyapunov
 
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    Data,
+    Parameter,
+    Shock,
+    State,
+)
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
 from pymc_extras.statespace.models.utilities import (
-    make_default_coords,
     make_harvey_state_names,
     make_SARIMA_transition_matrix,
     validate_names,
@@ -20,7 +25,6 @@ from pymc_extras.statespace.utils.constants import (
     AR_PARAM_DIM,
     EXOG_STATE_DIM,
     MA_PARAM_DIM,
-    OBS_STATE_DIM,
     SARIMAX_STATE_STRUCTURES,
     SEASONAL_AR_PARAM_DIM,
     SEASONAL_MA_PARAM_DIM,
@@ -132,7 +136,7 @@ class BayesianSARIMAX(PyMCStateSpace):
         self,
         order: tuple[int, int, int],
         seasonal_order: tuple[int, int, int, int] | None = None,
-        exog_state_names: list[str] | None = None,
+        exog_state_names: Sequence[str] | None = None,
         stationary_initialization: bool = True,
         filter_type: str = "standard",
         state_structure: str = "fast",
@@ -163,7 +167,7 @@ class BayesianSARIMAX(PyMCStateSpace):
             possible for the seasonal lags and the ARIMA lags to overlap, for example if P <= p. In this case, an error
             will be raised.
 
-        exog_state_names : list[str], optional
+        exog_state_names : Sequence of str, optional
             Names of the exogenous state variables.
 
         stationary_initialization : bool, default True
@@ -213,7 +217,7 @@ class BayesianSARIMAX(PyMCStateSpace):
         )  # Not sure if this adds anything
         k_exog = len(exog_state_names) if exog_state_names is not None else 0
 
-        self.exog_state_names = exog_state_names
+        self.exog_state_names = tuple(exog_state_names) if exog_state_names is not None else None
         self.k_exog = k_exog
 
         self.P, self.D, self.Q, self.S = seasonal_order
@@ -268,166 +272,159 @@ class BayesianSARIMAX(PyMCStateSpace):
         )
         self._needs_exog_data = self.k_exog > 0
 
-    @property
-    def param_names(self):
-        names = [
-            "x0",
-            "P0",
-            "ar_params",
-            "ma_params",
-            "seasonal_ar_params",
-            "seasonal_ma_params",
-            "beta_exog",
-            "sigma_state",
-            "sigma_obs",
-        ]
-        if self.stationary_initialization:
-            names.remove("P0")
-            names.remove("x0")
-        if self.p == 0:
-            names.remove("ar_params")
-        if self.P == 0:
-            names.remove("seasonal_ar_params")
-        if self.q == 0:
-            names.remove("ma_params")
-        if self.Q == 0:
-            names.remove("seasonal_ma_params")
-        if self.k_exog == 0:
-            names.remove("beta_exog")
-        if not self.measurement_error:
-            names.remove("sigma_obs")
+    def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
+        k_states = self.k_states
+        parameters = []
 
-        return names
+        if not self.stationary_initialization:
+            parameters.append(
+                Parameter(
+                    name="x0",
+                    shape=(k_states,),
+                    dims=(ALL_STATE_DIM,),
+                    constraints=None,
+                )
+            )
+            parameters.append(
+                Parameter(
+                    name="P0",
+                    shape=(k_states, k_states),
+                    dims=(ALL_STATE_DIM, ALL_STATE_AUX_DIM),
+                    constraints="Positive Semi-definite",
+                )
+            )
 
-    @property
-    def data_info(self) -> dict[str, dict[str, Any]]:
-        info = {
-            "exogenous_data": {
-                "dims": (TIME_DIM, EXOG_STATE_DIM),
-                "shape": (None, self.k_exog),
-            }
-        }
+        if self.p > 0:
+            parameters.append(
+                Parameter(
+                    name="ar_params",
+                    shape=(self.p,),
+                    dims=(AR_PARAM_DIM,),
+                    constraints=None,
+                )
+            )
 
-        return {name: info[name] for name in self.data_names}
+        if self.q > 0:
+            parameters.append(
+                Parameter(
+                    name="ma_params",
+                    shape=(self.q,),
+                    dims=(MA_PARAM_DIM,),
+                    constraints=None,
+                )
+            )
 
-    @property
-    def param_info(self) -> dict[str, dict[str, Any]]:
-        info = {
-            "x0": {
-                "shape": (self.k_states,),
-                "constraints": None,
-            },
-            "P0": {
-                "shape": (self.k_states, self.k_states),
-                "constraints": "Positive Semi-definite",
-            },
-            "sigma_obs": {
-                "shape": () if self.k_endog == 1 else (self.k_endog,),
-                "constraints": "Positive",
-            },
-            "sigma_state": {
-                "shape": () if self.k_posdef == 1 else (self.k_posdef,),
-                "constraints": "Positive",
-            },
-            "ar_params": {
-                "shape": (self.p,),
-                "constraints": "None",
-            },
-            "ma_params": {
-                "shape": (self.q,),
-                "constraints": "None",
-            },
-            "seasonal_ar_params": {"shape": (self.P,), "constraints": "None"},
-            "seasonal_ma_params": {"shape": (self.Q,), "constraints": "None"},
-            "beta_exog": {"shape": (self.k_exog,), "constraints": "None"},
-        }
+        if self.P > 0:
+            parameters.append(
+                Parameter(
+                    name="seasonal_ar_params",
+                    shape=(self.P,),
+                    dims=(SEASONAL_AR_PARAM_DIM,),
+                    constraints=None,
+                )
+            )
 
-        for name in self.param_names:
-            info[name]["dims"] = self.param_dims[name]
+        if self.Q > 0:
+            parameters.append(
+                Parameter(
+                    name="seasonal_ma_params",
+                    shape=(self.Q,),
+                    dims=(SEASONAL_MA_PARAM_DIM,),
+                    constraints=None,
+                )
+            )
 
-        return {name: info[name] for name in self.param_names}
+        if self.k_exog > 0:
+            parameters.append(
+                Parameter(
+                    name="beta_exog",
+                    shape=(self.k_exog,),
+                    dims=(EXOG_STATE_DIM,),
+                    constraints=None,
+                )
+            )
 
-    @property
-    def state_names(self):
+        parameters.append(
+            Parameter(
+                name="sigma_state",
+                shape=(),
+                dims=None,
+                constraints="Positive",
+            )
+        )
+
+        if self.measurement_error:
+            parameters.append(
+                Parameter(
+                    name="sigma_obs",
+                    shape=(),
+                    dims=None,
+                    constraints="Positive",
+                )
+            )
+
+        return tuple(parameters)
+
+    def set_states(self) -> State | tuple[State, ...] | None:
         if self.state_structure == "fast":
-            p, d, q = self.p, self.d, self.q
-            P, D, Q, S = self.P, self.D, self.Q, self.S
-            states = make_harvey_state_names(p, d, q, P, D, Q, S)
-
+            state_names = make_harvey_state_names(
+                self.p, self.d, self.q, self.P, self.D, self.Q, self.S
+            )
         elif self.state_structure == "interpretable":
-            states = ["data"]
+            state_names = ["data"]
             if self.p > 0:
-                states += [f"L{i + 1}.data" for i in range(self._p_max - 1)]
-            states += ["innovations"]
+                state_names += [f"L{i + 1}.data" for i in range(self._p_max - 1)]
+            state_names += ["innovations"]
             if self.q > 0:
-                states += [f"L{i + 1}.innovations" for i in range(self._q_max - 1)]
+                state_names += [f"L{i + 1}.innovations" for i in range(self._q_max - 1)]
         else:
             raise NotImplementedError()
 
-        return states
+        hidden_states = [State(name=name, observed=False) for name in state_names]
 
-    @property
-    def data_names(self) -> list[str]:
+        # The first state is the observed state
+        observed_state = State(name=state_names[0], observed=True)
+
+        return *hidden_states, observed_state
+
+    def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
+        return Shock(name="innovation")
+
+    def set_data_info(self) -> tuple[Data, ...] | None:
         if self.k_exog > 0:
-            return ["exogenous_data"]
-        return []
+            return (
+                Data(
+                    name="exogenous_data",
+                    shape=(None, self.k_exog),
+                    dims=(TIME_DIM, EXOG_STATE_DIM),
+                    is_exogenous=True,
+                ),
+            )
+        return None
 
-    @property
-    def observed_states(self):
-        return [self.state_names[0]]
+    def set_coords(self) -> Coord | tuple[Coord, ...] | None:
+        coords = list(self.default_coords())
 
-    @property
-    def shock_names(self):
-        return ["innovation"]
-
-    @property
-    def param_dims(self):
-        coord_map = {
-            "x0": (ALL_STATE_DIM,),
-            "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
-            "sigma_obs": (OBS_STATE_DIM,),
-            "sigma_state": (OBS_STATE_DIM,),
-            "ar_params": (AR_PARAM_DIM,),
-            "ma_params": (MA_PARAM_DIM,),
-            "seasonal_ar_params": (SEASONAL_AR_PARAM_DIM,),
-            "seasonal_ma_params": (SEASONAL_MA_PARAM_DIM,),
-            "beta_exog": (EXOG_STATE_DIM,),
-        }
-        if self.k_endog == 1:
-            coord_map["sigma_state"] = None
-            coord_map["sigma_obs"] = None
-        if not self.measurement_error:
-            del coord_map["sigma_obs"]
-        if self.p == 0:
-            del coord_map["ar_params"]
-        if self.q == 0:
-            del coord_map["ma_params"]
-        if self.P == 0:
-            del coord_map["seasonal_ar_params"]
-        if self.Q == 0:
-            del coord_map["seasonal_ma_params"]
-        if self.k_exog == 0:
-            del coord_map["beta_exog"]
-        if self.stationary_initialization:
-            del coord_map["P0"]
-            del coord_map["x0"]
-
-        return coord_map
-
-    @property
-    def coords(self) -> dict[str, Sequence]:
-        coords = make_default_coords(self)
         if self.p > 0:
-            coords.update({AR_PARAM_DIM: list(range(1, self.p + 1))})
+            coords.append(Coord(dimension=AR_PARAM_DIM, labels=tuple(range(1, self.p + 1))))
+
         if self.q > 0:
-            coords.update({MA_PARAM_DIM: list(range(1, self.q + 1))})
+            coords.append(Coord(dimension=MA_PARAM_DIM, labels=tuple(range(1, self.q + 1))))
+
         if self.P > 0:
-            coords.update({SEASONAL_AR_PARAM_DIM: list(range(1, self.P + 1))})
+            coords.append(
+                Coord(dimension=SEASONAL_AR_PARAM_DIM, labels=tuple(range(1, self.P + 1)))
+            )
+
         if self.Q > 0:
-            coords.update({SEASONAL_MA_PARAM_DIM: list(range(1, self.Q + 1))})
+            coords.append(
+                Coord(dimension=SEASONAL_MA_PARAM_DIM, labels=tuple(range(1, self.Q + 1)))
+            )
+
         if self.k_exog > 0:
-            coords.update({EXOG_STATE_DIM: self.exog_state_names})
-        return coords
+            coords.append(Coord(dimension=EXOG_STATE_DIM, labels=tuple(self.exog_state_names)))
+
+        return tuple(coords)
 
     def _stationary_initialization(self):
         # Solve for matrix quadratic for P0

@@ -390,7 +390,7 @@ class TestDFMConfiguration:
             verbose=False,
         )
 
-        expected_param_names = ["x0", "P0", "factor_loadings", "error_sigma"]
+        expected_param_names = ("x0", "P0", "factor_loadings", "error_sigma")
         expected_param_dims = {
             "x0": (ALL_STATE_DIM,),
             "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
@@ -398,19 +398,19 @@ class TestDFMConfiguration:
             "error_sigma": (OBS_STATE_DIM,),
         }
         expected_coords = {
-            OBS_STATE_DIM: ["y0", "y1", "y2"],
-            ALL_STATE_DIM: ["L0.factor_0"],
-            ALL_STATE_AUX_DIM: ["L0.factor_0"],
-            FACTOR_DIM: ["factor_1"],
+            OBS_STATE_DIM: ("y0", "y1", "y2"),
+            ALL_STATE_DIM: ("L0.factor_0",),
+            ALL_STATE_AUX_DIM: ("L0.factor_0",),
+            FACTOR_DIM: ("factor_1",),
         }
 
         assert mod.param_names == expected_param_names
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert mod.state_names == ["L0.factor_0"]
-        assert mod.observed_states == ["y0", "y1", "y2"]
-        assert mod.shock_names == ["factor_shock_0"]
+        assert mod.state_names == ("L0.factor_0",)
+        assert mod.observed_states == ("y0", "y1", "y2")
+        assert mod.shock_names == ("factor_shock_0",)
 
     def test_dynamic_factor_ar1_error_diagonal_error(self):
         k_factors = 2
@@ -429,7 +429,7 @@ class TestDFMConfiguration:
             measurement_error=True,
             verbose=False,
         )
-        expected_param_names = [
+        expected_param_names = (
             "x0",
             "P0",
             "factor_loadings",
@@ -437,7 +437,7 @@ class TestDFMConfiguration:
             "error_ar",
             "error_sigma",
             "sigma_obs",
-        ]
+        )
         expected_param_dims = {
             "x0": (ALL_STATE_DIM,),
             "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
@@ -448,8 +448,8 @@ class TestDFMConfiguration:
             "sigma_obs": (OBS_STATE_DIM,),
         }
         expected_coords = {
-            OBS_STATE_DIM: ["y0", "y1", "y2"],
-            ALL_STATE_DIM: [
+            OBS_STATE_DIM: ("y0", "y1", "y2"),
+            ALL_STATE_DIM: (
                 "L0.factor_0",
                 "L1.factor_0",
                 "L0.factor_1",
@@ -457,8 +457,8 @@ class TestDFMConfiguration:
                 "L0.error_0",
                 "L0.error_1",
                 "L0.error_2",
-            ],
-            ALL_STATE_AUX_DIM: [
+            ),
+            ALL_STATE_AUX_DIM: (
                 "L0.factor_0",
                 "L1.factor_0",
                 "L0.factor_1",
@@ -466,12 +466,12 @@ class TestDFMConfiguration:
                 "L0.error_0",
                 "L0.error_1",
                 "L0.error_2",
-            ],
-            FACTOR_DIM: ["factor_1", "factor_2"],
-            AR_PARAM_DIM: list(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: list(range(1, (error_order * k_endog) + 1))
+            ),
+            FACTOR_DIM: ("factor_1", "factor_2"),
+            AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
             if error_var
-            else list(range(1, error_order + 1)),
+            else tuple(range(1, error_order + 1)),
         }
 
         assert mod.param_names == expected_param_names
@@ -479,7 +479,7 @@ class TestDFMConfiguration:
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
         assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order
-        assert mod.observed_states == ["y0", "y1", "y2"]
+        assert mod.observed_states == ("y0", "y1", "y2")
         assert len(mod.shock_names) == k_factors + k_endog
 
     def test_dynamic_factor_ar2_error_var_unstructured(self):
@@ -498,7 +498,7 @@ class TestDFMConfiguration:
             measurement_error=True,
             verbose=False,
         )
-        expected_param_names = [
+        expected_param_names = (
             "x0",
             "P0",
             "factor_loadings",
@@ -506,7 +506,7 @@ class TestDFMConfiguration:
             "error_ar",
             "error_cov",
             "sigma_obs",
-        ]
+        )
         expected_param_dims = {
             "x0": (ALL_STATE_DIM,),
             "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
@@ -517,8 +517,8 @@ class TestDFMConfiguration:
             "sigma_obs": (OBS_STATE_DIM,),
         }
         expected_coords = {
-            OBS_STATE_DIM: ["y0", "y1", "y2"],
-            ALL_STATE_DIM: [
+            OBS_STATE_DIM: ("y0", "y1", "y2"),
+            ALL_STATE_DIM: (
                 "L0.factor_0",
                 "L0.error_0",
                 "L1.error_0",
@@ -526,8 +526,8 @@ class TestDFMConfiguration:
                 "L1.error_1",
                 "L0.error_2",
                 "L1.error_2",
-            ],
-            ALL_STATE_AUX_DIM: [
+            ),
+            ALL_STATE_AUX_DIM: (
                 "L0.factor_0",
                 "L0.error_0",
                 "L1.error_0",
@@ -535,12 +535,12 @@ class TestDFMConfiguration:
                 "L1.error_1",
                 "L0.error_2",
                 "L1.error_2",
-            ],
-            FACTOR_DIM: ["factor_1"],
-            AR_PARAM_DIM: list(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: list(range(1, (error_order * k_endog) + 1))
+            ),
+            FACTOR_DIM: ("factor_1",),
+            AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
             if error_var
-            else list(range(1, error_order + 1)),
+            else tuple(range(1, error_order + 1)),
         }
 
         assert mod.param_names == expected_param_names
@@ -548,7 +548,7 @@ class TestDFMConfiguration:
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
         assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order
-        assert mod.observed_states == ["y0", "y1", "y2"]
+        assert mod.observed_states == ("y0", "y1", "y2")
         assert len(mod.shock_names) == k_factors + k_endog
 
     def test_exog_shared_exog_states_exog_innovations(self):
@@ -572,7 +572,7 @@ class TestDFMConfiguration:
             measurement_error=True,
             verbose=False,
         )
-        expected_param_names = [
+        expected_param_names = (
             "x0",
             "P0",
             "factor_loadings",
@@ -582,7 +582,7 @@ class TestDFMConfiguration:
             "sigma_obs",
             "beta",
             "beta_sigma",
-        ]
+        )
         expected_param_dims = {
             "x0": (ALL_STATE_DIM,),
             "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
@@ -595,8 +595,8 @@ class TestDFMConfiguration:
             "beta_sigma": (EXOG_STATE_DIM,),
         }
         expected_coords = {
-            OBS_STATE_DIM: ["y0", "y1", "y2"],
-            ALL_STATE_DIM: [
+            OBS_STATE_DIM: ("y0", "y1", "y2"),
+            ALL_STATE_DIM: (
                 "L0.factor_0",
                 "L0.factor_1",
                 "L0.error_0",
@@ -604,8 +604,8 @@ class TestDFMConfiguration:
                 "L0.error_2",
                 "beta_x0[shared]",
                 "beta_x1[shared]",
-            ],
-            ALL_STATE_AUX_DIM: [
+            ),
+            ALL_STATE_AUX_DIM: (
                 "L0.factor_0",
                 "L0.factor_1",
                 "L0.error_0",
@@ -613,15 +613,15 @@ class TestDFMConfiguration:
                 "L0.error_2",
                 "beta_x0[shared]",
                 "beta_x1[shared]",
-            ],
-            FACTOR_DIM: ["factor_1", "factor_2"],
-            AR_PARAM_DIM: list(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: list(range(1, (error_order * k_endog) + 1))
+            ),
+            FACTOR_DIM: ("factor_1", "factor_2"),
+            AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
             if error_var
-            else list(range(1, error_order + 1)),
-            EXOG_STATE_DIM: list(range(1, k_exog + 1))
+            else tuple(range(1, error_order + 1)),
+            EXOG_STATE_DIM: tuple(range(1, k_exog + 1))
             if shared_exog_states
-            else list(range(1, k_exog * k_endog + 1)),
+            else tuple(range(1, k_exog * k_endog + 1)),
         }
 
         assert mod.param_names == expected_param_names
@@ -631,7 +631,7 @@ class TestDFMConfiguration:
         assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order + (
             k_exog if shared_exog_states else k_exog * k_endog
         )
-        assert mod.observed_states == ["y0", "y1", "y2"]
+        assert mod.observed_states == ("y0", "y1", "y2")
         assert len(mod.shock_names) == k_factors + k_endog + (
             k_exog if shared_exog_states else k_exog * k_endog
         )
@@ -657,7 +657,7 @@ class TestDFMConfiguration:
             measurement_error=False,
             verbose=False,
         )
-        expected_param_names = [
+        expected_param_names = (
             "x0",
             "P0",
             "factor_loadings",
@@ -665,7 +665,7 @@ class TestDFMConfiguration:
             "error_ar",
             "error_sigma",
             "beta",
-        ]
+        )
         expected_param_dims = {
             "x0": (ALL_STATE_DIM,),
             "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
@@ -676,8 +676,8 @@ class TestDFMConfiguration:
             "beta": (EXOG_STATE_DIM,),
         }
         expected_coords = {
-            OBS_STATE_DIM: ["y0", "y1", "y2"],
-            ALL_STATE_DIM: [
+            OBS_STATE_DIM: ("y0", "y1", "y2"),
+            ALL_STATE_DIM: (
                 "L0.factor_0",
                 "L1.factor_0",
                 "L0.error_0",
@@ -686,8 +686,8 @@ class TestDFMConfiguration:
                 "beta_x0[y0]",
                 "beta_x0[y1]",
                 "beta_x0[y2]",
-            ],
-            ALL_STATE_AUX_DIM: [
+            ),
+            ALL_STATE_AUX_DIM: (
                 "L0.factor_0",
                 "L1.factor_0",
                 "L0.error_0",
@@ -696,15 +696,15 @@ class TestDFMConfiguration:
                 "beta_x0[y0]",
                 "beta_x0[y1]",
                 "beta_x0[y2]",
-            ],
-            FACTOR_DIM: ["factor_1"],
-            AR_PARAM_DIM: list(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: list(range(1, (error_order * k_endog) + 1))
+            ),
+            FACTOR_DIM: ("factor_1",),
+            AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
             if error_var
-            else list(range(1, error_order + 1)),
-            EXOG_STATE_DIM: list(range(1, k_exog + 1))
+            else tuple(range(1, error_order + 1)),
+            EXOG_STATE_DIM: tuple(range(1, k_exog + 1))
             if shared_exog_states
-            else list(range(1, k_exog * k_endog + 1)),
+            else tuple(range(1, k_exog * k_endog + 1)),
         }
 
         assert mod.param_names == expected_param_names
@@ -714,7 +714,7 @@ class TestDFMConfiguration:
         assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order + (
             k_exog if shared_exog_states else k_exog * k_endog
         )
-        assert mod.observed_states == ["y0", "y1", "y2"]
+        assert mod.observed_states == ("y0", "y1", "y2")
         assert len(mod.shock_names) == k_factors + k_endog + (
             k_exog if shared_exog_states else k_exog * k_endog
         )

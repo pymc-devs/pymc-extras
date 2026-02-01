@@ -196,20 +196,19 @@ class DiscreteMarkovChain(Distribution):
         state_rng = pytensor.shared(np.random.default_rng())
 
         def transition(*args):
-            *states, transition_probs, old_rng = args
+            old_rng, *states, transition_probs = args
             p = transition_probs[tuple(states)]
             next_rng, next_state = pm.Categorical.dist(p=p, rng=old_rng).owner.outputs
-            return next_state, {old_rng: next_rng}
+            return next_rng, next_state
 
-        markov_chain, state_updates = pytensor.scan(
+        state_next_rng, markov_chain = pytensor.scan(
             transition,
-            non_sequences=[P_, state_rng],
-            outputs_info=_make_outputs_info(n_lags, init_dist_),
+            outputs_info=[state_rng, *_make_outputs_info(n_lags, init_dist_)],
+            non_sequences=[P_],
             n_steps=steps_,
             strict=True,
+            return_updates=False,
         )
-
-        (state_next_rng,) = tuple(state_updates.values())
 
         discrete_mc_ = pt.moveaxis(pt.concatenate([init_dist_, markov_chain], axis=0), 0, -1)
 
@@ -239,16 +238,17 @@ def discrete_mc_moment(op, rv, P, steps, init_dist, state_rng):
     n_lags = op.n_lags
 
     def greedy_transition(*args):
-        *states, transition_probs, old_rng = args
+        *states, transition_probs = args
         p = transition_probs[tuple(states)]
         return pt.argmax(p)
 
-    chain_moment, moment_updates = pytensor.scan(
+    chain_moment = pytensor.scan(
         greedy_transition,
-        non_sequences=[P, state_rng],
+        non_sequences=[P],
         outputs_info=_make_outputs_info(n_lags, init_dist),
         n_steps=steps,
         strict=True,
+        return_updates=False,
     )
     chain_moment = pt.concatenate([init_dist_moment, chain_moment])
     return chain_moment

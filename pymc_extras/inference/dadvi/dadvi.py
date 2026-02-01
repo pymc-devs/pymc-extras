@@ -3,25 +3,20 @@ import numpy as np
 import pymc
 import pytensor
 import pytensor.tensor as pt
-import xarray
 
+from arviz import InferenceData
 from better_optimize import basinhopping, minimize
 from better_optimize.constants import minimize_method
 from pymc import DictToArrayBijection, Model, join_nonshared_inputs
-from pymc.backends.arviz import (
-    PointFunc,
-    apply_function_over_dataset,
-    coords_and_dims_for_inferencedata,
-)
 from pymc.blocking import RaveledVars
-from pymc.util import RandomSeed, get_default_varnames
+from pymc.util import RandomSeed
 from pytensor.tensor.variable import TensorVariable
 
 from pymc_extras.inference.laplace_approx.idata import (
     add_data_to_inference_data,
     add_optimizer_result_to_inference_data,
 )
-from pymc_extras.inference.laplace_approx.laplace import unstack_laplace_draws
+from pymc_extras.inference.laplace_approx.laplace import draws_from_laplace_approx
 from pymc_extras.inference.laplace_approx.scipy_interface import (
     scipy_optimize_funcs_from_loss,
     set_optimizer_function_defaults,
@@ -193,16 +188,18 @@ def fit_dadvi(
     opt_var_params = result.x
     opt_means, opt_log_sds = np.split(opt_var_params, 2)
 
-    # Make the draws:
-    generator = np.random.default_rng(seed=random_seed)
-    draws_raw = generator.standard_normal(size=(n_draws, n_params))
-
-    draws = opt_means + draws_raw * np.exp(opt_log_sds)
-    draws_arviz = unstack_laplace_draws(draws, model, chains=1, draws=n_draws)
-
-    idata = dadvi_result_to_idata(
-        draws_arviz, model, include_transformed=include_transformed, progressbar=progressbar
+    posterior, unconstrained_posterior = draws_from_laplace_approx(
+        mean=opt_means,
+        standard_deviation=np.exp(opt_log_sds),
+        draws=n_draws,
+        model=model,
+        vectorize_draws=False,
+        return_unconstrained=include_transformed,
+        random_seed=random_seed,
     )
+    idata = InferenceData(posterior=posterior)
+    if include_transformed:
+        idata.add_groups(unconstrained_posterior=unconstrained_posterior)
 
     var_name_to_model_var = {f"{var_name}_mu": var_name for var_name in initial_point_dict.keys()}
     var_name_to_model_var.update(
@@ -283,69 +280,3 @@ def create_dadvi_graph(
     objective = -mean_log_density - entropy
 
     return var_params, objective
-
-
-def dadvi_result_to_idata(
-    unstacked_draws: xarray.Dataset,
-    model: Model,
-    include_transformed: bool = False,
-    progressbar: bool = True,
-):
-    """
-    Transforms the unconstrained draws back into the constrained space.
-
-    Parameters
-    ----------
-    unstacked_draws : xarray.Dataset
-        The draws to constrain back into the original space.
-
-    model : Model
-        The PyMC model the variables were derived from.
-
-    n_draws: int
-        The number of draws to return from the variational approximation.
-
-    include_transformed: bool
-        Whether or not to keep the unconstrained variables in the output.
-
-    progressbar: bool
-        Whether or not to show a progress bar during the transformation. Default is True.
-
-    Returns
-    -------
-    :class:`~arviz.InferenceData`
-        Draws from the original constrained parameters.
-    """
-
-    filtered_var_names = model.unobserved_value_vars
-    vars_to_sample = list(
-        get_default_varnames(filtered_var_names, include_transformed=include_transformed)
-    )
-    fn = pytensor.function(model.value_vars, vars_to_sample)
-    point_func = PointFunc(fn)
-
-    coords, dims = coords_and_dims_for_inferencedata(model)
-
-    transformed_result = apply_function_over_dataset(
-        point_func,
-        unstacked_draws,
-        output_var_names=[x.name for x in vars_to_sample],
-        coords=coords,
-        dims=dims,
-        progressbar=progressbar,
-    )
-
-    constrained_names = [
-        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=False)
-    ]
-    all_varnames = [
-        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=True)
-    ]
-    unconstrained_names = sorted(set(all_varnames) - set(constrained_names))
-
-    idata = az.InferenceData(posterior=transformed_result[constrained_names])
-
-    if unconstrained_names and include_transformed:
-        idata["unconstrained_posterior"] = transformed_result[unconstrained_names]
-
-    return idata

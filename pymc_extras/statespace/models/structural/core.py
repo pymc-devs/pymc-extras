@@ -1,7 +1,6 @@
 import functools as ft
 import logging
 
-from collections.abc import Sequence
 from itertools import pairwise
 from typing import Any
 
@@ -11,12 +10,28 @@ import xarray as xr
 from pytensor import Mode, Variable, config
 from pytensor import tensor as pt
 
-from pymc_extras.statespace.core import PyMCStateSpace, PytensorRepresentation
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    CoordInfo,
+    Data,
+    DataInfo,
+    Parameter,
+    ParameterInfo,
+    Shock,
+    ShockInfo,
+    State,
+    StateInfo,
+    SymbolicData,
+    SymbolicDataInfo,
+    SymbolicVariable,
+    SymbolicVariableInfo,
+)
+from pymc_extras.statespace.core.representation import PytensorRepresentation
+from pymc_extras.statespace.core.statespace import PyMCStateSpace, _validate_property
 from pymc_extras.statespace.models.utilities import (
     add_tensors_by_dim_labels,
     conform_time_varying_and_time_invariant_matrices,
     join_tensors_by_dim_labels,
-    make_default_coords,
 )
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
@@ -32,54 +47,13 @@ class StructuralTimeSeries(PyMCStateSpace):
     r"""
     Structural Time Series Model
 
-    The structural time series model, named by [1] and presented in statespace form in [2], is a framework for
-    decomposing a univariate time series into level, trend, seasonal, and cycle components. It also admits the
-    possibility of exogenous regressors. Unlike the SARIMAX framework, the time series is not assumed to be stationary.
+    A framework for decomposing a univariate time series into level, trend, seasonal, and cycle
+    components, as named by [1]_ and presented in state space form in [2]_.
 
-    Parameters
-    ----------
-    ssm : PytensorRepresentation
-        The state space representation containing system matrices.
-    name : str
-        Name of the model. If None, defaults to "StructuralTimeSeries".
-    state_names : list[str]
-        Names of the hidden states in the model.
-    observed_state_names : list[str]
-        Names of the observed variables.
-    data_names : list[str]
-        Names of data variables expected by the model.
-    shock_names : list[str]
-        Names of innovation/shock processes.
-    param_names : list[str]
-        Names of model parameters.
-    exog_names : list[str]
-        Names of exogenous variables.
-    param_dims : dict[str, tuple[int]]
-        Dimension specifications for parameters.
-    coords : dict[str, Sequence]
-        Coordinate specifications for the model.
-    param_info : dict[str, dict[str, Any]]
-        Information about parameters including shapes and constraints.
-    data_info : dict[str, dict[str, Any]]
-        Information about data variables.
-    component_info : dict[str, dict[str, Any]]
-        Information about model components.
-    measurement_error : bool
-        Whether the model includes measurement error.
-    name_to_variable : dict[str, Variable]
-        Mapping from parameter names to PyTensor variables.
-    name_to_data : dict[str, Variable] | None, optional
-        Mapping from data names to PyTensor variables. Default is None.
-    verbose : bool, optional
-        Whether to print model information. Default is True.
-    filter_type : str, optional
-        Type of Kalman filter to use. Default is "standard".
-    mode : str | Mode | None, optional
-        PyTensor compilation mode. Default is None.
+    This class is not typically instantiated directly. Instead, use ``Component.build()`` to
+    construct a model from components combined with the ``+`` operator.
 
-    Notes
-    -----
-    The structural time series model decomposes a time series into interpretable components:
+    The model decomposes a time series into interpretable components:
 
     .. math::
 
@@ -94,10 +68,6 @@ class StructuralTimeSeries(PyMCStateSpace):
         - :math:`\xi_t` is the autoregressive component
         - :math:`\varepsilon_t` is the measurement error
 
-    The model is built by combining individual components (e.g., LevelTrendComponent,
-    TimeSeasonality, CycleComponent) using the addition operator. Each component
-    contributes to the overall state space representation.
-
     Examples
     --------
     Create a model with trend and seasonal components:
@@ -108,7 +78,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         import pymc as pm
         import pytensor.tensor as pt
 
-        trend = st.LevelTrendComponent(order=2 innovations_order=1)
+        trend = st.LevelTrend(order=2, innovations_order=1)
         seasonal = st.TimeSeasonality(season_length=12, innovations=True)
         error = st.MeasurementError()
 
@@ -128,6 +98,14 @@ class StructuralTimeSeries(PyMCStateSpace):
             ss_mod.build_statespace_graph(data)
             idata = pm.sample()
 
+    See Also
+    --------
+    Component : Base class for structural time series components.
+    LevelTrend : Component for modeling level and trend.
+    TimeSeasonality : Component for seasonal effects.
+    Cycle : Component for cyclical effects.
+    Autoregressive : Component for autoregressive dynamics.
+
     References
     ----------
     .. [1] Harvey, A. C. (1989). Forecasting, structural time series models and the
@@ -140,49 +118,63 @@ class StructuralTimeSeries(PyMCStateSpace):
         self,
         ssm: PytensorRepresentation,
         name: str,
-        state_names: list[str],
-        observed_state_names: list[str],
-        data_names: list[str],
-        shock_names: list[str],
-        param_names: list[str],
-        exog_names: list[str],
-        param_dims: dict[str, tuple[int]],
-        coords: dict[str, Sequence],
-        param_info: dict[str, dict[str, Any]],
-        data_info: dict[str, dict[str, Any]],
+        coords_info: CoordInfo,
+        param_info: ParameterInfo,
+        data_info: DataInfo,
+        shock_info: ShockInfo,
+        state_info: StateInfo,
+        tensor_variable_info: SymbolicVariableInfo,
+        tensor_data_info: SymbolicDataInfo,
         component_info: dict[str, dict[str, Any]],
         measurement_error: bool,
-        name_to_variable: dict[str, Variable],
-        name_to_data: dict[str, Variable] | None = None,
         verbose: bool = True,
         filter_type: str = "standard",
         mode: str | Mode | None = None,
     ):
-        name = "StructuralTimeSeries" if name is None else name
+        """
+        Initialize a StructuralTimeSeries model.
 
-        self._name = name
-        self._observed_state_names = observed_state_names
+        This constructor is typically called by ``Component.build()`` rather than directly.
+
+        Parameters
+        ----------
+        ssm : PytensorRepresentation
+            The state space representation containing system matrices.
+        name : str
+            Name of the model. If None, defaults to "StructuralTimeSeries".
+        coords_info : CoordInfo
+            Coordinate specifications for model dimensions.
+        param_info : ParameterInfo
+            Information about model parameters including shapes and constraints.
+        data_info : DataInfo
+            Information about data variables expected by the model.
+        shock_info : ShockInfo
+            Information about innovation/shock processes.
+        state_info : StateInfo
+            Information about hidden and observed states.
+        tensor_variable_info : SymbolicVariableInfo
+            Mapping from parameter names to PyTensor symbolic variables.
+        tensor_data_info : SymbolicDataInfo
+            Mapping from data names to PyTensor symbolic variables.
+        component_info : dict[str, dict[str, Any]]
+            Information about model components used for state extraction.
+        measurement_error : bool
+            Whether the model includes measurement error.
+        verbose : bool, default True
+            Whether to print model information during construction.
+        filter_type : str, default "standard"
+            Type of Kalman filter to use.
+        mode : str | Mode | None, default None
+            PyTensor compilation mode.
+        """
+        self._name = name or "StructuralTimeSeries"
+        self.measurement_error = measurement_error
 
         k_states, k_posdef, k_endog = ssm.k_states, ssm.k_posdef, ssm.k_endog
-        param_names, param_dims, param_info = self._add_inital_state_cov_to_properties(
-            param_names, param_dims, param_info, k_states
+
+        self._init_info_objects(
+            param_info, data_info, shock_info, state_info, coords_info, k_states, k_endog
         )
-
-        self._state_names = self._strip_data_names_if_unambiguous(state_names, k_endog)
-        self._data_names = self._strip_data_names_if_unambiguous(data_names, k_endog)
-        self._shock_names = self._strip_data_names_if_unambiguous(shock_names, k_endog)
-        self._param_names = self._strip_data_names_if_unambiguous(param_names, k_endog)
-        self._param_dims = param_dims
-
-        default_coords = make_default_coords(self)
-        coords.update(default_coords)
-
-        self._coords = {
-            k: self._strip_data_names_if_unambiguous(v, k_endog) for k, v in coords.items()
-        }
-        self._param_info = param_info.copy()
-        self._data_info = data_info.copy()
-        self.measurement_error = measurement_error
 
         super().__init__(
             k_endog,
@@ -193,30 +185,75 @@ class StructuralTimeSeries(PyMCStateSpace):
             measurement_error=measurement_error,
             mode=mode,
         )
+
+        self._tensor_variable_info = tensor_variable_info
+        self._tensor_data_info = tensor_data_info
+        self._component_info = component_info.copy()
+        self._exog_names = data_info.exogenous_names
+        self._needs_exog_data = data_info.needs_exogenous_data
+
+        self._init_ssm(ssm, k_posdef)
+
+    def _init_info_objects(
+        self,
+        param_info: ParameterInfo,
+        data_info: DataInfo,
+        shock_info: ShockInfo,
+        state_info: StateInfo,
+        coords_info: CoordInfo,
+        k_states: int,
+        k_endog: int,
+    ) -> None:
+        """Initialize all info objects and set observed state names."""
+        self._observed_state_names = state_info.observed_state_names
+
+        param_names, param_dims, param_info = self._add_inital_state_cov_to_properties(
+            param_info, k_states
+        )
+        self._param_dims = param_dims
+
+        self._param_info = param_info
+        self._data_info = data_info
+        self._shock_info = shock_info
+        self._state_info = state_info
+
+        # Stripped names must be set before default_coords_from_model (which accesses state_names)
+        self._init_stripped_names(k_endog)
+
+        default_coords = coords_info.default_coords_from_model(self)
+        self._coords_info = coords_info.merge(default_coords)
+
+    def _init_stripped_names(self, k_endog: int) -> None:
+        """Strip data suffixes from names when k_endog == 1 for cleaner output."""
+
+        def strip(names):
+            return self._strip_data_names_if_unambiguous(names, k_endog)
+
+        self._state_names = strip(self._state_info.unobserved_state_names)
+        self._data_names = strip([d.name for d in self._data_info if not d.is_exogenous])
+        self._shock_names = strip(self._shock_info.names)
+        self._param_names = strip(self._param_info.names)
+
+    def _init_ssm(self, ssm: PytensorRepresentation, k_posdef: int) -> None:
+        """Initialize state space model representation."""
         self.ssm = ssm.copy()
 
         if k_posdef == 0:
-            # If there is no randomness in the model, add dummy matrices to the representation to avoid errors
-            # when we go to construct random variables from the matrices
             self.ssm.k_posdef = self.k_posdef
             self.ssm.shapes["state_cov"] = (1, 1, 1)
             self.ssm["state_cov"] = pt.zeros((1, 1, 1))
-
             self.ssm.shapes["selection"] = (1, self.k_states, 1)
             self.ssm["selection"] = pt.zeros((1, self.k_states, 1))
-
-        self._component_info = component_info.copy()
-
-        self._name_to_variable = name_to_variable.copy()
-        self._name_to_data = name_to_data.copy()
-
-        self._exog_names = exog_names.copy()
-        self._needs_exog_data = len(exog_names) > 0
 
         P0 = self.make_and_register_variable("P0", shape=(self.k_states, self.k_states))
         self.ssm["initial_state_cov"] = P0
 
-    def _strip_data_names_if_unambiguous(self, names: list[str], k_endog: int):
+    def _populate_properties(self) -> None:
+        # The base class method needs to be overridden because we directly set properties in
+        # the __init__ method.
+        pass
+
+    def _strip_data_names_if_unambiguous(self, names: list[str] | tuple[str, ...], k_endog: int):
         """
         State names from components should always be of the form name[data_name], in the case that the component is
         associated with multiple observed states. Not doing so leads to ambiguity -- we might have two level states,
@@ -226,62 +263,40 @@ class StructuralTimeSeries(PyMCStateSpace):
         the state name. This is a bit cleaner.
         """
         if k_endog == 1:
-            [data_name] = self.observed_states
-            return [
+            [data_name] = self._observed_state_names
+            return tuple(
                 name.replace(f"[{data_name}]", "") if isinstance(name, str) else name
                 for name in names
-            ]
+            )
 
         else:
             return names
 
-    @staticmethod
-    def _add_inital_state_cov_to_properties(param_names, param_dims, param_info, k_states):
-        param_names += ["P0"]
-        param_dims["P0"] = (ALL_STATE_DIM, ALL_STATE_AUX_DIM)
-        param_info["P0"] = {
-            "shape": (k_states, k_states),
-            "constraints": "Positive semi-definite",
-            "dims": param_dims["P0"],
-        }
-
-        return param_names, param_dims, param_info
-
     @property
-    def param_names(self):
-        return self._param_names
-
-    @property
-    def data_names(self) -> list[str]:
-        return self._data_names
-
-    @property
-    def state_names(self):
+    def state_names(self) -> tuple[str, ...]:
+        """Return stripped state names (without [data_name] suffix when k_endog == 1)."""
         return self._state_names
 
     @property
-    def observed_states(self):
-        return self._observed_state_names
-
-    @property
-    def shock_names(self):
+    def shock_names(self) -> tuple[str, ...]:
+        """Return stripped shock names (without [data_name] suffix when k_endog == 1)."""
         return self._shock_names
 
-    @property
-    def param_dims(self):
-        return self._param_dims
+    @staticmethod
+    def _add_inital_state_cov_to_properties(param_info, k_states):
+        initial_state_cov_param = Parameter(
+            name="P0",
+            shape=(k_states, k_states),
+            dims=(ALL_STATE_DIM, ALL_STATE_AUX_DIM),
+            constraints="Positive semi-definite",
+        )
 
-    @property
-    def coords(self) -> dict[str, Sequence]:
-        return self._coords
+        if param_info is not None:
+            param_info = param_info.add(initial_state_cov_param)
+        else:
+            param_info = ParameterInfo(parameters=(initial_state_cov_param,))
 
-    @property
-    def param_info(self) -> dict[str, dict[str, Any]]:
-        return self._param_info
-
-    @property
-    def data_info(self) -> dict[str, dict[str, Any]]:
-        return self._data_info
+        return param_info.names, [p.dims for p in param_info], param_info
 
     def make_symbolic_graph(self) -> None:
         """
@@ -401,7 +416,7 @@ class StructuralTimeSeries(PyMCStateSpace):
             new_idata.coords.update({state_dim: new_state_names})
             return new_idata
 
-        var_names = list(idata.data_vars.keys())
+        var_names: list[str] = list(idata.data_vars.keys())  # type: ignore[arg-type]
         is_latent = [idata[name].shape[-1] == self.k_states for name in var_names]
         new_state_names = self._get_subcomponent_names()
 
@@ -409,7 +424,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         dropped_vars = set(var_names) - set(latent_names)
         if len(dropped_vars) > 0:
             _log.warning(
-                f"Variables {', '.join(dropped_vars)} do not contain all hidden states (their last dimension "
+                f"Variables {', '.join(sorted(dropped_vars))} do not contain all hidden states (their last dimension "
                 f"is not {self.k_states}). They will not be present in the modified idata."
             )
         if len(dropped_vars) == len(var_names):
@@ -445,19 +460,12 @@ class Component:
     k_posdef : int
         Rank of the state covariance matrix, or the number of sources of innovations
         in the component model.
-    state_names : list[str] | None, optional
-        Names of the hidden states. If None, defaults to empty list.
-    observed_state_names : list[str] | None, optional
-        Names of the observed states associated with this component. Must have the same
-        length as k_endog. If None, defaults to empty list.
-    data_names : list[str] | None, optional
-        Names of data variables expected by the component. If None, defaults to empty list.
-    shock_names : list[str] | None, optional
-        Names of innovation/shock processes. If None, defaults to empty list.
-    param_names : list[str] | None, optional
-        Names of component parameters. If None, defaults to empty list.
-    exog_names : list[str] | None, optional
-        Names of exogenous variables. If None, defaults to empty list.
+    base_state_names : list[str] | None, optional
+        Base names of hidden states, before any transformations by set_states().
+        Subclasses typically transform these (e.g., adding suffixes). If None, defaults to empty list.
+    base_observed_state_names : list[str] | None, optional
+        Base names of observed states, before any transformations by set_states().
+        If None, defaults to empty list.
     representation : PytensorRepresentation | None, optional
         Pre-existing state space representation. If None, creates a new one.
     measurement_error : bool, optional
@@ -484,7 +492,7 @@ class Component:
 
         from pymc_extras.statespace import structural as st
 
-        trend = st.LevelTrendComponent(order=2, innovations_order=1)
+        trend = st.LevelTrend(order=2, innovations_order=1)
         seasonal = st.TimeSeasonality(season_length=12, innovations=True)
         model = (trend + seasonal).build()
 
@@ -493,10 +501,10 @@ class Component:
     See Also
     --------
     StructuralTimeSeries : The complete model class that combines components.
-    LevelTrendComponent : Component for modeling level and trend.
+    LevelTrend : Component for modeling level and trend.
     TimeSeasonality : Component for seasonal effects.
-    CycleComponent : Component for cyclical effects.
-    RegressionComponent : Component for regression effects.
+    Cycle : Component for cyclical effects.
+    Regression : Component for regression effects.
     """
 
     def __init__(
@@ -505,12 +513,8 @@ class Component:
         k_endog,
         k_states,
         k_posdef,
-        state_names=None,
-        observed_state_names=None,
-        data_names=None,
-        shock_names=None,
-        param_names=None,
-        exog_names=None,
+        base_state_names=None,
+        base_observed_state_names=None,
         representation: PytensorRepresentation | None = None,
         measurement_error=False,
         combine_hidden_states=True,
@@ -519,53 +523,202 @@ class Component:
         share_states: bool = False,
     ):
         self.name = name
-        self.k_endog = k_endog
-        self.k_states = k_states
         self.share_states = share_states
-        self.k_posdef = k_posdef
         self.measurement_error = measurement_error
 
-        self.state_names = list(state_names) if state_names is not None else []
-        self.observed_state_names = (
-            list(observed_state_names) if observed_state_names is not None else []
+        base_state_names = list(base_state_names) if base_state_names is not None else []
+        base_observed_state_names = (
+            list(base_observed_state_names) if base_observed_state_names is not None else []
         )
-        self.data_names = list(data_names) if data_names is not None else []
-        self.shock_names = list(shock_names) if shock_names is not None else []
-        self.param_names = list(param_names) if param_names is not None else []
-        self.exog_names = list(exog_names) if exog_names is not None else []
 
-        self.needs_exog_data = len(self.exog_names) > 0
-        self.coords = {}
-        self.param_dims = {}
+        self._k_posdef = k_posdef
+        self._k_endog = len(base_observed_state_names) or k_endog
+        self._k_states = k_states
+        self.base_state_names = base_state_names
+        self.base_observed_state_names = base_observed_state_names
 
-        self.param_info = {}
-        self.data_info = {}
+        self._init_ssm(representation, k_endog, k_states, k_posdef)
 
-        self.param_counts = {}
-
-        if representation is None:
-            self.ssm = PytensorRepresentation(k_endog=k_endog, k_states=k_states, k_posdef=k_posdef)
-        else:
-            self.ssm = representation
-
-        self._name_to_variable = {}
-        self._name_to_data = {}
+        self._tensor_variable_info = SymbolicVariableInfo()
+        self._tensor_data_info = SymbolicDataInfo()
 
         if not component_from_sum:
             self.populate_component_properties()
             self.make_symbolic_graph()
 
-        self._component_info = {
-            self.name: {
-                "k_states": self.k_states,
-                "k_endog": self.k_endog,
-                "k_posdef": self.k_posdef,
-                "observed_state_names": self.observed_state_names,
-                "combine_hidden_states": combine_hidden_states,
-                "obs_state_idx": obs_state_idxs,
-                "share_states": self.share_states,
+            self._component_info = {
+                self.name: {
+                    "k_states": k_states,
+                    "k_endog": k_endog,
+                    "k_posdef": k_posdef,
+                    "observed_state_names": self._state_info.observed_state_names,
+                    "combine_hidden_states": combine_hidden_states,
+                    "obs_state_idx": obs_state_idxs,
+                    "share_states": self.share_states,
+                }
             }
-        }
+
+    def _init_ssm(
+        self,
+        representation: PytensorRepresentation | None,
+        k_endog: int,
+        k_states: int,
+        k_posdef: int,
+    ) -> None:
+        """Initialize state space model representation."""
+        if representation is None:
+            self.ssm = PytensorRepresentation(k_endog=k_endog, k_states=k_states, k_posdef=k_posdef)
+        else:
+            self.ssm = representation
+
+    def populate_component_properties(self) -> None:
+        self._set_states()
+        self._set_parameters()
+        self._set_shocks()
+        self._set_data_info()
+        self._set_coords()
+
+    def set_states(self) -> State | tuple[State, ...] | None:
+        """
+        Set default state specification based on number of states and endogenous variables in the component.
+
+        It is encouraged to override this method.
+        """
+        state_names = self.base_state_names or [i for i in range(self.k_states or 0)]
+        observed_state_names = self.base_observed_state_names or [
+            i for i in range(self._k_endog or 0)
+        ]
+
+        hidden_states = [
+            State(name=name, observed=False, shared=self.share_states) for name in state_names
+        ]
+        observed_states = [
+            State(name=name, observed=True, shared=self.share_states)
+            for name in observed_state_names
+        ]
+        return *hidden_states, *observed_states
+
+    def _set_states(self) -> None:
+        states = self.set_states()
+        _validate_property(states, "states", State)
+        if isinstance(states, State):
+            states = (states,)
+        self._state_info = StateInfo(states=states)
+
+    def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
+        """
+        Set component parameter specifications. Since different component types will require different specifications,
+        you must be override this method.
+        """
+        return
+
+    def _set_parameters(self) -> None:
+        params = self.set_parameters()
+        _validate_property(params, "parameters", Parameter)
+        if isinstance(params, Parameter):
+            params = (params,)
+        self._param_info = ParameterInfo(parameters=params)
+
+    def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
+        """
+        Set default shock specifications based on the number of sources of innovations in the component.
+
+        It is encouraged to override this method.
+        """
+        return tuple(Shock(name=f"shock_{name}") for name in range(self.k_posdef or 0))
+
+    def _set_shocks(self) -> None:
+        shocks = self.set_shocks()
+        _validate_property(shocks, "shocks", Shock)
+        if isinstance(shocks, Shock):
+            shocks = (shocks,)
+        self._shock_info = ShockInfo(shocks=shocks)
+
+    def set_data_info(self) -> Data | tuple[Data, ...] | None:
+        """
+        Set default data specifications. Since different component types will require different specifications you must be override this method.
+        """
+        return
+
+    def _set_data_info(self) -> None:
+        data_info = self.set_data_info()
+        _validate_property(data_info, "data_info", Data)
+        if isinstance(data_info, Data):
+            data_info = (data_info,)
+        self._data_info = DataInfo(data=data_info)
+
+    def set_coords(self) -> Coord | tuple[Coord, ...] | None:
+        """
+        Set default coordinate specifications. Since different component types will require different specifications you must be override this method.
+        """
+        return
+
+    def _set_coords(self) -> None:
+        coords = self.set_coords()
+        _validate_property(coords, "coords", Coord)
+        if isinstance(coords, Coord):
+            coords = (coords,)
+        self._coords_info = CoordInfo(coords=coords)
+
+    @property
+    def state_names(self):
+        return self._state_info.unobserved_state_names
+
+    @property
+    def observed_state_names(self):
+        return self._state_info.observed_state_names
+
+    @property
+    def param_names(self):
+        return self._param_info.names
+
+    @property
+    def param_info(self):
+        return self._param_info
+
+    @property
+    def shock_names(self):
+        return self._shock_info.names
+
+    @property
+    def data_names(self):
+        return [data.name for data in self._data_info if not data.is_exogenous]
+
+    @property
+    def exog_names(self):
+        return self._data_info.exogenous_names
+
+    @property
+    def coords(self):
+        return self._coords_info.to_dict()
+
+    @property
+    def param_dims(self):
+        return {param.name: param.dims for param in self._param_info if param.dims is not None}
+
+    @property
+    def needs_exog_data(self):
+        return self._data_info.needs_exogenous_data
+
+    @property
+    def k_states(self):
+        return self._k_states
+
+    @property
+    def k_endog(self):
+        return self._k_endog
+
+    @property
+    def k_posdef(self):
+        return self._k_posdef
+
+    @property
+    def _name_to_variable(self):
+        return self._tensor_variable_info.to_dict()
+
+    @property
+    def _name_to_data(self):
+        return self._tensor_data_info.to_dict()
 
     def make_and_register_variable(self, name, shape, dtype=floatX) -> Variable:
         r"""
@@ -595,20 +748,21 @@ class Component:
         An error is raised if the provided name has already been registered, or if the name is not present in the
         ``param_names`` property.
         """
-        if name not in self.param_names:
+        if name not in self._param_info:
             raise ValueError(
                 f"{name} is not a model parameter. All placeholder variables should correspond to model "
                 f"parameters."
             )
 
-        if name in self._name_to_variable.keys():
+        if name in self._tensor_variable_info:
             raise ValueError(
                 f"{name} is already a registered placeholder variable with shape "
-                f"{self._name_to_variable[name].type.shape}"
+                f"{self._tensor_variable_info[name].symbolic_variable.type.shape}"
             )
 
         placeholder = pt.tensor(name, shape=shape, dtype=dtype)
-        self._name_to_variable[name] = placeholder
+        tensor_var = SymbolicVariable(name=name, symbolic_variable=placeholder)
+        self._tensor_variable_info = self._tensor_variable_info.add(tensor_var)
         return placeholder
 
     def make_and_register_data(self, name, shape, dtype=floatX) -> Variable:
@@ -632,26 +786,25 @@ class Component:
         An error is raised if the provided name has already been registered, or if the name is not present in the
         ``data_names`` property.
         """
-        if name not in self.data_names:
+        if name not in self._data_info:
             raise ValueError(
                 f"{name} is not a model parameter. All placeholder variables should correspond to model "
                 f"parameters."
             )
 
-        if name in self._name_to_data.keys():
+        if name in self._tensor_data_info:
             raise ValueError(
                 f"{name} is already a registered placeholder variable with shape "
-                f"{self._name_to_data[name].type.shape}"
+                f"{self._tensor_data_info[name].symbolic_data.type.shape}"
             )
 
         placeholder = pt.tensor(name, shape=shape, dtype=dtype)
-        self._name_to_data[name] = placeholder
+        tensor_data = SymbolicData(name=name, symbolic_data=placeholder)
+        tensor_data_info = SymbolicDataInfo(symbolic_data=(tensor_data,))
+        self._tensor_data_info = self._tensor_data_info.merge(tensor_data_info)
         return placeholder
 
     def make_symbolic_graph(self) -> None:
-        raise NotImplementedError
-
-    def populate_component_properties(self):
         raise NotImplementedError
 
     def _get_combined_shapes(self, other):
@@ -659,10 +812,8 @@ class Component:
         k_posdef = self.k_posdef + other.k_posdef
 
         # To count endog states, we have to count unique names between the two components.
-        combined_states = self._combine_property(
-            other, "observed_state_names", allow_duplicates=False
-        )
-        k_endog = len(combined_states)
+        combined_states = self._state_info.merge(other._state_info, overwrite_duplicates=True)
+        k_endog = len(combined_states.observed_state_names)
 
         return k_states, k_posdef, k_endog
 
@@ -698,7 +849,11 @@ class Component:
         state_intercept.name = c.name
 
         obs_intercept = add_tensors_by_dim_labels(
-            d, o_d, labels=self_observed_states, other_labels=other_observed_states, labeled_axis=-1
+            d,
+            o_d,
+            labels=list(self_observed_states),
+            other_labels=list(other_observed_states),
+            labeled_axis=-1,
         )
         obs_intercept.name = d.name
 
@@ -714,8 +869,8 @@ class Component:
 
         design = join_tensors_by_dim_labels(
             *conform_time_varying_and_time_invariant_matrices(Z, o_Z),
-            labels=self_observed_states,
-            other_labels=other_observed_states,
+            labels=list(self_observed_states),
+            other_labels=list(other_observed_states),
             labeled_axis=-2,
             join_axis=-1,
         )
@@ -734,8 +889,8 @@ class Component:
         obs_cov = add_tensors_by_dim_labels(
             H,
             o_H,
-            labels=self_observed_states,
-            other_labels=other_observed_states,
+            labels=list(self_observed_states),
+            other_labels=list(other_observed_states),
             labeled_axis=(-1, -2),
         )
         obs_cov.name = H.name
@@ -760,31 +915,6 @@ class Component:
 
         return new_ssm
 
-    def _combine_property(self, other, name, allow_duplicates=True):
-        self_prop = getattr(self, name)
-        other_prop = getattr(other, name)
-
-        if not isinstance(self_prop, type(other_prop)):
-            raise TypeError(
-                f"Property {name} of {self} and {other} are not the same and cannot be combined. Found "
-                f"{type(self_prop)} for {self} and {type(other_prop)} for {other}'"
-            )
-
-        if not isinstance(self_prop, list | dict):
-            raise TypeError(
-                f"All component properties are expected to be lists or dicts, but found {type(self_prop)}"
-                f"for property {name} of {self} and {type(other_prop)} for {other}'"
-            )
-
-        if isinstance(self_prop, list) and allow_duplicates:
-            return self_prop + other_prop
-        elif isinstance(self_prop, list) and not allow_duplicates:
-            return self_prop + [x for x in other_prop if x not in self_prop]
-        elif isinstance(self_prop, dict):
-            new_prop = self_prop.copy()
-            new_prop.update(other_prop)
-            return new_prop
-
     def _combine_component_info(self, other):
         combined_info = {}
         for key, value in self._component_info.items():
@@ -807,22 +937,14 @@ class Component:
         return name
 
     def __add__(self, other):
-        state_names = self._combine_property(other, "state_names")
-        data_names = self._combine_property(other, "data_names")
-        observed_state_names = self._combine_property(
-            other, "observed_state_names", allow_duplicates=False
-        )
-
-        param_names = self._combine_property(other, "param_names")
-        shock_names = self._combine_property(other, "shock_names")
-        param_info = self._combine_property(other, "param_info")
-        data_info = self._combine_property(other, "data_info")
-        param_dims = self._combine_property(other, "param_dims")
-        coords = self._combine_property(other, "coords")
-        exog_names = self._combine_property(other, "exog_names")
-
-        _name_to_variable = self._combine_property(other, "_name_to_variable")
-        _name_to_data = self._combine_property(other, "_name_to_data")
+        param_info = self._param_info.merge(other._param_info)
+        data_info = self._data_info.merge(other._data_info)
+        shock_info = self._shock_info.merge(other._shock_info)
+        state_info = self._state_info.merge(other._state_info, overwrite_duplicates=True)
+        coords_info = self._coords_info.merge(other._coords_info)
+        observed_state_names = state_info.observed_state_names
+        tensor_variable_info = self._tensor_variable_info.merge(other._tensor_variable_info)
+        tensor_data_info = self._tensor_data_info.merge(other._tensor_data_info)
 
         measurement_error = any([self.measurement_error, other.measurement_error])
 
@@ -835,7 +957,7 @@ class Component:
             k_endog=k_endog,
             k_states=k_states,
             k_posdef=k_posdef,
-            observed_state_names=observed_state_names,
+            base_observed_state_names=list(observed_state_names),
             measurement_error=measurement_error,
             representation=ssm,
             component_from_sum=True,
@@ -844,19 +966,13 @@ class Component:
         new_comp.name = new_comp._make_combined_name()
 
         names_and_props = [
-            ("state_names", state_names),
-            ("observed_state_names", observed_state_names),
-            ("data_names", data_names),
-            ("param_names", param_names),
-            ("shock_names", shock_names),
-            ("param_dims", param_dims),
-            ("coords", coords),
-            ("param_dims", param_dims),
-            ("param_info", param_info),
-            ("data_info", data_info),
-            ("exog_names", exog_names),
-            ("_name_to_variable", _name_to_variable),
-            ("_name_to_data", _name_to_data),
+            ("_coords_info", coords_info),
+            ("_param_info", param_info),
+            ("_data_info", data_info),
+            ("_shock_info", shock_info),
+            ("_state_info", state_info),
+            ("_tensor_variable_info", tensor_variable_info),
+            ("_tensor_data_info", tensor_data_info),
         ]
 
         for prop, value in names_and_props:
@@ -899,20 +1015,15 @@ class Component:
         return StructuralTimeSeries(
             self.ssm,
             name=name,
-            state_names=self.state_names,
-            observed_state_names=self.observed_state_names,
-            data_names=self.data_names,
-            shock_names=self.shock_names,
-            param_names=self.param_names,
-            param_dims=self.param_dims,
-            coords=self.coords,
-            param_info=self.param_info,
-            data_info=self.data_info,
+            coords_info=self._coords_info,
+            param_info=self._param_info,
+            data_info=self._data_info,
+            shock_info=self._shock_info,
+            state_info=self._state_info,
+            tensor_variable_info=self._tensor_variable_info,
+            tensor_data_info=self._tensor_data_info,
             component_info=self._component_info,
             measurement_error=self.measurement_error,
-            exog_names=self.exog_names,
-            name_to_variable=self._name_to_variable,
-            name_to_data=self._name_to_data,
             filter_type=filter_type,
             verbose=verbose,
             mode=mode,

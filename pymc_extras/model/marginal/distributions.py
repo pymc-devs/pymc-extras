@@ -305,11 +305,12 @@ def finite_discrete_marginal_rv_logp(op: MarginalFiniteDiscreteRV, values, *inpu
         def logp_fn(marginalized_rv_const, *non_sequences):
             return graph_replace(joint_logp, replace={marginalized_vv: marginalized_rv_const})
 
-        joint_logps, _ = scan_map(
+        joint_logps = scan_map(
             fn=logp_fn,
             sequences=marginalized_rv_domain_tensor,
             non_sequences=[*values, *inputs],
             mode=Mode().including("local_remove_check_parameter"),
+            return_updates=False,
         )
 
     joint_logp = pt.logsumexp(joint_logps, axis=0)
@@ -373,12 +374,13 @@ def marginal_hmm_logp(op, values, *inputs, **kwargs):
 
     P_bcast_dims = (len(chain_shape) - 1) - (P.type.ndim - 2)
     log_P = pt.shape_padright(pt.log(P), P_bcast_dims)
-    log_alpha_seq, _ = scan(
+    log_alpha_seq = scan(
         step_alpha,
         non_sequences=[log_P],
         outputs_info=[log_alpha_init],
         # Scan needs the time dimension first, and we already consumed the 1st logp computing the initial value
         sequences=pt.moveaxis(batch_logp_emissions[..., 1:], -1, 0),
+        return_updates=False,
     )
     # Final logp is just the sum of the last scan state
     joint_logp = pt.logsumexp(log_alpha_seq[-1], axis=0)

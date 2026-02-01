@@ -6,9 +6,9 @@ Structural Components
 .. autosummary::
    :toctree: generated
 
-   LevelTrendComponent
-   AutoregressiveComponent
+   LevelTrend
+   Autoregressive
    TimeSeasonality
    FrequencySeasonality
    MeasurementError
-   CycleComponent
+   Cycle

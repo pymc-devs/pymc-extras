@@ -8,7 +8,7 @@ import pytensor.tensor as pt
 import pytest
 
 from pymc_extras.statespace.models import structural
-from pymc_extras.statespace.models.structural import LevelTrendComponent
+from pymc_extras.statespace.models.structural import LevelTrend
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     FILTER_OUTPUT_NAMES,
@@ -69,7 +69,7 @@ def generate_timeseries():
 
 @pytest.fixture()
 def create_model(load_dataset):
-    ss_mod = structural.LevelTrendComponent(order=2).build("data", verbose=False)
+    ss_mod = structural.LevelTrend(order=2).build("data", verbose=False)
 
     def _create_model(f):
         data = load_dataset(f)
@@ -98,7 +98,7 @@ def test_filter_output_coord_assignment(f, warning, create_model):
 
 
 def test_model_build_without_coords(load_dataset):
-    ss_mod = structural.LevelTrendComponent().build(verbose=False)
+    ss_mod = structural.LevelTrend().build(verbose=False)
     data = load_dataset("numpy")
     with pm.Model() as mod:
         P0_diag = pm.Exponential("P0_diag", 1, shape=(2,))
@@ -121,7 +121,7 @@ def make_model(index):
     n = len(index)
     a = pd.DataFrame(index=index, columns=["A", "B", "C", "D"], data=np.arange(n * 4).reshape(n, 4))
 
-    mod = LevelTrendComponent(order=2, innovations_order=[0, 1])
+    mod = LevelTrend(order=2, innovations_order=[0, 1])
     ss_mod = mod.build(name="a", verbose=False)
 
     initial_trend_dims, sigma_trend_dims, P0_dims = ss_mod.param_dims.values()

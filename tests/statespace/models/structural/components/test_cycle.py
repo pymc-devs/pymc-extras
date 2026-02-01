@@ -19,9 +19,7 @@ cycle_test_vals = zip([None, None, 3, 5, 10], [False, True, True, False, False])
 
 
 def test_cycle_component_deterministic(rng):
-    cycle = st.CycleComponent(
-        name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False
-    )
+    cycle = st.Cycle(name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False)
     params = {"params_cycle": np.array([1.0, 1.0], dtype=config.floatX)}
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=12 * 12)
 
@@ -29,7 +27,7 @@ def test_cycle_component_deterministic(rng):
 
 
 def test_cycle_component_with_dampening(rng):
-    cycle = st.CycleComponent(
+    cycle = st.Cycle(
         name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False, dampen=True
     )
     params = {
@@ -43,9 +41,7 @@ def test_cycle_component_with_dampening(rng):
 
 
 def test_cycle_component_with_innovations_and_cycle_length(rng):
-    cycle = st.CycleComponent(
-        name="cycle", estimate_cycle_length=True, innovations=True, dampen=True
-    )
+    cycle = st.Cycle(name="cycle", estimate_cycle_length=True, innovations=True, dampen=True)
     params = {
         "params_cycle": np.array([1.0, 1.0], dtype=config.floatX),
         "length_cycle": 12.0,
@@ -55,12 +51,12 @@ def test_cycle_component_with_innovations_and_cycle_length(rng):
     x, y = simulate_from_numpy_model(cycle, rng, params)
 
     cycle.build(verbose=False)
-    _assert_basic_coords_correct(cycle)
+    assert cycle.coords["state_cycle"] == ("Cos_cycle", "Sin_cycle")
 
 
 def test_cycle_multivariate_deterministic(rng):
     """Test multivariate cycle component with deterministic cycles."""
-    cycle = st.CycleComponent(
+    cycle = st.Cycle(
         name="cycle",
         cycle_length=12,
         estimate_cycle_length=False,
@@ -111,7 +107,7 @@ def test_cycle_multivariate_deterministic(rng):
 
 
 def test_multivariate_cycle_with_shared(rng):
-    cycle = st.CycleComponent(
+    cycle = st.Cycle(
         name="cycle",
         cycle_length=12,
         estimate_cycle_length=False,
@@ -120,9 +116,12 @@ def test_multivariate_cycle_with_shared(rng):
         share_states=True,
     )
 
-    assert cycle.state_names == ["Cos_cycle[shared]", "Sin_cycle[shared]"]
-    assert cycle.shock_names == []
-    assert cycle.param_names == ["params_cycle"]
+    assert cycle.state_names == (
+        "Cos_cycle[shared]",
+        "Sin_cycle[shared]",
+    )
+    assert cycle.shock_names == ()
+    assert cycle.param_names == ("params_cycle",)
 
     params = {"params_cycle": np.array([1.0, 2.0], dtype=config.floatX)}
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=12 * 12)
@@ -133,7 +132,7 @@ def test_multivariate_cycle_with_shared(rng):
 
 def test_cycle_multivariate_with_dampening(rng):
     """Test multivariate cycle component with dampening."""
-    cycle = st.CycleComponent(
+    cycle = st.Cycle(
         name="cycle",
         cycle_length=12,
         estimate_cycle_length=False,
@@ -162,7 +161,7 @@ def test_cycle_multivariate_with_dampening(rng):
 
 def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
     """Test multivariate cycle component with innovations and estimated cycle length."""
-    cycle = st.CycleComponent(
+    cycle = st.Cycle(
         name="cycle",
         estimate_cycle_length=True,
         innovations=True,
@@ -177,11 +176,15 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
     }
     x, y = simulate_from_numpy_model(cycle, rng, params)
 
-    cycle.build(verbose=False)
-    _assert_basic_coords_correct(cycle)
+    mod = cycle.build(verbose=False)
+    _assert_basic_coords_correct(mod)
 
-    assert cycle.coords["state_cycle"] == ["Cos_cycle", "Sin_cycle"]
-    assert cycle.coords["endog_cycle"] == ["data_1", "data_2", "data_3"]
+    assert cycle.coords["state_cycle"] == ("Cos_cycle", "Sin_cycle")
+    assert cycle.coords["endog_cycle"] == (
+        "data_1",
+        "data_2",
+        "data_3",
+    )
 
     assert cycle.k_endog == 3
     assert cycle.k_states == 6  # 2 states per variable
@@ -241,18 +244,18 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
 
 def test_add_multivariate_cycle_components_with_different_observed():
     """
-    Test adding two multivariate CycleComponents with different observed_state_names.
-    Ensures that combining two multivariate CycleComponents with different observed state names
+    Test adding two multivariate Cycles with different observed_state_names.
+    Ensures that combining two multivariate Cycles with different observed state names
     results in the correct block-diagonal state space matrices and state naming.
     """
-    cycle1 = st.CycleComponent(
+    cycle1 = st.Cycle(
         name="cycle1",
         cycle_length=12,
         estimate_cycle_length=False,
         innovations=False,
         observed_state_names=["a1", "a2"],
     )
-    cycle2 = st.CycleComponent(
+    cycle2 = st.Cycle(
         name="cycle2",
         cycle_length=6,
         estimate_cycle_length=False,
@@ -267,7 +270,7 @@ def test_add_multivariate_cycle_components_with_different_observed():
     assert mod.k_posdef == 2 * mod.k_endog  # 2 innovations per variable
 
     # check state names and coords
-    expected_state_names = [
+    expected_state_names = (
         "Cos_cycle1[a1]",
         "Sin_cycle1[a1]",
         "Cos_cycle1[a2]",
@@ -276,13 +279,19 @@ def test_add_multivariate_cycle_components_with_different_observed():
         "Sin_cycle2[b1]",
         "Cos_cycle2[b2]",
         "Sin_cycle2[b2]",
-    ]
+    )
     assert mod.state_names == expected_state_names
 
-    assert mod.coords["state_cycle1"] == ["Cos_cycle1", "Sin_cycle1"]
-    assert mod.coords["state_cycle2"] == ["Cos_cycle2", "Sin_cycle2"]
-    assert mod.coords["endog_cycle1"] == ["a1", "a2"]
-    assert mod.coords["endog_cycle2"] == ["b1", "b2"]
+    assert mod.coords["state_cycle1"] == ("Cos_cycle1", "Sin_cycle1")
+    assert mod.coords["state_cycle2"] == ("Cos_cycle2", "Sin_cycle2")
+    assert mod.coords["endog_cycle1"] == (
+        "a1",
+        "a2",
+    )
+    assert mod.coords["endog_cycle2"] == (
+        "b1",
+        "b2",
+    )
 
     # evaluate design, transition, selection matrices
     Z, T, R = pytensor.function(
@@ -315,7 +324,7 @@ def test_add_multivariate_cycle_components_with_different_observed():
 
 
 def test_add_multivariate_shared_and_not_shared():
-    cycle_shared = st.CycleComponent(
+    cycle_shared = st.Cycle(
         name="shared_cycle",
         cycle_length=12,
         estimate_cycle_length=False,
@@ -323,7 +332,7 @@ def test_add_multivariate_shared_and_not_shared():
         observed_state_names=["gdp", "inflation", "unemployment"],
         share_states=True,
     )
-    cycle_individual = st.CycleComponent(
+    cycle_individual = st.Cycle(
         name="individual_cycle",
         estimate_cycle_length=True,
         innovations=False,
@@ -336,7 +345,7 @@ def test_add_multivariate_shared_and_not_shared():
     assert mod.k_states == 2 + 3 * 2
     assert mod.k_posdef == 2 + 3 * 2
 
-    expected_states = [
+    expected_states = (
         "Cos_shared_cycle[shared]",
         "Sin_shared_cycle[shared]",
         "Cos_individual_cycle[gdp]",
@@ -345,36 +354,40 @@ def test_add_multivariate_shared_and_not_shared():
         "Sin_individual_cycle[inflation]",
         "Cos_individual_cycle[unemployment]",
         "Sin_individual_cycle[unemployment]",
-    ]
+    )
 
     assert mod.state_names == expected_states
     assert mod.shock_names == expected_states[:2]
 
-    assert mod.param_names == [
+    assert mod.param_names == (
         "params_shared_cycle",
         "sigma_shared_cycle",
         "params_individual_cycle",
         "length_individual_cycle",
         "dampening_factor_individual_cycle",
         "P0",
-    ]
+    )
 
     assert "endog_shared_cycle" not in mod.coords
-    assert mod.coords["state_shared_cycle"] == ["Cos_shared_cycle", "Sin_shared_cycle"]
-    assert mod.coords["state_individual_cycle"] == ["Cos_individual_cycle", "Sin_individual_cycle"]
-    assert mod.coords["endog_individual_cycle"] == ["gdp", "inflation", "unemployment"]
+    assert mod.coords["state_shared_cycle"] == ("Cos_shared_cycle", "Sin_shared_cycle")
+    assert mod.coords["state_individual_cycle"] == ("Cos_individual_cycle", "Sin_individual_cycle")
+    assert mod.coords["endog_individual_cycle"] == (
+        "gdp",
+        "inflation",
+        "unemployment",
+    )
 
-    assert mod.param_info["params_shared_cycle"]["dims"] == ("state_shared_cycle",)
-    assert mod.param_info["params_shared_cycle"]["shape"] == (2,)
+    assert mod._param_info["params_shared_cycle"].dims == ("state_shared_cycle",)
+    assert mod._param_info["params_shared_cycle"].shape == (2,)
 
-    assert mod.param_info["sigma_shared_cycle"]["dims"] is None
-    assert mod.param_info["sigma_shared_cycle"]["shape"] == ()
+    assert mod._param_info["sigma_shared_cycle"].dims is None
+    assert mod._param_info["sigma_shared_cycle"].shape == ()
 
-    assert mod.param_info["params_individual_cycle"]["dims"] == (
+    assert mod._param_info["params_individual_cycle"].dims == (
         "endog_individual_cycle",
         "state_individual_cycle",
     )
-    assert mod.param_info["params_individual_cycle"]["shape"] == (3, 2)
+    assert mod._param_info["params_individual_cycle"].shape == (3, 2)
 
     params = {
         "length_individual_cycle": 12.0,

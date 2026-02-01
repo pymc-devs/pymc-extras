@@ -18,7 +18,6 @@ from pytensor.graph.traversal import graph_inputs
 
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
-from pymc_extras.statespace.models.utilities import make_default_coords
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_NAMES,
     MATRIX_NAMES,
@@ -83,10 +82,6 @@ def ss_mod():
         def shock_names(self):
             return ["a"]
 
-        @property
-        def coords(self):
-            return make_default_coords(self)
-
         def make_symbolic_graph(self):
             rho = self.make_and_register_variable("rho", ())
             zeta = self.make_and_register_variable("zeta", ())
@@ -127,13 +122,13 @@ def pymc_mod(ss_mod):
 
 @pytest.fixture(scope="session")
 def ss_mod_no_exog(rng):
-    ll = st.LevelTrendComponent(name="trend", order=2, innovations_order=1)
+    ll = st.LevelTrend(name="trend", order=2, innovations_order=1)
     return ll.build()
 
 
 @pytest.fixture(scope="session")
 def ss_mod_no_exog_mv(rng):
-    ll = st.LevelTrendComponent(
+    ll = st.LevelTrend(
         name="trend", order=2, innovations_order=1, observed_state_names=["y1", "y2"]
     )
     return ll.build()
@@ -141,7 +136,7 @@ def ss_mod_no_exog_mv(rng):
 
 @pytest.fixture(scope="session")
 def ss_mod_no_exog_dt(rng):
-    ll = st.LevelTrendComponent(name="trend", order=2, innovations_order=1)
+    ll = st.LevelTrend(name="trend", order=2, innovations_order=1)
     return ll.build()
 
 
@@ -179,8 +174,8 @@ def exog_data_mv(rng):
 
 @pytest.fixture(scope="session")
 def exog_ss_mod(exog_data):
-    level_trend = st.LevelTrendComponent(name="trend", order=1, innovations_order=[0])
-    exog = st.RegressionComponent(
+    level_trend = st.LevelTrend(name="trend", order=1, innovations_order=[0])
+    exog = st.Regression(
         name="exog",  # Name of this exogenous variable component
         innovations=False,  # Typically fixed effect (no stochastic evolution)
         state_names=exog_data[["x1"]].columns.tolist(),  # Only one exogenous variable now
@@ -192,10 +187,10 @@ def exog_ss_mod(exog_data):
 
 @pytest.fixture(scope="session")
 def exog_ss_mod_mv(exog_data_mv):
-    level_trend = st.LevelTrendComponent(
+    level_trend = st.LevelTrend(
         name="trend", order=1, innovations_order=[0], observed_state_names=["y1", "y2"]
     )
-    exog = st.RegressionComponent(
+    exog = st.Regression(
         name="exog",  # Name of this exogenous variable component
         innovations=False,  # Typically fixed effect (no stochastic evolution)
         state_names=exog_data_mv[["x1"]].columns.tolist(),  # Only one exogenous variable now
@@ -208,16 +203,16 @@ def exog_ss_mod_mv(exog_data_mv):
 
 @pytest.fixture(scope="session")
 def ss_mod_multi_component(rng):
-    ll = st.LevelTrendComponent(
+    ll = st.LevelTrend(
         name="trend", order=2, innovations_order=1, observed_state_names=["y1", "y2"]
     )
-    exog = st.RegressionComponent(
+    exog = st.Regression(
         name="exog",
         innovations=True,
         state_names=["x1"],
     )
-    ar = st.AutoregressiveComponent(observed_state_names=["y1"])
-    cycle = st.CycleComponent(cycle_length=2, observed_state_names=["y1", "y2"], innovations=True)
+    ar = st.Autoregressive(observed_state_names=["y1"])
+    cycle = st.Cycle(cycle_length=2, observed_state_names=["y1", "y2"], innovations=True)
     season = st.TimeSeasonality(season_length=2, observed_state_names=["y1"], innovations=True)
 
     fseason = st.FrequencySeasonality(
@@ -438,14 +433,6 @@ def test_unpack_matrices(rng):
         assert_allclose(np.zeros_like(x), fast_eval(y))
 
 
-def test_param_names_raises_on_base_class():
-    mod = make_statespace_mod(
-        k_endog=1, k_states=5, k_posdef=1, filter_type="standard", verbose=False
-    )
-    with pytest.raises(NotImplementedError):
-        x = mod.param_names
-
-
 def test_base_class_raises():
     with pytest.raises(NotImplementedError):
         mod = PyMCStateSpace(
@@ -463,7 +450,7 @@ def test_update_raises_if_missing_variables(ss_mod):
 
 def test_build_statespace_graph_warns_if_data_has_nans():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrendComponent(name="trend", order=1, innovations_order=0).build(verbose=False)
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))
@@ -476,7 +463,7 @@ def test_build_statespace_graph_warns_if_data_has_nans():
 
 def test_build_statespace_graph_raises_if_data_has_missing_fill():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrendComponent(name="trend", order=1, innovations_order=0).build(verbose=False)
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))
@@ -543,10 +530,6 @@ def test_sample_conditional_with_time_varying():
         @property
         def param_names(self) -> list[str]:
             return ["sigma_cov"]
-
-        @property
-        def coords(self) -> dict[str, Sequence[str]]:
-            return make_default_coords(self)
 
         @property
         def state_names(self) -> list[str]:

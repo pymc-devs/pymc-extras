@@ -1,13 +1,21 @@
+import warnings
+
 import numpy as np
 
 from pytensor import tensor as pt
-from pytensor.tensor.slinalg import block_diag
+from pytensor.tensor.linalg import block_diag
 
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    Parameter,
+    Shock,
+    State,
+)
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
 
 
-class CycleComponent(Component):
+class Cycle(Component):
     r"""
     A component for modeling longer-term cyclical effects
 
@@ -64,7 +72,7 @@ class CycleComponent(Component):
     effects, such as business cycles, and that the seasonal component be used for shorter term effects, such as
     weekly or monthly seasonality.
 
-    Unlike a FrequencySeasonality component, the length of a CycleComponent can be estimated.
+    Unlike a FrequencySeasonality component, the length of a Cycle can be estimated.
 
     **Multivariate Support:**
     For multivariate time series with k endogenous variables, the component creates:
@@ -89,8 +97,8 @@ class CycleComponent(Component):
         data = np.random.normal(size=(100, 1))
 
         # Build the structural model
-        grw = st.LevelTrendComponent(order=1, innovations_order=1)
-        cycle = st.CycleComponent(
+        grw = st.LevelTrend(order=1, innovations_order=1)
+        cycle = st.Cycle(
             "business_cycle", cycle_length=12, estimate_cycle_length=False, innovations=True, dampen=True
         )
         ss_mod = (grw + cycle).build()
@@ -117,7 +125,7 @@ class CycleComponent(Component):
     .. code:: python
 
         # Multivariate cycle component
-        cycle = st.CycleComponent(
+        cycle = st.Cycle(
             name='business_cycle',
             cycle_length=12,
             estimate_cycle_length=False,
@@ -188,17 +196,110 @@ class CycleComponent(Component):
         obs_state_idx = np.zeros(k_states)
         obs_state_idx[slice(0, k_states, 2)] = 1
 
+        state_names = [f"{f}_{name}" for f in ["Cos", "Sin"]]
+
         super().__init__(
             name=name,
             k_endog=k_endog,
             k_states=k_states,
             k_posdef=k_posdef,
+            base_state_names=state_names,
             measurement_error=False,
             combine_hidden_states=True,
             obs_state_idxs=obs_state_idx,
-            observed_state_names=observed_state_names,
+            base_observed_state_names=observed_state_names,
             share_states=share_states,
         )
+
+    def set_states(self) -> State | tuple[State, ...] | None:
+        k_endog_effective = 1 if self.share_states else self.k_endog
+
+        base_names = self.base_state_names
+        observed_state_names = self.base_observed_state_names
+
+        if self.share_states:
+            state_names = [f"{name}[shared]" for name in base_names]
+        else:
+            state_names = [
+                f"{name}[{var_name}]" if k_endog_effective > 1 else name
+                for var_name in observed_state_names
+                for name in base_names
+            ]
+        hidden_states = [State(name=name, observed=False, shared=True) for name in state_names]
+        observed_states = [
+            State(name=name, observed=True, shared=False) for name in observed_state_names
+        ]
+        return *hidden_states, *observed_states
+
+    def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+
+        cycle_param = Parameter(
+            name=f"params_{self.name}",
+            shape=(2,) if k_endog_effective == 1 else (k_endog_effective, 2),
+            dims=(f"state_{self.name}",)
+            if k_endog_effective == 1
+            else (f"endog_{self.name}", f"state_{self.name}"),
+            constraints=None,
+        )
+
+        params_container = [cycle_param]
+
+        if self.estimate_cycle_length:
+            length_param = Parameter(
+                name=f"length_{self.name}",
+                shape=() if k_endog_effective == 1 else (k_endog_effective,),
+                dims=None if k_endog_effective == 1 else (f"endog_{self.name}",),
+                constraints="Positive, non-zero",
+            )
+            params_container.append(length_param)
+
+        if self.dampen:
+            dampen_param = Parameter(
+                name=f"dampening_factor_{self.name}",
+                shape=() if k_endog_effective == 1 else (k_endog_effective,),
+                dims=None if k_endog_effective == 1 else (f"endog_{self.name}",),
+                constraints="0 < x ≤ 1",
+            )
+            params_container.append(dampen_param)
+
+        if self.innovations:
+            sigma_param = Parameter(
+                name=f"sigma_{self.name}",
+                shape=() if k_endog_effective == 1 else (k_endog_effective,),
+                dims=None if k_endog_effective == 1 else (f"endog_{self.name}",),
+                constraints="Positive",
+            )
+            params_container.append(sigma_param)
+
+        return tuple(params_container)
+
+    def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
+        if self.innovations:
+            return tuple(Shock(name=name) for name in self.state_names)
+        return None
+
+    def set_coords(self) -> Coord | tuple[Coord, ...] | None:
+        k_endog = self.k_endog
+        k_endog_effective = 1 if self.share_states else k_endog
+        base_names = tuple(f"{f}_{self.name}" for f in ["Cos", "Sin"])
+        observed_state_names = self.observed_state_names
+
+        state_coords = Coord(
+            dimension=f"state_{self.name}",
+            labels=base_names
+            if k_endog_effective == 1
+            else (f"Cos_{self.name}", f"Sin_{self.name}"),
+        )
+
+        coord_container = [state_coords]
+
+        if k_endog_effective != 1:
+            endog_coords = Coord(dimension=f"endog_{self.name}", labels=observed_state_names)
+            coord_container.append(endog_coords)
+
+        return tuple(coord_container)
 
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog
@@ -250,76 +351,14 @@ class CycleComponent(Component):
             # explicitly set state cov to 0 when no innovations
             self.ssm["state_cov", :, :] = pt.zeros((self.k_posdef, self.k_posdef))
 
-    def populate_component_properties(self):
-        k_endog = self.k_endog
-        k_endog_effective = 1 if self.share_states else k_endog
 
-        base_names = [f"{f}_{self.name}" for f in ["Cos", "Sin"]]
-
-        if self.share_states:
-            self.state_names = [f"{name}[shared]" for name in base_names]
-        else:
-            self.state_names = [
-                f"{name}[{var_name}]" if k_endog_effective > 1 else name
-                for var_name in self.observed_state_names
-                for name in base_names
-            ]
-
-        self.param_names = [f"params_{self.name}"]
-
-        if k_endog_effective == 1:
-            self.param_dims = {f"params_{self.name}": (f"state_{self.name}",)}
-            self.coords = {f"state_{self.name}": base_names}
-            self.param_info = {
-                f"params_{self.name}": {
-                    "shape": (2,),
-                    "constraints": None,
-                    "dims": (f"state_{self.name}",),
-                }
-            }
-        else:
-            self.param_dims = {f"params_{self.name}": (f"endog_{self.name}", f"state_{self.name}")}
-            self.coords = {
-                f"state_{self.name}": [f"Cos_{self.name}", f"Sin_{self.name}"],
-                f"endog_{self.name}": self.observed_state_names,
-            }
-            self.param_info = {
-                f"params_{self.name}": {
-                    "shape": (k_endog_effective, 2),
-                    "constraints": None,
-                    "dims": (f"endog_{self.name}", f"state_{self.name}"),
-                }
-            }
-
-        if self.estimate_cycle_length:
-            self.param_names += [f"length_{self.name}"]
-            self.param_info[f"length_{self.name}"] = {
-                "shape": () if k_endog_effective == 1 else (k_endog_effective,),
-                "constraints": "Positive, non-zero",
-                "dims": None if k_endog_effective == 1 else (f"endog_{self.name}",),
-            }
-
-        if self.dampen:
-            self.param_names += [f"dampening_factor_{self.name}"]
-            self.param_info[f"dampening_factor_{self.name}"] = {
-                "shape": () if k_endog_effective == 1 else (k_endog_effective,),
-                "constraints": "0 < x ≤ 1",
-                "dims": None if k_endog_effective == 1 else (f"endog_{self.name}",),
-            }
-
-        if self.innovations:
-            self.param_names += [f"sigma_{self.name}"]
-            if k_endog_effective == 1:
-                self.param_info[f"sigma_{self.name}"] = {
-                    "shape": (),
-                    "constraints": "Positive",
-                    "dims": None,
-                }
-            else:
-                self.param_dims[f"sigma_{self.name}"] = (f"endog_{self.name}",)
-                self.param_info[f"sigma_{self.name}"] = {
-                    "shape": (k_endog_effective,),
-                    "constraints": "Positive",
-                    "dims": (f"endog_{self.name}",),
-                }
-            self.shock_names = self.state_names.copy()
+def __getattr__(name: str):
+    if name == "CycleComponent":
+        warnings.warn(
+            "CycleComponent is deprecated and will be removed in a future release. "
+            "Use Cycle instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return Cycle
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
