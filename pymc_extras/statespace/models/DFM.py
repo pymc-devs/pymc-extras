@@ -486,7 +486,12 @@ class BayesianDynamicFactor(PyMCStateSpace):
                     for endog_name in self.endog_names
                 )
 
-        return tuple(State(name=name, observed=False, shared=False) for name in names)
+        hidden_states = [State(name=name, observed=False, shared=False) for name in names]
+        observed_states = [
+            State(name=name, observed=True, shared=False) for name in self.endog_names
+        ]
+
+        return *hidden_states, *observed_states
 
     def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
         shock_names = [f"factor_shock_{i}" for i in range(self.k_factors)]
@@ -548,13 +553,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
             coords.append(Coord(dimension=EXOG_STATE_DIM, labels=exog_labels))
 
         return tuple(coords)
-
-    @property
-    def observed_states(self) -> tuple[str, ...]:
-        """
-        Returns the names of the observed states (i.e., the endogenous variables).
-        """
-        return self.endog_names
 
     def make_symbolic_graph(self):
         if not self.exog_flag:

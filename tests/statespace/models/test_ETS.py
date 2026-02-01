@@ -1,9 +1,11 @@
 import numpy as np
+import pymc as pm
 import pytensor
 import pytest
 import statsmodels.api as sm
 
 from numpy.testing import assert_allclose
+from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
 
@@ -11,6 +13,8 @@ from pymc_extras.statespace.models.ETS import BayesianETS
 from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES
 from tests.statespace.shared_fixtures import rng
 from tests.statespace.test_utilities import load_nile_test_data
+
+mock_sample = pytest.fixture(scope="function")(mock_sample_setup_and_teardown)
 
 
 @pytest.fixture(scope="session")
@@ -419,3 +423,44 @@ def test_ETS_stationary_initialization():
     P0_expected = linalg.solve_discrete_lyapunov(T_stationary, R @ Q @ R.T)
 
     assert_allclose(outputs["initial_state_cov"], P0_expected, rtol=1e-8, atol=1e-8)
+
+
+def test_ets_workflow(mock_sample):
+    data = load_nile_test_data()
+
+    ss_mod = BayesianETS(
+        order=("A", "Ad", "N"),
+        endog_names=["height"],
+        stationary_initialization=True,
+        measurement_error=True,
+        initialization_dampening=0.8,
+    )
+
+    with pm.Model(coords=ss_mod.coords) as m:
+        pm.Normal("initial_level", 0, 1)
+        pm.Normal("initial_trend", 0, 1)
+        pm.Beta("alpha", 1, 1)
+        pm.Beta("beta", 1, 1)
+        pm.Beta("phi", 1, 1)
+
+        pm.Exponential("sigma_state", 1)
+        pm.Exponential("sigma_obs", 1)
+
+        ss_mod.build_statespace_graph(data)
+
+        idata = pm.sample()
+
+    post = ss_mod.sample_conditional_posterior(idata, mvn_method="cholesky")
+    assert "filtered_posterior" in post
+    assert "smoothed_posterior" in post
+    assert "predicted_posterior" in post
+
+    forecast = ss_mod.forecast(idata, periods=10, random_seed=42)
+    assert "forecast_latent" in forecast
+    assert "forecast_observed" in forecast
+    assert np.isfinite(forecast.forecast_latent.values).all()
+    assert np.isfinite(forecast.forecast_observed.values).all()
+
+    irf = ss_mod.impulse_response_function(idata, n_steps=10, random_seed=42)
+    assert "irf" in irf
+    assert np.isfinite(irf.irf.values).all()

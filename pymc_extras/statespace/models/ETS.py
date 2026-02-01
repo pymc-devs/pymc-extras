@@ -446,15 +446,13 @@ class BayesianETS(PyMCStateSpace):
         else:
             state_names = base_states
 
-        # First state for each endog is the innovation (observed), rest are hidden
-        states = []
-        states_per_endog = len(base_states)
-        for i, name in enumerate(state_names):
-            # innovation states are "observed" in the sense they directly affect the observation
-            is_observed = (i % states_per_endog) == 0
-            states.append(State(name=name, observed=is_observed, shared=False))
+        hidden_states = [State(name=name, observed=False, shared=False) for name in state_names]
 
-        return tuple(states)
+        observed_states = [
+            State(name=name, observed=True, shared=False) for name in self.endog_names
+        ]
+
+        return *hidden_states, *observed_states
 
     def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
         k_endog = self.k_endog
