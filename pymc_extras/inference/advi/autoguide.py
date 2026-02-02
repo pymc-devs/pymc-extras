@@ -6,6 +6,8 @@ import pytensor.tensor as pt
 from pymc.distributions import Normal
 from pymc.logprob.basic import conditional_logp
 from pymc.model.core import Deterministic, Model
+from pytensor import graph_replace
+from pytensor.gradient import disconnected_grad
 from pytensor.graph.basic import Variable
 
 from pymc_extras.inference.advi.pytensorf import get_symbolic_rv_shapes
@@ -31,14 +33,21 @@ class AutoGuideModel:
     def __getitem__(self, name: str) -> Variable:
         return self.name_to_param[name]
 
-    def stochastic_logq(self):
+    def stochastic_logq(self, stick_the_landing: bool = True) -> pt.TensorVariable:
         """Returns a graph representing the logp of the guide model, evaluated under draws from its random variables."""
         # This allows arbitrary
         logp_terms = conditional_logp(
             {rv: rv for rv in self.model.deterministics},
             warn_rvs=False,
         )
-        return pt.sum([logp_term.sum() for logp_term in logp_terms.values()])
+        logq = pt.sum([logp_term.sum() for logp_term in logp_terms.values()])
+
+        if stick_the_landing:
+            # Detach variational parameters from the gradient computation of logq
+            repl = {p: disconnected_grad(p) for p in self.params}
+            logq = graph_replace(logq, repl)
+
+        return logq
 
 
 def AutoDiagonalNormal(model) -> AutoGuideModel:

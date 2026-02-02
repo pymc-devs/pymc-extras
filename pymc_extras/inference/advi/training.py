@@ -21,9 +21,9 @@ def compile_svi_training_fn(
     draws = pt.scalar("draws", dtype=int)
     params = guide.params
 
-    logp, logq = get_logp_logq(model, guide)
+    logp, logq = get_logp_logq(model, guide, stick_the_landing=stick_the_landing)
 
-    scalar_negative_elbo = advi_objective(logp, logq, stick_the_landing=stick_the_landing)
+    scalar_negative_elbo = advi_objective(logp, logq)
     [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
     negative_elbo = negative_elbo_draws.mean(axis=0)
 
