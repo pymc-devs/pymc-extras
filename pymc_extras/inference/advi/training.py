@@ -1,17 +1,15 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
 import arviz as az
 import numpy as np
 import pymc as pm
 
 from arviz import dict_to_dataset
-from pymc import Model, compile, modelcontext
+from pymc import Model, modelcontext
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.progress_bar import CustomProgress, default_progress_theme
-from pymc.pytensorf import rewrite_pregrad
-from pytensor import tensor as pt
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -25,8 +23,11 @@ from rich.table import Column
 from rich.theme import Theme
 
 from pymc_extras.inference.advi.autoguide import AutoGuideModel
-from pymc_extras.inference.advi.objective import advi_objective, get_logp_logq
-from pymc_extras.inference.advi.pytensorf import vectorize_random_graph
+from pymc_extras.inference.advi.compile import (
+    TrainingFn,
+    compile_sampling_fn,
+    compile_svi_training_fn,
+)
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 
 
@@ -43,58 +44,6 @@ def compute_step_speed(elapsed: float, step: int) -> tuple[float, str]:
     return speed, unit
 
 
-class TrainingFn(Protocol):
-    def __call__(self, draws: int, *params: np.ndarray) -> tuple[np.ndarray, ...]: ...
-
-
-def compile_svi_training_fn(
-    model: Model, guide: AutoGuideModel, stick_the_landing: bool = True, **compile_kwargs
-) -> TrainingFn:
-    draws = pt.scalar("draws", dtype=int)
-    params = guide.params
-
-    logp, logq = get_logp_logq(model, guide, stick_the_landing=stick_the_landing)
-
-    scalar_negative_elbo = advi_objective(logp, logq)
-    [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
-    negative_elbo = negative_elbo_draws.mean(axis=0)
-
-    negative_elbo_grads = pt.grad(rewrite_pregrad(negative_elbo), wrt=params)
-
-    if "trust_input" not in compile_kwargs:
-        compile_kwargs["trust_input"] = True
-
-    f_loss_dloss = compile(
-        inputs=[draws, *params], outputs=[negative_elbo, *negative_elbo_grads], **compile_kwargs
-    )
-
-    return f_loss_dloss
-
-
-def compile_sampling_fn(model: Model, guide: AutoGuideModel, **compile_kwargs) -> TrainingFn:
-    draws = pt.scalar("draws", dtype=int)
-    params = guide.params
-
-    parameterized_value_vars = [
-        guide.model[rv.name] for rv in model.rvs_to_values.keys() if rv not in model.observed_RVs
-    ]
-    transformed_vars = [
-        transform.backward(parameterized_var)
-        if (transform := model.rvs_to_transforms[rv]) is not None
-        else parameterized_var
-        for rv, parameterized_var in zip(model.rvs_to_values.keys(), parameterized_value_vars)
-    ]
-
-    sampled_rvs_draws = vectorize_random_graph(transformed_vars, batch_draws=draws)
-
-    if "trust_input" not in compile_kwargs:
-        compile_kwargs["trust_input"] = True
-
-    f_sample = compile(inputs=[draws, *params], outputs=sampled_rvs_draws, **compile_kwargs)
-
-    return f_sample
-
-
 def make_advi_progress_bar(theme: Theme) -> CustomProgress:
     columns: list[ProgressColumn] = [
         TextColumn("{task.fields[step]}", table_column=Column("Step", ratio=1))
@@ -103,8 +52,8 @@ def make_advi_progress_bar(theme: Theme) -> CustomProgress:
     columns += [
         TextColumn("{task.fields[loss]:.4f}", table_column=Column("ELBO", ratio=1)),
         TextColumn(
-            "{task.fields[sampling_speed]:0.2f} {task.fields[speed_unit]}",
-            table_column=Column("Sampling Speed", ratio=1),
+            "{task.fields[training_speed]:0.2f} {task.fields[speed_unit]}",
+            table_column=Column("Training Speed", ratio=1),
         ),
         TimeElapsedColumn(table_column=Column("Elapsed", ratio=1)),
         TimeRemainingColumn(table_column=Column("Remaining", ratio=1)),
@@ -363,7 +312,7 @@ class SVITrainer:
                     step=0,
                     total=n_steps,
                     loss=np.inf,
-                    sampling_speed=0,
+                    training_speed=0,
                     speed_unit="steps/s",
                 )
                 for step in range(n_steps):
@@ -395,7 +344,7 @@ class SVITrainer:
                         completed=step,
                         step=step,
                         loss=loss,
-                        sampling_speed=speed,
+                        training_speed=speed,
                         speed_unit=unit,
                     )
 
@@ -404,7 +353,7 @@ class SVITrainer:
                     completed=n_steps,
                     step=step + 1,
                     loss=loss,
-                    sampling_speed=speed,
+                    training_speed=speed,
                     speed_unit=unit,
                     refresh=True,
                 )
