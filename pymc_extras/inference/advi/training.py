@@ -2,15 +2,21 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+import arviz as az
 import numpy as np
+import pymc as pm
 
-from pymc import Model, compile
+from arviz import dict_to_dataset
+from pymc import Model, compile, modelcontext
+from pymc.backends.arviz import coords_and_dims_for_inferencedata
+from pymc.progress_bar import create_simple_progress, default_progress_theme
 from pymc.pytensorf import rewrite_pregrad
 from pytensor import tensor as pt
 
 from pymc_extras.inference.advi.autoguide import AutoGuideModel
 from pymc_extras.inference.advi.objective import advi_objective, get_logp_logq
 from pymc_extras.inference.advi.pytensorf import vectorize_random_graph
+from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 
 
 class TrainingFn(Protocol):
@@ -39,6 +45,30 @@ def compile_svi_training_fn(
     )
 
     return f_loss_dloss
+
+
+def compile_sampling_fn(model: Model, guide: AutoGuideModel, **compile_kwargs) -> TrainingFn:
+    draws = pt.scalar("draws", dtype=int)
+    params = guide.params
+
+    parameterized_value_vars = [
+        guide.model[rv.name] for rv in model.rvs_to_values.keys() if rv not in model.observed_RVs
+    ]
+    transformed_vars = [
+        transform.backward(parameterized_var)
+        if (transform := model.rvs_to_transforms[rv]) is not None
+        else parameterized_var
+        for rv, parameterized_var in zip(model.rvs_to_values.keys(), parameterized_value_vars)
+    ]
+
+    sampled_rvs_draws = vectorize_random_graph(transformed_vars, batch_draws=draws)
+
+    if "trust_input" not in compile_kwargs:
+        compile_kwargs["trust_input"] = True
+
+    f_sample = compile(inputs=[draws, *params], outputs=sampled_rvs_draws, **compile_kwargs)
+
+    return f_sample
 
 
 @dataclass
@@ -206,7 +236,8 @@ class SVITrainer:
         self.stick_the_landing = stick_the_landing
         self.compile_kwargs = compile_kwargs or {}
 
-        self._compiled_fn: TrainingFn | None = None
+        self._training_fn: TrainingFn | None = None
+        self._sampling_fn: TrainingFn | None = None
         self._guide: AutoGuideModel | None = None
         self._optimizer: Any = None
         self._param_names: list[str] | None = None
@@ -214,31 +245,26 @@ class SVITrainer:
     def _compile(self, model: Model) -> None:
         """Compile the training function."""
         self._guide = self.module.configure_guide(model)
-        self._compiled_fn = compile_svi_training_fn(
+        self._training_fn = compile_svi_training_fn(
             model,
             self._guide,
             stick_the_landing=self.stick_the_landing,
             **self.compile_kwargs,
         )
+
+        self._sampling_fn = compile_sampling_fn(
+            model=model,
+            guide=self._guide,
+            **self.compile_kwargs,
+        )
+
         self._param_names = [p.name for p in self._guide.params]
-
-    def _params_dict_to_tuple(self, params: dict[str, np.ndarray]) -> tuple[np.ndarray, ...]:
-        """Convert params dict to tuple in correct order."""
-        return tuple(params[name] for name in self._param_names)
-
-    def _params_tuple_to_dict(self, params: tuple[np.ndarray, ...]) -> dict[str, np.ndarray]:
-        """Convert params tuple to dict."""
-        return dict(zip(self._param_names, params))
-
-    def _grads_tuple_to_dict(self, grads: tuple[np.ndarray, ...]) -> dict[str, np.ndarray]:
-        """Convert grads tuple to dict."""
-        return dict(zip(self._param_names, grads))
 
     def fit(
         self,
-        model: Model,
         n_steps: int,
         draws_per_step: int = 10,
+        model: Model | None = None,
         state: SVIState | None = None,
     ) -> SVIState:
         """
@@ -246,12 +272,12 @@ class SVITrainer:
 
         Parameters
         ----------
-        model : Model
-            The PyMC model to fit.
         n_steps : int
             Number of optimization steps.
         draws_per_step : int, optional
             Number of MC draws per step for gradient estimation, by default 10.
+        model : Model
+            The PyMC model to fit. If None, the model is inferred from context.
         state : SVIState, optional
             Previous state to resume training from. If None, starts fresh.
 
@@ -260,7 +286,10 @@ class SVITrainer:
         SVIState
             The final training state containing optimized parameters.
         """
-        if self._compiled_fn is None:
+        if model is None:
+            model = modelcontext(None)
+
+        if self._training_fn is None:
             self._compile(model)
 
         if state is None:
@@ -274,33 +303,79 @@ class SVITrainer:
             )
 
         self.module.on_fit_start(state)
+        progress = create_simple_progress(
+            progressbar=True, progressbar_theme=default_progress_theme
+        )
+        with progress:
+            task = progress.add_task("Sampling ...", completed=0, total=n_steps)
+            for _ in range(n_steps):
+                self.module.on_epoch_start(state)
 
-        for _ in range(n_steps):
-            self.module.on_epoch_start(state)
+                loss, *grads = self._training_fn(np.array(draws_per_step), **state.params)
+                grad_dict = {name: grad for name, grad in zip(self._param_names, grads)}
 
-            params_tuple = self._params_dict_to_tuple(state.params)
-            outputs = self._compiled_fn(draws_per_step, *params_tuple)
+                new_params, new_optimizer_state = self.module.apply_gradients(
+                    state.params, grad_dict, self._optimizer, state.optimizer_state
+                )
 
-            loss = float(outputs[0])
-            grads_tuple = outputs[1:]
-            grads = self._grads_tuple_to_dict(grads_tuple)
+                state = SVIState(
+                    params=new_params,
+                    optimizer_state=new_optimizer_state,
+                    step=state.step + 1,
+                    loss_history=[*state.loss_history, loss],
+                )
 
-            new_params, new_optimizer_state = self.module.apply_gradients(
-                state.params, grads, self._optimizer, state.optimizer_state
-            )
+                self.module.on_epoch_end(state, loss)
 
-            state = SVIState(
-                params=new_params,
-                optimizer_state=new_optimizer_state,
-                step=state.step + 1,
-                loss_history=[*state.loss_history, loss],
-            )
+                if self.module.should_stop(state, loss):
+                    break
+                progress.advance(task)
 
-            self.module.on_epoch_end(state, loss)
-
-            if self.module.should_stop(state, loss):
-                break
-
+            progress.update(task, refresh=True, completed=n_steps)
         self.module.on_fit_end(state)
 
         return state
+
+    def sample_posterior(
+        self, draws: int, state: SVIState, model: Model | None = None
+    ) -> az.InferenceData:
+        """
+        Sample from the guide posterior using the trained parameters.
+
+        Parameters
+        ----------
+        draws: int
+            Number of posterior samples to draw.
+        state : SVIState
+            The training state containing optimized parameters.
+        model : Model | None
+            The PyMC model. If None, the model is inferred from context.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            Samples from the guide posterior for each latent variable.
+        """
+        if self._guide is None or self._sampling_fn is None:
+            raise RuntimeError("The trainer has not been fitted yet.")
+
+        if model is None:
+            model = modelcontext(None)
+
+        samples = self._sampling_fn(np.array(draws), **state.params)
+        posterior = {
+            rv.name: np.expand_dims(sample, axis=0)
+            for rv, sample in zip(
+                (rv for rv in model.rvs_to_values.keys() if rv not in model.observed_RVs), samples
+            )
+        }
+
+        model_coords, model_dims = coords_and_dims_for_inferencedata(model)
+        posterior_dataset = dict_to_dataset(
+            posterior, coords=model_coords, dims=model_dims, library=pm
+        )
+
+        idata = az.InferenceData(posterior=posterior_dataset)
+        idata = add_data_to_inference_data(idata=idata, progressbar=False, model=model)
+
+        return idata
