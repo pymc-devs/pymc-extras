@@ -9,14 +9,38 @@ import pymc as pm
 from arviz import dict_to_dataset
 from pymc import Model, compile, modelcontext
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
-from pymc.progress_bar import create_simple_progress, default_progress_theme
+from pymc.progress_bar import CustomProgress, default_progress_theme
 from pymc.pytensorf import rewrite_pregrad
 from pytensor import tensor as pt
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    ProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from rich.style import Style
+from rich.table import Column
+from rich.theme import Theme
 
 from pymc_extras.inference.advi.autoguide import AutoGuideModel
 from pymc_extras.inference.advi.objective import advi_objective, get_logp_logq
 from pymc_extras.inference.advi.pytensorf import vectorize_random_graph
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
+
+
+def compute_step_speed(elapsed: float, step: int) -> tuple[float, str]:
+    """Compute sampling speed and appropriate unit (draws/s or s/draw)."""
+    speed = step / max(elapsed, 1e-6)
+
+    if speed > 1 or speed == 0:
+        unit = "steps/s"
+    else:
+        unit = "s/step"
+        speed = 1 / speed
+
+    return speed, unit
 
 
 class TrainingFn(Protocol):
@@ -69,6 +93,33 @@ def compile_sampling_fn(model: Model, guide: AutoGuideModel, **compile_kwargs) -
     f_sample = compile(inputs=[draws, *params], outputs=sampled_rvs_draws, **compile_kwargs)
 
     return f_sample
+
+
+def make_advi_progress_bar(theme: Theme) -> CustomProgress:
+    columns: list[ProgressColumn] = [
+        TextColumn("{task.fields[step]}", table_column=Column("Step", ratio=1))
+    ]
+
+    columns += [
+        TextColumn("{task.fields[loss]:.4f}", table_column=Column("ELBO", ratio=1)),
+        TextColumn(
+            "{task.fields[sampling_speed]:0.2f} {task.fields[speed_unit]}",
+            table_column=Column("Sampling Speed", ratio=1),
+        ),
+        TimeElapsedColumn(table_column=Column("Elapsed", ratio=1)),
+        TimeRemainingColumn(table_column=Column("Remaining", ratio=1)),
+    ]
+
+    return CustomProgress(
+        BarColumn(
+            table_column=Column("Progress", ratio=2),
+            complete_style=Style.parse("rgb(31,119,180)"),
+            finished_style=Style.parse("rgb(44,160,44)"),
+        ),
+        *columns,
+        console=Console(theme=theme),
+        include_headers=True,
+    )
 
 
 @dataclass
@@ -303,35 +354,63 @@ class SVITrainer:
             )
 
         self.module.on_fit_start(state)
-        progress = create_simple_progress(
-            progressbar=True, progressbar_theme=default_progress_theme
-        )
-        with progress:
-            task = progress.add_task("Sampling ...", completed=0, total=n_steps)
-            for _ in range(n_steps):
-                self.module.on_epoch_start(state)
+        progress = make_advi_progress_bar(theme=default_progress_theme)
 
-                loss, *grads = self._training_fn(np.array(draws_per_step), **state.params)
-                grad_dict = {name: grad for name, grad in zip(self._param_names, grads)}
-
-                new_params, new_optimizer_state = self.module.apply_gradients(
-                    state.params, grad_dict, self._optimizer, state.optimizer_state
+        try:
+            with progress:
+                task = progress.add_task(
+                    "Fitting",
+                    step=0,
+                    total=n_steps,
+                    loss=np.inf,
+                    sampling_speed=0,
+                    speed_unit="steps/s",
                 )
+                for step in range(n_steps):
+                    self.module.on_epoch_start(state)
 
-                state = SVIState(
-                    params=new_params,
-                    optimizer_state=new_optimizer_state,
-                    step=state.step + 1,
-                    loss_history=[*state.loss_history, loss],
+                    loss, *grads = self._training_fn(np.array(draws_per_step), **state.params)
+                    grad_dict = {name: grad for name, grad in zip(self._param_names, grads)}
+
+                    new_params, new_optimizer_state = self.module.apply_gradients(
+                        state.params, grad_dict, self._optimizer, state.optimizer_state
+                    )
+
+                    state = SVIState(
+                        params=new_params,
+                        optimizer_state=new_optimizer_state,
+                        step=state.step + 1,
+                        loss_history=[*state.loss_history, loss],
+                    )
+
+                    self.module.on_epoch_end(state, loss)
+
+                    if self.module.should_stop(state, loss):
+                        break
+
+                    elapsed = progress.tasks[0].elapsed or 0.0
+                    speed, unit = compute_step_speed(elapsed, step)
+                    progress.update(
+                        task,
+                        completed=step,
+                        step=step,
+                        loss=loss,
+                        sampling_speed=speed,
+                        speed_unit=unit,
+                    )
+
+                progress.update(
+                    task,
+                    completed=n_steps,
+                    step=step + 1,
+                    loss=loss,
+                    sampling_speed=speed,
+                    speed_unit=unit,
+                    refresh=True,
                 )
+        except KeyboardInterrupt:
+            pass
 
-                self.module.on_epoch_end(state, loss)
-
-                if self.module.should_stop(state, loss):
-                    break
-                progress.advance(task)
-
-            progress.update(task, refresh=True, completed=n_steps)
         self.module.on_fit_end(state)
 
         return state
