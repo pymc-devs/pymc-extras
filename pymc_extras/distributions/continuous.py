@@ -24,7 +24,11 @@ import pytensor.tensor as pt
 
 from pymc import ChiSquared, CustomDist
 from pymc.distributions import transforms
-from pymc.distributions.dist_math import check_parameters
+from pymc.distributions.dist_math import (
+    check_icdf_parameters,
+    check_icdf_value,
+    check_parameters,
+)
 from pymc.distributions.distribution import Continuous
 from pymc.distributions.shape_utils import rv_size_is_none
 from pymc.logprob.utils import CheckParameterValue
@@ -671,6 +675,37 @@ class ExtGenPareto(Continuous):
         )
 
         return check_parameters(logcdf, sigma > 0, kappa > 0, msg="sigma > 0, kappa > 0")
+
+    def icdf(value, mu, sigma, xi, kappa):
+        """
+        Compute the inverse CDF (quantile function) for Extended Generalized Pareto distribution.
+
+        For ExtGPD: G(x) = H(x)^kappa, so G^{-1}(p) = H^{-1}(p^{1/kappa})
+
+        For GPD: H^{-1}(p) = mu + sigma * [(1-p)^(-xi) - 1] / xi  for xi != 0
+                 H^{-1}(p) = mu - sigma * log(1-p)  for xi = 0
+
+        Parameters
+        ----------
+        value: numeric or np.ndarray or `TensorVariable`
+            Probability value(s) in [0, 1] for which to compute quantiles.
+
+        Returns
+        -------
+        TensorVariable
+        """
+        # Transform p to get the GPD quantile input: p_gpd = p^(1/kappa)
+        p_gpd = pt.pow(value, 1 / kappa)
+
+        # GPD inverse CDF: H^{-1}(p) = mu + sigma * [(1-p)^(-xi) - 1] / xi
+        res = pt.switch(
+            pt.isclose(xi, 0),
+            mu - sigma * pt.log(1 - p_gpd),
+            mu + sigma * (pt.pow(1 - p_gpd, -xi) - 1) / xi,
+        )
+
+        res = check_icdf_value(res, value)
+        return check_icdf_parameters(res, sigma > 0, kappa > 0, msg="sigma > 0, kappa > 0")
 
     def support_point(rv, size, mu, sigma, xi, kappa):
         r"""
