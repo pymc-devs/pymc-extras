@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from pymc import SymbolicRandomVariable
 from pymc.distributions.shape_utils import change_dist_size
@@ -12,9 +12,6 @@ from pytensor.tensor import TensorLike, TensorVariable
 from pytensor.tensor.basic import infer_shape_db
 from pytensor.tensor.random.op import RandomVariable
 from pytensor.tensor.rewriting.shape import ShapeFeature
-
-if TYPE_CHECKING:
-    pass
 
 
 def vectorize_random_graph(
