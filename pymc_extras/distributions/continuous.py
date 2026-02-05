@@ -29,37 +29,52 @@ from pymc.distributions.dist_math import (
     check_icdf_value,
     check_parameters,
 )
-from pymc.distributions.distribution import Continuous
-from pymc.distributions.shape_utils import rv_size_is_none
+from pymc.distributions.distribution import Continuous, SymbolicRandomVariable
+from pymc.distributions.shape_utils import (
+    implicit_size_from_params,
+    rv_size_is_none,
+)
 from pymc.logprob.utils import CheckParameterValue
-from pymc.pytensorf import floatX
+from pymc.pytensorf import floatX, normalize_rng_param
+from pytensor.tensor.random.basic import uniform
 from pytensor.tensor.random.op import RandomVariable
+from pytensor.tensor.random.utils import normalize_size_param
 from pytensor.tensor.variable import TensorVariable
 from scipy import stats
 
 
-class GenParetoRV(RandomVariable):
-    name: str = "Generalized Pareto"
-    signature = "(),(),()->()"
-    dtype: str = "floatX"
-    _print_name: tuple[str, str] = ("Generalized Pareto", "\\operatorname{GPD}")
+class GenParetoRV(SymbolicRandomVariable):
+    """Symbolic random variable for Generalized Pareto Distribution using inverse CDF sampling."""
 
-    def __call__(self, mu=0.0, sigma=1.0, xi=0.0, size=None, **kwargs) -> TensorVariable:
-        return super().__call__(mu, sigma, xi, size=size, **kwargs)
+    name = "genpareto"
+    extended_signature = "[rng],[size],(),(),()->[rng],()"
+    _print_name = ("Generalized Pareto", "\\operatorname{GPD}")
 
     @classmethod
-    def rng_fn(
-        cls,
-        rng: np.random.RandomState | np.random.Generator,
-        mu: np.ndarray,
-        sigma: np.ndarray,
-        xi: np.ndarray,
-        size: tuple[int, ...],
-    ) -> np.ndarray:
-        return stats.genpareto.rvs(c=xi, loc=mu, scale=sigma, random_state=rng, size=size)
+    def rv_op(cls, mu, sigma, xi, *, size=None, rng=None):
+        mu = pt.as_tensor(mu)
+        sigma = pt.as_tensor(sigma)
+        xi = pt.as_tensor(xi)
+        rng = normalize_rng_param(rng)
+        size = normalize_size_param(size)
 
+        if rv_size_is_none(size):
+            size = implicit_size_from_params(mu, sigma, xi, ndims_params=cls.ndims_params)
 
-gpd = GenParetoRV()
+        next_rng, u = uniform(size=size, rng=rng).owner.outputs
+
+        # GPD inverse CDF: mu + sigma * [(1-u)^(-xi) - 1] / xi for xi != 0
+        #                  mu - sigma * log(1-u) for xi = 0
+        draws = pt.switch(
+            pt.isclose(xi, 0),
+            mu - sigma * pt.log(1 - u),
+            mu + sigma * (pt.pow(1 - u, -xi) - 1) / xi,
+        )
+
+        return cls(
+            inputs=[rng, size, mu, sigma, xi],
+            outputs=[next_rng, draws],
+        )(rng, size, mu, sigma, xi)
 
 
 class GenExtremeRV(RandomVariable):
@@ -339,7 +354,8 @@ class GenPareto(Continuous):
             obs = GenPareto("obs", mu=0, sigma=sigma, xi=xi, observed=exceedances)
     """
 
-    rv_op = gpd
+    rv_type = GenParetoRV
+    rv_op = GenParetoRV.rv_op
 
     @classmethod
     def dist(cls, mu=0, sigma=1, xi=0, **kwargs):
@@ -441,35 +457,43 @@ class GenPareto(Continuous):
         return median
 
 
-class ExtGenParetoRV(RandomVariable):
-    name: str = "Extended Generalized Pareto"
-    signature = "(),(),(),()->()"
-    dtype: str = "floatX"
-    _print_name: tuple[str, str] = ("Extended Generalized Pareto", "\\operatorname{ExtGPD}")
+class ExtGenParetoRV(SymbolicRandomVariable):
+    """Symbolic random variable for Extended Generalized Pareto using inverse CDF sampling."""
 
-    def __call__(self, mu=0.0, sigma=1.0, xi=0.0, kappa=1.0, size=None, **kwargs) -> TensorVariable:
-        return super().__call__(mu, sigma, xi, kappa, size=size, **kwargs)
+    name = "extgenpareto"
+    extended_signature = "[rng],[size],(),(),(),()->[rng],()"
+    _print_name = ("Extended Generalized Pareto", "\\operatorname{ExtGPD}")
 
     @classmethod
-    def rng_fn(
-        cls,
-        rng: np.random.RandomState | np.random.Generator,
-        mu: np.ndarray,
-        sigma: np.ndarray,
-        xi: np.ndarray,
-        kappa: np.ndarray,
-        size: tuple[int, ...],
-    ) -> np.ndarray:
-        # Use inverse transform sampling: X = H^{-1}(U^{1/kappa})
-        # where H^{-1} is the GPD quantile function
-        u = rng.uniform(size=size)
-        # Transform uniform: v = u^{1/kappa} gives CDF v^kappa
-        v = np.power(u, 1.0 / kappa)
-        # Apply GPD quantile function
-        return stats.genpareto.ppf(v, c=xi, loc=mu, scale=sigma)
+    def rv_op(cls, mu, sigma, xi, kappa, *, size=None, rng=None):
+        mu = pt.as_tensor(mu)
+        sigma = pt.as_tensor(sigma)
+        xi = pt.as_tensor(xi)
+        kappa = pt.as_tensor(kappa)
+        rng = normalize_rng_param(rng)
+        size = normalize_size_param(size)
 
+        if rv_size_is_none(size):
+            size = implicit_size_from_params(mu, sigma, xi, kappa, ndims_params=cls.ndims_params)
 
-ext_gpd = ExtGenParetoRV()
+        next_rng, u = uniform(size=size, rng=rng).owner.outputs
+
+        # ExtGPD inverse CDF: G^{-1}(p) = H^{-1}(p^{1/kappa})
+        # Transform uniform: p_gpd = u^{1/kappa}
+        p_gpd = pt.pow(u, 1 / kappa)
+
+        # GPD inverse CDF: mu + sigma * [(1-p)^(-xi) - 1] / xi for xi != 0
+        #                  mu - sigma * log(1-p) for xi = 0
+        draws = pt.switch(
+            pt.isclose(xi, 0),
+            mu - sigma * pt.log(1 - p_gpd),
+            mu + sigma * (pt.pow(1 - p_gpd, -xi) - 1) / xi,
+        )
+
+        return cls(
+            inputs=[rng, size, mu, sigma, xi, kappa],
+            outputs=[next_rng, draws],
+        )(rng, size, mu, sigma, xi, kappa)
 
 
 class ExtGenPareto(Continuous):
@@ -567,7 +591,8 @@ class ExtGenPareto(Continuous):
             obs = ExtGenPareto("obs", mu=0, sigma=sigma, xi=xi, kappa=kappa, observed=data)
     """
 
-    rv_op = ext_gpd
+    rv_type = ExtGenParetoRV
+    rv_op = ExtGenParetoRV.rv_op
 
     @classmethod
     def dist(cls, mu=0, sigma=1, xi=0, kappa=1, **kwargs):
