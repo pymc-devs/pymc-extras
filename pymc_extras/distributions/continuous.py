@@ -43,8 +43,22 @@ from pytensor.tensor.variable import TensorVariable
 from scipy import stats
 
 
+def _exprel(t):
+    """Compute exprel(t) = (exp(t) - 1) / t with stable gradient at t=0."""
+    taylor = 1 + t * (0.5 + t * (1 / 6 + t / 24))
+    direct = pt.expm1(t) / t
+    return pt.switch(pt.abs(t) < 1e-10, taylor, direct)
+
+
+def _gpd_isf(v, mu, sigma, xi):
+    """GPD inverse survival function: x such that P(X > x) = v."""
+    log_v = pt.log(v)
+    t = -xi * log_v
+    return mu + sigma * (-log_v) * _exprel(t)
+
+
 class GenParetoRV(SymbolicRandomVariable):
-    """Symbolic random variable for Generalized Pareto Distribution using inverse CDF sampling."""
+    """Generalized Pareto random variable."""
 
     name = "genpareto"
     extended_signature = "[rng],[size],(),(),()->[rng],()"
@@ -61,15 +75,9 @@ class GenParetoRV(SymbolicRandomVariable):
         if rv_size_is_none(size):
             size = implicit_size_from_params(mu, sigma, xi, ndims_params=cls.ndims_params)
 
-        next_rng, u = uniform(size=size, rng=rng).owner.outputs
-
-        # GPD inverse CDF: mu + sigma * [(1-u)^(-xi) - 1] / xi for xi != 0
-        #                  mu - sigma * log(1-u) for xi = 0
-        draws = pt.switch(
-            pt.isclose(xi, 0),
-            mu - sigma * pt.log(1 - u),
-            mu + sigma * (pt.pow(1 - u, -xi) - 1) / xi,
-        )
+        # Sample v ~ Uniform(0,1) as survival probability (avoids 1-u cancellation)
+        next_rng, v = uniform(size=size, rng=rng).owner.outputs
+        draws = _gpd_isf(v, mu, sigma, xi)
 
         return cls(
             inputs=[rng, size, mu, sigma, xi],
@@ -458,7 +466,7 @@ class GenPareto(Continuous):
 
 
 class ExtGenParetoRV(SymbolicRandomVariable):
-    """Symbolic random variable for Extended Generalized Pareto using inverse CDF sampling."""
+    """Extended Generalized Pareto random variable."""
 
     name = "extgenpareto"
     extended_signature = "[rng],[size],(),(),(),()->[rng],()"
@@ -479,16 +487,15 @@ class ExtGenParetoRV(SymbolicRandomVariable):
         next_rng, u = uniform(size=size, rng=rng).owner.outputs
 
         # ExtGPD inverse CDF: G^{-1}(p) = H^{-1}(p^{1/kappa})
-        # Transform uniform: p_gpd = u^{1/kappa}
-        p_gpd = pt.pow(u, 1 / kappa)
+        # where H is the GPD CDF. We need the GPD survival probability:
+        #   v_gpd = 1 - p_gpd = 1 - u^{1/kappa}
+        #
+        # Compute v_gpd = 1 - u^{1/kappa} = 1 - exp(log(u)/kappa) = -expm1(log(u)/kappa)
+        # This avoids catastrophic cancellation when u^{1/kappa} is close to 1
+        v_gpd = -pt.expm1(pt.log(u) / kappa)
 
-        # GPD inverse CDF: mu + sigma * [(1-p)^(-xi) - 1] / xi for xi != 0
-        #                  mu - sigma * log(1-p) for xi = 0
-        draws = pt.switch(
-            pt.isclose(xi, 0),
-            mu - sigma * pt.log(1 - p_gpd),
-            mu + sigma * (pt.pow(1 - p_gpd, -xi) - 1) / xi,
-        )
+        # Apply GPD inverse survival function
+        draws = _gpd_isf(v_gpd, mu, sigma, xi)
 
         return cls(
             inputs=[rng, size, mu, sigma, xi, kappa],
