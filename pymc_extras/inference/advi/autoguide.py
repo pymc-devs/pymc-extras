@@ -35,7 +35,6 @@ class AutoGuideModel:
 
     def stochastic_logq(self, stick_the_landing: bool = True) -> pt.TensorVariable:
         """Returns a graph representing the logp of the guide model, evaluated under draws from its random variables."""
-        # This allows arbitrary
         logp_terms = conditional_logp(
             {rv: rv for rv in self.model.deterministics},
             warn_rvs=False,
@@ -50,7 +49,33 @@ class AutoGuideModel:
         return logq
 
 
-def AutoDiagonalNormal(model) -> AutoGuideModel:
+def AutoDiagonalNormal(model: Model) -> AutoGuideModel:
+    """
+    Create a guide model for ADVI with a mean-field normal distribution.
+
+    A guide model is a variational distribution that approximates the posterior distribution of the model's free
+    random variables. In this case, we use a mean-field normal distribution, which assumes that the free random
+    variables are independent and normally distributed. For details, see _[1].
+
+    For each free random variable in the model, we create a corresponding random variable in the guide model with a
+    normal distribution. The mean and standard deviation of each normal distribution are parameterized by learnable
+    parameters (loc and scale), which are initialized to small random values.
+
+    Parameters
+    ----------
+    model : Model
+        The probabilistic model for which to create the guide.
+
+    Returns
+    -------
+    guide_model : AutoGuideModel
+        An AutoGuideModel containing the guide model and the initial values for its parameters.
+
+    References
+    ----------
+    .. [1] Alp Kucukelbir, Dustin Tran, Rajesh Ranganath, Andrew Gelman, and David M. Blei. Automatic Differentiation
+           Variational Inference. Journal of Machine Learning Research, 18(14):1–45, 2017.
+    """
     coords = model.coords
     free_rvs = model.free_RVs
 
