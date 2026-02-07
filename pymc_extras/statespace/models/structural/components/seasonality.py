@@ -242,14 +242,12 @@ class TimeSeasonality(Component):
         self.season_length = season_length
 
         if self.remove_first_state:
-            # In traditional models, the first state isn't identified, so we can help out the user by automatically
-            # discarding it.
-            # TODO: Can this be stashed and reconstructed automatically somehow?
-            state_names = state_names[duration:]
+            # TODO: Can we somehow use a transformation to preserve all of the user's states?
+            state_names = state_names[1:]
 
         self.provided_state_names = state_names
 
-        k_states = (season_length - int(self.remove_first_state)) * duration
+        k_states = duration * (season_length - int(remove_first_state))
         k_endog = len(observed_state_names)
         k_posdef = int(innovations)
 
@@ -267,18 +265,34 @@ class TimeSeasonality(Component):
             share_states=share_states,
         )
 
+    @property
+    def n_seasons(self) -> int:
+        """Number of unique seasonal parameters (season_length - 1 if remove_first_state, else season_length)."""
+        return self.season_length - int(self.remove_first_state)
+
     def set_states(self) -> State | tuple[State, ...] | None:
         observed_state_names = self.base_observed_state_names
 
+        # Expand state names for duration > 1
+        # Each unique seasonal state is repeated d times in the state vector
+        if self.duration > 1:
+            expanded_state_names = [
+                f"{state_name}_{i}"
+                for state_name in self.provided_state_names
+                for i in range(self.duration)
+            ]
+        else:
+            expanded_state_names = self.provided_state_names
+
         if self.share_states:
             state_names = [
-                f"{state_name}[{self.name}_shared]" for state_name in self.provided_state_names
+                f"{state_name}[{self.name}_shared]" for state_name in expanded_state_names
             ]
         else:
             state_names = [
                 f"{state_name}[{endog_name}]"
                 for endog_name in observed_state_names
-                for state_name in self.provided_state_names
+                for state_name in expanded_state_names
             ]
 
         hidden_states = [State(name=name, observed=False, shared=True) for name in state_names]
@@ -290,11 +304,13 @@ class TimeSeasonality(Component):
     def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
         k_endog = self.k_endog
         k_endog_effective = 1 if self.share_states else k_endog
-        k_states = self.k_states // k_endog_effective
+        k_unique_params = self.n_seasons
 
         seasonal_param = Parameter(
             name=f"params_{self.name}",
-            shape=(k_states,) if k_endog == 1 else (k_endog, k_states),
+            shape=(k_unique_params,)
+            if k_endog_effective == 1
+            else (k_endog_effective, k_unique_params),
             dims=(f"state_{self.name}",)
             if k_endog_effective == 1
             else (f"endog_{self.name}", f"state_{self.name}"),
