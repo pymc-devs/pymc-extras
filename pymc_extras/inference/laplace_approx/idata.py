@@ -219,13 +219,13 @@ def add_data_to_inference_data(
 
     if model.deterministics:
         expand_dims = {}
-        if "chain" not in idata.posterior.coords:
+        if "chain" not in idata["posterior"].coords:
             expand_dims["chain"] = [0]
-        if "draw" not in idata.posterior.coords:
+        if "draw" not in idata["posterior"].coords:
             expand_dims["draw"] = [0]
 
-        idata.posterior = pm.compute_deterministics(
-            idata.posterior.expand_dims(expand_dims),
+        idata["posterior"] = pm.compute_deterministics(
+            idata["posterior"].expand_dims(expand_dims),
             model=model,
             merge_dataset=True,
             progressbar=progressbar,

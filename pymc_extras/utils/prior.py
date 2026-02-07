@@ -76,7 +76,7 @@ def _parse_args(
 
 
 def _flatten(idata: xarray.DataTree, **kwargs: ParamCfg) -> FlatInfo:
-    posterior = idata.posterior
+    posterior = idata["posterior"]
     vars = list()
     info = list()
     begin = 0

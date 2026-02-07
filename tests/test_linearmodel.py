@@ -122,7 +122,7 @@ def test_parameter_fit(toy_X, toy_y, toy_actual_params):
     }
     model = LinearModel(sampler_config=sampler_config)
     model.fit(toy_X, toy_y, random_seed=312)
-    fit_params = model.idata.posterior.mean()
+    fit_params = model.idata["posterior"].mean()
     np.testing.assert_allclose(fit_params["intercept"], toy_actual_params["intercept"], rtol=0.1)
     np.testing.assert_allclose(fit_params["slope"], toy_actual_params["slope"], rtol=0.1)
     np.testing.assert_allclose(fit_params["σ_model_fmc"], toy_actual_params["obs_error"], rtol=0.1)
@@ -142,8 +142,8 @@ def test_predict_posterior(fitted_linear_model_instance, combined):
     n_pred = 150
     X_pred = pd.DataFrame({"input": np.random.uniform(low=0, high=1, size=n_pred)})
     pred = model.predict_posterior(X_pred, combined=combined)
-    chains = model.idata.sample_stats.sizes["chain"]
-    draws = model.idata.sample_stats.sizes["draw"]
+    chains = model.idata["sample_stats"].sizes["chain"]
+    draws = model.idata["sample_stats"].sizes["draw"]
     expected_shape = (n_pred, chains * draws) if combined else (chains, draws, n_pred)
     assert pred.shape == expected_shape
     assert np.issubdtype(pred.dtype, np.floating)

@@ -642,10 +642,10 @@ def join_tensors_by_dim_labels(
 
 
 def get_exog_dims_from_idata(exog_name, idata):
-    if exog_name in idata.posterior.data_vars:
-        exog_dims = idata.posterior[exog_name].dims[2:]
+    if exog_name in idata["posterior"].data_vars:
+        exog_dims = idata["posterior"][exog_name].dims[2:]
     elif exog_name in getattr(idata, "constant_data", []):
-        exog_dims = idata.constant_data[exog_name].dims
+        exog_dims = idata["constant_data"][exog_name].dims
     elif exog_name in getattr(idata, "mutable_data", []):
         exog_dims = idata.mutable_data[exog_name].dims
     else:

@@ -237,8 +237,8 @@ def test_sample_posterior_predictive(fitted_model_instance, combined):
     pred = fitted_model_instance.sample_posterior_predictive(
         prediction_data["input"], combined=combined, extend_idata=True
     )
-    chains = fitted_model_instance.idata.sample_stats.sizes["chain"]
-    draws = fitted_model_instance.idata.sample_stats.sizes["draw"]
+    chains = fitted_model_instance.idata["sample_stats"].sizes["chain"]
+    draws = fitted_model_instance.idata["sample_stats"].sizes["draw"]
     expected_shape = (n_pred, chains * draws) if combined else (chains, draws, n_pred)
     assert pred[fitted_model_instance.output_var].shape == expected_shape
     assert np.issubdtype(pred[fitted_model_instance.output_var].dtype, np.floating)

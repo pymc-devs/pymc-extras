@@ -485,7 +485,7 @@ def fit_laplace(
         )
 
     # We override the posterior/unconstrained_posterior from find_MAP
-    idata.posterior, unconstrained_posterior = draws_from_laplace_approx(
+    idata["posterior"], unconstrained_posterior = draws_from_laplace_approx(
         mean=idata.fit["mean_vector"].values,
         covariance=idata.fit["covariance_matrix"].values,
         draws=draws,

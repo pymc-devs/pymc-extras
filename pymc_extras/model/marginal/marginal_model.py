@@ -424,7 +424,7 @@ def recover_marginals(
 
     posterior_pts, stacked_dims = dataset_to_point_list(
         # Remove Deterministics
-        idata.posterior[[rv.name for rv in model.free_RVs]],
+        idata["posterior"][[rv.name for rv in model.free_RVs]],
         sample_dims=("chain", "draw"),
     )
     transformed_posterior_pts = transform_posterior_pts(model, posterior_pts)
@@ -539,7 +539,7 @@ def recover_marginals(
     )
 
     if extend_inferencedata:
-        idata.posterior = idata.posterior.assign(rv_dataset)
+        idata["posterior"] = idata["posterior"].assign(rv_dataset)
         return idata
     else:
         return rv_dataset

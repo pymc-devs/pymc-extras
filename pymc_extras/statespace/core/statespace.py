@@ -1804,7 +1804,7 @@ class PyMCStateSpace:
         frozen_model = freeze_dims_and_data(forward_model)
         with frozen_model:
             matrix_idata = pm.sample_posterior_predictive(
-                idata if group == "posterior" else idata.prior,
+                idata if group == "posterior" else idata["prior"],
                 var_names=matrix_names,
                 extend_inferencedata=False,
                 compile_kwargs=compile_kwargs,
@@ -1879,7 +1879,7 @@ class PyMCStateSpace:
 
         with freeze_dims_and_data(m):
             return pm.sample_posterior_predictive(
-                idata if group == "posterior" else idata.prior,
+                idata if group == "posterior" else idata["prior"],
                 var_names=filter_output_names,
                 compile_kwargs=compile_kwargs,
                 **kwargs,
@@ -2656,7 +2656,7 @@ class PyMCStateSpace:
                 **kwargs,
             )
 
-            return irf_idata.posterior_predictive
+            return irf_idata["posterior_predictive"]
 
     def _sort_obs_inputs_by_time_varying(self, d, Z):
         seqs = []
