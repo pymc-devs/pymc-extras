@@ -1,4 +1,4 @@
-"""Tests for pathfinder InferenceData integration."""
+"""Tests for pathfinder DataTree integration."""
 
 from collections import Counter
 from dataclasses import dataclass
@@ -299,20 +299,18 @@ class TestMultiPathfinderResultToXarray:
         assert ds_with_diag["diagnostics_samples_full"].shape == (3, 100, 2)
 
 
-class TestAddPathfinderToInferenceData:
-    """Tests for adding pathfinder results to InferenceData."""
+class TestAddPathfinderToDataTree:
+    """Tests for adding pathfinder results to DataTree."""
 
     def test_add_to_inference_data(self):
-        """Test adding pathfinder results to InferenceData object."""
+        """Test adding pathfinder results to DataTree object."""
         pytest.importorskip("arviz")
-
-        import arviz as az
 
         from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
 
-        # Create mock InferenceData
+        # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = az.InferenceData(posterior=posterior)
+        idata = xr.DataTree.from_dict({"/posterior": posterior})
 
         # Create mock result with proper single-path status values
         # (Note: MockMultiPathfinderResult isn't a real MultiPathfinderResult,
@@ -344,14 +342,12 @@ class TestDiagnosticsAndConfigGroups:
         """Test that config data is integrated into consolidated pathfinder group."""
         pytest.importorskip("arviz")
 
-        import arviz as az
-
         from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
         from pymc_extras.inference.pathfinder.pathfinder import PathfinderConfig
 
-        # Create mock InferenceData
+        # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = az.InferenceData(posterior=posterior)
+        idata = xr.DataTree.from_dict({"/posterior": posterior})
 
         # Create mock config
         config = PathfinderConfig(
@@ -394,13 +390,11 @@ class TestDiagnosticsAndConfigGroups:
         """Test that diagnostics data is integrated into consolidated pathfinder group."""
         pytest.importorskip("arviz")
 
-        import arviz as az
-
         from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
 
-        # Create mock InferenceData
+        # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = az.InferenceData(posterior=posterior)
+        idata = xr.DataTree.from_dict({"/posterior": posterior})
 
         # Create mock result with diagnostic data
         result = MockMultiPathfinderResult(
@@ -437,13 +431,11 @@ class TestDiagnosticsAndConfigGroups:
         """Test that diagnostics group is NOT created when store_diagnostics=False."""
         pytest.importorskip("arviz")
 
-        import arviz as az
-
         from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
 
-        # Create mock InferenceData
+        # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = az.InferenceData(posterior=posterior)
+        idata = xr.DataTree.from_dict({"/posterior": posterior})
 
         # Create mock result with diagnostic data
         result = MockMultiPathfinderResult(

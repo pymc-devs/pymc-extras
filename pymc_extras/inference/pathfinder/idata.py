@@ -12,7 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-"""Utilities for converting Pathfinder results to xarray and adding them to InferenceData."""
+"""Utilities for converting Pathfinder results to xarray and adding them to DataTree."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ import warnings
 
 from dataclasses import asdict
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import xarray as xr
@@ -446,15 +445,15 @@ def _determine_num_paths(result: MultiPathfinderResult) -> int:
 
 
 def add_pathfinder_to_inference_data(
-    idata: az.InferenceData,
+    idata: xr.DataTree,
     result: PathfinderResult | MultiPathfinderResult,
     model: pm.Model | None = None,
     *,
     group: str = "sample_stats",
     store_diagnostics: bool = False,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
-    Add pathfinder results to an ArviZ InferenceData object as a single consolidated group.
+    Add pathfinder results to an ArviZ DataTree object as a single consolidated group.
 
     All pathfinder output is now consolidated under a single group with nested structure:
     - Summary statistics at the top level
@@ -464,8 +463,8 @@ def add_pathfinder_to_inference_data(
 
     Parameters
     ----------
-    idata : az.InferenceData
-        InferenceData object to modify
+    idata : xr.DataTree
+        DataTree object to modify
     result : PathfinderResult | MultiPathfinderResult
         Pathfinder results to add
     model : pm.Model | None
@@ -477,8 +476,8 @@ def add_pathfinder_to_inference_data(
 
     Returns
     -------
-    az.InferenceData
-        Modified InferenceData object with consolidated pathfinder group added
+    xr.DataTree
+        Modified DataTree object with consolidated pathfinder group added
 
     Examples
     --------
@@ -516,7 +515,7 @@ def add_pathfinder_to_inference_data(
         consolidated_ds = pathfinder_result_to_xarray(result, model=model)
 
     if group in idata.groups():
-        warnings.warn(f"Group '{group}' already exists in InferenceData, it will be replaced.")
+        warnings.warn(f"Group '{group}' already exists in DataTree, it will be replaced.")
 
     idata.add_groups({group: consolidated_ds})
     return idata

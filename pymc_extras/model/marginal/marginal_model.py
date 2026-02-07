@@ -6,7 +6,7 @@ import numpy as np
 import pymc
 import pytensor.tensor as pt
 
-from arviz import InferenceData, dict_to_dataset
+from arviz_base import dict_to_dataset
 from pymc.backends.arviz import coords_and_dims_for_inferencedata, dataset_to_point_list
 from pymc.distributions.discrete import Bernoulli, Categorical, DiscreteUniform
 from pymc.distributions.transforms import Chain
@@ -35,6 +35,7 @@ from pytensor.graph import (
 )
 from pytensor.graph.rewriting.basic import in2out
 from pytensor.tensor import TensorVariable
+from xarray import DataTree
 
 __all__ = ["MarginalModel", "marginalize"]
 
@@ -337,7 +338,7 @@ def transform_posterior_pts(model, posterior_pts):
 
 
 def recover_marginals(
-    idata: InferenceData,
+    idata: DataTree,
     *,
     model: Model | None = None,
     var_names: Sequence[str] | None = None,
@@ -346,7 +347,7 @@ def recover_marginals(
     random_seed: RandomState = None,
 ):
     """Computes posterior log-probabilities and samples of marginalized variables
-    conditioned on parameters of the model given InferenceData with posterior group
+    conditioned on parameters of the model given DataTree with posterior group
 
     When there are multiple marginalized variables, each marginalized variable is
     conditioned on both the parameters and the other variables still marginalized
@@ -357,21 +358,21 @@ def recover_marginals(
     ----------
     model: Model
         PyMC model with marginalized variables to recover
-    idata : InferenceData
-        InferenceData with posterior group
+    idata : DataTree
+        DataTree with posterior group
     var_names : sequence of str, optional
         List of variable names for which to compute posterior log-probabilities and samples. Defaults to all marginalized variables
     return_samples : bool, default True
         If True, also return samples of the marginalized variables
     extend_inferencedata : bool, default True
-        Whether to extend the original InferenceData or return a new one
+        Whether to extend the original DataTree or return a new one
     random_seed: int, array-like of int or SeedSequence, optional
         Seed used to generating samples
 
     Returns
     -------
-    idata : InferenceData
-        InferenceData with where a lp_{varname} and {varname} for each marginalized variable in var_names added to the posterior group
+    idata : DataTree
+        DataTree with where a lp_{varname} and {varname} for each marginalized variable in var_names added to the posterior group
 
     .. code-block:: python
 

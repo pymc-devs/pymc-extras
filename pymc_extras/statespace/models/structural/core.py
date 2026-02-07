@@ -367,7 +367,7 @@ class StructuralTimeSeries(PyMCStateSpace):
 
     def extract_components_from_idata(self, idata: xr.Dataset) -> xr.Dataset:
         r"""
-        Extract interpretable hidden states from an InferenceData returned by a PyMCStateSpace sampling method
+        Extract interpretable hidden states from a DataTree returned by a PyMCStateSpace sampling method
 
         Parameters
         ----------

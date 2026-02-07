@@ -68,7 +68,7 @@ def hierarchical_model(rng):
     return model, mu_val, H_inv, test_point
 
 
-class TestFittoInferenceData:
+class TestFittoDataTree:
     def check_idata(self, idata, var_names, n_vars):
         assert "fit" in idata.groups()
 

@@ -19,11 +19,11 @@ import warnings
 from collections.abc import Callable
 from typing import NamedTuple, cast
 
-import arviz as az
 import blackjax
 import jax
 import jax.numpy as jnp
 import numpy as np
+import xarray as xr
 
 from blackjax.smc import extend_params
 from blackjax.smc.resampling import systematic
@@ -320,7 +320,7 @@ def blackjax_particles_from_pymc_population(model, pymc_population):
 
 
 def add_to_inference_data(
-    inference_data: az.InferenceData,
+    inference_data: xr.DataTree,
     n_particles: int,
     target_ess: float,
     num_mcmc_steps: int,
@@ -332,7 +332,7 @@ def add_to_inference_data(
     running_time_seconds: float,
 ):
     """
-    Adds several SMC parameters into the az.InferenceData result
+    Adds several SMC parameters into the xr.DataTree result
 
     Parameters
     ----------

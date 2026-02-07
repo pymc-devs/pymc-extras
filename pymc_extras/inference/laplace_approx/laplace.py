@@ -18,14 +18,13 @@ import logging
 from collections.abc import Callable
 from typing import Literal
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import xarray as xr
 
-from arviz import dict_to_dataset
+from arviz_base import dict_to_dataset
 from better_optimize.constants import minimize_method
 from numpy.typing import ArrayLike
 from pymc import Model
@@ -337,7 +336,7 @@ def fit_laplace(
     vectorize_draws: bool = True,
     optimizer_kwargs: dict | None = None,
     compile_kwargs: dict | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
     Create a Laplace (quadratic) approximation for a posterior distribution.
 
@@ -374,7 +373,7 @@ def fit_laplace(
         Whether to display a progress bar during optimization. Defaults to True.
     include_transformed: bool, default True
         Whether to include transformed variables in the output. If True, transformed variables will be included in the
-        output InferenceData object. If False, only the original variables will be included.
+        output DataTree object. If False, only the original variables will be included.
     freeze_model: bool, optional
         If True, freeze_dims_and_data will be called on the model before compiling the loss functions. This is
         sometimes necessary for JAX, and can sometimes improve performance by allowing constant folding. Defaults to
@@ -394,8 +393,8 @@ def fit_laplace(
 
     Returns
     -------
-    :class:`~arviz.InferenceData`
-        An InferenceData object containing the approximated posterior samples.
+    xr.DataTree
+        A DataTree object containing the approximated posterior samples.
 
     Examples
     --------

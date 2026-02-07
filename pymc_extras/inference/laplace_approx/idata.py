@@ -1,12 +1,11 @@
 from itertools import product
 from typing import Literal
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import xarray as xr
 
-from arviz import dict_to_dataset
+from arviz_base import dict_to_dataset, from_dict
 from better_optimize.constants import minimize_method
 from pymc.backends.arviz import coords_and_dims_for_inferencedata, find_constants, find_observations
 from pymc.blocking import RaveledVars
@@ -68,7 +67,7 @@ def map_results_to_inference_data(
     include_transformed: bool = True,
 ):
     """
-    Add the MAP point to an InferenceData object in the posterior group.
+    Add the MAP point to a DataTree object in the posterior group.
 
     Unlike a typical posterior, the MAP point is a single point estimate rather than a distribution. As a result, it
     does not have a chain or draw dimension, and is stored as a single point in the posterior group.
@@ -85,8 +84,8 @@ def map_results_to_inference_data(
 
     Returns
     -------
-    idata: az.InferenceData
-        The provided InferenceData, with the MAP point added to the posterior group.
+    idata: xr.DataTree
+        The provided DataTree, with the MAP point added to the posterior group.
     """
 
     model = pm.modelcontext(model) if model is None else model
@@ -117,17 +116,19 @@ def map_results_to_inference_data(
 
     unconstrained_names = sorted(set(all_varnames) - set(constrained_names))
 
-    idata = az.from_dict(
-        posterior={
-            k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in constrained_names
+    idata = from_dict(
+        {
+            "posterior": {
+                k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in constrained_names
+            }
         },
         coords=coords,
         dims=dims,
     )
 
     if unconstrained_names and include_transformed:
-        unconstrained_posterior = az.from_dict(
-            posterior={
+        unconstrained_posterior_ds = dict_to_dataset(
+            {
                 k: np.expand_dims(v, (0, 1))
                 for k, v in map_point.items()
                 if k in unconstrained_names
@@ -136,24 +137,24 @@ def map_results_to_inference_data(
             dims=dims,
         )
 
-        idata["unconstrained_posterior"] = unconstrained_posterior.posterior
+        idata["unconstrained_posterior"] = unconstrained_posterior_ds
 
     return idata
 
 
 def add_fit_to_inference_data(
-    idata: az.InferenceData,
+    idata: xr.DataTree,
     mu: RaveledVars,
     H_inv: np.ndarray | None,
     model: pm.Model | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
-    Add the mean vector and covariance matrix of the Laplace approximation to an InferenceData object.
+    Add the mean vector and covariance matrix of the Laplace approximation to a DataTree object.
 
     Parameters
     ----------
     idata: az.InfereceData
-        An InferenceData object containing the approximated posterior samples.
+        A DataTree object containing the approximated posterior samples.
     mu: RaveledVars
         The MAP estimate of the model parameters.
     H_inv: np.ndarray, optional
@@ -163,8 +164,8 @@ def add_fit_to_inference_data(
 
     Returns
     -------
-    idata: az.InferenceData
-        The provided InferenceData, with the mean vector and covariance matrix added to the "fit" group.
+    idata: xr.DataTree
+        The provided DataTree, with the mean vector and covariance matrix added to the "fit" group.
     """
     model = pm.modelcontext(model) if model is None else model
 
@@ -191,18 +192,18 @@ def add_fit_to_inference_data(
 
 
 def add_data_to_inference_data(
-    idata: az.InferenceData,
+    idata: xr.DataTree,
     progressbar: bool = True,
     model: pm.Model | None = None,
     compile_kwargs: dict | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
-    Add observed and constant data to an InferenceData object.
+    Add observed and constant data to a DataTree object.
 
     Parameters
     ----------
-    idata: az.InferenceData
-        An InferenceData object containing the approximated posterior samples.
+    idata: xr.DataTree
+        A DataTree object containing the approximated posterior samples.
     progressbar: bool
         Whether to display a progress bar during computations. Default is True.
     model: Model, optional
@@ -212,8 +213,8 @@ def add_data_to_inference_data(
 
     Returns
     -------
-    idata: az.InferenceData
-        The provided InferenceData, with observed and constant data added.
+    idata: xr.DataTree
+        The provided DataTree, with observed and constant data added.
     """
     model = pm.modelcontext(model) if model is None else model
 
@@ -375,20 +376,20 @@ def optimizer_result_to_dataset(
 
 
 def add_optimizer_result_to_inference_data(
-    idata: az.InferenceData,
+    idata: xr.DataTree,
     result: OptimizeResult,
     method: minimize_method | Literal["basinhopping"],
     mu: RaveledVars | None = None,
     model: pm.Model | None = None,
     var_name_to_model_var: dict[str, str] | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
-    Add the optimization result to an InferenceData object.
+    Add the optimization result to a DataTree object.
 
     Parameters
     ----------
-    idata: az.InferenceData
-        An InferenceData object containing the approximated posterior samples.
+    idata: xr.DataTree
+        A DataTree object containing the approximated posterior samples.
     result: OptimizeResult
         The result of the optimization process.
     method: minimize_method or "basinhopping"
@@ -403,8 +404,8 @@ def add_optimizer_result_to_inference_data(
 
     Returns
     -------
-    idata: az.InferenceData
-        The provided InferenceData, with the optimization results added to the "optimizer" group.
+    idata: xr.DataTree
+        The provided DataTree, with the optimization results added to the "optimizer" group.
     """
     dataset = optimizer_result_to_dataset(
         result, method=method, mu=mu, model=model, var_name_to_model_var=var_name_to_model_var

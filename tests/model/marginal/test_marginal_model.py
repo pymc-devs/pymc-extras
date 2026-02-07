@@ -8,7 +8,7 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
-from arviz import InferenceData, dict_to_dataset
+from arviz_base import from_dict
 from pymc import Model, draw
 from pymc.distributions import transforms
 from pymc.distributions.transforms import ordered
@@ -842,7 +842,7 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(posterior=dict_to_dataset(prior))
+            idata = from_dict({"posterior": prior})
 
         if explicit_model:
             idata = recover_marginals(idata, model=marginal_m, return_samples=True)
@@ -889,9 +889,7 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(
-                posterior=dict_to_dataset({k: np.expand_dims(prior[k], axis=0) for k in prior})
-            )
+            idata = from_dict({"posterior": {k: np.expand_dims(prior[k], axis=0) for k in prior}})
 
         with marginal_m:
             idata = recover_marginals(idata, return_samples=True)
@@ -916,9 +914,7 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(
-                posterior=dict_to_dataset({k: np.expand_dims(prior[k], axis=0) for k in prior})
-            )
+            idata = from_dict({"posterior": {k: np.expand_dims(prior[k], axis=0) for k in prior}})
 
             idata = recover_marginals(idata, return_samples=True)
         post = idata.posterior
@@ -944,7 +940,7 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(posterior=dict_to_dataset(prior))
+            idata = from_dict({"posterior": prior})
 
             idata = recover_marginals(idata, return_samples=True)
         post = idata.posterior
