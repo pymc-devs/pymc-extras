@@ -214,8 +214,8 @@ class PyMCStateSpace:
 
                 x0 = self.make_and_register_variable('x0', shape=(2,))
                 P0 = self.make_and_register_variable('P0', shape=(2,2))
-                sigma_mu = self.make_and_register_variable('sigma_nu')
-                sigma_eta = self.make_and_register_variable('sigma_eta')
+                sigma_nu = self.make_and_register_variable('sigma_nu', shape=())
+                sigma_eta = self.make_and_register_variable('sigma_eta', shape=())
 
                 # Next, use these symbolic variables to build the statespace matrices by assigning each parameter
                 # to its correct location in the correct matrix
