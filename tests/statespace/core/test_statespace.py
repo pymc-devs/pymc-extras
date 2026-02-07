@@ -141,6 +141,44 @@ def ss_mod_no_exog_dt(rng):
 
 
 @pytest.fixture(scope="session")
+def ss_mod_time_varying():
+    """A minimal model with time-varying observation intercept (uses n_timesteps)."""
+
+    class TimeVaryingInterceptModel(PyMCStateSpace):
+        def __init__(self):
+            super().__init__(k_states=1, k_endog=1, k_posdef=1)
+
+        def make_symbolic_graph(self) -> None:
+            self.ssm["transition", 0, 0] = 1.0
+            self.ssm["design", 0, 0] = 1.0
+            self.ssm["selection", 0, 0] = 1.0
+            self.ssm["state_cov", 0, 0] = 1.0
+
+            # Time-varying observation intercept: slope * arange(n_timesteps)
+            slope = self.make_and_register_variable("slope", ())
+            time_trend = slope * pt.arange(self.n_timesteps)
+            self.ssm["obs_intercept"] = time_trend[:, None]
+
+        @property
+        def param_names(self) -> list[str]:
+            return ["slope"]
+
+        @property
+        def state_names(self) -> list[str]:
+            return ["level"]
+
+        @property
+        def observed_states(self) -> list[str]:
+            return ["level"]
+
+        @property
+        def shock_names(self) -> list[str]:
+            return ["level"]
+
+    return TimeVaryingInterceptModel()
+
+
+@pytest.fixture(scope="session")
 def exog_data(rng):
     # simulate data
     df = pd.DataFrame(
@@ -337,6 +375,23 @@ def pymc_mod_no_exog_dt(ss_mod_no_exog_dt, rng):
 
 
 @pytest.fixture(scope="session")
+def pymc_mod_time_varying(ss_mod_time_varying, rng):
+    """PyMC model with time-varying observation intercept."""
+    n_obs = 40
+    y = rng.normal(size=(n_obs, 1)).astype(floatX)
+
+    with pm.Model(coords=ss_mod_time_varying.coords) as m:
+        slope = pm.Normal("slope", mu=0, sigma=1)
+        P0 = pm.Deterministic(
+            "P0", pt.eye(ss_mod_time_varying.k_states) * 1.0, dims=["state", "state_aux"]
+        )
+        x0 = pm.Normal("x0", dims=["state"])
+        ss_mod_time_varying.build_statespace_graph(y)
+
+    return m
+
+
+@pytest.fixture(scope="session")
 def idata(pymc_mod, rng, mock_pymc_sample):
     with pymc_mod:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
@@ -394,6 +449,16 @@ def idata_no_exog_mv_dt(pymc_mod_no_exog_mv_dt, rng, mock_pymc_sample):
 @pytest.fixture(scope="session")
 def idata_no_exog_dt(pymc_mod_no_exog_dt, rng, mock_pymc_sample):
     with pymc_mod_no_exog_dt:
+        idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
+        idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
+    idata.extend(idata_prior)
+    return idata
+
+
+@pytest.fixture(scope="session")
+def idata_time_varying(pymc_mod_time_varying, rng, mock_pymc_sample):
+    """Inference data for time-varying model."""
+    with pymc_mod_time_varying:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
     idata.extend(idata_prior)
@@ -1256,3 +1321,55 @@ def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
     incorrect_outputs = ["filter_states", "filter_covariances"]
     with pytest.raises(ValueError, match=re.escape(msg)):
         exog_ss_mod.sample_filter_outputs(idata_exog, filter_output_names=incorrect_outputs)
+
+
+class TestTimeVaryingTransition:
+    """Tests for models with time-varying transition matrices (n_timesteps placeholder)."""
+
+    @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+    def test_sample_conditional_prior(self, ss_mod_time_varying, idata_time_varying):
+        result = ss_mod_time_varying.sample_conditional_prior(idata_time_varying)
+        assert "filtered_prior" in result
+        assert "smoothed_prior" in result
+        assert "predicted_prior" in result
+        assert not np.any(np.isnan(result["filtered_prior"].values))
+
+    @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+    def test_sample_conditional_posterior(self, ss_mod_time_varying, idata_time_varying):
+        result = ss_mod_time_varying.sample_conditional_posterior(idata_time_varying)
+        assert "filtered_posterior" in result
+        assert "smoothed_posterior" in result
+        assert "predicted_posterior" in result
+        assert not np.any(np.isnan(result["filtered_posterior"].values))
+
+    @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+    def test_sample_unconditional_prior(self, ss_mod_time_varying, idata_time_varying):
+        result = ss_mod_time_varying.sample_unconditional_prior(idata_time_varying)
+        assert "prior_latent" in result
+        assert "prior_observed" in result
+        assert not np.any(np.isnan(result["prior_latent"].values))
+
+    @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+    def test_sample_unconditional_posterior(self, ss_mod_time_varying, idata_time_varying):
+        result = ss_mod_time_varying.sample_unconditional_posterior(idata_time_varying)
+        assert "posterior_latent" in result
+        assert "posterior_observed" in result
+        assert not np.any(np.isnan(result["posterior_latent"].values))
+
+    @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+    @pytest.mark.filterwarnings("ignore:No start date provided")
+    def test_forecast(self, ss_mod_time_varying, idata_time_varying):
+        result = ss_mod_time_varying.forecast(idata_time_varying, periods=10)
+        assert "forecast_latent" in result
+        assert "forecast_observed" in result
+        assert result["forecast_latent"].shape[2] == 10
+        assert not np.any(np.isnan(result["forecast_latent"].values))
+
+    @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+    def test_impulse_response_function(self, ss_mod_time_varying, idata_time_varying):
+        result = ss_mod_time_varying.impulse_response_function(
+            idata_time_varying, n_steps=20, shock_size=1.0
+        )
+        assert "irf" in result
+        assert result["irf"].shape[2] == 20
+        assert not np.any(np.isnan(result["irf"].values))
