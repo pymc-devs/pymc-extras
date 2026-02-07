@@ -24,36 +24,19 @@ from pytensor.tensor.random.type import RandomType
 from pymc_extras.distributions import DiscreteMarkovChain
 
 
-class MarginalRV(OpFromGraph, MeasurableOp):
+class MarginalRV(OpFromGraph):
     """Base class for Marginalized RVs"""
 
     def __init__(
         self,
         *args,
-        dims_connections: tuple[tuple[int | None], ...],
         dims: tuple[Variable, ...],
+        n_dependent_rvs: int,
         **kwargs,
     ) -> None:
-        self.dims_connections = dims_connections
         self.dims = dims
+        self.n_dependent_rvs = n_dependent_rvs
         super().__init__(*args, **kwargs)
-
-    @property
-    def support_axes(self) -> tuple[tuple[int]]:
-        """Dimensions of dependent RVs that belong to the core (non-batched) marginalized variable."""
-        marginalized_ndim_supp = self.inner_outputs[0].owner.op.ndim_supp
-        support_axes_vars = []
-        for dims_connection in self.dims_connections:
-            ndim = len(dims_connection)
-            marginalized_supp_axes = ndim - marginalized_ndim_supp
-            support_axes_vars.append(
-                tuple(
-                    -i
-                    for i, dim in enumerate(reversed(dims_connection), start=1)
-                    if (dim is None or dim > marginalized_supp_axes)
-                )
-            )
-        return tuple(support_axes_vars)
 
     def __eq__(self, other):
         # Just to allow easy testing of equivalent models,
@@ -124,11 +107,35 @@ def support_point_marginal_rv(op: MarginalRV, rv, *inputs):
     return rv_support_point
 
 
-class MarginalFiniteDiscreteRV(MarginalRV):
+class MarginalEnumerableRV(MarginalRV, MeasurableOp):
+
+    def __init__(self, *args,  dims_connections: tuple[tuple[int | None], ...], **kwargs):
+        super().__init__(*args, **kwargs)
+        self.dims_connections = dims_connections
+
+    @property
+    def support_axes(self) -> tuple[tuple[int]]:
+        """Dimensions of dependent RVs that belong to the core (non-batched) marginalized variable."""
+        marginalized_ndim_supp = self.inner_outputs[0].owner.op.ndim_supp
+        support_axes_vars = []
+        for dims_connection in self.dims_connections:
+            ndim = len(dims_connection)
+            marginalized_supp_axes = ndim - marginalized_ndim_supp
+            support_axes_vars.append(
+                tuple(
+                    -i
+                    for i, dim in enumerate(reversed(dims_connection), start=1)
+                    if (dim is None or dim > marginalized_supp_axes)
+                )
+            )
+        return tuple(support_axes_vars)
+
+
+class MarginalFiniteDiscreteRV(MarginalEnumerableRV):
     """Base class for Marginalized Finite Discrete RVs"""
 
 
-class MarginalDiscreteMarkovChainRV(MarginalRV):
+class MarginalDiscreteMarkovChainRV(MarginalEnumerableRV):
     """Base class for Marginalized Discrete Markov Chain RVs"""
 
 
@@ -239,7 +246,9 @@ DUMMY_ZERO = pt.constant(0, name="dummy_zero")
 @_logprob.register(MarginalFiniteDiscreteRV)
 def finite_discrete_marginal_rv_logp(op: MarginalFiniteDiscreteRV, values, *inputs, **kwargs):
     # Clone the inner RV graph of the Marginalized RV
-    marginalized_rv, *inner_rvs = inline_ofg_outputs(op, inputs)
+    marginalized_rv, *inner_rvs_and_rngs = inline_ofg_outputs(op, inputs)
+    inner_rvs = inner_rvs_and_rngs[:op.n_dependent_rvs]
+    assert len(values) == len(inner_rvs)
 
     # Obtain the joint_logp graph of the inner RV graph
     inner_rv_values = dict(zip(inner_rvs, values))
@@ -303,7 +312,9 @@ def finite_discrete_marginal_rv_logp(op: MarginalFiniteDiscreteRV, values, *inpu
 
 @_logprob.register(MarginalDiscreteMarkovChainRV)
 def marginal_hmm_logp(op, values, *inputs, **kwargs):
-    chain_rv, *dependent_rvs = inline_ofg_outputs(op, inputs)
+    chain_rv, *dependent_rvs_and_rngs = inline_ofg_outputs(op, inputs)
+    dependent_rvs = dependent_rvs_and_rngs[:op.n_dependent_rvs]
+    assert len(values) == len(dependent_rvs)
 
     P, n_steps_, init_dist_, rng = chain_rv.owner.inputs
     domain = pt.arange(P.shape[-1], dtype="int32")
