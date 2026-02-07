@@ -192,11 +192,11 @@ class TimeSeasonality(Component):
         if observed_state_names is None:
             observed_state_names = ["data"]
 
-        if season_length <= 1 or not isinstance(season_length, int):
+        if not isinstance(season_length, int) or season_length <= 1:
             raise ValueError(
                 f"season_length must be an integer greater than 1, got {season_length}"
             )
-        if duration <= 0 or not isinstance(duration, int):
+        if not isinstance(duration, int) or duration <= 0:
             raise ValueError(f"duration must be a positive integer, got {duration}")
         if name is None:
             name = f"Seasonal[s={season_length}, d={duration}]"
@@ -446,7 +446,7 @@ class FrequencySeasonality(Component):
 
     def __init__(
         self,
-        season_length: int,
+        season_length: int | float,
         n: int | None = None,
         name: str | None = None,
         innovations: bool = True,
@@ -456,11 +456,16 @@ class FrequencySeasonality(Component):
         if observed_state_names is None:
             observed_state_names = ["data"]
 
+        if not isinstance(season_length, int | float) or season_length <= 0:
+            raise ValueError(f"season_length must be a positive number, got {season_length}")
+
         self.share_states = share_states
         k_endog = len(observed_state_names)
 
         if n is None:
             n = int(season_length / 2)
+        if not isinstance(n, int) or n <= 0:
+            raise ValueError(f"n must be a positive integer, got {n}")
         if name is None:
             name = f"Frequency[s={season_length}, n={n}]"
 
