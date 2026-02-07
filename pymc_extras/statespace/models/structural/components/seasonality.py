@@ -200,20 +200,41 @@ class TimeSeasonality(Component):
             raise ValueError(f"duration must be a positive integer, got {duration}")
         if name is None:
             name = f"Seasonal[s={season_length}, d={duration}]"
+
+        # The user only provides unique names. If duration > 1, the states will be repeated with suffixes _0, _1, ...,
+        # _{duration-1} to create unique state names for each position in the cycle.
         if state_names is None:
-            if duration > 1:
-                state_names = [
-                    f"{name}_{i}_{j}" for i in range(season_length) for j in range(duration)
-                ]
-            else:
-                state_names = [f"{name}_{i}" for i in range(season_length)]
+            state_names = [f"{name}_{i}" for i in range(season_length)]
         else:
-            if len(state_names) != season_length * duration:
+            if len(state_names) != season_length:
                 raise ValueError(
-                    f"state_names must be a list of length season_length*duration, got {len(state_names)}"
+                    f"state_names must be a list of length season_length={season_length}, got {len(state_names)}"
                 )
             state_names = list(state_names)
 
+        # Validate and convert start_state to an index
+        if start_state is not None:
+            if isinstance(start_state, str):
+                if start_state not in state_names:
+                    raise ValueError(
+                        f"start_state '{start_state}' not found in state_names. "
+                        f"Available names: {state_names}"
+                    )
+                start_idx = state_names.index(start_state)
+            elif isinstance(start_state, int):
+                if not (0 <= start_state < season_length):
+                    raise ValueError(
+                        f"start_state index must be in [0, {season_length}), got {start_state}"
+                    )
+                start_idx = start_state
+            else:
+                raise ValueError(
+                    f"start_state must be a string (state name) or int (index), got {type(start_state)}"
+                )
+        else:
+            start_idx = 0
+
+        self.start_idx = start_idx
         self.share_states = share_states
         self.innovations = innovations
         self.duration = duration
