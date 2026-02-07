@@ -303,8 +303,23 @@ def create_structural_model_and_equivalent_statsmodel(
         expected_coords[ALL_STATE_DIM] += state_names
         expected_coords[ALL_STATE_AUX_DIM] += state_names
 
+        # Our implementation reorders the initial state to produce output order [gamma_0, gamma_1, gamma_2,
+        # ..., gamma_{s-1}]
+        # Internal state is: [gamma_0, gamma_{s-1}, gamma_{s-2}, ..., gamma_2]
+        # where gamma_0 = -sum(seasonal_coefs) and seasonal_coefs = [gamma_1, gamma_2, ..., gamma_{s-1}]
+
+        # Statsmodels expects state: [gamma_t, gamma_{t-1}, ..., gamma_{t-s+2}]
+        # which with the same labeling is [current, lag1, lag2, ...]
+
+        # To match, we set sm_init to our reordered state: [gamma_0, gamma_{s-1}, ..., gamma_2]
+        gamma_0 = -seasonal_coefs.sum()
+        if len(seasonal_coefs) > 1:
+            reordered_state = np.concatenate([[gamma_0], seasonal_coefs[1:][::-1]])
+        else:
+            reordered_state = np.array([gamma_0])
+
         seasonal_dict = {
-            "seasonal" if i == 0 else f"seasonal.L{i}": c for i, c in enumerate(seasonal_coefs)
+            "seasonal" if i == 0 else f"seasonal.L{i}": c for i, c in enumerate(reordered_state)
         }
         sm_init.update(seasonal_dict)
 
