@@ -20,6 +20,7 @@ import arviz
 import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
+import xarray
 
 from pymc.logprob.transforms import Transform
 
@@ -74,7 +75,7 @@ def _parse_args(
     return results
 
 
-def _flatten(idata: arviz.InferenceData, **kwargs: ParamCfg) -> FlatInfo:
+def _flatten(idata: xarray.DataTree, **kwargs: ParamCfg) -> FlatInfo:
     posterior = idata.posterior
     vars = list()
     info = list()
@@ -131,7 +132,7 @@ def _mvn_prior_from_flat_info(name, flat_info: FlatInfo):
 
 
 def prior_from_idata(
-    idata: arviz.InferenceData,
+    idata: xarray.DataTree,
     name="trace_prior_",
     *,
     var_names: Sequence[str] = (),

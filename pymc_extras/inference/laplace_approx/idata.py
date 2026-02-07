@@ -142,11 +142,11 @@ def map_results_to_inference_data(
 
 
 def add_fit_to_inference_data(
-    idata: az.InferenceData,
+    idata: xr.DataTree,
     mu: RaveledVars,
     H_inv: np.ndarray | None,
     model: pm.Model | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
     Add the mean vector and covariance matrix of the Laplace approximation to an InferenceData object.
 
@@ -191,11 +191,11 @@ def add_fit_to_inference_data(
 
 
 def add_data_to_inference_data(
-    idata: az.InferenceData,
+    idata: xr.DataTree,
     progressbar: bool = True,
     model: pm.Model | None = None,
     compile_kwargs: dict | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
     Add observed and constant data to an InferenceData object.
 
@@ -375,13 +375,13 @@ def optimizer_result_to_dataset(
 
 
 def add_optimizer_result_to_inference_data(
-    idata: az.InferenceData,
+    idata: xr.DataTree,
     result: OptimizeResult,
     method: minimize_method | Literal["basinhopping"],
     mu: RaveledVars | None = None,
     model: pm.Model | None = None,
     var_name_to_model_var: dict[str, str] | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
     Add the optimization result to an InferenceData object.
 

@@ -8,7 +8,8 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
-from arviz import InferenceData, dict_to_dataset
+from arviz_base import dict_to_dataset
+from xarray import DataTree
 from pymc import Model, draw
 from pymc.distributions import transforms
 from pymc.distributions.transforms import ordered

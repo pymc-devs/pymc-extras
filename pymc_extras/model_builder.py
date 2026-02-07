@@ -82,7 +82,7 @@ class ModelBuilder:
 
         self.model_config = model_config  # parameters for priors etc.
         self.model = None  # Set by build_model
-        self.idata: az.InferenceData | None = None  # idata is generated during fitting
+        self.idata: xr.DataTree | None = None  # idata is generated during fitting
         self.is_fitted_ = False
 
     def _validate_data(self, X, y=None):
@@ -468,7 +468,7 @@ class ModelBuilder:
         predictor_names: list[str] | None = None,
         random_seed: RandomState = None,
         **kwargs: Any,
-    ) -> az.InferenceData:
+    ) -> xr.DataTree:
         """
         Fit a model using the data passed as a parameter.
         Sets attrs to inference data of the model.
@@ -617,7 +617,7 @@ class ModelBuilder:
         else:
             self._data_setter(X_pred, y_pred)
         with self.model:  # sample with new input data
-            prior_pred: az.InferenceData = pm.sample_prior_predictive(samples, **kwargs)
+            prior_pred: xr.DataTree = pm.sample_prior_predictive(samples, **kwargs)
             self.set_idata_attrs(prior_pred)
             if extend_idata:
                 if self.idata is not None:

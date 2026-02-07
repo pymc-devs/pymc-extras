@@ -10,7 +10,7 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 
-from arviz import InferenceData
+from xarray import DataTree
 from pymc.model import modelcontext
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import RandomState
@@ -1265,7 +1265,7 @@ class PyMCStateSpace:
 
     def _sample_conditional(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         group: str,
         random_seed: RandomState | None = None,
         data: pt.TensorLike | None = None,
@@ -1391,7 +1391,7 @@ class PyMCStateSpace:
 
     def _sample_unconditional(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         group: str,
         steps: int | None = None,
         use_data_time_dim: bool = False,
@@ -1519,11 +1519,11 @@ class PyMCStateSpace:
 
     def sample_conditional_prior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Sample from the conditional prior; that is, given parameter draws from the prior distribution,
         compute Kalman filtered trajectories. Trajectories are drawn from a single multivariate normal with mean and
@@ -1567,7 +1567,7 @@ class PyMCStateSpace:
 
     def sample_conditional_posterior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
@@ -1614,13 +1614,13 @@ class PyMCStateSpace:
 
     def sample_unconditional_prior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Draw unconditional sample trajectories according to state space dynamics, using random samples from the prior
         distribution over model parameters. The state space update equations are:
@@ -1682,13 +1682,13 @@ class PyMCStateSpace:
 
     def sample_unconditional_posterior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Draw unconditional sample trajectories according to state space dynamics, using random samples from the
         posterior distribution over model parameters. The state space update equations are:
@@ -2319,7 +2319,7 @@ class PyMCStateSpace:
 
     def forecast(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         start: int | pd.Timestamp | None = None,
         periods: int | None = None,
         end: int | pd.Timestamp = None,
@@ -2330,7 +2330,7 @@ class PyMCStateSpace:
         verbose: bool = True,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Generate forecasts of state space model trajectories into the future.
 

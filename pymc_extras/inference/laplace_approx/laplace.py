@@ -337,7 +337,7 @@ def fit_laplace(
     vectorize_draws: bool = True,
     optimizer_kwargs: dict | None = None,
     compile_kwargs: dict | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
     Create a Laplace (quadratic) approximation for a posterior distribution.
 

@@ -6,7 +6,8 @@ import numpy as np
 import pymc
 import pytensor.tensor as pt
 
-from arviz import InferenceData, dict_to_dataset
+from arviz_base import dict_to_dataset
+from xarray import DataTree
 from pymc.backends.arviz import coords_and_dims_for_inferencedata, dataset_to_point_list
 from pymc.distributions.discrete import Bernoulli, Categorical, DiscreteUniform
 from pymc.distributions.transforms import Chain
@@ -337,7 +338,7 @@ def transform_posterior_pts(model, posterior_pts):
 
 
 def recover_marginals(
-    idata: InferenceData,
+    idata: DataTree,
     *,
     model: Model | None = None,
     var_names: Sequence[str] | None = None,

@@ -30,6 +30,7 @@ import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
+import xarray as xr
 
 from numpy.typing import NDArray
 from packaging import version
@@ -150,7 +151,7 @@ def convert_flat_trace_to_idata(
     inference_backend: Literal["pymc", "blackjax"] = "pymc",
     model: Model | None = None,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
-) -> az.InferenceData:
+) -> xr.DataTree:
     """convert flattened samples to arviz InferenceData format.
 
     Parameters
@@ -1613,7 +1614,7 @@ def fit_pathfinder(
     paths_group: str = "pathfinder_paths",
     diagnostics_group: str = "pathfinder_diagnostics",
     config_group: str = "pathfinder_config",
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
     Fit the Pathfinder Variational Inference algorithm.
 

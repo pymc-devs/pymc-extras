@@ -46,3 +46,9 @@ pytestdebug.log
 # Codespaces
 pythonenv*
 env/
+.venv/
+
+# Log files
+*.log
+log_errores*.txt
+test_results*.txt
