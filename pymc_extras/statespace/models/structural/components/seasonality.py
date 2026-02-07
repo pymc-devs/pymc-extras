@@ -3,6 +3,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from pytensor import tensor as pt
+from pytensor.tensor import TensorVariable
 
 from pymc_extras.statespace.core.properties import (
     Coord,
@@ -32,6 +33,7 @@ class TimeSeasonality(Component):
         observed_state_names: Sequence[str] | None = None,
         share_states: bool = False,
         start_state: str | int | None = None,
+        use_time_varying: bool = True,
     ):
         r"""
         Deterministic seasonal pattern with optional stochastic drift.
@@ -91,6 +93,11 @@ class TimeSeasonality(Component):
             or ``start_state=3``.
 
             The index refers to positions in the original ``state_names`` (before any removal).
+
+        use_time_varying : bool, default True
+            If True and duration > 1, the transition matrix will be time-varying to correctly handle the shifting
+            seasonal effects. If False, a single very large and sparse transition matrix will be used. Ignored if
+            duration = 1. The time-varying approach is suggested for now to keep the state space small.
 
         Notes
         -----
@@ -240,6 +247,7 @@ class TimeSeasonality(Component):
         self.duration = duration
         self.remove_first_state = remove_first_state
         self.season_length = season_length
+        self.use_time_varying = use_time_varying
 
         if self.remove_first_state:
             # TODO: Can we somehow use a transformation to preserve all of the user's states?
@@ -247,7 +255,14 @@ class TimeSeasonality(Component):
 
         self.provided_state_names = state_names
 
-        k_states = duration * (season_length - int(remove_first_state))
+        # When using time-varying transition matrices with duration > 1, we don't need
+        # to expand the state dimension. The time-varying T handles the duration logic.
+        use_tv = use_time_varying and duration > 1
+        if use_tv:
+            k_states = season_length - int(remove_first_state)
+        else:
+            k_states = duration * (season_length - int(remove_first_state))
+
         k_endog = len(observed_state_names)
         k_posdef = int(innovations)
 
@@ -270,12 +285,17 @@ class TimeSeasonality(Component):
         """Number of unique seasonal parameters (season_length - 1 if remove_first_state, else season_length)."""
         return self.season_length - int(self.remove_first_state)
 
+    @property
+    def _uses_time_varying_transition(self) -> bool:
+        """Whether this component uses time-varying transition matrices."""
+        return self.use_time_varying and self.duration > 1
+
     def set_states(self) -> State | tuple[State, ...] | None:
         observed_state_names = self.base_observed_state_names
 
-        # Expand state names for duration > 1
-        # Each unique seasonal state is repeated d times in the state vector
-        if self.duration > 1:
+        # Expand state names for duration > 1, but NOT when using time-varying T
+        # (time-varying T keeps the state compact)
+        if self.duration > 1 and not self._uses_time_varying_transition:
             expanded_state_names = [
                 f"{state_name}_{i}"
                 for state_name in self.provided_state_names
@@ -355,125 +375,245 @@ class TimeSeasonality(Component):
 
         return tuple(coords_container)
 
-    def make_symbolic_graph(self) -> None:
-        k_endog = self.k_endog
-        k_endog_effective = 1 if self.share_states else k_endog
-        k_states = self.k_states // k_endog_effective
-        duration = self.duration
-        season_length = self.season_length
+    def _k_endog_effective(self) -> int:
+        return 1 if self.share_states else self.k_endog
 
-        k_posdef = self.k_posdef // k_endog_effective
+    def _k_states_per_endog(self) -> int:
+        return self.k_states // self._k_endog_effective()
 
-        if self.remove_first_state:
-            # Use duration-augmented D&K formulation
-            # State dimension: d * (s-1)
-            # T matrix: shifts between d copies, applies D&K T_gamma at wrap
-            n = season_length - 1
+    def _k_posdef_per_endog(self) -> int:
+        return self.k_posdef // self._k_endog_effective()
 
-            # Build D&K seasonal transition (s-1) x (s-1)
-            # First row = -1, subdiagonal = 1
-            T_gamma = pt.zeros((n, n))
-            T_gamma = pt.set_subtensor(T_gamma[0, :], -1.0)
-            if n > 1:
-                T_gamma = pt.set_subtensor(T_gamma[1:, :-1], pt.eye(n - 1))
+    def _build_dk_seasonal_rotation(self) -> TensorVariable:
+        """Build the (s-1) x (s-1) Durbin-Koopman seasonal transition matrix."""
+        n = self.season_length - 1
+        T_gamma = pt.zeros((n, n))
+        T_gamma = pt.set_subtensor(T_gamma[0, :], -1.0)
+        if n > 1:
+            T_gamma = pt.set_subtensor(T_gamma[1:, :-1], pt.eye(n - 1))
+        return T_gamma
 
-            # Build duration-augmented T: d*n x d*n
+    def _build_circulant_rotation(self) -> TensorVariable:
+        """Build simple circulant permutation matrix of size season_length."""
+        n = self.season_length
+        T = pt.eye(n, k=1)
+        return pt.set_subtensor(T[-1, 0], 1)
+
+    def _build_static_transition(self) -> TensorVariable:
+        """Build static transition matrix (2D) for duration >= 1."""
+        k_states = self._k_states_per_endog()
+
+        if not self.remove_first_state:
+            T_rotate = self._build_circulant_rotation()
+
+            if self.duration == 1:
+                return T_rotate
+
+            # Duration > 1: block structure with circulant rotation at wrap
+            n = self.season_length
             I_n = pt.eye(n)
             T = pt.zeros((k_states, k_states))
 
-            # Block shift: new block k <- old block k+1 for k = 0, ..., d-2
-            for k in range(duration - 1):
-                row_start = k * n
-                row_end = row_start + n
-                col_start = (k + 1) * n
-                col_end = col_start + n
-                T = pt.set_subtensor(T[row_start:row_end, col_start:col_end], I_n)
+            for k in range(self.duration - 1):
+                row_slice = slice(k * n, (k + 1) * n)
+                col_slice = slice((k + 1) * n, (k + 2) * n)
+                T = pt.set_subtensor(T[row_slice, col_slice], I_n)
 
-            # Wrap: apply D&K seasonal transition from first block to last block
-            last_block_row_start = (duration - 1) * n
-            last_block_row_end = duration * n
-            T = pt.set_subtensor(T[last_block_row_start:last_block_row_end, 0:n], T_gamma)
-        else:
-            # Use simple circulant for remove_first_state=False
-            # User is responsible for sum-to-zero constraint via priors
-            T = pt.eye(k_states, k=1)
-            T = pt.set_subtensor(T[-1, 0], 1)
+            last_row_slice = slice((self.duration - 1) * n, self.duration * n)
+            T = pt.set_subtensor(T[last_row_slice, :n], T_rotate)
+            return T
 
-        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
+        if self.duration == 1:
+            return self._build_dk_seasonal_rotation()
 
-        Z = pt.zeros((1, k_states))[0, 0].set(1)
-        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
+        # Duration > 1: block structure with D&K rotation at wrap
+        n = self.season_length - 1
+        T_gamma = self._build_dk_seasonal_rotation()
+        I_n = pt.eye(n)
+        T = pt.zeros((k_states, k_states))
 
+        for k in range(self.duration - 1):
+            row_slice = slice(k * n, (k + 1) * n)
+            col_slice = slice((k + 1) * n, (k + 2) * n)
+            T = pt.set_subtensor(T[row_slice, col_slice], I_n)
+
+        last_row_slice = slice((self.duration - 1) * n, self.duration * n)
+        T = pt.set_subtensor(T[last_row_slice, :n], T_gamma)
+        return T
+
+    def _build_time_varying_transition(self) -> TensorVariable:
+        """Build time-varying transition matrix (3D) for duration > 1 with time-varying mode."""
         if self.remove_first_state:
-            # Parameters represent season_length - 1 unique seasonal effects
-            k_unique_params = season_length - 1
-            initial_params = self.make_and_register_variable(
-                f"params_{self.name}",
-                shape=(k_unique_params,)
-                if k_endog_effective == 1
-                else (k_endog_effective, k_unique_params),
-            )
-
-            # Construct initial state to produce output order [gamma_0, gamma_1, gamma_2, ..., gamma_{s-1}]
-            # Given params [gamma_1, gamma_2, ..., gamma_{s-1}]:
-            # - Compute gamma_0 = -sum(params)
-            # - Reorder state as [gamma_0, gamma_{s-1}, gamma_{s-2}, ..., gamma_2] (gamma_1 becomes implied)
-            # - Tile d times for duration
-            if k_endog_effective == 1:
-                gamma_0 = -pt.sum(initial_params)
-                # [gamma_0, gamma_{s-1}, ..., gamma_2] = [gamma_0, params[-1], params[-2], ..., params[1]]
-                if k_unique_params > 1:
-                    reordered = pt.concatenate([[gamma_0], initial_params[1:][::-1]])
-                else:
-                    # s=2 case: only gamma_1, so reordered is just [gamma_0]
-                    reordered = pt.atleast_1d(gamma_0)
-                initial_state = pt.tile(reordered, duration)
-            else:
-                gamma_0 = -pt.sum(initial_params, axis=1, keepdims=True)
-                if k_unique_params > 1:
-                    # Reverse params[:, 1:] along axis 1, then prepend gamma_0
-                    reordered = pt.concatenate([gamma_0, initial_params[:, 1:][:, ::-1]], axis=1)
-                else:
-                    reordered = gamma_0
-                tiled = pt.tile(reordered, (1, duration))
-                initial_state = tiled.ravel()
+            n = self.season_length - 1
+            T_rotate = self._build_dk_seasonal_rotation()
         else:
-            # All seasonal effects provided by user
-            k_unique_params = season_length
-            initial_params = self.make_and_register_variable(
-                f"params_{self.name}",
-                shape=(k_unique_params,)
-                if k_endog_effective == 1
-                else (k_endog_effective, k_unique_params),
-            )
-            if k_endog_effective == 1:
-                initial_state = pt.extra_ops.repeat(initial_params, duration, axis=0)
-            else:
-                initial_state = pt.extra_ops.repeat(initial_params, duration, axis=1).ravel()
+            n = self.season_length
+            T_rotate = self._build_circulant_rotation()
 
-        # Shift the initial state if start_state is specified
-        # This advances the state so that data starting on a different day/period is handled correctly
-        # We achieve this by applying T^(start_idx * duration) to the initial state
-        if self.start_idx != 0:
-            shift_steps = self.start_idx * duration
+        T_hold = pt.eye(n)
 
+        time_idx = pt.arange(self.n_timesteps)
+        is_rotation_step = pt.eq(time_idx % self.duration, self.duration - 1)
+
+        return pt.where(
+            is_rotation_step[:, None, None],
+            pt.broadcast_to(T_rotate, (self.n_timesteps, n, n)),
+            pt.broadcast_to(T_hold, (self.n_timesteps, n, n)),
+        )
+
+    def _build_transition_matrix(self) -> TensorVariable:
+        """Build the full transition matrix, handling multivariate via block_diag."""
+        k_endog_effective = self._k_endog_effective()
+
+        if self._uses_time_varying_transition:
+            T_single = self._build_time_varying_transition()
             if k_endog_effective == 1:
-                initial_state = pt.linalg.matrix_power(T, shift_steps) @ initial_state
+                return T_single
+            # For multivariate: build block diagonal for each time step
+            # T_single is (n_timesteps, n, n), we need (n_timesteps, k_states, k_states)
+            blocks = [T_single for _ in range(k_endog_effective)]
+            # Stack along a new axis then reshape to block diagonal per timestep
+            return pt.linalg.block_diag(*blocks)
+        else:
+            T_single = self._build_static_transition()
+            return pt.linalg.block_diag(*[T_single for _ in range(k_endog_effective)])
+
+    def _build_design_matrix(self) -> TensorVariable:
+        """Build the design matrix Z that extracts the first state."""
+        k_states = self._k_states_per_endog()
+        k_endog_effective = self._k_endog_effective()
+        Z = pt.zeros((1, k_states))[0, 0].set(1)
+        return pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
+
+    def _build_initial_state_dk(self, initial_params: TensorVariable) -> TensorVariable:
+        """Build initial state for Durbin-Koopman formulation (remove_first_state=True)."""
+        k_endog_effective = self._k_endog_effective()
+        k_unique_params = self.season_length - 1
+        use_tv = self._uses_time_varying_transition
+
+        if k_endog_effective == 1:
+            gamma_0 = -pt.sum(initial_params)
+            if k_unique_params > 1:
+                reordered = pt.concatenate([[gamma_0], initial_params[1:][::-1]])
             else:
-                # For multiple endogenous, apply to each endog's states separately
+                reordered = pt.atleast_1d(gamma_0)
+            # Only tile when NOT using time-varying transition
+            if use_tv:
+                return reordered
+            else:
+                return pt.tile(reordered, self.duration)
+        else:
+            gamma_0 = -pt.sum(initial_params, axis=1, keepdims=True)
+            if k_unique_params > 1:
+                reordered = pt.concatenate([gamma_0, initial_params[:, 1:][:, ::-1]], axis=1)
+            else:
+                reordered = gamma_0
+            if use_tv:
+                return reordered.ravel()
+            else:
+                return pt.tile(reordered, (1, self.duration)).ravel()
+
+    def _build_initial_state_simple(self, initial_params: TensorVariable) -> TensorVariable:
+        """Build initial state for simple formulation (remove_first_state=False)."""
+        k_endog_effective = self._k_endog_effective()
+        use_tv = self._uses_time_varying_transition
+
+        if k_endog_effective == 1:
+            if use_tv:
+                return initial_params
+            else:
+                return pt.extra_ops.repeat(initial_params, self.duration, axis=0)
+        else:
+            if use_tv:
+                return initial_params.ravel()
+            else:
+                return pt.extra_ops.repeat(initial_params, self.duration, axis=1).ravel()
+
+    def _apply_start_state_shift(
+        self, initial_state: TensorVariable, T: TensorVariable
+    ) -> TensorVariable:
+        """Shift initial state to account for start_state offset."""
+        if self.start_idx == 0:
+            return initial_state
+
+        k_endog_effective = self._k_endog_effective()
+
+        if self._uses_time_varying_transition:
+            # Time-varying case: shift by start_idx rotations
+            # Each rotation is one application of T_rotate, which happens every 'duration' steps
+            if self.remove_first_state:
+                T_rotate = self._build_dk_seasonal_rotation()
+            else:
+                T_rotate = self._build_circulant_rotation()
+            if k_endog_effective == 1:
+                return pt.linalg.matrix_power(T_rotate, self.start_idx) @ initial_state
+            else:
+                T_full = pt.linalg.block_diag(*[T_rotate for _ in range(k_endog_effective)])
+                return pt.linalg.matrix_power(T_full, self.start_idx) @ initial_state
+        else:
+            # Static case: shift by start_idx * duration applications of T
+            shift_steps = self.start_idx * self.duration
+            if k_endog_effective == 1:
+                return pt.linalg.matrix_power(T, shift_steps) @ initial_state
+            else:
                 T_full = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
-                initial_state = pt.linalg.matrix_power(T_full, shift_steps) @ initial_state
+                return pt.linalg.matrix_power(T_full, shift_steps) @ initial_state
+
+    def _build_selection_and_state_cov(self) -> None:
+        """Build selection matrix R and state covariance Q for innovations."""
+        if not self.innovations:
+            return
+
+        k_endog_effective = self._k_endog_effective()
+        k_states = self._k_states_per_endog()
+        k_posdef = self._k_posdef_per_endog()
+
+        R = pt.zeros((k_states, k_posdef))[0, 0].set(1.0)
+        self.ssm["selection", :, :] = pt.join(0, *[R for _ in range(k_endog_effective)])
+
+        sigma = self.make_and_register_variable(
+            f"sigma_{self.name}",
+            shape=() if k_endog_effective == 1 else (k_endog_effective,),
+        )
+        cov_idx = ("state_cov", *np.diag_indices(k_posdef * k_endog_effective))
+        self.ssm[cov_idx] = sigma**2
+
+    def make_symbolic_graph(self) -> None:
+        k_endog_effective = self._k_endog_effective()
+        k_unique_params = self.n_seasons
+
+        # Transition matrix
+        T = self._build_transition_matrix()
+        if T.ndim == 3:
+            self.ssm["transition"] = T
+        else:
+            self.ssm["transition", :, :] = T
+
+        # Design matrix
+        self.ssm["design", :, :] = self._build_design_matrix()
+
+        # Initial state parameters
+        initial_params = self.make_and_register_variable(
+            f"params_{self.name}",
+            shape=(k_unique_params,)
+            if k_endog_effective == 1
+            else (k_endog_effective, k_unique_params),
+        )
+
+        # Build initial state
+        if self.remove_first_state:
+            initial_state = self._build_initial_state_dk(initial_params)
+        else:
+            initial_state = self._build_initial_state_simple(initial_params)
+
+        # Apply start_state shift (handles time-varying vs static internally)
+        T_for_shift = self._build_static_transition()
+        initial_state = self._apply_start_state_shift(initial_state, T_for_shift)
 
         self.ssm["initial_state", :] = initial_state
 
-        if self.innovations:
-            R = pt.zeros((k_states, k_posdef))[0, 0].set(1.0)
-            self.ssm["selection", :, :] = pt.join(0, *[R for _ in range(k_endog_effective)])
-            season_sigma = self.make_and_register_variable(
-                f"sigma_{self.name}", shape=() if k_endog_effective == 1 else (k_endog_effective,)
-            )
-            cov_idx = ("state_cov", *np.diag_indices(k_posdef * k_endog_effective))
-            self.ssm[cov_idx] = season_sigma**2
+        # Selection and state covariance
+        self._build_selection_and_state_cov()
 
 
 class FrequencySeasonality(Component):
