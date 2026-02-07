@@ -173,14 +173,14 @@ def test_find_MAP(
     assert hasattr(idata, "optimizer_result")
     assert hasattr(idata, "observed_data")
 
-    posterior = idata.posterior.squeeze(["chain", "draw"])
+    posterior = idata["posterior"].squeeze(["chain", "draw"])
     assert "mu" in posterior and "sigma" in posterior
     assert posterior["mu"].shape == ()
     assert posterior["sigma"].shape == ()
 
     if include_transformed:
         assert hasattr(idata, "unconstrained_posterior")
-        unconstrained_posterior = idata.unconstrained_posterior.squeeze(["chain", "draw"])
+        unconstrained_posterior = idata["unconstrained_posterior"].squeeze(["chain", "draw"])
         assert "sigma_log__" in unconstrained_posterior
         assert unconstrained_posterior["sigma_log__"].shape == ()
     else:
@@ -236,8 +236,8 @@ def test_map_shared_variables(backend, gradient_backend: GradientBackend):
     assert hasattr(idata, "observed_data")
     assert hasattr(idata, "constant_data")
 
-    posterior = idata.posterior.squeeze(["chain", "draw"])
-    unconstrained_posterior = idata.unconstrained_posterior.squeeze(["chain", "draw"])
+    posterior = idata["posterior"].squeeze(["chain", "draw"])
+    unconstrained_posterior = idata["unconstrained_posterior"].squeeze(["chain", "draw"])
 
     assert "mu" in posterior and "sigma" in posterior
     assert posterior["mu"].shape == ()
@@ -284,8 +284,8 @@ def test_find_MAP_basinhopping(
     assert hasattr(idata, "posterior")
     assert hasattr(idata, "unconstrained_posterior")
 
-    posterior = idata.posterior.squeeze(["chain", "draw"])
-    unconstrained_posterior = idata.unconstrained_posterior.squeeze(["chain", "draw"])
+    posterior = idata["posterior"].squeeze(["chain", "draw"])
+    unconstrained_posterior = idata["unconstrained_posterior"].squeeze(["chain", "draw"])
     assert "mu" in posterior
     assert posterior["mu"].shape == ()
 
@@ -309,8 +309,8 @@ def test_find_MAP_with_coords():
     assert hasattr(idata, "unconstrained_posterior")
     assert hasattr(idata, "fit")
 
-    posterior = idata.posterior.squeeze(["chain", "draw"])
-    unconstrained_posterior = idata.unconstrained_posterior.squeeze(["chain", "draw"])
+    posterior = idata["posterior"].squeeze(["chain", "draw"])
+    unconstrained_posterior = idata["unconstrained_posterior"].squeeze(["chain", "draw"])
 
     assert (
         "mu_loc" in posterior
@@ -337,8 +337,8 @@ def test_map_nonscalar_rv_without_dims():
 
         idata = find_MAP(method="L-BFGS-B", progressbar=False)
 
-    assert idata.posterior["x"].shape == (1, 1, 2, 3)
-    assert all(f"x_dim_{i}" in idata.posterior.coords for i in range(2))
+    assert idata["posterior"]["x"].shape == (1, 1, 2, 3)
+    assert all(f"x_dim_{i}" in idata["posterior"].coords for i in range(2))
 
     assert idata.fit.rows.values.tolist() == [
         "x_loc[A]",
