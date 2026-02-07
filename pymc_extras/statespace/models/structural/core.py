@@ -534,6 +534,8 @@ class Component:
         self._k_posdef = k_posdef
         self._k_endog = len(base_observed_state_names) or k_endog
         self._k_states = k_states
+        self._n_timesteps_placeholder = pt.iscalar("n_timesteps")
+
         self.base_state_names = base_state_names
         self.base_observed_state_names = base_observed_state_names
 
@@ -719,6 +721,10 @@ class Component:
     @property
     def _name_to_data(self):
         return self._tensor_data_info.to_dict()
+
+    @property
+    def n_timesteps(self) -> Variable:
+        return self._n_timesteps_placeholder
 
     def make_and_register_variable(self, name, shape, dtype=floatX) -> Variable:
         r"""
