@@ -360,37 +360,42 @@ class TimeSeasonality(Component):
         k_endog_effective = 1 if self.share_states else k_endog
         k_states = self.k_states // k_endog_effective
         duration = self.duration
+        season_length = self.season_length
 
-        k_unique_states = k_states // duration
         k_posdef = self.k_posdef // k_endog_effective
 
         if self.remove_first_state:
-            # In this case, parameters are normalized to sum to zero, so the current state is the negative sum of
-            # all previous states.
-            zero_d = pt.zeros((self.duration, self.duration))
-            id_d = pt.eye(self.duration)
+            # Use duration-augmented D&K formulation
+            # State dimension: d * (s-1)
+            # T matrix: shifts between d copies, applies D&K T_gamma at wrap
+            n = season_length - 1
 
-            row_blocks = []
+            # Build D&K seasonal transition (s-1) x (s-1)
+            # First row = -1, subdiagonal = 1
+            T_gamma = pt.zeros((n, n))
+            T_gamma = pt.set_subtensor(T_gamma[0, :], -1.0)
+            if n > 1:
+                T_gamma = pt.set_subtensor(T_gamma[1:, :-1], pt.eye(n - 1))
 
-            # First row: all -1_d blocks
-            first_row = [-id_d for _ in range(self.season_length - 1)]
-            row_blocks.append(pt.concatenate(first_row, axis=1))
+            # Build duration-augmented T: d*n x d*n
+            I_n = pt.eye(n)
+            T = pt.zeros((k_states, k_states))
 
-            # Rows 2 to season_length-1: shifted identity blocks
-            for i in range(self.season_length - 2):
-                row = []
-                for j in range(self.season_length - 1):
-                    if j == i:
-                        row.append(id_d)
-                    else:
-                        row.append(zero_d)
-                row_blocks.append(pt.concatenate(row, axis=1))
+            # Block shift: new block k <- old block k+1 for k = 0, ..., d-2
+            for k in range(duration - 1):
+                row_start = k * n
+                row_end = row_start + n
+                col_start = (k + 1) * n
+                col_end = col_start + n
+                T = pt.set_subtensor(T[row_start:row_end, col_start:col_end], I_n)
 
-            # Stack blocks
-            T = pt.concatenate(row_blocks, axis=0)
+            # Wrap: apply D&K seasonal transition from first block to last block
+            last_block_row_start = (duration - 1) * n
+            last_block_row_end = duration * n
+            T = pt.set_subtensor(T[last_block_row_start:last_block_row_end, 0:n], T_gamma)
         else:
-            # In this case we assume the user to be responsible for ensuring the states sum to zero, so T is just a
-            # circulant matrix that cycles between the states.
+            # Use simple circulant for remove_first_state=False
+            # User is responsible for sum-to-zero constraint via priors
             T = pt.eye(k_states, k=1)
             T = pt.set_subtensor(T[-1, 0], 1)
 
@@ -399,18 +404,67 @@ class TimeSeasonality(Component):
         Z = pt.zeros((1, k_states))[0, 0].set(1)
         self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
 
-        initial_states = self.make_and_register_variable(
-            f"params_{self.name}",
-            shape=(k_unique_states,)
-            if k_endog_effective == 1
-            else (k_endog_effective, k_unique_states),
-        )
-        if k_endog_effective == 1:
-            self.ssm["initial_state", :] = pt.extra_ops.repeat(initial_states, duration, axis=0)
+        if self.remove_first_state:
+            # Parameters represent season_length - 1 unique seasonal effects
+            k_unique_params = season_length - 1
+            initial_params = self.make_and_register_variable(
+                f"params_{self.name}",
+                shape=(k_unique_params,)
+                if k_endog_effective == 1
+                else (k_endog_effective, k_unique_params),
+            )
+
+            # Construct initial state to produce output order [gamma_0, gamma_1, gamma_2, ..., gamma_{s-1}]
+            # Given params [gamma_1, gamma_2, ..., gamma_{s-1}]:
+            # - Compute gamma_0 = -sum(params)
+            # - Reorder state as [gamma_0, gamma_{s-1}, gamma_{s-2}, ..., gamma_2] (gamma_1 becomes implied)
+            # - Tile d times for duration
+            if k_endog_effective == 1:
+                gamma_0 = -pt.sum(initial_params)
+                # [gamma_0, gamma_{s-1}, ..., gamma_2] = [gamma_0, params[-1], params[-2], ..., params[1]]
+                if k_unique_params > 1:
+                    reordered = pt.concatenate([[gamma_0], initial_params[1:][::-1]])
+                else:
+                    # s=2 case: only gamma_1, so reordered is just [gamma_0]
+                    reordered = pt.atleast_1d(gamma_0)
+                initial_state = pt.tile(reordered, duration)
+            else:
+                gamma_0 = -pt.sum(initial_params, axis=1, keepdims=True)
+                if k_unique_params > 1:
+                    # Reverse params[:, 1:] along axis 1, then prepend gamma_0
+                    reordered = pt.concatenate([gamma_0, initial_params[:, 1:][:, ::-1]], axis=1)
+                else:
+                    reordered = gamma_0
+                tiled = pt.tile(reordered, (1, duration))
+                initial_state = tiled.ravel()
         else:
-            self.ssm["initial_state", :] = pt.extra_ops.repeat(
-                initial_states, duration, axis=1
-            ).ravel()
+            # All seasonal effects provided by user
+            k_unique_params = season_length
+            initial_params = self.make_and_register_variable(
+                f"params_{self.name}",
+                shape=(k_unique_params,)
+                if k_endog_effective == 1
+                else (k_endog_effective, k_unique_params),
+            )
+            if k_endog_effective == 1:
+                initial_state = pt.extra_ops.repeat(initial_params, duration, axis=0)
+            else:
+                initial_state = pt.extra_ops.repeat(initial_params, duration, axis=1).ravel()
+
+        # Shift the initial state if start_state is specified
+        # This advances the state so that data starting on a different day/period is handled correctly
+        # We achieve this by applying T^(start_idx * duration) to the initial state
+        if self.start_idx != 0:
+            shift_steps = self.start_idx * duration
+
+            if k_endog_effective == 1:
+                initial_state = pt.linalg.matrix_power(T, shift_steps) @ initial_state
+            else:
+                # For multiple endogenous, apply to each endog's states separately
+                T_full = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
+                initial_state = pt.linalg.matrix_power(T_full, shift_steps) @ initial_state
+
+        self.ssm["initial_state", :] = initial_state
 
         if self.innovations:
             R = pt.zeros((k_states, k_posdef))[0, 0].set(1.0)
