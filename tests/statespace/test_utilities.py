@@ -13,6 +13,8 @@ import statsmodels.api as sm
 
 from numpy.testing import assert_allclose
 from pymc import modelcontext
+from pytensor.graph.replace import graph_replace
+from pytensor.graph.traversal import explicit_graph_inputs
 
 from pymc_extras.statespace.filters.kalman_smoother import KalmanSmoother
 from pymc_extras.statespace.utils.constants import (
@@ -219,16 +221,29 @@ def unpack_statespace(ssm):
     return [ssm[SHORT_NAME_TO_LONG[x]] for x in MATRIX_NAMES]
 
 
-def unpack_symbolic_matrices_with_params(mod, param_dict, data_dict=None, mode="FAST_COMPILE"):
+def unpack_symbolic_matrices_with_params(
+    mod, param_dict, steps=None, data_dict=None, mode="FAST_COMPILE"
+):
     inputs = list(mod._name_to_variable.values())
     if data_dict is not None:
         inputs += list(mod._name_to_data.values())
     else:
         data_dict = {}
 
+    matrices = unpack_statespace(mod.ssm)
+    n_timestep_variables = tuple(
+        variable for variable in explicit_graph_inputs(matrices) if variable.name == "n_timesteps"
+    )
+    if n_timestep_variables:
+        if steps is None:
+            raise ValueError("steps must be provided when the model contains time-varying matrices")
+        steps_pt = pt.constant(steps, dtype="int32")
+        replacement_dict = {var: steps_pt for var in n_timestep_variables}
+        matrices = graph_replace(matrices, replacement_dict, strict=False)
+
     f_matrices = pytensor.function(
         inputs,
-        unpack_statespace(mod.ssm),
+        matrices,
         on_unused_input="raise",
         mode=mode,
     )
@@ -242,7 +257,9 @@ def simulate_from_numpy_model(mod, rng, param_dict, data_dict=None, steps=100):
     """
     Helper function to visualize the components outside of a PyMC model context
     """
-    x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(mod, param_dict, data_dict)
+    x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(
+        mod, param_dict, steps, data_dict
+    )
     k_endog = mod.k_endog
     k_states = mod.k_states
     k_posdef = mod.k_posdef
@@ -268,7 +285,10 @@ def simulate_from_numpy_model(mod, rng, param_dict, data_dict=None, steps=100):
         else:
             error = 0
 
-        x[t] = c + T @ x[t - 1] + innov
+        if T.ndim == 2:
+            x[t] = c + T @ x[t - 1] + innov
+        else:
+            x[t] = c + T[t - 1] @ x[t - 1] + innov
         if Z.ndim == 2:
             y[t] = (d + Z @ x[t] + error).squeeze()
         else:
