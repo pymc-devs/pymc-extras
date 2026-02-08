@@ -513,5 +513,5 @@ def add_pathfinder_to_inference_data(
     if group in idata.groups():
         warnings.warn(f"Group '{group}' already exists in InferenceData, it will be replaced.")
 
-    idata.add_groups({group: consolidated_ds})
+    idata[group] = consolidated_ds
     return idata

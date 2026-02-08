@@ -98,7 +98,11 @@ def idata(transformed_data, param_cfg):
             var = orig
         assert not np.isnan(var).any()
         vars[k] = var
-    return az.convert_to_inference_data(vars)
+    # Create DataTree with posterior group for ArviZ 1.0 compatibility
+    from arviz import dict_to_dataset
+    import xarray as xr
+    posterior_ds = dict_to_dataset(vars)
+    return xr.DataTree.from_dict({"posterior": xr.DataTree(posterior_ds)})
 
 
 def test_idata_for_tests(idata, param_cfg):

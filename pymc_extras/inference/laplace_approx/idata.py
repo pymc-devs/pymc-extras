@@ -117,26 +117,30 @@ def map_results_to_inference_data(
 
     unconstrained_names = sorted(set(all_varnames) - set(constrained_names))
 
-    idata = az.from_dict(
-        posterior={
-            k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in constrained_names
-        },
+    posterior_dict = {
+        k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in constrained_names
+    }
+    posterior_ds = dict_to_dataset(
+        posterior_dict,
         coords=coords,
         dims=dims,
+        sample_dims=["chain", "draw"],
     )
+    idata = xr.DataTree.from_dict({"posterior": xr.DataTree(posterior_ds)})
 
     if unconstrained_names and include_transformed:
-        unconstrained_posterior = az.from_dict(
-            posterior={
-                k: np.expand_dims(v, (0, 1))
-                for k, v in map_point.items()
-                if k in unconstrained_names
-            },
+        unconstrained_dict = {
+            k: np.expand_dims(v, (0, 1))
+            for k, v in map_point.items()
+            if k in unconstrained_names
+        }
+        unconstrained_ds = dict_to_dataset(
+            unconstrained_dict,
             coords=coords,
             dims=dims,
+            sample_dims=["chain", "draw"],
         )
-
-        idata["unconstrained_posterior"] = unconstrained_posterior.posterior
+        idata["unconstrained_posterior"] = unconstrained_ds
 
     return idata
 
@@ -185,7 +189,7 @@ def add_fit_to_inference_data(
         data["covariance_matrix"] = cov_dataarray
 
     dataset = xr.Dataset(data)
-    idata.add_groups(fit=dataset)
+    idata["fit"] = dataset
 
     return idata
 
@@ -236,25 +240,22 @@ def add_data_to_inference_data(
 
     observed_data = dict_to_dataset(
         find_observations(model),
-        library=pm,
+        inference_library=pm,
         coords=coords,
         dims=dims,
-        default_dims=[],
+        sample_dims=[],
     )
 
     constant_data = dict_to_dataset(
         find_constants(model),
-        library=pm,
+        inference_library=pm,
         coords=coords,
         dims=dims,
-        default_dims=[],
+        sample_dims=[],
     )
 
-    idata.add_groups(
-        {"observed_data": observed_data, "constant_data": constant_data},
-        coords=coords,
-        dims=dims,
-    )
+    idata["observed_data"] = observed_data
+    idata["constant_data"] = constant_data
 
     return idata
 
@@ -409,6 +410,6 @@ def add_optimizer_result_to_inference_data(
     dataset = optimizer_result_to_dataset(
         result, method=method, mu=mu, model=model, var_name_to_model_var=var_name_to_model_var
     )
-    idata.add_groups({"optimizer_result": dataset})
+    idata["optimizer_result"] = dataset
 
     return idata

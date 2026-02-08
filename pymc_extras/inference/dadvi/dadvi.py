@@ -199,7 +199,7 @@ def fit_dadvi(
     )
     idata = DataTree.from_dict({"posterior": posterior})
     if include_transformed:
-        idata.add_groups(unconstrained_posterior=unconstrained_posterior)
+        idata["unconstrained_posterior"] = unconstrained_posterior
 
     var_name_to_model_var = {f"{var_name}_mu": var_name for var_name in initial_point_dict.keys()}
     var_name_to_model_var.update(
