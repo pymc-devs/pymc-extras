@@ -300,9 +300,9 @@ def test_DFM_exog_betas_random_walk(n_obs, n_runs):
     var_t1 = betas_t1.var(axis=0)
     var_t100 = betas_t100.var(axis=0)
 
-    assert np.all(var_t100 > var_t1), (
-        f"Expected variance at T=100 > T=1, got {var_t1} vs {var_t100}"
-    )
+    assert np.all(
+        var_t100 > var_t1
+    ), f"Expected variance at T=100 > T=1, got {var_t1} vs {var_t100}"
 
 
 @pytest.mark.parametrize("shared", [True, False])
@@ -373,17 +373,17 @@ def test_DFM_exog_shared_vs_not(shared):
     if shared:
         # All endogenous variables get the same beta * data contribution
         contributions = [beta @ exog_t for _ in range(k_endog)]
-        assert np.allclose(contributions[0], contributions[1]), (
-            "Expected same contribution for all endog when shared=True"
-        )
+        assert np.allclose(
+            contributions[0], contributions[1]
+        ), "Expected same contribution for all endog when shared=True"
     else:
         # Each endogenous variable gets different beta * data
         beta_reshaped = beta.reshape(k_endog, k_exog)
         contributions = [beta_reshaped[i] @ exog_t for i in range(k_endog)]
         # Check that contributions are different
-        assert not np.allclose(contributions[0], contributions[1]), (
-            f"Expected different contributions, got {contributions}"
-        )
+        assert not np.allclose(
+            contributions[0], contributions[1]
+        ), f"Expected different contributions, got {contributions}"
 
 
 class TestDFMConfiguration:
