@@ -17,7 +17,6 @@ import logging
 from collections.abc import Callable
 from typing import Literal
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import pytensor

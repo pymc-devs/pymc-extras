@@ -15,7 +15,6 @@ from pymc.pytensorf import constant_fold, inputvars
 from pymc.util import UNSET
 from scipy.special import log_softmax, logsumexp
 from scipy.stats import halfnorm, norm
-from xarray import DataTree
 
 from pymc_extras.model.marginal.distributions import MarginalRV
 from pymc_extras.model.marginal.marginal_model import (marginalize,

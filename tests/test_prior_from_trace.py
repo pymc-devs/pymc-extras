@@ -13,7 +13,6 @@
 #   limitations under the License.
 
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import pytest

@@ -16,7 +16,6 @@
 from collections.abc import Sequence
 from typing import TypedDict
 
-import arviz
 import numpy as np
 import pymc as pm
 import pytensor.tensor as pt

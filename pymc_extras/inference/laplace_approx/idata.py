@@ -1,7 +1,6 @@
 from itertools import product
 from typing import Literal
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import xarray as xr
