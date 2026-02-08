@@ -1,7 +1,6 @@
 import numpy as np
 import pymc as pm
 import pytest
-
 from pymc.logprob.abstract import _logprob
 from pytensor import tensor as pt
 from scipy.stats import norm
@@ -39,7 +38,9 @@ def test_marginalized_bernoulli_logp():
 
 
 @pytest.mark.parametrize("batch_chain", (False, True), ids=lambda x: f"batch_chain={x}")
-@pytest.mark.parametrize("batch_emission", (False, True), ids=lambda x: f"batch_emission={x}")
+@pytest.mark.parametrize(
+    "batch_emission", (False, True), ids=lambda x: f"batch_emission={x}"
+)
 def test_marginalized_hmm_normal_emission(batch_chain, batch_emission):
     if batch_chain and not batch_emission:
         pytest.skip("Redundant implicit combination")
@@ -48,17 +49,26 @@ def test_marginalized_hmm_normal_emission(batch_chain, batch_emission):
         P = [[0, 1], [1, 0]]
         init_dist = pm.Categorical.dist(p=[1, 0])
         chain = DiscreteMarkovChain(
-            "chain", P=P, init_dist=init_dist, steps=3, shape=(3, 4) if batch_chain else None
+            "chain",
+            P=P,
+            init_dist=init_dist,
+            steps=3,
+            shape=(3, 4) if batch_chain else None,
         )
         emission = pm.Normal(
-            "emission", mu=chain * 2 - 1, sigma=1e-1, shape=(3, 4) if batch_emission else None
+            "emission",
+            mu=chain * 2 - 1,
+            sigma=1e-1,
+            shape=(3, 4) if batch_emission else None,
         )
 
     marginal_m = marginalize(m, [chain])
     logp_fn = marginal_m.compile_logp()
 
     test_value = np.array([-1, 1, -1, 1])
-    expected_logp = pm.logp(pm.Normal.dist(0, 1e-1), np.zeros_like(test_value)).sum().eval()
+    expected_logp = (
+        pm.logp(pm.Normal.dist(0, 1e-1), np.zeros_like(test_value)).sum().eval()
+    )
     if batch_emission:
         test_value = np.broadcast_to(test_value, (3, 4))
         expected_logp *= 3
@@ -76,7 +86,9 @@ def test_marginalized_hmm_categorical_emission(categorical_emission):
         init_dist = pm.Categorical.dist(p=[0.375, 0.625])
         chain = DiscreteMarkovChain("chain", P=P, init_dist=init_dist, steps=2)
         if categorical_emission:
-            emission = pm.Categorical("emission", p=pt.constant([[0.8, 0.2], [0.4, 0.6]])[chain])
+            emission = pm.Categorical(
+                "emission", p=pt.constant([[0.8, 0.2], [0.4, 0.6]])[chain]
+            )
         else:
             emission = pm.Bernoulli("emission", p=pt.where(pt.eq(chain, 0), 0.2, 0.6))
     marginal_m = marginalize(m, [chain])
@@ -90,7 +102,9 @@ def test_marginalized_hmm_categorical_emission(categorical_emission):
 @pytest.mark.parametrize("batch_chain", (False, True))
 @pytest.mark.parametrize("batch_emission1", (False, True))
 @pytest.mark.parametrize("batch_emission2", (False, True))
-def test_marginalized_hmm_multiple_emissions(batch_chain, batch_emission1, batch_emission2):
+def test_marginalized_hmm_multiple_emissions(
+    batch_chain, batch_emission1, batch_emission2
+):
     chain_shape = (3, 1, 4) if batch_chain else (4,)
     emission1_shape = (
         (2, *reversed(chain_shape)) if batch_emission1 else tuple(reversed(chain_shape))
@@ -99,7 +113,9 @@ def test_marginalized_hmm_multiple_emissions(batch_chain, batch_emission1, batch
     with pm.Model() as m:
         P = [[0, 1], [1, 0]]
         init_dist = pm.Categorical.dist(p=[1, 0])
-        chain = DiscreteMarkovChain("chain", P=P, init_dist=init_dist, shape=chain_shape)
+        chain = DiscreteMarkovChain(
+            "chain", P=P, init_dist=init_dist, shape=chain_shape
+        )
         emission_1 = pm.Normal(
             "emission_1", mu=(chain * 2 - 1).T, sigma=1e-1, shape=emission1_shape
         )
@@ -107,7 +123,9 @@ def test_marginalized_hmm_multiple_emissions(batch_chain, batch_emission1, batch
         emission2_mu = (1 - chain) * 2 - 1
         if batch_emission2:
             emission2_mu = emission2_mu[..., None]
-        emission_2 = pm.Normal("emission_2", mu=emission2_mu, sigma=1e-1, shape=emission2_shape)
+        emission_2 = pm.Normal(
+            "emission_2", mu=emission2_mu, sigma=1e-1, shape=emission2_shape
+        )
 
     marginal_m = marginalize(m, [chain])
 
@@ -126,7 +144,10 @@ def test_marginalized_hmm_multiple_emissions(batch_chain, batch_emission1, batch
         test_value_emission2 = np.broadcast_to(-test_value[..., None], emission2_shape)
     else:
         test_value_emission2 = np.broadcast_to(-test_value, emission2_shape)
-    test_point = {"emission_1": test_value_emission1, "emission_2": test_value_emission2}
+    test_point = {
+        "emission_1": test_value_emission1,
+        "emission_2": test_value_emission2,
+    }
     res_logp, dummy_logp = logp_fn(test_point)
     assert res_logp.shape == ((3, 1) if batch_chain else ())
     np.testing.assert_allclose(res_logp.sum(), expected_logp)

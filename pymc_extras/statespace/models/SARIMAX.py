@@ -2,34 +2,23 @@ from collections.abc import Sequence
 
 import numpy as np
 import pytensor.tensor as pt
-
 from pytensor.compile.mode import Mode
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Data,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import (Coord, Data, Parameter,
+                                                    Shock, State)
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
 from pymc_extras.statespace.models.utilities import (
-    make_harvey_state_names,
-    make_SARIMA_transition_matrix,
-    validate_names,
-)
-from pymc_extras.statespace.utils.constants import (
-    ALL_STATE_AUX_DIM,
-    ALL_STATE_DIM,
-    AR_PARAM_DIM,
-    EXOG_STATE_DIM,
-    MA_PARAM_DIM,
-    SARIMAX_STATE_STRUCTURES,
-    SEASONAL_AR_PARAM_DIM,
-    SEASONAL_MA_PARAM_DIM,
-    TIME_DIM,
-)
+    make_harvey_state_names, make_SARIMA_transition_matrix, validate_names)
+from pymc_extras.statespace.utils.constants import (ALL_STATE_AUX_DIM,
+                                                    ALL_STATE_DIM,
+                                                    AR_PARAM_DIM,
+                                                    EXOG_STATE_DIM,
+                                                    MA_PARAM_DIM,
+                                                    SARIMAX_STATE_STRUCTURES,
+                                                    SEASONAL_AR_PARAM_DIM,
+                                                    SEASONAL_MA_PARAM_DIM,
+                                                    TIME_DIM)
 
 
 def _verify_order(p, d, q, P, D, Q, S):
@@ -217,7 +206,9 @@ class BayesianSARIMAX(PyMCStateSpace):
         )  # Not sure if this adds anything
         k_exog = len(exog_state_names) if exog_state_names is not None else 0
 
-        self.exog_state_names = tuple(exog_state_names) if exog_state_names is not None else None
+        self.exog_state_names = (
+            tuple(exog_state_names) if exog_state_names is not None else None
+        )
         self.k_exog = k_exog
 
         self.P, self.D, self.Q, self.S = seasonal_order
@@ -406,23 +397,33 @@ class BayesianSARIMAX(PyMCStateSpace):
         coords = list(self.default_coords())
 
         if self.p > 0:
-            coords.append(Coord(dimension=AR_PARAM_DIM, labels=tuple(range(1, self.p + 1))))
+            coords.append(
+                Coord(dimension=AR_PARAM_DIM, labels=tuple(range(1, self.p + 1)))
+            )
 
         if self.q > 0:
-            coords.append(Coord(dimension=MA_PARAM_DIM, labels=tuple(range(1, self.q + 1))))
+            coords.append(
+                Coord(dimension=MA_PARAM_DIM, labels=tuple(range(1, self.q + 1)))
+            )
 
         if self.P > 0:
             coords.append(
-                Coord(dimension=SEASONAL_AR_PARAM_DIM, labels=tuple(range(1, self.P + 1)))
+                Coord(
+                    dimension=SEASONAL_AR_PARAM_DIM, labels=tuple(range(1, self.P + 1))
+                )
             )
 
         if self.Q > 0:
             coords.append(
-                Coord(dimension=SEASONAL_MA_PARAM_DIM, labels=tuple(range(1, self.Q + 1)))
+                Coord(
+                    dimension=SEASONAL_MA_PARAM_DIM, labels=tuple(range(1, self.Q + 1))
+                )
             )
 
         if self.k_exog > 0:
-            coords.append(Coord(dimension=EXOG_STATE_DIM, labels=tuple(self.exog_state_names)))
+            coords.append(
+                Coord(dimension=EXOG_STATE_DIM, labels=tuple(self.exog_state_names))
+            )
 
         return tuple(coords)
 
@@ -433,8 +434,12 @@ class BayesianSARIMAX(PyMCStateSpace):
         Q = self.ssm["state_cov"]
         c = self.ssm["state_intercept"]
 
-        x0 = pt.linalg.solve(pt.identity_like(T) - T, c, assume_a="gen", check_finite=False)
-        P0 = solve_discrete_lyapunov(T, pt.linalg.matrix_dot(R, Q, R.T), method="bilinear")
+        x0 = pt.linalg.solve(
+            pt.identity_like(T) - T, c, assume_a="gen", check_finite=False
+        )
+        P0 = solve_discrete_lyapunov(
+            T, pt.linalg.matrix_dot(R, Q, R.T), method="bilinear"
+        )
 
         return x0, P0
 
@@ -444,7 +449,9 @@ class BayesianSARIMAX(PyMCStateSpace):
 
         # Initial state and covariance can be handled first if we're not doing a stationary initialization
         if not self.stationary_initialization:
-            x0 = self.make_and_register_variable("x0", shape=(self.k_states,), dtype=floatX)
+            x0 = self.make_and_register_variable(
+                "x0", shape=(self.k_states,), dtype=floatX
+            )
             P0 = self.make_and_register_variable(
                 "P0", shape=(self.k_states, self.k_states), dtype=floatX
             )
@@ -454,9 +461,9 @@ class BayesianSARIMAX(PyMCStateSpace):
 
         # Design matrix has no RVs
         k_lags = self.k_states - self._k_diffs
-        self.ssm["design"] = np.r_[[1] * d, ([0] * (S - 1) + [1]) * D, [1], [0] * (k_lags - 1)][
-            None
-        ]
+        self.ssm["design"] = np.r_[
+            [1] * d, ([0] * (S - 1) + [1]) * D, [1], [0] * (k_lags - 1)
+        ][None]
 
         # Set up the transition and selection matrices, depending on the requested representation
         if self.state_structure == "fast":
@@ -468,13 +475,17 @@ class BayesianSARIMAX(PyMCStateSpace):
             ar_param_idx = np.s_[
                 "transition", self._k_diffs : self._k_diffs + self.p, self._k_diffs
             ]
-            ma_param_idx = np.s_["selection", 1 + self._k_diffs : 1 + self._k_diffs + self.q, 0]
+            ma_param_idx = np.s_[
+                "selection", 1 + self._k_diffs : 1 + self._k_diffs + self.q, 0
+            ]
 
             self.ssm["transition"] = transition
             self.ssm["selection"] = selection
 
             if p > 0:
-                ar_params = self.make_and_register_variable("ar_params", shape=(p,), dtype=floatX)
+                ar_params = self.make_and_register_variable(
+                    "ar_params", shape=(p,), dtype=floatX
+                )
                 self.ssm[ar_param_idx] = ar_params
 
             if P > 0:
@@ -491,12 +502,14 @@ class BayesianSARIMAX(PyMCStateSpace):
                         idx_rows.repeat(p) + np.tile(np.arange(p), P) + 1,
                         self._k_diffs,
                     ]
-                    self.ssm[cross_term_idx] = -pt.repeat(seasonal_ar_params, p) * pt.tile(
-                        ar_params, P
-                    )
+                    self.ssm[cross_term_idx] = -pt.repeat(
+                        seasonal_ar_params, p
+                    ) * pt.tile(ar_params, P)
 
             if q > 0:
-                ma_params = self.make_and_register_variable("ma_params", shape=(q,), dtype=floatX)
+                ma_params = self.make_and_register_variable(
+                    "ma_params", shape=(q,), dtype=floatX
+                )
                 self.ssm[ma_param_idx] = ma_params
 
             if Q > 0:
@@ -509,11 +522,13 @@ class BayesianSARIMAX(PyMCStateSpace):
 
                 if q > 0:
                     cross_term_idx = np.s_[
-                        "selection", idx_rows.repeat(q) + np.tile(np.arange(q), Q) + 1, 0
+                        "selection",
+                        idx_rows.repeat(q) + np.tile(np.arange(q), Q) + 1,
+                        0,
                     ]
-                    self.ssm[cross_term_idx] = pt.repeat(seasonal_ma_params, q) * pt.tile(
-                        ma_params, Q
-                    )
+                    self.ssm[cross_term_idx] = pt.repeat(
+                        seasonal_ma_params, q
+                    ) * pt.tile(ma_params, Q)
 
         elif self.state_structure == "interpretable":
             ar_param_idx = np.s_["transition", 0, : max(1, p)]
@@ -544,11 +559,13 @@ class BayesianSARIMAX(PyMCStateSpace):
 
                 if p > 0:
                     cross_term_idx = np.s_[
-                        "transition", 0, idx_cols.repeat(p) + np.tile(np.arange(p), P) + 1
+                        "transition",
+                        0,
+                        idx_cols.repeat(p) + np.tile(np.arange(p), P) + 1,
                     ]
-                    self.ssm[cross_term_idx] = -pt.repeat(seasonal_ar_params, p) * pt.tile(
-                        ar_params, P
-                    )
+                    self.ssm[cross_term_idx] = -pt.repeat(
+                        seasonal_ar_params, p
+                    ) * pt.tile(ar_params, P)
 
             if self.q > 0:
                 ma_params = self.make_and_register_variable(
@@ -566,11 +583,13 @@ class BayesianSARIMAX(PyMCStateSpace):
 
                 if q > 0:
                     cross_term_idx = np.s_[
-                        "transition", 0, idx_cols.repeat(q) + np.tile(np.arange(q), Q) + 1
+                        "transition",
+                        0,
+                        idx_cols.repeat(q) + np.tile(np.arange(q), Q) + 1,
                     ]
-                    self.ssm[cross_term_idx] = pt.repeat(seasonal_ma_params, q) * pt.tile(
-                        ma_params, Q
-                    )
+                    self.ssm[cross_term_idx] = pt.repeat(
+                        seasonal_ma_params, q
+                    ) * pt.tile(ma_params, Q)
 
         # If exogenous regressors are present, register them as data and include a regression term
         # in the observation intercept
@@ -587,14 +606,18 @@ class BayesianSARIMAX(PyMCStateSpace):
         # Set up the state covariance matrix
         state_cov_idx = ("state_cov", *np.diag_indices(self.k_posdef))
         state_cov = self.make_and_register_variable(
-            "sigma_state", shape=() if self.k_posdef == 1 else (self.k_posdef,), dtype=floatX
+            "sigma_state",
+            shape=() if self.k_posdef == 1 else (self.k_posdef,),
+            dtype=floatX,
         )
         self.ssm[state_cov_idx] = state_cov**2
 
         if self.measurement_error:
             obs_cov_idx = ("obs_cov", *np.diag_indices(self.k_endog))
             obs_cov = self.make_and_register_variable(
-                "sigma_obs", shape=() if self.k_endog == 1 else (self.k_endog,), dtype=floatX
+                "sigma_obs",
+                shape=() if self.k_endog == 1 else (self.k_endog,),
+                dtype=floatX,
             )
             self.ssm[obs_cov_idx] = obs_cov**2
 

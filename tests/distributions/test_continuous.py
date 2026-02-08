@@ -13,25 +13,15 @@
 #   limitations under the License.
 import numpy as np
 import pymc as pm
-
 # general imports
 import pytest
 import scipy.stats.distributions as sp
-
-
 # test support imports from pymc
-from pymc.testing import (
-    BaseTestDistributionRandom,
-    Domain,
-    R,
-    Rplus,
-    Rplusbig,
-    assert_support_point_is_expected,
-    check_logcdf,
-    check_logp,
-    seeded_scipy_distribution_builder,
-    select_by_precision,
-)
+from pymc.testing import (BaseTestDistributionRandom, Domain, R, Rplus,
+                          Rplusbig, assert_support_point_is_expected,
+                          check_logcdf, check_logp,
+                          seeded_scipy_distribution_builder,
+                          select_by_precision)
 
 # the distributions to be tested
 from pymc_extras.distributions import Chi, GenExtreme, Maxwell
@@ -90,7 +80,13 @@ class TestGenExtremeClass:
         "mu, sigma, xi, size, expected",
         [
             (0, 1, 0, None, 0),
-            (1, np.arange(1, 4), 0.1, None, 1 + np.arange(1, 4) * (1.1**-0.1 - 1) / 0.1),
+            (
+                1,
+                np.arange(1, 4),
+                0.1,
+                None,
+                1 + np.arange(1, 4) * (1.1**-0.1 - 1) / 0.1,
+            ),
             (np.arange(5), 1, 0.1, None, np.arange(5) + (1.1**-0.1 - 1) / 0.1),
             (
                 0,
@@ -110,7 +106,10 @@ class TestGenExtremeClass:
                     (3, 6),
                     np.arange(6)
                     + np.arange(1, 7)
-                    * ((1 + np.linspace(-0.2, 0.2, 6)) ** -np.linspace(-0.2, 0.2, 6) - 1)
+                    * (
+                        (1 + np.linspace(-0.2, 0.2, 6)) ** -np.linspace(-0.2, 0.2, 6)
+                        - 1
+                    )
                     / np.linspace(-0.2, 0.2, 6),
                 ),
             ),

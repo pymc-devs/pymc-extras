@@ -1,13 +1,13 @@
 import numpy as np
 import pytensor
 import pytest
-
 from numpy.testing import assert_allclose
 from pytensor import config
 from pytensor.graph.traversal import explicit_graph_inputs
 
 from pymc_extras.statespace.models import structural as st
-from tests.statespace.models.structural.conftest import _assert_basic_coords_correct
+from tests.statespace.models.structural.conftest import \
+    _assert_basic_coords_correct
 from tests.statespace.test_utilities import simulate_from_numpy_model
 
 
@@ -22,7 +22,9 @@ def test_autoregressive_model(order, rng):
 
 
 def test_autoregressive_multiple_observed_build(rng):
-    ar = st.Autoregressive(order=3, name="ar", observed_state_names=["data_1", "data_2"])
+    ar = st.Autoregressive(
+        order=3, name="ar", observed_state_names=["data_1", "data_2"]
+    )
     mod = ar.build(verbose=False)
     _assert_basic_coords_correct(mod)
 
@@ -84,7 +86,10 @@ def test_autoregressive_multiple_observed_build(rng):
     )
 
     np.testing.assert_allclose(
-        R, np.array([[1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]])
+        R,
+        np.array(
+            [[1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]]
+        ),
     )
 
     np.testing.assert_allclose(Q, np.diag([0.05**2, 0.12**2]))
@@ -131,7 +136,9 @@ def test_autoregressive_multiple_observed_data(rng):
     x, y = simulate_from_numpy_model(mod, rng, params, steps=2000)
     for i in range(3):
         ols_coefs = np.polyfit(y[:-1, i], y[1:, i], 1)
-        np.testing.assert_allclose(ols_coefs[0], params["params_auto_regressive"][i, 0], atol=1e-1)
+        np.testing.assert_allclose(
+            ols_coefs[0], params["params_auto_regressive"][i, 0], atol=1e-1
+        )
 
 
 def test_add_autoregressive_different_observed():
@@ -171,7 +178,9 @@ def test_autoregressive_shared_and_not_shared():
 
     # make sure param_info is correct
     # shound't have endog state when share_states is True
-    assert not any(dim.startswith("endog_") for dim in shared.param_info["params_shared_ar"].dims)
+    assert not any(
+        dim.startswith("endog_") for dim in shared.param_info["params_shared_ar"].dims
+    )
     assert shared.param_info["sigma_shared_ar"].dims is None
 
     individual = st.Autoregressive(
@@ -211,7 +220,12 @@ def test_autoregressive_shared_and_not_shared():
     assert mod.coords["lag_shared_ar"] == (1, 2, 3)
     assert mod.coords["lag_individual_ar"] == (1, 2, 3)
 
-    outputs = [mod.ssm["transition"], mod.ssm["design"], mod.ssm["selection"], mod.ssm["state_cov"]]
+    outputs = [
+        mod.ssm["transition"],
+        mod.ssm["design"],
+        mod.ssm["selection"],
+        mod.ssm["state_cov"],
+    ]
     T, Z, R, Q = pytensor.function(
         list(explicit_graph_inputs(outputs)),
         outputs,

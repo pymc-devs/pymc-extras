@@ -1,16 +1,10 @@
 import warnings
 
 import numpy as np
-
 from pytensor import tensor as pt
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Data,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import (Coord, Data, Parameter,
+                                                    Shock, State)
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import TIME_DIM
@@ -153,12 +147,17 @@ class Regression(Component):
             state_names = [f"{name}[{self.name}_shared]" for name in base_names]
         else:
             state_names = [
-                f"{name}[{obs_name}]" for obs_name in observed_state_names for name in base_names
+                f"{name}[{obs_name}]"
+                for obs_name in observed_state_names
+                for name in base_names
             ]
 
-        hidden_states = [State(name=name, observed=False, shared=True) for name in state_names]
+        hidden_states = [
+            State(name=name, observed=False, shared=True) for name in state_names
+        ]
         observed_states = [
-            State(name=name, observed=True, shared=False) for name in observed_state_names
+            State(name=name, observed=True, shared=False)
+            for name in observed_state_names
         ]
         return *hidden_states, *observed_states
 
@@ -169,7 +168,9 @@ class Regression(Component):
 
         beta_parameter = Parameter(
             name=f"beta_{self.name}",
-            shape=(k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,),
+            shape=(
+                (k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,)
+            ),
             dims=(
                 (f"endog_{self.name}", f"state_{self.name}")
                 if k_endog_effective > 1
@@ -232,9 +233,12 @@ class Regression(Component):
         k_states = self.k_states // k_endog_effective
 
         betas = self.make_and_register_variable(
-            f"beta_{self.name}", shape=(k_endog, k_states) if k_endog_effective > 1 else (k_states,)
+            f"beta_{self.name}",
+            shape=(k_endog, k_states) if k_endog_effective > 1 else (k_states,),
         )
-        regression_data = self.make_and_register_data(f"data_{self.name}", shape=(None, k_states))
+        regression_data = self.make_and_register_data(
+            f"data_{self.name}", shape=(None, k_states)
+        )
 
         self.ssm["initial_state", :] = betas.ravel()
         self.ssm["transition", :, :] = pt.eye(self.k_states)
@@ -242,11 +246,15 @@ class Regression(Component):
 
         if self.share_states:
             self.ssm["design"] = pt.specify_shape(
-                pt.join(1, *[pt.expand_dims(regression_data, 1) for _ in range(k_endog)]),
+                pt.join(
+                    1, *[pt.expand_dims(regression_data, 1) for _ in range(k_endog)]
+                ),
                 (None, k_endog, self.k_states),
             )
         else:
-            Z = pt.linalg.block_diag(*[pt.expand_dims(regression_data, 1) for _ in range(k_endog)])
+            Z = pt.linalg.block_diag(
+                *[pt.expand_dims(regression_data, 1) for _ in range(k_endog)]
+            )
             self.ssm["design"] = pt.specify_shape(
                 Z, (None, k_endog, regression_data.type.shape[1] * k_endog)
             )

@@ -17,7 +17,6 @@ import arviz as az
 import numpy as np
 import pymc as pm
 import pytest
-
 from pymc.distributions import transforms
 
 import pymc_extras as pmx
@@ -34,7 +33,10 @@ import pymc_extras as pmx
             dict(name="a", transform=transforms.log, dims=None),
         ),
         (("a", dict(name="b")), dict(name="b", transform=None, dims=None)),
-        (("a", dict(name="b", dims="test")), dict(name="b", transform=None, dims="test")),
+        (
+            ("a", dict(name="b", dims="test")),
+            dict(name="b", transform=None, dims="test"),
+        ),
         (("a", ("test",)), dict(name="a", transform=None, dims=("test",))),
     ],
 )
@@ -99,8 +101,9 @@ def idata(transformed_data, param_cfg):
         assert not np.isnan(var).any()
         vars[k] = var
     # Create DataTree with posterior group for ArviZ 1.0 compatibility
-    from arviz import dict_to_dataset
     import xarray as xr
+    from arviz import dict_to_dataset
+
     posterior_ds = dict_to_dataset(vars)
     return xr.DataTree.from_dict({"posterior": xr.DataTree(posterior_ds)})
 

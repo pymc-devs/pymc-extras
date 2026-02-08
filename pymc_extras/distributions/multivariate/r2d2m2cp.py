@@ -92,7 +92,9 @@ def _R2D2M2CP_beta(
                 raw = pt.zeros_like(mu_param)
             else:
                 raw = pm.Normal("raw", dims=dims)
-        beta = pm.Deterministic(name, (raw * std_param + mu_param) / input_sigma, dims=dims)
+        beta = pm.Deterministic(
+            name, (raw * std_param + mu_param) / input_sigma, dims=dims
+        )
     else:
         if psi_mask is not None and psi_mask.any():
             # limit case where some probs are not 1 or 0
@@ -113,7 +115,9 @@ def _R2D2M2CP_beta(
             # all variables are deterministic
             beta = pm.Deterministic(name, (mu_param / input_sigma), dims=dims)
         else:
-            beta = pm.Normal(name, mu_param / input_sigma, std_param / input_sigma, dims=dims)
+            beta = pm.Normal(
+                name, mu_param / input_sigma, std_param / input_sigma, dims=dims
+            )
     return beta
 
 
@@ -137,7 +141,8 @@ def _psi_masked(
     dims: Sequence[str],
 ) -> tuple[pt.TensorLike | None, pt.TensorVariable]:
     if not (
-        isinstance(positive_probs, pt.Constant) and isinstance(positive_probs_std, pt.Constant)
+        isinstance(positive_probs, pt.Constant)
+        and isinstance(positive_probs_std, pt.Constant)
     ):
         raise TypeError(
             "Only constant values for positive_probs and positive_probs_std are accepted"
@@ -147,7 +152,9 @@ def _psi_masked(
     )
     mask = ~np.bitwise_or(positive_probs == 1, positive_probs == 0)
     if np.bitwise_and(~mask, positive_probs_std != 0).any():
-        raise ValueError("Can't have both positive_probs == '1 or 0' and positive_probs_std != 0")
+        raise ValueError(
+            "Can't have both positive_probs == '1 or 0' and positive_probs_std != 0"
+        )
     if (~mask).any() and mask.any():
         # limit case where some probs are not 1 or 0
         # setsubtensor is required
@@ -206,7 +213,9 @@ def _phi(
         if variance_explained is not None:
             raise TypeError("Can't use variable importance with variance explained")
         if len(model.coords[dim]) <= 1:
-            raise TypeError("Can't use variable importance with less than two variables")
+            raise TypeError(
+                "Can't use variable importance with less than two variables"
+            )
         variables_importance = pt.as_tensor(variables_importance)
         if importance_concentration is not None:
             variables_importance *= importance_concentration
@@ -218,7 +227,9 @@ def _phi(
     else:
         phi = _broadcast_as_dims(1.0, dims=dims)
     if importance_concentration is not None:
-        return pm.Dirichlet("phi", importance_concentration * phi, dims=[*broadcast_dims, dim])
+        return pm.Dirichlet(
+            "phi", importance_concentration * phi, dims=[*broadcast_dims, dim]
+        )
     else:
         return phi
 
@@ -429,7 +440,9 @@ def R2D2M2CP(
             dims=dims,
         )
         mask, psi = _psi(
-            positive_probs=positive_probs, positive_probs_std=positive_probs_std, dims=dims
+            positive_probs=positive_probs,
+            positive_probs_std=positive_probs_std,
+            dims=dims,
         )
 
     beta = _R2D2M2CP_beta(

@@ -1,11 +1,7 @@
 import pytest
 
-from pymc_extras.deserialize import (
-    DESERIALIZERS,
-    DeserializableError,
-    deserialize,
-    register_deserialization,
-)
+from pymc_extras.deserialize import (DESERIALIZERS, DeserializableError,
+                                     deserialize, register_deserialization)
 
 
 @pytest.mark.parametrize(

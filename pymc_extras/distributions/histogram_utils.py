@@ -15,7 +15,6 @@
 
 import numpy as np
 import pymc as pm
-
 from numpy.typing import ArrayLike
 
 __all__ = ["discrete_histogram", "histogram_approximation", "quantile_histogram"]

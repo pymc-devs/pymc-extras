@@ -1,15 +1,17 @@
 import numpy as np
 import pytensor
-
 from numpy.testing import assert_allclose
 from pytensor import config
 from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
 
 from pymc_extras.statespace.models import structural as st
-from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
-from tests.statespace.models.structural.conftest import _assert_basic_coords_correct
-from tests.statespace.test_utilities import assert_pattern_repeats, simulate_from_numpy_model
+from pymc_extras.statespace.models.structural.utils import \
+    _frequency_transition_block
+from tests.statespace.models.structural.conftest import \
+    _assert_basic_coords_correct
+from tests.statespace.test_utilities import (assert_pattern_repeats,
+                                             simulate_from_numpy_model)
 
 ATOL = 1e-8 if config.floatX.endswith("64") else 1e-4
 RTOL = 0 if config.floatX.endswith("64") else 1e-6
@@ -19,7 +21,9 @@ cycle_test_vals = zip([None, None, 3, 5, 10], [False, True, True, False, False])
 
 
 def test_cycle_component_deterministic(rng):
-    cycle = st.Cycle(name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False)
+    cycle = st.Cycle(
+        name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False
+    )
     params = {"params_cycle": np.array([1.0, 1.0], dtype=config.floatX)}
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=12 * 12)
 
@@ -28,7 +32,11 @@ def test_cycle_component_deterministic(rng):
 
 def test_cycle_component_with_dampening(rng):
     cycle = st.Cycle(
-        name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False, dampen=True
+        name="cycle",
+        cycle_length=12,
+        estimate_cycle_length=False,
+        innovations=False,
+        dampen=True,
     )
     params = {
         "params_cycle": np.array([10.0, 10.0], dtype=config.floatX),
@@ -41,7 +49,9 @@ def test_cycle_component_with_dampening(rng):
 
 
 def test_cycle_component_with_innovations_and_cycle_length(rng):
-    cycle = st.Cycle(name="cycle", estimate_cycle_length=True, innovations=True, dampen=True)
+    cycle = st.Cycle(
+        name="cycle", estimate_cycle_length=True, innovations=True, dampen=True
+    )
     params = {
         "params_cycle": np.array([1.0, 1.0], dtype=config.floatX),
         "length_cycle": 12.0,
@@ -63,7 +73,11 @@ def test_cycle_multivariate_deterministic(rng):
         innovations=False,
         observed_state_names=["data_1", "data_2", "data_3"],
     )
-    params = {"params_cycle": np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=config.floatX)}
+    params = {
+        "params_cycle": np.array(
+            [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=config.floatX
+        )
+    }
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=12 * 12)
 
     # Check that each variable has a cyclical pattern with the expected period
@@ -141,7 +155,9 @@ def test_cycle_multivariate_with_dampening(rng):
         observed_state_names=["data_1", "data_2", "data_3"],
     )
     params = {
-        "params_cycle": np.array([[10.0, 10.0], [20.0, 20.0], [30.0, 30.0]], dtype=config.floatX),
+        "params_cycle": np.array(
+            [[10.0, 10.0], [20.0, 20.0], [30.0, 30.0]], dtype=config.floatX
+        ),
         "dampening_factor_cycle": 0.75,
     }
     x, y = simulate_from_numpy_model(cycle, rng, params, steps=100)
@@ -169,7 +185,9 @@ def test_cycle_multivariate_with_innovations_and_cycle_length(rng):
         observed_state_names=["data_1", "data_2", "data_3"],
     )
     params = {
-        "params_cycle": np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=config.floatX),
+        "params_cycle": np.array(
+            [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=config.floatX
+        ),
         "length_cycle": 12.0,
         "dampening_factor_cycle": 0.95,
         "sigma_cycle": np.array([0.5, 1.0, 1.5]),  # different innov variances per var
@@ -295,7 +313,9 @@ def test_add_multivariate_cycle_components_with_different_observed():
 
     # evaluate design, transition, selection matrices
     Z, T, R = pytensor.function(
-        [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
+        [],
+        [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]],
+        mode="FAST_COMPILE",
     )()
 
     # design: each row selects first state of its block
@@ -370,7 +390,10 @@ def test_add_multivariate_shared_and_not_shared():
 
     assert "endog_shared_cycle" not in mod.coords
     assert mod.coords["state_shared_cycle"] == ("Cos_shared_cycle", "Sin_shared_cycle")
-    assert mod.coords["state_individual_cycle"] == ("Cos_individual_cycle", "Sin_individual_cycle")
+    assert mod.coords["state_individual_cycle"] == (
+        "Cos_individual_cycle",
+        "Sin_individual_cycle",
+    )
     assert mod.coords["endog_individual_cycle"] == (
         "gdp",
         "inflation",
@@ -402,13 +425,21 @@ def test_add_multivariate_shared_and_not_shared():
 
     lamb = 2 * np.pi / 12  # dampening factor for individual cycle
     transition_block = np.array(
-        [[np.cos(lamb), np.sin(lamb)], [-np.sin(lamb), np.cos(lamb)]], dtype=config.floatX
+        [[np.cos(lamb), np.sin(lamb)], [-np.sin(lamb), np.cos(lamb)]],
+        dtype=config.floatX,
     )
     T_expected = linalg.block_diag(transition_block, *[0.95 * transition_block] * 3)
     np.testing.assert_allclose(T, T_expected)
 
     np.testing.assert_allclose(
-        Z, np.array([[1, 0, 1, 0, 0, 0, 0, 0], [1, 0, 0, 0, 1, 0, 0, 0], [1, 0, 0, 0, 0, 0, 1, 0]])
+        Z,
+        np.array(
+            [
+                [1, 0, 1, 0, 0, 0, 0, 0],
+                [1, 0, 0, 0, 1, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0, 1, 0],
+            ]
+        ),
     )
 
     np.testing.assert_allclose(R, np.eye(8, dtype=config.floatX))

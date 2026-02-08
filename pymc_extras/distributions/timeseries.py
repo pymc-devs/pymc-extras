@@ -4,19 +4,13 @@ import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
-
 from pymc.distributions.dist_math import check_parameters
-from pymc.distributions.distribution import (
-    Distribution,
-    SymbolicRandomVariable,
-    _support_point,
-    support_point,
-)
-from pymc.distributions.shape_utils import (
-    _change_dist_size,
-    change_dist_size,
-    get_support_shape_1d,
-)
+from pymc.distributions.distribution import (Distribution,
+                                             SymbolicRandomVariable,
+                                             _support_point, support_point)
+from pymc.distributions.shape_utils import (_change_dist_size,
+                                            change_dist_size,
+                                            get_support_shape_1d)
 from pymc.logprob.abstract import _logprob
 from pymc.logprob.basic import logp
 from pymc.pytensorf import constant_fold, intX
@@ -31,7 +25,9 @@ from pytensor.tensor import TensorVariable
 from pytensor.tensor.random.op import RandomVariable
 
 
-def _make_outputs_info(n_lags: int, init_dist: Distribution) -> list[Distribution | dict]:
+def _make_outputs_info(
+    n_lags: int, init_dist: Distribution
+) -> list[Distribution | dict]:
     """
     Two cases are needed for outputs_info in the scans used by DiscreteMarkovRv. If n_lags = 1, we need to throw away
     the first dimension of init_dist_ or else markov_chain will have shape (steps, 1, *batch_size) instead of
@@ -136,7 +132,9 @@ class DiscreteMarkovChain(Distribution):
     @classmethod
     def dist(cls, P=None, logit_P=None, steps=None, init_dist=None, n_lags=1, **kwargs):
         steps = get_support_shape_1d(
-            support_shape=steps, shape=kwargs.get("shape", None), support_shape_offset=n_lags
+            support_shape=steps,
+            shape=kwargs.get("shape", None),
+            support_shape_offset=n_lags,
         )
 
         if steps is None:
@@ -210,7 +208,9 @@ class DiscreteMarkovChain(Distribution):
             return_updates=False,
         )
 
-        discrete_mc_ = pt.moveaxis(pt.concatenate([init_dist_, markov_chain], axis=0), 0, -1)
+        discrete_mc_ = pt.moveaxis(
+            pt.concatenate([init_dist_, markov_chain], axis=0), 0, -1
+        )
 
         discrete_mc_op = DiscreteMarkovChainRV(
             inputs=[P_, steps_, init_dist_, state_rng],
@@ -229,7 +229,9 @@ def change_mc_size(op, dist, new_size, expand=False):
         old_size = dist.shape[:-1]
         new_size = tuple(new_size) + tuple(old_size)
 
-    return DiscreteMarkovChain.rv_op(*dist.owner.inputs[:-1], size=new_size, n_lags=op.n_lags)
+    return DiscreteMarkovChain.rv_op(
+        *dist.owner.inputs[:-1], size=new_size, n_lags=op.n_lags
+    )
 
 
 @_support_point.register(DiscreteMarkovChainRV)
@@ -259,7 +261,10 @@ def discrete_mc_logp(op, values, P, steps, init_dist, state_rng, **kwargs):
     value = values[0]
     n_lags = op.n_lags
 
-    indexes = [value[..., i : -(n_lags - i) if n_lags != i else None] for i in range(n_lags + 1)]
+    indexes = [
+        value[..., i : -(n_lags - i) if n_lags != i else None]
+        for i in range(n_lags + 1)
+    ]
 
     mc_logprob = logp(init_dist, value[..., :n_lags]).sum(axis=-1)
     mc_logprob += pt.log(P[tuple(indexes)]).sum(axis=-1)
@@ -337,7 +342,9 @@ class DiscreteMarkovChainGibbsMetropolis(CategoricalGibbsMetropolis):
             # Use the optimized "Metropolized Gibbs Sampler" described in Liu96.
             self.astep = self.astep_prop
         else:
-            raise ValueError("Argument 'proposal' should either be 'uniform' or 'proportional'")
+            raise ValueError(
+                "Argument 'proposal' should either be 'uniform' or 'proportional'"
+            )
 
         # Doesn't actually tune, but it's required to emit a sampler stat
         # that indicates whether a draw was done in a tuning phase.

@@ -5,22 +5,16 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import pytest
-
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.testing import mock_sample_setup_and_teardown
 
-from pymc_extras.statespace.utils.constants import (
-    FILTER_OUTPUT_NAMES,
-    MATRIX_NAMES,
-    SMOOTHER_OUTPUT_NAMES,
-)
+from pymc_extras.statespace.utils.constants import (FILTER_OUTPUT_NAMES,
+                                                    MATRIX_NAMES,
+                                                    SMOOTHER_OUTPUT_NAMES)
 from tests.statespace.core.test_statespace import (  # pylint: disable=unused-import
-    exog_ss_mod,
-    ss_mod,
-)
-from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
-    rng,
-)
+    exog_ss_mod, ss_mod)
+from tests.statespace.shared_fixtures import \
+    rng  # pylint: disable=unused-import
 from tests.statespace.test_utilities import load_nile_test_data
 
 pytest.importorskip("jax")
@@ -40,7 +34,9 @@ def pymc_mod(ss_mod):
         rho = pm.Beta("rho", 1, 1)
         zeta = pm.Deterministic("zeta", 1 - rho)
 
-        ss_mod.build_statespace_graph(data=nile, save_kalman_filter_outputs_in_idata=True)
+        ss_mod.build_statespace_graph(
+            data=nile, save_kalman_filter_outputs_in_idata=True
+        )
         names = ["x0", "P0", "c", "d", "T", "Z", "R", "H", "Q"]
         for name, matrix in zip(names, ss_mod.unpack_statespace()):
             pm.Deterministic(name, matrix)
@@ -144,12 +140,21 @@ def test_forecast(filter_output, ss_mod, idata, rng):
     time_idx = idata.posterior.coords["time"].values
 
     forecast_idata = ss_mod.forecast(
-        idata, start=time_idx[-1], periods=10, filter_output=filter_output, random_seed=rng
+        idata,
+        start=time_idx[-1],
+        periods=10,
+        filter_output=filter_output,
+        random_seed=rng,
     )
 
     assert forecast_idata.coords["time"].values.shape == (10,)
     assert forecast_idata.forecast_latent.dims == ("chain", "draw", "time", "state")
-    assert forecast_idata.forecast_observed.dims == ("chain", "draw", "time", "observed_state")
+    assert forecast_idata.forecast_observed.dims == (
+        "chain",
+        "draw",
+        "time",
+        "observed_state",
+    )
 
     assert not np.any(np.isnan(forecast_idata.forecast_latent.values))
     assert not np.any(np.isnan(forecast_idata.forecast_observed.values))

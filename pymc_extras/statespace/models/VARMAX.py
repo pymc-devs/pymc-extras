@@ -1,31 +1,22 @@
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
-
 from pytensor.compile.mode import Mode
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Data,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import (Coord, Data, Parameter,
+                                                    Shock, State)
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.models.utilities import validate_names
-from pymc_extras.statespace.utils.constants import (
-    ALL_STATE_AUX_DIM,
-    ALL_STATE_DIM,
-    AR_PARAM_DIM,
-    EXOG_STATE_DIM,
-    MA_PARAM_DIM,
-    OBS_STATE_AUX_DIM,
-    OBS_STATE_DIM,
-    SHOCK_AUX_DIM,
-    SHOCK_DIM,
-    TIME_DIM,
-)
+from pymc_extras.statespace.utils.constants import (ALL_STATE_AUX_DIM,
+                                                    ALL_STATE_DIM,
+                                                    AR_PARAM_DIM,
+                                                    EXOG_STATE_DIM,
+                                                    MA_PARAM_DIM,
+                                                    OBS_STATE_AUX_DIM,
+                                                    OBS_STATE_DIM,
+                                                    SHOCK_AUX_DIM, SHOCK_DIM,
+                                                    TIME_DIM)
 
 floatX = pytensor.config.floatX
 
@@ -161,8 +152,12 @@ class BayesianVARMAX(PyMCStateSpace):
 
         needs_exog_data = False
 
-        if exog_state_names is not None and not isinstance(exog_state_names, list | dict):
-            raise ValueError("If not None, exog_state_names must be either a list or a dict")
+        if exog_state_names is not None and not isinstance(
+            exog_state_names, list | dict
+        ):
+            raise ValueError(
+                "If not None, exog_state_names must be either a list or a dict"
+            )
 
         if exog_state_names is not None:
             if isinstance(exog_state_names, list):
@@ -311,7 +306,9 @@ class BayesianVARMAX(PyMCStateSpace):
             f"L{i + 1}_{state}" for i in range(self.p - 1) for state in self.endog_names
         ]
         state_names += [
-            f"L{i + 1}_{state}_innov" for i in range(self.q) for state in self.endog_names
+            f"L{i + 1}_{state}_innov"
+            for i in range(self.q)
+            for state in self.endog_names
         ]
 
         hidden_states = [State(name=name, observed=False) for name in state_names]
@@ -356,17 +353,27 @@ class BayesianVARMAX(PyMCStateSpace):
 
         # AR/MA param coords
         if self.p > 0:
-            coords.append(Coord(dimension=AR_PARAM_DIM, labels=tuple(range(1, self.p + 1))))
+            coords.append(
+                Coord(dimension=AR_PARAM_DIM, labels=tuple(range(1, self.p + 1)))
+            )
 
         if self.q > 0:
-            coords.append(Coord(dimension=MA_PARAM_DIM, labels=tuple(range(1, self.q + 1))))
+            coords.append(
+                Coord(dimension=MA_PARAM_DIM, labels=tuple(range(1, self.q + 1)))
+            )
 
         # Exogenous coords
         if isinstance(self.exog_state_names, list):
-            coords.append(Coord(dimension=EXOG_STATE_DIM, labels=tuple(self.exog_state_names)))
+            coords.append(
+                Coord(dimension=EXOG_STATE_DIM, labels=tuple(self.exog_state_names))
+            )
         elif isinstance(self.exog_state_names, dict):
             for name, exog_names in self.exog_state_names.items():
-                coords.append(Coord(dimension=f"{EXOG_STATE_DIM}_{name}", labels=tuple(exog_names)))
+                coords.append(
+                    Coord(
+                        dimension=f"{EXOG_STATE_DIM}_{name}", labels=tuple(exog_names)
+                    )
+                )
 
         return tuple(coords)
 
@@ -381,7 +388,9 @@ class BayesianVARMAX(PyMCStateSpace):
         # Initialize the matrices
         if not self.stationary_initialization:
             # initial states
-            x0 = self.make_and_register_variable("x0", shape=(self.k_states,), dtype=floatX)
+            x0 = self.make_and_register_variable(
+                "x0", shape=(self.k_states,), dtype=floatX
+            )
             self.ssm["initial_state", :] = x0
 
             # initial covariance
@@ -414,7 +423,11 @@ class BayesianVARMAX(PyMCStateSpace):
             self.ssm[("transition", *idx)] = np.eye(self.k_endog * (self.q - 1))
 
         if self.p > 0:
-            ar_param_idx = ("transition", slice(0, self.k_endog), slice(0, self.k_endog * self.p))
+            ar_param_idx = (
+                "transition",
+                slice(0, self.k_endog),
+                slice(0, self.k_endog * self.p),
+            )
 
             # Register the AR parameter matrix as a (k, p, k), then reshape it and allocate it in the transition matrix
             # This way the user can use 3 dimensions in the prior (clearer?)
@@ -445,7 +458,9 @@ class BayesianVARMAX(PyMCStateSpace):
             self.ssm[ma_param_idx] = ma_params
 
             end = -self.k_endog * (self.q - 1) if self.q > 1 else None
-            self.ssm["selection", slice(self.k_endog * -self.q, end), :] = np.eye(self.k_endog)
+            self.ssm["selection", slice(self.k_endog * -self.q, end), :] = np.eye(
+                self.k_endog
+            )
 
         if self.measurement_error:
             obs_cov_idx = ("obs_cov", *np.diag_indices(self.k_endog))
@@ -481,7 +496,9 @@ class BayesianVARMAX(PyMCStateSpace):
                         exog_data = self.make_and_register_data(
                             f"{name}_exogenous_data", shape=(None, k_exog), dtype=floatX
                         )
-                        obs_components.append(pt.expand_dims(exog_data @ beta_exog, axis=-1))
+                        obs_components.append(
+                            pt.expand_dims(exog_data @ beta_exog, axis=-1)
+                        )
                     else:
                         obs_components.append(pt.zeros((1, 1), dtype=floatX))
 
@@ -505,7 +522,9 @@ class BayesianVARMAX(PyMCStateSpace):
                 bcast_tensor_inputs = []
                 for tensor_inp in obs_components:
                     non_concat_shape[1] = tensor_inp.shape[1]
-                    bcast_tensor_inputs.append(pt.broadcast_to(tensor_inp, non_concat_shape))
+                    bcast_tensor_inputs.append(
+                        pt.broadcast_to(tensor_inp, non_concat_shape)
+                    )
 
                 obs_intercept = pt.join(1, *bcast_tensor_inputs)
 
@@ -521,7 +540,9 @@ class BayesianVARMAX(PyMCStateSpace):
             Q = self.ssm["state_cov"]
             c = self.ssm["state_intercept"]
 
-            x0 = pt.linalg.solve(pt.eye(T.shape[0]) - T, c, assume_a="gen", check_finite=False)
+            x0 = pt.linalg.solve(
+                pt.eye(T.shape[0]) - T, c, assume_a="gen", check_finite=False
+            )
             P0 = solve_discrete_lyapunov(
                 T,
                 pt.linalg.matrix_dot(R, Q, R.T),

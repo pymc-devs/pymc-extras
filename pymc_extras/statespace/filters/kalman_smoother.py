@@ -2,10 +2,7 @@ import pytensor
 import pytensor.tensor as pt
 
 from pymc_extras.statespace.filters.utilities import (
-    quad_form_sym,
-    split_vars_into_seq_and_nonseq,
-    stabilize,
-)
+    quad_form_sym, split_vars_into_seq_and_nonseq, stabilize)
 from pymc_extras.statespace.utils.constants import JITTER_DEFAULT
 
 
@@ -69,8 +66,8 @@ class KalmanSmoother:
         a_last = pt.specify_shape(filtered_states[-1], (k,))
         P_last = pt.specify_shape(filtered_covariances[-1], (k, k))
 
-        sequences, non_sequences, seq_names, non_seq_names = split_vars_into_seq_and_nonseq(
-            [T, R, Q], ["T", "R", "Q"]
+        sequences, non_sequences, seq_names, non_seq_names = (
+            split_vars_into_seq_and_nonseq([T, R, Q], ["T", "R", "Q"])
         )
 
         self.seq_names = seq_names

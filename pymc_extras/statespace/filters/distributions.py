@@ -1,7 +1,6 @@
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
-
 from pymc import intX
 from pymc.distributions.dist_math import check_parameters
 from pymc.distributions.distribution import Continuous, SymbolicRandomVariable
@@ -43,14 +42,19 @@ def make_signature(sequence_names):
         base_shape = matrix_to_shape[matrix]
         matrix_to_shape[matrix] = (time, *base_shape)
 
-    signature = ",".join(["(" + ",".join(shapes) + ")" for shapes in matrix_to_shape.values()])
+    signature = ",".join(
+        ["(" + ",".join(shapes) + ")" for shapes in matrix_to_shape.values()]
+    )
 
     return f"{signature},[rng]->[rng],({time},{state_and_obs})"
 
 
 class LinearGaussianStateSpaceRV(SymbolicRandomVariable):
     default_output = 1
-    _print_name = ("LinearGuassianStateSpace", "\\operatorname{LinearGuassianStateSpace}")
+    _print_name = (
+        "LinearGuassianStateSpace",
+        "\\operatorname{LinearGuassianStateSpace}",
+    )
 
     def update(self, node: Node):
         return {node.inputs[-1]: node.outputs[0]}
@@ -175,7 +179,9 @@ class _LinearGaussianStateSpace(Continuous):
 
         sequences = [
             x
-            for x, name in zip([c_, d_, T_, Z_, R_, H_, Q_], ["c", "d", "T", "Z", "R", "H", "Q"])
+            for x, name in zip(
+                [c_, d_, T_, Z_, R_, H_, Q_], ["c", "d", "T", "Z", "R", "H", "Q"]
+            )
             if name in sequence_names
         ]
         non_sequences = [x for x in [c_, d_, T_, Z_, R_, H_, Q_] if x not in sequences]
@@ -253,7 +259,9 @@ class _LinearGaussianStateSpace(Continuous):
             extended_signature=make_signature(sequence_names),
         )
 
-        linear_gaussian_ss = linear_gaussian_ss_op(a0, P0, c, d, T, Z, R, H, Q, steps, rng)
+        linear_gaussian_ss = linear_gaussian_ss_op(
+            a0, P0, c, d, T, Z, R, H, Q, steps, rng
+        )
         return linear_gaussian_ss
 
 
@@ -312,7 +320,9 @@ class LinearGaussianStateSpace(Continuous):
             method=method,
             **kwargs,
         )
-        latent_obs_combined = pt.specify_shape(latent_obs_combined, (steps + int(append_x0), None))
+        latent_obs_combined = pt.specify_shape(
+            latent_obs_combined, (steps + int(append_x0), None)
+        )
         if k_endog is None:
             k_endog = cls._get_k_endog(H)
         latent_slice = slice(None, -k_endog)
@@ -321,7 +331,9 @@ class LinearGaussianStateSpace(Continuous):
         latent_states = latent_obs_combined[..., latent_slice]
         obs_states = latent_obs_combined[..., obs_slice]
 
-        latent_states = pm.Deterministic(f"{name}_latent", latent_states, dims=latent_dims)
+        latent_states = pm.Deterministic(
+            f"{name}_latent", latent_states, dims=latent_dims
+        )
         obs_states = pm.Deterministic(f"{name}_observed", obs_states, dims=obs_dims)
 
         return latent_states, obs_states
@@ -383,7 +395,9 @@ class SequenceMvNormal(Continuous):
         ).owner.outputs
 
         mvn_seq_op = KalmanFilterRV(
-            inputs=[mus_, covs_, logp_, rng], outputs=[seq_mvn_rng, mvn_seq], ndim_supp=2
+            inputs=[mus_, covs_, logp_, rng],
+            outputs=[seq_mvn_rng, mvn_seq],
+            ndim_supp=2,
         )
 
         mvn_seq = mvn_seq_op(mus, covs, logp, rng)

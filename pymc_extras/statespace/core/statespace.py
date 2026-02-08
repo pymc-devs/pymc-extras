@@ -1,6 +1,5 @@
 import logging
 import warnings
-
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
@@ -9,8 +8,6 @@ import pandas as pd
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
-
-from xarray import DataTree
 from pymc.model import modelcontext
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import RandomState
@@ -18,49 +15,31 @@ from pytensor import Variable, graph_replace
 from rich.box import SIMPLE_HEAD
 from rich.console import Console
 from rich.table import Table
+from xarray import DataTree
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    CoordInfo,
-    Data,
-    DataInfo,
-    Parameter,
-    ParameterInfo,
-    Shock,
-    ShockInfo,
-    State,
-    StateInfo,
-    SymbolicData,
-    SymbolicDataInfo,
-    SymbolicVariable,
-    SymbolicVariableInfo,
-)
+from pymc_extras.statespace.core.properties import (Coord, CoordInfo, Data,
+                                                    DataInfo, Parameter,
+                                                    ParameterInfo, Shock,
+                                                    ShockInfo, State,
+                                                    StateInfo, SymbolicData,
+                                                    SymbolicDataInfo,
+                                                    SymbolicVariable,
+                                                    SymbolicVariableInfo)
 from pymc_extras.statespace.core.representation import PytensorRepresentation
-from pymc_extras.statespace.filters import (
-    KalmanSmoother,
-    SquareRootFilter,
-    StandardFilter,
-    UnivariateFilter,
-)
+from pymc_extras.statespace.filters import (KalmanSmoother, SquareRootFilter,
+                                            StandardFilter, UnivariateFilter)
 from pymc_extras.statespace.filters.distributions import (
-    LinearGaussianStateSpace,
-    SequenceMvNormal,
-)
+    LinearGaussianStateSpace, SequenceMvNormal)
 from pymc_extras.statespace.filters.utilities import stabilize
-from pymc_extras.statespace.utils.constants import (
-    ALL_STATE_AUX_DIM,
-    ALL_STATE_DIM,
-    FILTER_OUTPUT_DIMS,
-    FILTER_OUTPUT_TYPES,
-    JITTER_DEFAULT,
-    MATRIX_DIMS,
-    MATRIX_NAMES,
-    OBS_STATE_DIM,
-    SHOCK_DIM,
-    SHORT_NAME_TO_LONG,
-    TIME_DIM,
-    VECTOR_VALUED,
-)
+from pymc_extras.statespace.utils.constants import (ALL_STATE_AUX_DIM,
+                                                    ALL_STATE_DIM,
+                                                    FILTER_OUTPUT_DIMS,
+                                                    FILTER_OUTPUT_TYPES,
+                                                    JITTER_DEFAULT,
+                                                    MATRIX_DIMS, MATRIX_NAMES,
+                                                    OBS_STATE_DIM, SHOCK_DIM,
+                                                    SHORT_NAME_TO_LONG,
+                                                    TIME_DIM, VECTOR_VALUED)
 from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
 
 _log = logging.getLogger("pymc.experimental.statespace")
@@ -82,7 +61,9 @@ def _validate_filter_arg(filter_arg):
 
 def _verify_group(group):
     if group not in ["prior", "posterior"]:
-        raise ValueError(f'Argument "group" must be one of "prior" or "posterior", found {group}')
+        raise ValueError(
+            f'Argument "group" must be one of "prior" or "posterior", found {group}'
+        )
 
 
 def _validate_property(props, property_name, expected_type):
@@ -287,11 +268,14 @@ class PyMCStateSpace:
 
         if filter_type.lower() not in FILTER_FACTORY.keys():
             raise NotImplementedError(
-                "The following are valid filter types: " + ", ".join(list(FILTER_FACTORY.keys()))
+                "The following are valid filter types: "
+                + ", ".join(list(FILTER_FACTORY.keys()))
             )
 
         if filter_type == "single" and self.k_endog > 1:
-            raise ValueError('Cannot use filter_type = "single" with multiple observed time series')
+            raise ValueError(
+                'Cannot use filter_type = "single" with multiple observed time series'
+            )
 
         self.kalman_filter = FILTER_FACTORY[filter_type.lower()]()
         self.kalman_smoother = KalmanSmoother()
@@ -333,10 +317,12 @@ class PyMCStateSpace:
         Child classes can override to provide meaningful state names.
         """
         hidden_states = [
-            State(name=f"hidden_state_{name}", observed=False) for name in range(self.k_states or 0)
+            State(name=f"hidden_state_{name}", observed=False)
+            for name in range(self.k_states or 0)
         ]
         observed_states = [
-            State(name=f"observed_state_{name}", observed=True) for name in range(self.k_endog or 0)
+            State(name=f"observed_state_{name}", observed=True)
+            for name in range(self.k_endog or 0)
         ]
         return *hidden_states, *observed_states
 
@@ -429,7 +415,9 @@ class PyMCStateSpace:
             self.requirement_table.add_section()
 
         for data, info in self.data_info.items():
-            self.requirement_table.add_row(data, str(info["shape"]), "pm.Data", str(info["dims"]))
+            self.requirement_table.add_row(
+                data, str(info["shape"]), "pm.Data", str(info["dims"])
+            )
 
     def _initialize_requirement_table(self) -> None:
         self.requirement_table = Table(
@@ -573,7 +561,9 @@ class PyMCStateSpace:
         Returns a dictionary with param_name: Callable key-value pairs. Used by the ``add_default_priors()`` method
         to automatically add priors to the PyMC model.
         """
-        raise NotImplementedError("The default_priors property has not been implemented!")
+        raise NotImplementedError(
+            "The default_priors property has not been implemented!"
+        )
 
     @property
     def coords(self) -> dict[str, Sequence[str]]:
@@ -597,7 +587,11 @@ class PyMCStateSpace:
 
         Note: Scalar parameters (with dims=None) are not included in this dictionary.
         """
-        return {param.name: param.dims for param in self._param_info if param.dims is not None}
+        return {
+            param.name: param.dims
+            for param in self._param_info
+            if param.dims is not None
+        }
 
     @property
     def _name_to_variable(self):
@@ -611,7 +605,9 @@ class PyMCStateSpace:
         """
         Add default priors to the active PyMC model context
         """
-        raise NotImplementedError("The add_default_priors property has not been implemented!")
+        raise NotImplementedError(
+            "The add_default_priors property has not been implemented!"
+        )
 
     def make_and_register_variable(
         self, name, shape: int | tuple[int, ...] | None = None, dtype=floatX
@@ -755,9 +751,13 @@ class PyMCStateSpace:
             self.ssm['selection', 1:, 0] = theta_params
             self.ssm['state_cov', 0, 0] = sigma
         """
-        raise NotImplementedError("The make_symbolic_statespace method has not been implemented!")
+        raise NotImplementedError(
+            "The make_symbolic_statespace method has not been implemented!"
+        )
 
-    def _get_matrix_shape_and_dims(self, name: str) -> tuple[tuple[int] | None, tuple[str] | None]:
+    def _get_matrix_shape_and_dims(
+        self, name: str
+    ) -> tuple[tuple[int] | None, tuple[str] | None]:
         """
         Get the shape and dimensions of a matrix associated with the specified name.
 
@@ -863,7 +863,9 @@ class PyMCStateSpace:
 
         matrices = list(self._unpack_statespace_with_placeholders())
 
-        replacement_dict = {var: pymc_model[name] for name, var in self._name_to_variable.items()}
+        replacement_dict = {
+            var: pymc_model[name] for name, var in self._name_to_variable.items()
+        }
         self.subbed_ssm = graph_replace(matrices, replace=replacement_dict, strict=True)
 
     def _insert_data_variables(self):
@@ -891,8 +893,12 @@ class PyMCStateSpace:
                 + ", ".join(missing_data)
             )
 
-        replacement_dict = {data: pymc_model[name] for name, data in self._name_to_data.items()}
-        self.subbed_ssm = graph_replace(self.subbed_ssm, replace=replacement_dict, strict=True)
+        replacement_dict = {
+            data: pymc_model[name] for name, data in self._name_to_data.items()
+        }
+        self.subbed_ssm = graph_replace(
+            self.subbed_ssm, replace=replacement_dict, strict=True
+        )
 
     def _register_matrices_with_pymc_model(self) -> list[pt.TensorVariable]:
         """
@@ -926,7 +932,9 @@ class PyMCStateSpace:
         return registered_matrices
 
     @staticmethod
-    def _register_kalman_filter_outputs_with_pymc_model(outputs: tuple[pt.TensorVariable]) -> None:
+    def _register_kalman_filter_outputs_with_pymc_model(
+        outputs: tuple[pt.TensorVariable],
+    ) -> None:
         mod = modelcontext(None)
         coords = mod.coords
 
@@ -948,7 +956,9 @@ class PyMCStateSpace:
         with mod:
             for var, name in zip(states + covs, state_names + cov_names):
                 dim_names = FILTER_OUTPUT_DIMS.get(name, None)
-                dims = tuple([dim if dim in coords.keys() else None for dim in dim_names])
+                dims = tuple(
+                    [dim if dim in coords.keys() else None for dim in dim_names]
+                )
                 pm.Deterministic(name, var, dims=dims)
 
     def build_statespace_graph(
@@ -1067,7 +1077,9 @@ class PyMCStateSpace:
             self._register_kalman_filter_outputs_with_pymc_model(all_kf_outputs)
 
         obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_states"]
-        obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
+        obs_dims = (
+            obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
+        )
 
         SequenceMvNormal(
             "obs",
@@ -1176,7 +1188,9 @@ class PyMCStateSpace:
         data: pt.TensorLike | None = None,
         data_dims: str | tuple[str] | list[str] | None = None,
         scenario: dict[str, pd.DataFrame] | pd.DataFrame | None = None,
-    ) -> tuple[list[pt.TensorVariable], list[tuple[pt.TensorVariable, pt.TensorVariable]]]:
+    ) -> tuple[
+        list[pt.TensorVariable], list[tuple[pt.TensorVariable, pt.TensorVariable]]
+    ]:
         """
         Builds a Kalman filter graph using "dummy" pm.Flat distributions for the model variables and sorts the returns
         into (mean, covariance) pairs for each of filtered, predicted, and smoothed output.
@@ -1338,12 +1352,16 @@ class PyMCStateSpace:
 
                 state_dims = (
                     (TIME_DIM, ALL_STATE_DIM)
-                    if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM]])
+                    if all(
+                        [dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM]]
+                    )
                     else (None, None)
                 )
                 obs_dims = (
                     (TIME_DIM, OBS_STATE_DIM)
-                    if all([dim in self._fit_coords for dim in [TIME_DIM, OBS_STATE_DIM]])
+                    if all(
+                        [dim in self._fit_coords for dim in [TIME_DIM, OBS_STATE_DIM]]
+                    )
                     else (None, None)
                 )
 
@@ -1470,10 +1488,17 @@ class PyMCStateSpace:
         else:
             steps = len(temp_coords[TIME_DIM]) - 1
 
-        if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]]):
+        if all(
+            [
+                dim in self._fit_coords
+                for dim in [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+            ]
+        ):
             dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
 
-        with pm.Model(coords=temp_coords if dims is not None else None) as forward_model:
+        with pm.Model(
+            coords=temp_coords if dims is not None else None
+        ) as forward_model:
             self._build_dummy_graph()
             self._insert_random_variables()
 
@@ -1486,7 +1511,8 @@ class PyMCStateSpace:
 
             if not self.measurement_error:
                 H_jittered = pm.Deterministic(
-                    "H_jittered", pt.specify_shape(stabilize(H), (self.k_endog, self.k_endog))
+                    "H_jittered",
+                    pt.specify_shape(stabilize(H), (self.k_endog, self.k_endog)),
                 )
                 matrices = [x0, P0, c, d, T, Z, R, H_jittered, Q]
 
@@ -1747,7 +1773,11 @@ class PyMCStateSpace:
         )
 
     def sample_statespace_matrices(
-        self, idata, matrix_names: str | list[str] | None, group: str = "posterior", **kwargs
+        self,
+        idata,
+        matrix_names: str | list[str] | None,
+        group: str = "posterior",
+        **kwargs,
     ):
         """
         Draw samples of requested statespace matrices from provided idata
@@ -1794,7 +1824,10 @@ class PyMCStateSpace:
                 long_name = SHORT_NAME_TO_LONG[short_name]
                 if (long_name in matrix_names) or (short_name in matrix_names):
                     name = long_name if long_name in matrix_names else short_name
-                    dims = [x if x in self._fit_coords else None for x in MATRIX_DIMS[short_name]]
+                    dims = [
+                        x if x in self._fit_coords else None
+                        for x in MATRIX_DIMS[short_name]
+                    ]
                     pm.Deterministic(name, matrix, dims=dims)
 
         # TODO: Remove this after pm.Flat has its initial_value fixed
@@ -1814,7 +1847,11 @@ class PyMCStateSpace:
         return matrix_idata
 
     def sample_filter_outputs(
-        self, idata, filter_output_names: str | list[str] | None, group: str = "posterior", **kwargs
+        self,
+        idata,
+        filter_output_names: str | list[str] | None,
+        group: str = "posterior",
+        **kwargs,
     ):
         if isinstance(filter_output_names, str):
             filter_output_names = [filter_output_names]
@@ -1826,8 +1863,12 @@ class PyMCStateSpace:
                 filter_output_names, list(FILTER_OUTPUT_DIMS.keys())
             )
             if unknown_filter_output_names.size > 0:
-                raise ValueError(f"{unknown_filter_output_names} not a valid filter output name!")
-            filter_output_names = [x for x in FILTER_OUTPUT_DIMS.keys() if x in filter_output_names]
+                raise ValueError(
+                    f"{unknown_filter_output_names} not a valid filter output name!"
+                )
+            filter_output_names = [
+                x for x in FILTER_OUTPUT_DIMS.keys() if x in filter_output_names
+            ]
 
         compile_kwargs = kwargs.pop("compile_kwargs", {})
         compile_kwargs.setdefault("mode", self.mode)
@@ -1896,7 +1937,9 @@ class PyMCStateSpace:
         verbose: bool = True,
     ):
         if isinstance(start, pd.Timestamp) and start not in time_index:
-            raise ValueError("Datetime start must be in the data index used to fit the model.")
+            raise ValueError(
+                "Datetime start must be in the data index used to fit the model."
+            )
         elif isinstance(start, int):
             if abs(start) > len(time_index):
                 raise ValueError(
@@ -1909,11 +1952,17 @@ class PyMCStateSpace:
         if periods is not None and end is not None:
             raise ValueError("Must specify exactly one of either periods or end")
         if scenario is None and use_scenario_index:
-            raise ValueError("use_scenario_index=True requires a scenario to be provided.")
+            raise ValueError(
+                "use_scenario_index=True requires a scenario to be provided."
+            )
         if scenario is not None and use_scenario_index:
             if isinstance(scenario, dict):
                 first_df = next(
-                    (df for df in scenario.values() if isinstance(df, pd.DataFrame | pd.Series)),
+                    (
+                        df
+                        for df in scenario.values()
+                        if isinstance(df, pd.DataFrame | pd.Series)
+                    ),
                     None,
                 )
                 if first_df is None:
@@ -1924,14 +1973,22 @@ class PyMCStateSpace:
                 raise ValueError(
                     "use_scenario_index=True requires a scenario to be a DataFrame or Series."
                 )
-        if use_scenario_index and any(arg is not None for arg in [start, end, periods]) and verbose:
+        if (
+            use_scenario_index
+            and any(arg is not None for arg in [start, end, periods])
+            and verbose
+        ):
             _log.warning(
                 "start, end, and periods arguments are ignored when use_scenario_index is True. Pass only "
                 "one or the other to avoid this warning, or pass verbose = False."
             )
 
     def _get_fit_time_index(self) -> pd.RangeIndex | pd.DatetimeIndex:
-        time_index = self._fit_coords.get(TIME_DIM, None) if self._fit_coords is not None else None
+        time_index = (
+            self._fit_coords.get(TIME_DIM, None)
+            if self._fit_coords is not None
+            else None
+        )
         if time_index is None:
             raise ValueError(
                 "No time dimension found on coordinates used to fit the model. Has this model been fit?"
@@ -1947,7 +2004,9 @@ class PyMCStateSpace:
 
     def _validate_scenario_data(
         self,
-        scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
+        scenario: (
+            pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None
+        ),
         name: str | None = None,
         verbose=True,
     ):
@@ -2004,9 +2063,13 @@ class PyMCStateSpace:
             # For checking shapes, the first object will always be good enough. But we also need to make sure all the
             # indices agree, so we grab the first dataframe (which might not exist, but that's OK)
             first_scenario = next(iter(scenario.values()))
-            first_df = next((df for df in scenario.values() if isinstance(df, pd.DataFrame)), None)
+            first_df = next(
+                (df for df in scenario.values() if isinstance(df, pd.DataFrame)), None
+            )
 
-            if not all(data.shape[0] == first_scenario.shape[0] for data in scenario.values()):
+            if not all(
+                data.shape[0] == first_scenario.shape[0] for data in scenario.values()
+            ):
                 raise ValueError(
                     "Scenario data must have the same number of time steps for all variables."
                 )
@@ -2016,7 +2079,9 @@ class PyMCStateSpace:
                 for df in scenario.values()
                 if isinstance(df, pd.DataFrame)
             ):
-                raise ValueError("Scenario data must have the same index for all variables.")
+                raise ValueError(
+                    "Scenario data must have the same index for all variables."
+                )
 
             return scenario
 
@@ -2040,9 +2105,9 @@ class PyMCStateSpace:
 
             # Omit dataframe from this basic shape check so we can give more detailed information about missing columns
             # in the next check
-            if not isinstance(scenario, pd.DataFrame | pd.Series) and scenario.shape[1] != len(
-                coords[name]
-            ):
+            if not isinstance(scenario, pd.DataFrame | pd.Series) and scenario.shape[
+                1
+            ] != len(coords[name]):
                 raise ValueError(
                     f"Scenario data for variable '{name}' has the wrong number of columns. Expected "
                     f"{len(coords[name])}, got {scenario.shape[1]}"
@@ -2180,7 +2245,9 @@ class PyMCStateSpace:
                     # date_range includes both the start and end date, but we're going to pop off the start later
                     # (it will be interpreted as x0). So we need to add 1 to the periods so the user gets "periods"
                     # number of forecasts back
-                    forecast_index = pd.date_range(start, periods=periods + 1, freq=freq)
+                    forecast_index = pd.date_range(
+                        start, periods=periods + 1, freq=freq
+                    )
 
             else:
                 # If the user provided a positive integer as start, directly interpret it as the start time. If its
@@ -2190,7 +2257,9 @@ class PyMCStateSpace:
                 if end is not None:
                     forecast_index = pd.RangeIndex(start, end, step=1, dtype="int")
                 if periods is not None:
-                    forecast_index = pd.RangeIndex(start, start + periods + 1, step=1, dtype="int")
+                    forecast_index = pd.RangeIndex(
+                        start, start + periods + 1, step=1, dtype="int"
+                    )
 
         if is_datetime:
             if forecast_index.freq != time_index.freq:
@@ -2212,7 +2281,9 @@ class PyMCStateSpace:
 
     def _finalize_scenario_initialization(
         self,
-        scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
+        scenario: (
+            pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None
+        ),
         forecast_index: pd.RangeIndex | pd.DatetimeIndex,
         name=None,
     ):
@@ -2234,7 +2305,9 @@ class PyMCStateSpace:
 
         if isinstance(scenario, dict):
             for name, data in scenario.items():
-                scenario[name] = self._finalize_scenario_initialization(data, forecast_index, name)
+                scenario[name] = self._finalize_scenario_initialization(
+                    data, forecast_index, name
+                )
             return scenario
 
         # This was already checked as valid
@@ -2250,7 +2323,9 @@ class PyMCStateSpace:
         # lists and tuples were handled during validation, along with shape check, so just cast arrays to dataframes
         # with the correct index and columns
         if isinstance(scenario, np.ndarray):
-            scenario = pd.DataFrame(scenario, index=forecast_index, columns=coords[name])
+            scenario = pd.DataFrame(
+                scenario, index=forecast_index, columns=coords[name]
+            )
 
         return scenario
 
@@ -2261,7 +2336,12 @@ class PyMCStateSpace:
         temp_coords = self._fit_coords.copy()
 
         dims = None
-        if all([dim in temp_coords for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]]):
+        if all(
+            [
+                dim in temp_coords
+                for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]
+            ]
+        ):
             dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
 
         t0_idx = np.flatnonzero(time_index == t0)[0]
@@ -2270,13 +2350,20 @@ class PyMCStateSpace:
         temp_coords[TIME_DIM] = forecast_index
 
         mu_dims, cov_dims = None, None
-        if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]]):
+        if all(
+            [
+                dim in self._fit_coords
+                for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]
+            ]
+        ):
             mu_dims = ["data_time", ALL_STATE_DIM]
             cov_dims = ["data_time", ALL_STATE_DIM, ALL_STATE_AUX_DIM]
 
         with pm.Model(coords=temp_coords) as forecast_model:
-            (_, _, *matrices), grouped_outputs = self._kalman_filter_outputs_from_dummy_graph(
-                data_dims=["data_time", OBS_STATE_DIM],
+            (_, _, *matrices), grouped_outputs = (
+                self._kalman_filter_outputs_from_dummy_graph(
+                    data_dims=["data_time", OBS_STATE_DIM],
+                )
             )
 
             group_idx = FILTER_OUTPUT_TYPES.index(filter_output)
@@ -2288,18 +2375,27 @@ class PyMCStateSpace:
             }
 
             missing_data_vars = np.setdiff1d(
-                ar1=[*self.data_names, "data"], ar2=[k.name for k, _ in sub_dict.items()]
+                ar1=[*self.data_names, "data"],
+                ar2=[k.name for k, _ in sub_dict.items()],
             )
             if missing_data_vars.size > 0:
-                raise ValueError(f"{missing_data_vars} data used for fitting not found!")
+                raise ValueError(
+                    f"{missing_data_vars} data used for fitting not found!"
+                )
 
-            mu_frozen, cov_frozen = graph_replace([mu, cov], replace=sub_dict, strict=True)
+            mu_frozen, cov_frozen = graph_replace(
+                [mu, cov], replace=sub_dict, strict=True
+            )
 
             x0 = pm.Deterministic(
-                "x0_slice", mu_frozen[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
+                "x0_slice",
+                mu_frozen[t0_idx],
+                dims=mu_dims[1:] if mu_dims is not None else None,
             )
             P0 = pm.Deterministic(
-                "P0_slice", cov_frozen[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
+                "P0_slice",
+                cov_frozen[t0_idx],
+                dims=cov_dims[1:] if cov_dims is not None else None,
             )
 
             _ = LinearGaussianStateSpace(
@@ -2323,7 +2419,9 @@ class PyMCStateSpace:
         start: int | pd.Timestamp | None = None,
         periods: int | None = None,
         end: int | pd.Timestamp = None,
-        scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None = None,
+        scenario: (
+            pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None
+        ) = None,
         use_scenario_index: bool = False,
         filter_output="smoothed",
         random_seed: RandomState | None = None,
@@ -2573,7 +2671,9 @@ class PyMCStateSpace:
         compile_kwargs.setdefault("mode", self.mode)
 
         if n_options > 1:
-            raise ValueError("Specify exactly 0 or 1 of shock_size, shock_cov, or shock_trajectory")
+            raise ValueError(
+                "Specify exactly 0 or 1 of shock_size, shock_cov, or shock_trajectory"
+            )
         elif n_options == 1:
             # If the user passed an alternative parameterization for the shocks of the IRF, don't use the posterior
             use_posterior_cov = False
@@ -2604,7 +2704,9 @@ class PyMCStateSpace:
             self._insert_random_variables()
 
             P0, _, c, d, T, Z, R, H, post_Q = self.unpack_statespace()
-            x0 = pm.Deterministic("x0_new", pt.zeros(self.k_states), dims=[ALL_STATE_DIM])
+            x0 = pm.Deterministic(
+                "x0_new", pt.zeros(self.k_states), dims=[ALL_STATE_DIM]
+            )
 
             if use_posterior_cov:
                 Q = post_Q
@@ -2619,7 +2721,11 @@ class PyMCStateSpace:
                 shock_trajectory = pt.zeros((n_steps, self.k_posdef))
                 if Q is not None:
                     init_shock = pm.MvNormal(
-                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
+                        "initial_shock",
+                        mu=0,
+                        cov=Q,
+                        dims=[SHOCK_DIM],
+                        method=mvn_method,
                     )
                 else:
                     init_shock = pm.Deterministic(

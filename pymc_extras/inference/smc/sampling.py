@@ -15,7 +15,6 @@
 import logging
 import time
 import warnings
-
 from collections.abc import Callable
 from typing import NamedTuple, cast
 
@@ -24,7 +23,6 @@ import blackjax
 import jax
 import jax.numpy as jnp
 import numpy as np
-
 from blackjax.smc import extend_params
 from blackjax.smc.resampling import systematic
 from pymc import draw, modelcontext, to_inference_data
@@ -215,7 +213,9 @@ def arviz_from_particles(model, particles):
         strace = NDArray(name=model.name)
         strace.setup(n_particles, 0)
     for particle_index in range(0, n_particles):
-        strace.record(point={k: np.asarray(by_varname[k][0][particle_index]) for k in varnames})
+        strace.record(
+            point={k: np.asarray(by_varname[k][0][particle_index]) for k in varnames}
+        )
         multitrace = MultiTrace((strace,))
     return to_inference_data(multitrace, log_likelihood=False)
 
@@ -356,18 +356,18 @@ def add_to_inference_data(
         "sampler": f"Blackjax SMC with {kernel} kernel",
     }
 
-    inference_data.posterior.attrs["lambda_evolution"] = np.array(diagnosis.lmbda_evolution)[
-        :iterations_to_diagnose
-    ]
+    inference_data.posterior.attrs["lambda_evolution"] = np.array(
+        diagnosis.lmbda_evolution
+    )[:iterations_to_diagnose]
     inference_data.posterior.attrs["log_likelihood_increments"] = np.array(
         diagnosis.log_likelihood_increment_evolution
     )[:iterations_to_diagnose]
-    inference_data.posterior.attrs["ancestors_evolution"] = np.array(diagnosis.ancestors_evolution)[
-        :iterations_to_diagnose
-    ]
-    inference_data.posterior.attrs["weights_evolution"] = np.array(diagnosis.weights_evolution)[
-        :iterations_to_diagnose
-    ]
+    inference_data.posterior.attrs["ancestors_evolution"] = np.array(
+        diagnosis.ancestors_evolution
+    )[:iterations_to_diagnose]
+    inference_data.posterior.attrs["weights_evolution"] = np.array(
+        diagnosis.weights_evolution
+    )[:iterations_to_diagnose]
 
     for k in experiment_parameters:
         inference_data.posterior.attrs[k] = experiment_parameters[k]
@@ -403,7 +403,9 @@ def get_jaxified_particles_fn(model, graph_outputs):
 
 def initialize_population(model, draws, random_seed) -> dict[str, np.ndarray]:
     with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message="The effect of Potentials")
+        warnings.filterwarnings(
+            "ignore", category=UserWarning, message="The effect of Potentials"
+        )
 
         prior_expression = make_initial_point_expression(
             free_rvs=model.free_RVs,

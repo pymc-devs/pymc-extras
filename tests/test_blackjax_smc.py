@@ -16,7 +16,6 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 import scipy
-
 from numpy import dtype
 from xarray.core.utils import Frozen
 
@@ -24,12 +23,8 @@ jax = pytest.importorskip("jax")
 pytest.importorskip("blackjax")
 
 from pymc_extras.inference.smc.sampling import (
-    arviz_from_particles,
-    blackjax_particles_from_pymc_population,
-    get_jaxified_loglikelihood,
-    get_jaxified_logprior,
-    sample_smc_blackjax,
-)
+    arviz_from_particles, blackjax_particles_from_pymc_population,
+    get_jaxified_loglikelihood, get_jaxified_logprior, sample_smc_blackjax)
 
 
 def two_gaussians_model():
@@ -117,7 +112,9 @@ def test_sample_smc_blackjax(kernel, check_for_integration_steps, inner_kernel_p
         assert inference_data.posterior.attrs[attribute] == value
 
     for diagnostic in ["lambda_evolution", "log_likelihood_increments"]:
-        assert inference_data.posterior.attrs[diagnostic].shape == (iterations_to_diagnose,)
+        assert inference_data.posterior.attrs[diagnostic].shape == (
+            iterations_to_diagnose,
+        )
 
     for diagnostic in ["ancestors_evolution", "weights_evolution"]:
         assert inference_data.posterior.attrs[diagnostic].shape == (
@@ -136,7 +133,9 @@ def test_blackjax_particles_from_pymc_population_univariate():
     model = fast_model()
     population = {"x": np.array([2, 3, 4])}
     blackjax_particles = blackjax_particles_from_pymc_population(model, population)
-    jax.tree.map(np.testing.assert_allclose, blackjax_particles, [np.array([[2], [3], [4]])])
+    jax.tree.map(
+        np.testing.assert_allclose, blackjax_particles, [np.array([[2], [3], [4]])]
+    )
 
 
 def test_blackjax_particles_from_pymc_population_multivariate():
@@ -145,12 +144,18 @@ def test_blackjax_particles_from_pymc_population_multivariate():
         z = pm.Normal("z", 0, 1)
         y = pm.Normal("y", x + z, 1, observed=0)
 
-    population = {"x": np.array([0.34614613, 1.09163261, -0.44526825]), "z": np.array([1, 2, 3])}
+    population = {
+        "x": np.array([0.34614613, 1.09163261, -0.44526825]),
+        "z": np.array([1, 2, 3]),
+    }
     blackjax_particles = blackjax_particles_from_pymc_population(model, population)
     jax.tree.map(
         np.testing.assert_allclose,
         blackjax_particles,
-        [np.array([[0.34614613], [1.09163261], [-0.44526825]]), np.array([[1], [2], [3]])],
+        [
+            np.array([[0.34614613], [1.09163261], [-0.44526825]]),
+            np.array([[1], [2], [3]]),
+        ],
     )
 
 
@@ -184,7 +189,9 @@ def test_arviz_from_particles():
     with model:
         inference_data = arviz_from_particles(model, particles)
 
-    assert inference_data.posterior.sizes == Frozen({"chain": 1, "draw": 3, "x_dim_0": 2})
+    assert inference_data.posterior.sizes == Frozen(
+        {"chain": 1, "draw": 3, "x_dim_0": 2}
+    )
     assert inference_data.posterior.data_vars.dtypes == Frozen(
         {"x": dtype("float64"), "z": dtype("float64")}
     )

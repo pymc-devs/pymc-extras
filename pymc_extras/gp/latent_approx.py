@@ -16,7 +16,6 @@ from functools import partial
 import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
-
 from pymc.gp.util import JITTER_DEFAULT, stabilize
 from pytensor.tensor.linalg import cholesky, solve_triangular
 
@@ -47,7 +46,9 @@ class ProjectedProcess(pm.gp.Latent):
         L = cholesky(stabilize(Kuu, jitter))
 
         n_inducing_points = np.shape(X_inducing)[0]
-        v = pm.Normal(name + "_u_rotated_", mu=0.0, sigma=1.0, size=n_inducing_points, **kwargs)
+        v = pm.Normal(
+            name + "_u_rotated_", mu=0.0, sigma=1.0, size=n_inducing_points, **kwargs
+        )
         u = pm.Deterministic(name + "_u", L @ v)
 
         Kfu = self.cov_func(X, X_inducing)
@@ -113,7 +114,9 @@ class ProjectedProcess(pm.gp.Latent):
         Ksu = self.cov_func(Xnew, X_inducing)
         mu = self.mean_func(Xnew) + Ksu @ Kuuiu
         tmp = solve_lower(L, pt.transpose(Ksu))
-        Qss = pt.transpose(tmp) @ tmp  # Qss = tt.dot(tt.dot(Ksu, tt.nlinalg.pinv(Kuu)), Ksu.T)
+        Qss = (
+            pt.transpose(tmp) @ tmp
+        )  # Qss = tt.dot(tt.dot(Ksu, tt.nlinalg.pinv(Kuu)), Ksu.T)
         Kss = self.cov_func(Xnew)
         Lss = cholesky(stabilize(Kss - Qss, jitter))
         return mu, Lss
@@ -149,7 +152,9 @@ class KarhunenLoeveExpansion(pm.gp.Latent):
             if self.variance_limit == 1:
                 n_eigs = len(vals)
             else:
-                n_eigs = ((vals[::-1].cumsum() / vals.sum()) > self.variance_limit).nonzero()[0][0]
+                n_eigs = (
+                    (vals[::-1].cumsum() / vals.sum()) > self.variance_limit
+                ).nonzero()[0][0]
         U = vecs[:, -n_eigs:]
         s = vals[-n_eigs:]
         basis = U * pt.sqrt(s)

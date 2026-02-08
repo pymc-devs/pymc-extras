@@ -1,14 +1,10 @@
 import numpy as np
 import pytest
-
 from pytensor import function
 from pytensor import tensor as pt
 
 from pymc_extras.statespace.models.utilities import (
-    add_tensors_by_dim_labels,
-    join_tensors_by_dim_labels,
-    reorder_from_labels,
-)
+    add_tensors_by_dim_labels, join_tensors_by_dim_labels, reorder_from_labels)
 
 
 def test_reorder_from_labels():
@@ -95,7 +91,9 @@ def mixed_and_padded(left, right):
     ],
 )
 @pytest.mark.parametrize("ndim", [1, 2], ids=["vector", "matrix"])
-def test_add_matrices_by_observed_state_names(left_names, right_names, expected_computation, ndim):
+def test_add_matrices_by_observed_state_names(
+    left_names, right_names, expected_computation, ndim
+):
     rng = np.random.default_rng()
     n_left = len(left_names)
     n_right = len(right_names)
@@ -165,7 +163,9 @@ class TestAddCovarianceMatrices:
         state_to_idx = {name: idx for idx, name in enumerate(observed_states_1)}
         idx = np.argsort([state_to_idx[state] for state in observed_states_2])
 
-        np.testing.assert_allclose(fn(H_1_val, H_2_val), H_1_val + H_2_val[np.ix_(idx, idx)])
+        np.testing.assert_allclose(
+            fn(H_1_val, H_2_val), H_1_val + H_2_val[np.ix_(idx, idx)]
+        )
 
     def test_add_non_overlapping_covaraince_matrices(self):
         rng = np.random.default_rng()
@@ -232,7 +232,9 @@ class TestJoinDesignMatrices:
         Z_1_val = np.array([[1.0, 0.0]])
         Z_2_val = np.array([[0.0, 1.0]])
 
-        np.testing.assert_allclose(fn(Z_1_val, Z_2_val), np.array([[1.0, 0.0, 0.0, 1.0]]))
+        np.testing.assert_allclose(
+            fn(Z_1_val, Z_2_val), np.array([[1.0, 0.0, 0.0, 1.0]])
+        )
 
     def test_join_fully_overlapping_mixed_design_matrices(self):
         observed_states_1 = ["A", "B", "C"]
@@ -268,7 +270,8 @@ class TestJoinDesignMatrices:
 
         Z_1, Z_2 = self._setup_Z(observed_states_1, observed_states_2)
         fn = function(
-            [Z_1, Z_2], join_tensors_by_dim_labels(Z_1, Z_2, observed_states_1, observed_states_2)
+            [Z_1, Z_2],
+            join_tensors_by_dim_labels(Z_1, Z_2, observed_states_1, observed_states_2),
         )
 
         Z_1_val = np.array([[1.0, 0.0]])

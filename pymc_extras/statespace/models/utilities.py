@@ -3,14 +3,11 @@ from typing import cast as type_cast
 
 import numpy as np
 import pytensor.tensor as pt
-
 from pytensor.tensor import TensorVariable
 
-from pymc_extras.statespace.utils.constants import (
-    LONG_MATRIX_NAMES,
-    MATRIX_NAMES,
-    VECTOR_VALUED,
-)
+from pymc_extras.statespace.utils.constants import (LONG_MATRIX_NAMES,
+                                                    MATRIX_NAMES,
+                                                    VECTOR_VALUED)
 
 
 def cleanup_states(states: list[str]) -> list[str]:
@@ -44,7 +41,9 @@ def cleanup_states(states: list[str]) -> list[str]:
     return out
 
 
-def make_harvey_state_names(p: int, d: int, q: int, P: int, D: int, Q: int, S: int) -> list[str]:
+def make_harvey_state_names(
+    p: int, d: int, q: int, P: int, D: int, Q: int, S: int
+) -> list[str]:
     """
     Generate informative names for the SARIMA states in the Harvey representation
 
@@ -279,7 +278,7 @@ def make_SARIMA_transition_matrix(
 
     if S > 0:
         # "Rolling" indices for seasonal differences
-        (row_roll_idx, col_roll_idx) = np.diag_indices(S * D)
+        row_roll_idx, col_roll_idx = np.diag_indices(S * D)
         row_roll_idx = row_roll_idx + d + 1
         col_roll_idx = col_roll_idx + d
 
@@ -402,14 +401,20 @@ def reorder_from_labels(
     label_to_index = {label: index for index, label in enumerate(ordered_labels)}
 
     missing_labels = [label for label in ordered_labels if label not in labels]
-    indices = np.argsort([label_to_index[label] for label in [*labels, *missing_labels]])
+    indices = np.argsort(
+        [label_to_index[label] for label in [*labels, *missing_labels]]
+    )
 
     if isinstance(labeled_axis, int):
         labeled_axis = (labeled_axis,)
 
     if indices.tolist() != list(range(n_out)):
         for axis in labeled_axis:
-            idx = np.s_[tuple([slice(None, None) if i != axis else indices for i in range(x.ndim)])]
+            idx = np.s_[
+                tuple(
+                    [slice(None, None) if i != axis else indices for i in range(x.ndim)]
+                )
+            ]
             shape = x.type.shape
             x = pt.specify_shape(x[idx], shape)
 
@@ -446,7 +451,9 @@ def pad_and_reorder(
 
     if n_missing > 0:
         zeros = pt.zeros(
-            tuple([x.shape[i] if i != labeled_axis else n_missing for i in range(x.ndim)])
+            tuple(
+                [x.shape[i] if i != labeled_axis else n_missing for i in range(x.ndim)]
+            )
         )
         x_padded = pt.concatenate([x, zeros], axis=labeled_axis)
     else:
@@ -493,7 +500,9 @@ def ndim_pad_and_reorder(
         labeled_axis = (labeled_axis,)
 
     if n_missing > 0:
-        pad_size = [(0, 0) if i not in labeled_axis else (0, n_missing) for i in range(x.ndim)]
+        pad_size = [
+            (0, 0) if i not in labeled_axis else (0, n_missing) for i in range(x.ndim)
+        ]
         for axis, (_, after) in enumerate(pad_size):
             if after > 0:
                 shape = list(x.type.shape)
@@ -563,7 +572,10 @@ def add_tensors_by_dim_labels(
         else:
             # In the case where we want to align multiple dimensions, use block_diag to accomplish padding on the last
             # two dimensions
-            dims = [*[i for i in range(tensor.ndim) if i not in labeled_axis], *labeled_axis]
+            dims = [
+                *[i for i in range(tensor.ndim) if i not in labeled_axis],
+                *labeled_axis,
+            ]
             return pt.linalg.block_diag(
                 type_cast(TensorVariable, tensor.transpose(*dims)),
                 type_cast(TensorVariable, other_tensor.transpose(*dims)),
@@ -618,7 +630,9 @@ def join_tensors_by_dim_labels(
 
     # Otherwise there is either total overlap or partial overlap. Let the padding and reordering function figure it out.
     tensor = ndim_pad_and_reorder(tensor, labels, combined_labels, labeled_axis)
-    other_tensor = ndim_pad_and_reorder(other_tensor, other_labels, combined_labels, labeled_axis)
+    other_tensor = ndim_pad_and_reorder(
+        other_tensor, other_labels, combined_labels, labeled_axis
+    )
 
     if block_diag_join:
         new_shape = [
@@ -629,10 +643,14 @@ def join_tensors_by_dim_labels(
     else:
         new_shape = []
         join_axis_norm = normalize_axis(tensor, join_axis)
-        for i, (shape_1, shape_2) in enumerate(zip(tensor.type.shape, other_tensor.type.shape)):
+        for i, (shape_1, shape_2) in enumerate(
+            zip(tensor.type.shape, other_tensor.type.shape)
+        ):
             if i == join_axis_norm:
                 new_shape.append(
-                    shape_1 + shape_2 if (shape_1 is not None and shape_2 is not None) else None
+                    shape_1 + shape_2
+                    if (shape_1 is not None and shape_2 is not None)
+                    else None
                 )
             else:
                 new_shape.append(shape_1 if shape_1 is not None else shape_2)
@@ -654,7 +672,9 @@ def get_exog_dims_from_idata(exog_name, idata):
     return exog_dims
 
 
-def validate_names(names: Sequence[str] | None, var_name: str, optional: bool = True) -> None:
+def validate_names(
+    names: Sequence[str] | None, var_name: str, optional: bool = True
+) -> None:
     if names is None:
         if optional:
             return None

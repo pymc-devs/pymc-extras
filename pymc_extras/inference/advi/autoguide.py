@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pytensor.tensor as pt
-
 from pymc.distributions import Normal
 from pymc.logprob.basic import conditional_logp
 from pymc.model.core import Deterministic, Model
@@ -87,7 +86,9 @@ def AutoDiagonalNormal(model: Model) -> AutoGuideModel:
             loc = pt.tensor(f"{rv.name}_loc", shape=rv.type.shape)
             scale = pt.tensor(f"{rv.name}_scale", shape=rv.type.shape)
             # TODO: Make these customizable
-            params_init_values[loc] = pt.random.uniform(-1, 1, size=free_rv_shapes[rv]).eval()
+            params_init_values[loc] = pt.random.uniform(
+                -1, 1, size=free_rv_shapes[rv]
+            ).eval()
             params_init_values[scale] = pt.full(free_rv_shapes[rv], 0.1).eval()
 
             z = Normal(

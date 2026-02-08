@@ -1,12 +1,10 @@
 import logging
 import warnings as _warnings
-
 from dataclasses import dataclass, field
 from typing import Literal
 
 import arviz as az
 import numpy as np
-
 from numpy.typing import NDArray
 from scipy.special import logsumexp
 
@@ -82,7 +80,9 @@ def importance_sampling(
         warnings.append(
             "Importance sampling is disabled. The samples are returned as is which may include samples from failed paths with non-finite logP or logQ values. It is recommended to use importance_sampling='psis' for better stability."
         )
-        return ImportanceSamplingResult(samples=samples, warnings=warnings, method=method)
+        return ImportanceSamplingResult(
+            samples=samples, warnings=warnings, method=method
+        )
     else:
         samples = samples.reshape(-1, N)
         logP = logP.ravel()
@@ -117,7 +117,9 @@ def importance_sampling(
     rng = np.random.default_rng(random_seed)
 
     try:
-        resampled = rng.choice(samples, size=num_draws, replace=replace, p=p, shuffle=False, axis=0)
+        resampled = rng.choice(
+            samples, size=num_draws, replace=replace, p=p, shuffle=False, axis=0
+        )
         return ImportanceSamplingResult(
             samples=resampled, pareto_k=pareto_k, warnings=warnings, method=method
         )
@@ -132,7 +134,10 @@ def importance_sampling(
                     samples, size=num_draws, replace=True, p=p, shuffle=False, axis=0
                 )
                 return ImportanceSamplingResult(
-                    samples=resampled, pareto_k=pareto_k, warnings=warnings, method=method
+                    samples=resampled,
+                    pareto_k=pareto_k,
+                    warnings=warnings,
+                    method=method,
                 )
             except ValueError as e2:
                 logger.error(

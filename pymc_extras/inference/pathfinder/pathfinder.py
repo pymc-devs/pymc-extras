@@ -17,7 +17,6 @@ import collections
 import logging
 import time
 import warnings
-
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field, replace
@@ -31,7 +30,6 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import xarray as xr
-
 from numpy.typing import NDArray
 from packaging import version
 from pymc import Model
@@ -41,36 +39,26 @@ from pymc.initial_point import make_initial_point_fn
 from pymc.model import modelcontext
 from pymc.model.core import Point
 from pymc.progress_bar import CustomProgress, default_progress_theme
-from pymc.pytensorf import (
-    compile,
-    find_rng_nodes,
-    reseed_rngs,
-)
-from pymc.util import (
-    RandomSeed,
-    _get_seeds_per_chain,
-    get_default_varnames,
-)
+from pymc.pytensorf import compile, find_rng_nodes, reseed_rngs
+from pymc.util import RandomSeed, _get_seeds_per_chain, get_default_varnames
 from pytensor.compile.function.types import Function
 from pytensor.compile.mode import FAST_COMPILE, Mode
 from pytensor.graph import Apply, Op, vectorize_graph
 from pytensor.tensor import TensorConstant, TensorVariable
 from rich.console import Console, Group
 from rich.padding import Padding
-from rich.progress import BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import (BarColumn, TextColumn, TimeElapsedColumn,
+                           TimeRemainingColumn)
 from rich.table import Table
 from rich.text import Text
 
-from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
-from pymc_extras.inference.pathfinder.importance_sampling import (
-    importance_sampling as _importance_sampling,
-)
-from pymc_extras.inference.pathfinder.lbfgs import (
-    LBFGS,
-    LBFGSException,
-    LBFGSInitFailed,
-    LBFGSStatus,
-)
+from pymc_extras.inference.laplace_approx.idata import \
+    add_data_to_inference_data
+from pymc_extras.inference.pathfinder.importance_sampling import \
+    importance_sampling as _importance_sampling
+from pymc_extras.inference.pathfinder.lbfgs import (LBFGS, LBFGSException,
+                                                    LBFGSInitFailed,
+                                                    LBFGSStatus)
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +181,9 @@ def convert_flat_trace_to_idata(
     trace = {k: np.asarray(v)[None, ...] for k, v in trace.items()}
 
     var_names = model.unobserved_value_vars
-    vars_to_sample = list(get_default_varnames(var_names, include_transformed=include_transformed))
+    vars_to_sample = list(
+        get_default_varnames(var_names, include_transformed=include_transformed)
+    )
     logger.info("Transforming variables...")
 
     if inference_backend == "pymc":
@@ -215,16 +205,19 @@ def convert_flat_trace_to_idata(
         result = fn(*list(trace.values()))
 
         if importance_sampling is None:
-            result = [res.reshape(num_paths, num_pdraws, *res.shape[2:]) for res in result]
+            result = [
+                res.reshape(num_paths, num_pdraws, *res.shape[2:]) for res in result
+            ]
 
     elif inference_backend == "blackjax":
         import jax
-
         from pymc.sampling.jax import get_jaxified_graph
 
         jax_fn = get_jaxified_graph(inputs=model.value_vars, outputs=vars_to_sample)
         result = jax.vmap(jax.vmap(jax_fn))(
-            *jax.device_put(list(trace.values()), jax.devices(postprocessing_backend)[0])
+            *jax.device_put(
+                list(trace.values()), jax.devices(postprocessing_backend)[0]
+            )
         )
 
     trace = {v.name: r for v, r in zip(vars_to_sample, result)}
@@ -268,9 +261,7 @@ def alpha_recover(
         b = z_l.T @ s_l
         c = s_l.T @ pt.diag(1.0 / alpha_lm1) @ s_l
         inv_alpha_l = (
-            a / (b * alpha_lm1)
-            + z_l ** 2 / b
-            - (a * s_l ** 2) / (b * c * alpha_lm1**2)
+            a / (b * alpha_lm1) + z_l**2 / b - (a * s_l**2) / (b * c * alpha_lm1**2)
         )  # fmt:off
         return 1.0 / inv_alpha_l
 
@@ -380,7 +371,9 @@ def inverse_hessian_factors(
     eta = pt.diagonal(E, axis1=-2, axis2=-1)
 
     # beta: (L, N, 2J)
-    alpha_diag = pytensor.scan(lambda a: pt.diag(a), sequences=[alpha], return_updates=False)
+    alpha_diag = pytensor.scan(
+        lambda a: pt.diag(a), sequences=[alpha], return_updates=False
+    )
     beta = pt.concatenate([alpha_diag @ Z, S], axis=-1)
 
     # more performant and numerically precise to use solve than inverse: https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.linalg.inv.html
@@ -391,7 +384,9 @@ def inverse_hessian_factors(
 
     # block_dd: (L, J, J)
     block_dd = (
-        pt.matrix_transpose(E_inv) @ (eta_diag + pt.matrix_transpose(Z) @ alpha_diag @ Z) @ E_inv
+        pt.matrix_transpose(E_inv)
+        @ (eta_diag + pt.matrix_transpose(Z) @ alpha_diag @ Z)
+        @ E_inv
     )
 
     # (L, J, 2J)
@@ -461,14 +456,20 @@ def bfgs_sample_dense(
         sqrt_alpha_diag
         @ (
             IdN
-            + inv_sqrt_alpha_diag @ beta @ gamma @ pt.matrix_transpose(beta) @ inv_sqrt_alpha_diag
+            + inv_sqrt_alpha_diag
+            @ beta
+            @ gamma
+            @ pt.matrix_transpose(beta)
+            @ inv_sqrt_alpha_diag
         )
         @ sqrt_alpha_diag
     )
 
     Lchol = pt.linalg.cholesky(H_inv, lower=False, check_finite=False, on_error="nan")
 
-    logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
+    logdet = 2.0 * pt.sum(
+        pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1
+    )
 
     # mu = x - pt.einsum("ijk,ik->ij", H_inv, g) # causes error: Multiple destroyers of g
 
@@ -543,9 +544,13 @@ def bfgs_sample_sparse(
     Lchol_input = IdN + R @ gamma @ pt.matrix_transpose(R)
 
     # TODO: make robust Lchol calcs more robust, ie. try exceptions, increase REGULARISATION_TERM if non-finite exists
-    Lchol = pt.linalg.cholesky(Lchol_input, lower=False, check_finite=False, on_error="nan")
+    Lchol = pt.linalg.cholesky(
+        Lchol_input, lower=False, check_finite=False, on_error="nan"
+    )
 
-    logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
+    logdet = 2.0 * pt.sum(
+        pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1
+    )
     logdet += pt.sum(pt.log(alpha), axis=-1)
 
     # inverse Hessian
@@ -656,9 +661,7 @@ def bfgs_sample(
     )
 
     logQ_phi = -0.5 * (
-        logdet[..., None]
-        + pt.sum(u * u, axis=-1)
-        + N * pt.log(2.0 * pt.pi)
+        logdet[..., None] + pt.sum(u * u, axis=-1) + N * pt.log(2.0 * pt.pi)
     )  # fmt: off
 
     mask = pt.isnan(logQ_phi) | pt.isinf(logQ_phi)
@@ -721,7 +724,9 @@ class PathException(Exception):
 
     DEFAULT_MESSAGE = "Path failed."
 
-    def __init__(self, message=None, status: PathStatus = PathStatus.PATH_FAILED) -> None:
+    def __init__(
+        self, message=None, status: PathStatus = PathStatus.PATH_FAILED
+    ) -> None:
         super().__init__(message or self.DEFAULT_MESSAGE)
         self.status = status
 
@@ -731,7 +736,9 @@ class PathInvalidLogP(PathException):
     raises a PathException if all the logP values in a path are not finite.
     """
 
-    DEFAULT_MESSAGE = "Path failed because all the logP values in a path are not finite."
+    DEFAULT_MESSAGE = (
+        "Path failed because all the logP values in a path are not finite."
+    )
 
     def __init__(self, message=None) -> None:
         super().__init__(message or self.DEFAULT_MESSAGE, PathStatus.INVALID_LOGP)
@@ -742,7 +749,9 @@ class PathInvalidLogQ(PathException):
     raises a PathException if all the logQ values in a path are not finite.
     """
 
-    DEFAULT_MESSAGE = "Path failed because all the logQ values in a path are not finite."
+    DEFAULT_MESSAGE = (
+        "Path failed because all the logQ values in a path are not finite."
+    )
 
     def __init__(self, message=None) -> None:
         super().__init__(message or self.DEFAULT_MESSAGE, PathStatus.INVALID_LOGQ)
@@ -886,7 +895,10 @@ def make_single_pathfinder_fn(
     """
 
     compile_kwargs = {"mode": Mode(linker=DEFAULT_LINKER), **compile_kwargs}
-    logp_dlogp_kwargs = {"jacobian": pathfinder_kwargs.get("jacobian", True), **compile_kwargs}
+    logp_dlogp_kwargs = {
+        "jacobian": pathfinder_kwargs.get("jacobian", True),
+        **compile_kwargs,
+    }
 
     logp_dlogp_func = get_logp_dlogp_of_ravel_inputs(model, **logp_dlogp_kwargs)
 
@@ -921,7 +933,10 @@ def make_single_pathfinder_fn(
             x0 = x_base + jitter_value
             x, g, lbfgs_niter, lbfgs_status = lbfgs.minimize(x0)
 
-            if lbfgs_status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
+            if lbfgs_status in {
+                LBFGSStatus.INIT_FAILED,
+                LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT,
+            }:
                 raise LBFGSInitFailed(lbfgs_status)
             elif lbfgs_status == LBFGSStatus.LBFGS_FAILED:
                 raise LBFGSException()
@@ -994,7 +1009,6 @@ def _process(fn: SinglePathfinderFn, seed: int) -> "PathfinderResult | bytes":
     execute pathfinder runs concurrently using multiprocessing.
     """
     import cloudpickle
-
     from pytensor.compile.compilelock import lock_ctx
 
     with lock_ctx():
@@ -1047,19 +1061,27 @@ def _execute_concurrently(
 
     concurrent_fn = _thread if concurrent == "thread" else _process
 
-    executor_kwargs = {} if concurrent == "thread" else {"mp_context": _get_mp_context()}
+    executor_kwargs = (
+        {} if concurrent == "thread" else {"mp_context": _get_mp_context()}
+    )
 
-    max_workers = max_workers or (None if concurrent == "thread" else _calculate_max_workers())
+    max_workers = max_workers or (
+        None if concurrent == "thread" else _calculate_max_workers()
+    )
 
     fn = fn if concurrent == "thread" else cloudpickle.dumps(fn)
 
     with executor_cls(max_workers=max_workers, **executor_kwargs) as executor:
         futures = [executor.submit(concurrent_fn, fn, seed) for seed in seeds]
         for f in as_completed(futures):
-            yield (f.result() if concurrent == "thread" else cloudpickle.loads(f.result()))
+            yield (
+                f.result() if concurrent == "thread" else cloudpickle.loads(f.result())
+            )
 
 
-def _execute_serially(fn: SinglePathfinderFn, seeds: list[int]) -> Iterator["PathfinderResult"]:
+def _execute_serially(
+    fn: SinglePathfinderFn, seeds: list[int]
+) -> Iterator["PathfinderResult"]:
     """
     execute pathfinder runs serially.
     """
@@ -1176,7 +1198,9 @@ class MultiPathfinderResult:
     all_paths_failed: bool = False  # raises ValueError if all paths failed
 
     @classmethod
-    def from_path_results(cls, path_results: list[PathfinderResult]) -> "MultiPathfinderResult":
+    def from_path_results(
+        cls, path_results: list[PathfinderResult]
+    ) -> "MultiPathfinderResult":
         """aggregate successful pathfinder results and count the occurrences of each status in PathStatus and LBFGSStatus"""
 
         NUMERIC_ATTRIBUTES = ["samples", "logP", "logQ", "lbfgs_niter", "elbo_argmax"]
@@ -1186,7 +1210,9 @@ class MultiPathfinderResult:
 
         for pr in path_results:
             if pr.path_status not in FAILED_PATH_STATUS:
-                success_results.append(tuple(getattr(pr, attr) for attr in NUMERIC_ATTRIBUTES))
+                success_results.append(
+                    tuple(getattr(pr, attr) for attr in NUMERIC_ATTRIBUTES)
+                )
 
             mpr.lbfgs_status[pr.lbfgs_status] += 1
             mpr.path_status[pr.path_status] += 1
@@ -1342,7 +1368,9 @@ class MultiPathfinderResult:
                 Text("Warnings:"),
                 *(
                     Padding(
-                        Text("- " + warning, no_wrap=False).wrap(console, width=console.width - 6),
+                        Text("- " + warning, no_wrap=False).wrap(
+                            console, width=console.width - 6
+                        ),
                         (0, 0, 0, 2),  # left padding only
                     )
                     for warning in self.warnings
@@ -1507,7 +1535,9 @@ def multipath_pathfinder(
             disable=not progressbar,
         )
         with progress:
-            task = progress.add_task(desc.format(path_idx=0), completed=0, total=num_paths)
+            task = progress.add_task(
+                desc.format(path_idx=0), completed=0, total=num_paths
+            )
             for path_idx, result in enumerate(generator, start=1):
                 try:
                     if isinstance(result, Exception):
@@ -1525,7 +1555,9 @@ def multipath_pathfinder(
                         except filelock.Timeout:
                             num_attempts += 1
                             time.sleep(0.5)
-                            logger.warning(f"Lock timeout. Retrying... ({num_attempts}/10)")
+                            logger.warning(
+                                f"Lock timeout. Retrying... ({num_attempts}/10)"
+                            )
                 except Exception as e:
                     logger.warning("Unexpected error in a path: %s", str(e))
                     results.append(
@@ -1554,7 +1586,9 @@ def multipath_pathfinder(
                 MultiPathfinderResult.from_path_results(results)
                 .with_pathfinder_config(config=pathfinder_config)
                 .with_importance_sampling(
-                    num_draws=num_draws, method=importance_sampling, random_seed=choice_seed
+                    num_draws=num_draws,
+                    method=importance_sampling,
+                    random_seed=choice_seed,
                 )
                 .with_timing(
                     compile_time=compile_end - compile_start,
@@ -1797,7 +1831,8 @@ def fit_pathfinder(
     # Add pathfinder results to InferenceData if requested
     if add_pathfinder_groups:
         if inference_backend == "pymc":
-            from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
+            from pymc_extras.inference.pathfinder.idata import \
+                add_pathfinder_to_inference_data
 
             idata = add_pathfinder_to_inference_data(
                 idata=idata,

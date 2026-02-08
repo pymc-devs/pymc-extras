@@ -2,26 +2,19 @@ from collections.abc import Sequence
 
 import numpy as np
 import pytensor.tensor as pt
-
 from pytensor import graph_replace
 from pytensor.compile.mode import Mode
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import (Coord, Parameter, Shock,
+                                                    State)
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
 from pymc_extras.statespace.models.utilities import validate_names
-from pymc_extras.statespace.utils.constants import (
-    ALL_STATE_AUX_DIM,
-    ALL_STATE_DIM,
-    ETS_SEASONAL_DIM,
-    OBS_STATE_AUX_DIM,
-    OBS_STATE_DIM,
-)
+from pymc_extras.statespace.utils.constants import (ALL_STATE_AUX_DIM,
+                                                    ALL_STATE_DIM,
+                                                    ETS_SEASONAL_DIM,
+                                                    OBS_STATE_AUX_DIM,
+                                                    OBS_STATE_DIM)
 
 
 class BayesianETS(PyMCStateSpace):
@@ -328,10 +321,16 @@ class BayesianETS(PyMCStateSpace):
             parameters.append(
                 Parameter(
                     name="initial_seasonal",
-                    shape=(self.seasonal_periods,)
-                    if k_endog == 1
-                    else (k_endog, self.seasonal_periods),
-                    dims=(ETS_SEASONAL_DIM,) if k_endog == 1 else (OBS_STATE_DIM, ETS_SEASONAL_DIM),
+                    shape=(
+                        (self.seasonal_periods,)
+                        if k_endog == 1
+                        else (k_endog, self.seasonal_periods)
+                    ),
+                    dims=(
+                        (ETS_SEASONAL_DIM,)
+                        if k_endog == 1
+                        else (OBS_STATE_DIM, ETS_SEASONAL_DIM)
+                    ),
                     constraints=None,
                 )
             )
@@ -360,7 +359,9 @@ class BayesianETS(PyMCStateSpace):
         # Beta - only if trend is enabled
         if self.trend:
             beta_constraint = (
-                "0 < beta < alpha" if self.use_transformed_parameterization else "0 < beta < 1"
+                "0 < beta < alpha"
+                if self.use_transformed_parameterization
+                else "0 < beta < 1"
             )
             parameters.append(
                 Parameter(
@@ -442,11 +443,15 @@ class BayesianETS(PyMCStateSpace):
             base_states += [f"L{i}.season" for i in range(1, self.seasonal_periods)]
 
         if k_endog > 1:
-            state_names = [f"{name}_{state}" for name in self.endog_names for state in base_states]
+            state_names = [
+                f"{name}_{state}" for name in self.endog_names for state in base_states
+            ]
         else:
             state_names = base_states
 
-        hidden_states = [State(name=name, observed=False, shared=False) for name in state_names]
+        hidden_states = [
+            State(name=name, observed=False, shared=False) for name in state_names
+        ]
 
         observed_states = [
             State(name=name, observed=True, shared=False) for name in self.endog_names
@@ -497,7 +502,9 @@ class BayesianETS(PyMCStateSpace):
         k_states_each = self.k_states // self.k_endog
 
         initial_level = self.make_and_register_variable(
-            "initial_level", shape=(self.k_endog,) if self.k_endog > 1 else (), dtype=floatX
+            "initial_level",
+            shape=(self.k_endog,) if self.k_endog > 1 else (),
+            dtype=floatX,
         )
 
         initial_states = [pt.zeros(k_states_each) for _ in range(self.k_endog)]
@@ -533,14 +540,18 @@ class BayesianETS(PyMCStateSpace):
         else:
             # If there are multiple endog, clone the basic R matrix and modify the appropriate entries
             R_list = [pt.set_subtensor(R[1, 0], alpha[i]) for i in range(self.k_endog)]
-            R_list = [pt.set_subtensor(R[0, :], (1 - alpha[i])) for i, R in enumerate(R_list)]
+            R_list = [
+                pt.set_subtensor(R[0, :], (1 - alpha[i])) for i, R in enumerate(R_list)
+            ]
 
         # Shock and level component always exists, the base case is e_t = e_t and l_t = l_{t-1}
         T_base = pt.set_subtensor(pt.zeros((2, 2))[1, 1], stationary_dampening)
 
         if self.trend:
             initial_trend = self.make_and_register_variable(
-                "initial_trend", shape=(self.k_endog,) if self.k_endog > 1 else (), dtype=floatX
+                "initial_trend",
+                shape=(self.k_endog,) if self.k_endog > 1 else (),
+                dtype=floatX,
             )
 
             if self.k_endog == 1:
@@ -560,12 +571,16 @@ class BayesianETS(PyMCStateSpace):
             if self.k_endog == 1:
                 R_list = [pt.set_subtensor(R[2, 0], param) for R in R_list]
             else:
-                R_list = [pt.set_subtensor(R[2, 0], param[i]) for i, R in enumerate(R_list)]
+                R_list = [
+                    pt.set_subtensor(R[2, 0], param[i]) for i, R in enumerate(R_list)
+                ]
 
             # If a trend is requested, we have the following transition equations (omitting the shocks):
             # l_t = l_{t-1} + b_{t-1}
             # b_t = b_{t-1}
-            T_base = pt.as_tensor_variable(([0.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]))
+            T_base = pt.as_tensor_variable(
+                ([0.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0])
+            )
             T_base = pt.set_subtensor(T_base[[1, 2], [1, 2]], stationary_dampening)
 
         if self.damped_trend:
@@ -577,37 +592,51 @@ class BayesianETS(PyMCStateSpace):
             # l_t = l_{t-1} + phi * b_{t-1}
             # b_t = phi * b_{t-1}
             if self.k_endog > 1:
-                T_base = [pt.set_subtensor(T_base[1:, 2], phi[i]) for i in range(self.k_endog)]
+                T_base = [
+                    pt.set_subtensor(T_base[1:, 2], phi[i]) for i in range(self.k_endog)
+                ]
             else:
                 T_base = pt.set_subtensor(T_base[1:, 2], phi)
 
         T_components = (
-            [T_base for _ in range(self.k_endog)] if not isinstance(T_base, list) else T_base
+            [T_base for _ in range(self.k_endog)]
+            if not isinstance(T_base, list)
+            else T_base
         )
 
         if self.seasonal:
             initial_seasonal = self.make_and_register_variable(
                 "initial_seasonal",
-                shape=(self.seasonal_periods,)
-                if self.k_endog == 1
-                else (self.k_endog, self.seasonal_periods),
+                shape=(
+                    (self.seasonal_periods,)
+                    if self.k_endog == 1
+                    else (self.k_endog, self.seasonal_periods)
+                ),
                 dtype=floatX,
             )
             if self.k_endog == 1:
                 initial_states = [
-                    pt.set_subtensor(initial_states[0][2 + int(self.trend) :], initial_seasonal)
+                    pt.set_subtensor(
+                        initial_states[0][2 + int(self.trend) :], initial_seasonal
+                    )
                 ]
             else:
                 initial_states = [
-                    pt.set_subtensor(initial_state[2 + int(self.trend) :], initial_seasonal[i])
+                    pt.set_subtensor(
+                        initial_state[2 + int(self.trend) :], initial_seasonal[i]
+                    )
                     for i, initial_state in enumerate(initial_states)
                 ]
 
             gamma = self.make_and_register_variable(
-                "gamma", shape=() if self.k_endog == 1 else (self.k_endog,), dtype=floatX
+                "gamma",
+                shape=() if self.k_endog == 1 else (self.k_endog,),
+                dtype=floatX,
             )
 
-            param = gamma if self.use_transformed_parameterization else (1 - alpha) * gamma
+            param = (
+                gamma if self.use_transformed_parameterization else (1 - alpha) * gamma
+            )
             # Additional adjustment to the R[0, 0] position is required. Start from:
             # y_t = l_{t-1} + s_{t-m} + e_t
             # l_t = l_{t-1} + alpha * e_t
@@ -616,7 +645,9 @@ class BayesianETS(PyMCStateSpace):
             # y_t = l_t + s_t - alpha * e_t - gamma * e_t + e_t --> y_t = l_t + s_t + (1 - alpha - gamma) * e_t
 
             if self.k_endog == 1:
-                R_list = [pt.set_subtensor(R[2 + int(self.trend), 0], param) for R in R_list]
+                R_list = [
+                    pt.set_subtensor(R[2 + int(self.trend), 0], param) for R in R_list
+                ]
                 R_list = [pt.set_subtensor(R[0, 0], R[0, 0] - param) for R in R_list]
 
             else:
@@ -625,12 +656,15 @@ class BayesianETS(PyMCStateSpace):
                     for i, R in enumerate(R_list)
                 ]
                 R_list = [
-                    pt.set_subtensor(R[0, 0], R[0, 0] - param[i]) for i, R in enumerate(R_list)
+                    pt.set_subtensor(R[0, 0], R[0, 0] - param[i])
+                    for i, R in enumerate(R_list)
                 ]
 
             # The seasonal component is always going to look like a TimeFrequency structural component, see that
             # docstring for more details
-            T_seasonals = [pt.eye(self.seasonal_periods, k=-1) for _ in range(self.k_endog)]
+            T_seasonals = [
+                pt.eye(self.seasonal_periods, k=-1) for _ in range(self.k_endog)
+            ]
             T_seasonals = [
                 pt.set_subtensor(T_seasonal[0, -1], stationary_dampening)
                 for T_seasonal in T_seasonals
@@ -638,23 +672,31 @@ class BayesianETS(PyMCStateSpace):
 
             # Organize the components so it goes T1, T_seasonal_1, T2, T_seasonal_2, etc.
             T_components = [
-                matrix[i] for i in range(self.k_endog) for matrix in [T_components, T_seasonals]
+                matrix[i]
+                for i in range(self.k_endog)
+                for matrix in [T_components, T_seasonals]
             ]
 
         x0 = pt.concatenate(initial_states, axis=0)
         R = pt.linalg.block_diag(*R_list)
 
         self.ssm["initial_state"] = x0
-        self.ssm["selection"] = pt.specify_shape(R, shape=(self.k_states, self.k_posdef))
+        self.ssm["selection"] = pt.specify_shape(
+            R, shape=(self.k_states, self.k_posdef)
+        )
 
         T = pt.linalg.block_diag(*T_components)
 
         # Remove the stationary_dampening dummies before saving the transition matrix
         self.ssm["transition"] = pt.specify_shape(
-            graph_replace(T, {stationary_dampening: 1.0}), (self.k_states, self.k_states)
+            graph_replace(T, {stationary_dampening: 1.0}),
+            (self.k_states, self.k_states),
         )
 
-        Zs = [np.zeros((self.k_endog, self.k_states // self.k_endog)) for _ in range(self.k_endog)]
+        Zs = [
+            np.zeros((self.k_endog, self.k_states // self.k_endog))
+            for _ in range(self.k_endog)
+        ]
         for i, Z in enumerate(Zs):
             Z[i, 0] = 1.0  # innovation
             Z[i, 1] = 1.0  # level
@@ -675,19 +717,25 @@ class BayesianETS(PyMCStateSpace):
         else:
             state_cov_idx = ("state_cov", *np.diag_indices(self.k_posdef))
             state_cov = self.make_and_register_variable(
-                "sigma_state", shape=() if self.k_posdef == 1 else (self.k_posdef,), dtype=floatX
+                "sigma_state",
+                shape=() if self.k_posdef == 1 else (self.k_posdef,),
+                dtype=floatX,
             )
             self.ssm[state_cov_idx] = state_cov**2
 
         if self.measurement_error:
             obs_cov_idx = ("obs_cov", *np.diag_indices(self.k_endog))
             obs_cov = self.make_and_register_variable(
-                "sigma_obs", shape=() if self.k_endog == 1 else (self.k_endog,), dtype=floatX
+                "sigma_obs",
+                shape=() if self.k_endog == 1 else (self.k_endog,),
+                dtype=floatX,
             )
             self.ssm[obs_cov_idx] = obs_cov**2
 
         if self.stationary_initialization:
-            T_stationary = graph_replace(T, {stationary_dampening: self.initialization_dampening})
+            T_stationary = graph_replace(
+                T, {stationary_dampening: self.initialization_dampening}
+            )
             P0 = self._stationary_initialization(T_stationary)
 
         else:

@@ -5,10 +5,10 @@ import arviz as az
 import numpy as np
 import pymc as pm
 import xarray as xr
-
 from arviz import dict_to_dataset
 from better_optimize.constants import minimize_method
-from pymc.backends.arviz import coords_and_dims_for_inferencedata, find_constants, find_observations
+from pymc.backends.arviz import (coords_and_dims_for_inferencedata,
+                                 find_constants, find_observations)
 from pymc.blocking import RaveledVars
 from pymc.util import get_default_varnames
 from scipy.optimize import OptimizeResult
@@ -23,7 +23,9 @@ def make_default_labels(name: str, shape: tuple[int, ...]) -> list:
 
 
 def make_unpacked_variable_names(
-    names: list[str], model: pm.Model, var_name_to_model_var: dict[str, str] | None = None
+    names: list[str],
+    model: pm.Model,
+    var_name_to_model_var: dict[str, str] | None = None,
 ) -> list[str]:
     coords = model.coords
     initial_point = model.initial_point()
@@ -104,21 +106,30 @@ def map_results_to_inference_data(
         {
             value_name: dims[var_name]
             for var_name, value_name in var_name_to_value_name.items()
-            if var_name in dims and (initial_point[value_name].shape == map_point[var_name].shape)
+            if var_name in dims
+            and (initial_point[value_name].shape == map_point[var_name].shape)
         }
     )
 
     constrained_names = [
-        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=False)
+        x.name
+        for x in get_default_varnames(
+            model.unobserved_value_vars, include_transformed=False
+        )
     ]
     all_varnames = [
-        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=True)
+        x.name
+        for x in get_default_varnames(
+            model.unobserved_value_vars, include_transformed=True
+        )
     ]
 
     unconstrained_names = sorted(set(all_varnames) - set(constrained_names))
 
     posterior_dict = {
-        k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in constrained_names
+        k: np.expand_dims(v, (0, 1))
+        for k, v in map_point.items()
+        if k in constrained_names
     }
     posterior_ds = dict_to_dataset(
         posterior_dict,
@@ -176,7 +187,9 @@ def add_fit_to_inference_data(
 
     unpacked_variable_names = make_unpacked_variable_names(variable_names, model)
 
-    mean_dataarray = xr.DataArray(mu.data, dims=["rows"], coords={"rows": unpacked_variable_names})
+    mean_dataarray = xr.DataArray(
+        mu.data, dims=["rows"], coords={"rows": unpacked_variable_names}
+    )
 
     data = {"mean_vector": mean_dataarray}
 
@@ -184,7 +197,10 @@ def add_fit_to_inference_data(
         cov_dataarray = xr.DataArray(
             H_inv,
             dims=["rows", "columns"],
-            coords={"rows": unpacked_variable_names, "columns": unpacked_variable_names},
+            coords={
+                "rows": unpacked_variable_names,
+                "columns": unpacked_variable_names,
+            },
         )
         data["covariance_matrix"] = cov_dataarray
 
@@ -334,14 +350,19 @@ def optimizer_result_to_dataset(
         if isinstance(hess_inv, LinearOperator):
             n = hess_inv.shape[0]
             eye = np.eye(n)
-            hess_inv_mat = np.column_stack([hess_inv.matvec(eye[:, i]) for i in range(n)])
+            hess_inv_mat = np.column_stack(
+                [hess_inv.matvec(eye[:, i]) for i in range(n)]
+            )
             hess_inv = hess_inv_mat
         else:
             hess_inv = np.asarray(hess_inv)
         data_vars["hess_inv"] = xr.DataArray(
             hess_inv,
             dims=["variables", "variables_aux"],
-            coords={"variables": unpacked_variable_names, "variables_aux": unpacked_variable_names},
+            coords={
+                "variables": unpacked_variable_names,
+                "variables_aux": unpacked_variable_names,
+            },
         )
 
     if hasattr(result, "nit"):
@@ -367,7 +388,9 @@ def optimizer_result_to_dataset(
         data_vars[key] = xr.DataArray(
             arr,
             dims=dims,
-            coords={f"{key}_dim_{i}": np.arange(arr.shape[i]) for i in range(len(dims))},
+            coords={
+                f"{key}_dim_{i}": np.arange(arr.shape[i]) for i in range(len(dims))
+            },
         )
 
     data_vars["method"] = xr.DataArray(np.array(method), dims=[])
@@ -408,7 +431,11 @@ def add_optimizer_result_to_inference_data(
         The provided InferenceData, with the optimization results added to the "optimizer" group.
     """
     dataset = optimizer_result_to_dataset(
-        result, method=method, mu=mu, model=model, var_name_to_model_var=var_name_to_model_var
+        result,
+        method=method,
+        mu=mu,
+        model=model,
+        var_name_to_model_var=var_name_to_model_var,
     )
     idata["optimizer_result"] = dataset
 

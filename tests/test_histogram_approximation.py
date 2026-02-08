@@ -60,7 +60,9 @@ def test_histogram_init_discrete(use_dask, min_count, ndims):
         dask = pytest.importorskip("dask")
         dask_df = pytest.importorskip("dask.dataframe")
         data = dask_df.from_array(data)
-    histogram = pmx.distributions.histogram_utils.discrete_histogram(data, min_count=min_count)
+    histogram = pmx.distributions.histogram_utils.discrete_histogram(
+        data, min_count=min_count
+    )
     if use_dask:
         (histogram,) = dask.compute(histogram)
     assert isinstance(histogram, dict)

@@ -1,14 +1,11 @@
 import pytensor.tensor as pt
 import pytest
-
 from pymc.distributions import CustomDist
 from pymc.variational.minibatch_rv import create_minibatch_rv
 from pytensor.tensor.type_other import NoneTypeT
 
 from pymc_extras.model.marginal.graph_analysis import (
-    is_conditional_dependent,
-    subgraph_batch_dim_connection,
-)
+    is_conditional_dependent, subgraph_batch_dim_connection)
 
 
 def test_is_conditional_dependent_static_shape():
@@ -80,7 +77,9 @@ class TestSubgraphBatchDimConnection:
 
         # Indexing on a labeled dim fails
         out = intermediate_out[:, :, [0, 0, 1, 2]]
-        with pytest.raises(ValueError, match="Partial slicing or advanced integer indexing"):
+        with pytest.raises(
+            ValueError, match="Partial slicing or advanced integer indexing"
+        ):
             subgraph_batch_dim_connection(inp, [out])
 
     def test_advanced_subtensor_key(self):
@@ -111,7 +110,9 @@ class TestSubgraphBatchDimConnection:
 
         # Mix keys dimensions
         out = base[:, inp, inp.T]
-        with pytest.raises(ValueError, match="Different known dimensions mixed via broadcasting"):
+        with pytest.raises(
+            ValueError, match="Different known dimensions mixed via broadcasting"
+        ):
             subgraph_batch_dim_connection(inp, [out])
 
     def test_elemwise(self):
@@ -122,12 +123,15 @@ class TestSubgraphBatchDimConnection:
         assert dims == (0, 1)
 
         out = inp + inp.T
-        with pytest.raises(ValueError, match="Different known dimensions mixed via broadcasting"):
+        with pytest.raises(
+            ValueError, match="Different known dimensions mixed via broadcasting"
+        ):
             subgraph_batch_dim_connection(inp, [out])
 
         out = inp[None, :, None, :] + inp[:, None, :, None]
         with pytest.raises(
-            ValueError, match="Same known dimension used in different axis after broadcasting"
+            ValueError,
+            match="Same known dimension used in different axis after broadcasting",
         ):
             subgraph_batch_dim_connection(inp, [out])
 

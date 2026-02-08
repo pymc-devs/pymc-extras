@@ -1,6 +1,8 @@
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, NEVER_TIME_VARYING, VECTOR_VALUED
+from pymc_extras.statespace.utils.constants import (JITTER_DEFAULT,
+                                                    NEVER_TIME_VARYING,
+                                                    VECTOR_VALUED)
 
 
 def decide_if_x_time_varies(x, name):

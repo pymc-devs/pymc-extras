@@ -3,15 +3,11 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
-from pymc_extras.inference.laplace_approx.find_map import (
-    find_MAP,
-    get_nearest_psd,
-)
+from pymc_extras.inference.laplace_approx.find_map import (find_MAP,
+                                                           get_nearest_psd)
 from pymc_extras.inference.laplace_approx.scipy_interface import (
-    GradientBackend,
-    scipy_optimize_funcs_from_loss,
-    set_optimizer_function_defaults,
-)
+    GradientBackend, scipy_optimize_funcs_from_loss,
+    set_optimizer_function_defaults)
 
 
 @pytest.fixture(scope="session")
@@ -46,7 +42,9 @@ def test_set_optimizer_function_defaults_warns_and_prefers_hessp(caplog):
     # "trust-ncg" uses_grad=True, uses_hess=True, uses_hessp=True
     method = "trust-ncg"
     with caplog.at_level("WARNING"):
-        use_grad, use_hess, use_hessp = set_optimizer_function_defaults(method, True, True, True)
+        use_grad, use_hess, use_hessp = set_optimizer_function_defaults(
+            method, True, True, True
+        )
 
     message = caplog.messages[0]
     assert message.startswith('Both "use_hess" and "use_hessp" are set to True')
@@ -61,13 +59,17 @@ def test_set_optimizer_function_defaults_infers_hess_and_hessp():
     method = "trust-ncg"
 
     # If only use_hessp is set, use_hess should be False but use_grad should be inferred as True
-    use_grad, use_hess, use_hessp = set_optimizer_function_defaults(method, None, None, True)
+    use_grad, use_hess, use_hessp = set_optimizer_function_defaults(
+        method, None, None, True
+    )
     assert use_grad
     assert not use_hess
     assert use_hessp
 
     # Only use_hess is set
-    use_grad, use_hess, use_hessp = set_optimizer_function_defaults(method, None, True, None)
+    use_grad, use_hess, use_hessp = set_optimizer_function_defaults(
+        method, None, True, None
+    )
     assert use_hess
     assert not use_hessp
 
@@ -75,7 +77,9 @@ def test_set_optimizer_function_defaults_infers_hess_and_hessp():
 def test_set_optimizer_function_defaults_defaults():
     # "trust-ncg" uses_grad=True, uses_hess=True, uses_hessp=True
     method = "trust-ncg"
-    use_grad, use_hess, use_hessp = set_optimizer_function_defaults(method, None, None, None)
+    use_grad, use_hess, use_hessp = set_optimizer_function_defaults(
+        method, None, None, None
+    )
     assert use_grad
     assert not use_hess
     assert use_hessp
@@ -109,7 +113,9 @@ def test_jax_functions_from_graph(gradient_backend: GradientBackend):
 
     z_jax, grad_val, hess_val = f_fused(x_val)
     np.testing.assert_allclose(z_jax, expected_z)
-    np.testing.assert_allclose(grad_val.squeeze(), np.array([2 * x_val[0] + x_val[1], x_val[0]]))
+    np.testing.assert_allclose(
+        grad_val.squeeze(), np.array([2 * x_val[0] + x_val[1], x_val[0]])
+    )
 
     hess_val = np.array(hess_val)
     np.testing.assert_allclose(hess_val.squeeze(), np.array([[2, 1], [1, 0]]))
@@ -153,7 +159,9 @@ def test_find_MAP(
     with pm.Model() as m:
         mu = pm.Normal("mu")
         sigma = pm.Exponential("sigma", 1)
-        pm.Normal("y_hat", mu=mu, sigma=sigma, observed=rng.normal(loc=3, scale=1.5, size=10))
+        pm.Normal(
+            "y_hat", mu=mu, sigma=sigma, observed=rng.normal(loc=3, scale=1.5, size=10)
+        )
 
         idata = find_MAP(
             method=method,
@@ -180,7 +188,9 @@ def test_find_MAP(
 
     if include_transformed:
         assert hasattr(idata, "unconstrained_posterior")
-        unconstrained_posterior = idata["unconstrained_posterior"].squeeze(["chain", "draw"])
+        unconstrained_posterior = idata["unconstrained_posterior"].squeeze(
+            ["chain", "draw"]
+        )
         assert "sigma_log__" in unconstrained_posterior
         assert unconstrained_posterior["sigma_log__"].shape == ()
     else:
@@ -196,7 +206,9 @@ def test_find_map_outside_model_context():
     with pm.Model() as m:
         mu = pm.Normal("mu", 0, 1)
         sigma = pm.Exponential("sigma", 1)
-        y_hat = pm.Normal("y_hat", mu=mu, sigma=sigma, observed=np.random.normal(size=10))
+        y_hat = pm.Normal(
+            "y_hat", mu=mu, sigma=sigma, observed=np.random.normal(size=10)
+        )
 
     idata = find_MAP(model=m, method="L-BFGS-B", use_grad=True, progressbar=False)
 
@@ -237,7 +249,9 @@ def test_map_shared_variables(backend, gradient_backend: GradientBackend):
     assert hasattr(idata, "constant_data")
 
     posterior = idata["posterior"].squeeze(["chain", "draw"])
-    unconstrained_posterior = idata["unconstrained_posterior"].squeeze(["chain", "draw"])
+    unconstrained_posterior = idata["unconstrained_posterior"].squeeze(
+        ["chain", "draw"]
+    )
 
     assert "mu" in posterior and "sigma" in posterior
     assert posterior["mu"].shape == ()
@@ -267,7 +281,9 @@ def test_find_MAP_basinhopping(
     with pm.Model() as m:
         mu = pm.Normal("mu")
         sigma = pm.Exponential("sigma", 1)
-        pm.Normal("y_hat", mu=mu, sigma=sigma, observed=rng.normal(loc=3, scale=1.5, size=10))
+        pm.Normal(
+            "y_hat", mu=mu, sigma=sigma, observed=rng.normal(loc=3, scale=1.5, size=10)
+        )
 
         idata = find_MAP(
             method="basinhopping",
@@ -285,7 +301,9 @@ def test_find_MAP_basinhopping(
     assert hasattr(idata, "unconstrained_posterior")
 
     posterior = idata["posterior"].squeeze(["chain", "draw"])
-    unconstrained_posterior = idata["unconstrained_posterior"].squeeze(["chain", "draw"])
+    unconstrained_posterior = idata["unconstrained_posterior"].squeeze(
+        ["chain", "draw"]
+    )
     assert "mu" in posterior
     assert posterior["mu"].shape == ()
 
@@ -301,7 +319,9 @@ def test_find_MAP_with_coords():
         mu = pm.Normal("mu", mu_loc, mu_scale, dims=["group"])
         sigma = pm.HalfNormal("sigma", 1, dims=["group"])
 
-        obs = pm.Normal("obs", mu=mu, sigma=sigma, observed=np.random.normal(size=(10, 5)))
+        obs = pm.Normal(
+            "obs", mu=mu, sigma=sigma, observed=np.random.normal(size=(10, 5))
+        )
 
         idata = find_MAP(progressbar=False, method="L-BFGS-B")
 
@@ -310,7 +330,9 @@ def test_find_MAP_with_coords():
     assert hasattr(idata, "fit")
 
     posterior = idata["posterior"].squeeze(["chain", "draw"])
-    unconstrained_posterior = idata["unconstrained_posterior"].squeeze(["chain", "draw"])
+    unconstrained_posterior = idata["unconstrained_posterior"].squeeze(
+        ["chain", "draw"]
+    )
 
     assert (
         "mu_loc" in posterior
@@ -318,7 +340,10 @@ def test_find_MAP_with_coords():
         and "mu" in posterior
         and "sigma" in posterior
     )
-    assert "mu_scale_log__" in unconstrained_posterior and "sigma_log__" in unconstrained_posterior
+    assert (
+        "mu_scale_log__" in unconstrained_posterior
+        and "sigma_log__" in unconstrained_posterior
+    )
 
     assert posterior["mu_loc"].shape == ()
     assert posterior["mu_scale"].shape == ()

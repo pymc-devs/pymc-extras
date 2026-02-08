@@ -1,5 +1,4 @@
 import logging
-
 from collections.abc import Callable
 from importlib.util import find_spec
 from typing import Literal, get_args
@@ -7,7 +6,6 @@ from typing import Literal, get_args
 import numpy as np
 import pymc as pm
 import pytensor
-
 from better_optimize.constants import MINIMIZE_MODE_KWARGS
 from pymc import join_nonshared_inputs
 from pytensor import tensor as pt

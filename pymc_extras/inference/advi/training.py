@@ -1,7 +1,6 @@
 from typing import Protocol
 
 import numpy as np
-
 from pymc import Model, compile
 from pymc.pytensorf import rewrite_pregrad
 from pytensor import tensor as pt
@@ -16,7 +15,10 @@ class TrainingFn(Protocol):
 
 
 def compile_svi_training_fn(
-    model: Model, guide: AutoGuideModel, stick_the_landing: bool = True, **compile_kwargs
+    model: Model,
+    guide: AutoGuideModel,
+    stick_the_landing: bool = True,
+    **compile_kwargs,
 ) -> TrainingFn:
     draws = pt.scalar("draws", dtype=int)
     params = guide.params
@@ -24,7 +26,9 @@ def compile_svi_training_fn(
     logp, logq = get_logp_logq(model, guide, stick_the_landing=stick_the_landing)
 
     scalar_negative_elbo = advi_objective(logp, logq)
-    [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
+    [negative_elbo_draws] = vectorize_random_graph(
+        [scalar_negative_elbo], batch_draws=draws
+    )
     negative_elbo = negative_elbo_draws.mean(axis=0)
 
     negative_elbo_grads = pt.grad(rewrite_pregrad(negative_elbo), wrt=params)
@@ -33,7 +37,9 @@ def compile_svi_training_fn(
         compile_kwargs["trust_input"] = True
 
     f_loss_dloss = compile(
-        inputs=[draws, *params], outputs=[negative_elbo, *negative_elbo_grads], **compile_kwargs
+        inputs=[draws, *params],
+        outputs=[negative_elbo, *negative_elbo_grads],
+        **compile_kwargs,
     )
 
     return f_loss_dloss

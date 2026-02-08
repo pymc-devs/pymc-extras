@@ -3,7 +3,6 @@ import pymc as pm
 import pytest
 
 import pymc_extras as pmx
-
 from pymc_extras.inference.dadvi.dadvi import fit_dadvi
 
 
@@ -44,15 +43,21 @@ def test_fit_dadvi_basic(mode, gradient_backend):
 
     bda_map = [y.mean(), np.log(y.std())]
 
-    np.testing.assert_allclose(idata["posterior"]["mu"].mean(), bda_map[0], atol=1, rtol=1e-1)
-    np.testing.assert_allclose(idata["posterior"]["logsigma"].mean(), bda_map[1], atol=1, rtol=1e-1)
+    np.testing.assert_allclose(
+        idata["posterior"]["mu"].mean(), bda_map[0], atol=1, rtol=1e-1
+    )
+    np.testing.assert_allclose(
+        idata["posterior"]["logsigma"].mean(), bda_map[1], atol=1, rtol=1e-1
+    )
 
 
 def test_fit_dadvi_outside_model_context():
     with pm.Model() as m:
         mu = pm.Normal("mu", 0, 1)
         sigma = pm.Exponential("sigma", 1)
-        y_hat = pm.Normal("y_hat", mu=mu, sigma=sigma, observed=np.random.normal(size=10))
+        y_hat = pm.Normal(
+            "y_hat", mu=mu, sigma=sigma, observed=np.random.normal(size=10)
+        )
 
     idata = fit_dadvi(
         model=m,
@@ -91,10 +96,14 @@ def test_fit_dadvi_coords(include_transformed, rng):
         )
 
     np.testing.assert_allclose(
-        idata["posterior"].mu.mean(dim=["chain", "draw"]).values, np.full((3,), 3), atol=0.5
+        idata["posterior"].mu.mean(dim=["chain", "draw"]).values,
+        np.full((3,), 3),
+        atol=0.5,
     )
     np.testing.assert_allclose(
-        idata["posterior"].sigma.mean(dim=["chain", "draw"]).values, np.full((3,), 1.5), atol=0.3
+        idata["posterior"].sigma.mean(dim=["chain", "draw"]).values,
+        np.full((3,), 1.5),
+        atol=0.3,
     )
 
     if include_transformed:
@@ -108,7 +117,9 @@ def test_fit_dadvi_ragged_coords(rng):
     with pm.Model(coords=coords) as ragged_dim_model:
         X = pm.Data("X", np.ones((100, 2)), dims=["obs_idx", "feature"])
         beta = pm.Normal(
-            "beta", mu=[[-100.0, 100.0], [-100.0, 100.0], [-100.0, 100.0]], dims=["city", "feature"]
+            "beta",
+            mu=[[-100.0, 100.0], [-100.0, 100.0], [-100.0, 100.0]],
+            dims=["city", "feature"],
         )
         mu = pm.Deterministic(
             "mu", (X[:, None, :] * beta[None]).sum(axis=-1), dims=["obs_idx", "city"]
@@ -151,7 +162,9 @@ def test_dadvi_basinhopping(method, use_grad, use_hess, use_hessp, rng):
     with pm.Model() as m:
         mu = pm.Normal("mu")
         sigma = pm.Exponential("sigma", 1)
-        pm.Normal("y_hat", mu=mu, sigma=sigma, observed=rng.normal(loc=3, scale=1.5, size=10))
+        pm.Normal(
+            "y_hat", mu=mu, sigma=sigma, observed=rng.normal(loc=3, scale=1.5, size=10)
+        )
 
         idata = fit_dadvi(
             optimizer_method="basinhopping",

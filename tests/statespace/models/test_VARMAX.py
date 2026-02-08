@@ -7,16 +7,14 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 import statsmodels.api as sm
-
 from numpy.testing import assert_allclose, assert_array_less
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.testing import mock_sample_setup_and_teardown
 
 from pymc_extras.statespace import BayesianVARMAX
 from pymc_extras.statespace.utils.constants import SHORT_NAME_TO_LONG
-from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
-    rng,
-)
+from tests.statespace.shared_fixtures import \
+    rng  # pylint: disable=unused-import
 
 mock_sample = pytest.fixture(scope="function")(mock_sample_setup_and_teardown)
 
@@ -61,14 +59,19 @@ def pymc_mod(varma_mod, data):
             "state_chol", n=varma_mod.k_posdef, eta=1, sd_dist=pm.Exponential.dist(1)
         )
         ar_params = pm.Normal(
-            "ar_params", mu=0, sigma=0.1, dims=["observed_state", "lag_ar", "observed_state_aux"]
+            "ar_params",
+            mu=0,
+            sigma=0.1,
+            dims=["observed_state", "lag_ar", "observed_state_aux"],
         )
         state_cov = pm.Deterministic(
             "state_cov", state_chol @ state_chol.T, dims=["shock", "shock_aux"]
         )
         sigma_obs = pm.Exponential("sigma_obs", 1, dims=["observed_state"])
 
-        varma_mod.build_statespace_graph(data=data, save_kalman_filter_outputs_in_idata=True)
+        varma_mod.build_statespace_graph(
+            data=data, save_kalman_filter_outputs_in_idata=True
+        )
 
     return pymc_mod
 
@@ -83,7 +86,9 @@ def idata(pymc_mod, rng):
 
 def test_mode_argument():
     # Mode argument should be passed to the parent class
-    mod = BayesianVARMAX(endog_names=["y1", "y2"], order=(3, 0), mode="FAST_RUN", verbose=False)
+    mod = BayesianVARMAX(
+        endog_names=["y1", "y2"], order=(3, 0), mode="FAST_RUN", verbose=False
+    )
     assert mod.mode == "FAST_RUN"
 
 
@@ -142,15 +147,23 @@ def test_VARMAX_update_matches_statsmodels(data, order, rng):
         P0 = pm.Deterministic("P0", pt.eye(mod.k_states, dtype=floatX))
         ma_params = pm.Deterministic(
             "ma_params",
-            pt.as_tensor_variable(np.array([param_d[var] for var in ma])).reshape(ma_shape),
+            pt.as_tensor_variable(np.array([param_d[var] for var in ma])).reshape(
+                ma_shape
+            ),
         )
         ar_params = pm.Deterministic(
             "ar_params",
-            pt.as_tensor_variable(np.array([param_d[var] for var in ar])).reshape(ar_shape),
+            pt.as_tensor_variable(np.array([param_d[var] for var in ar])).reshape(
+                ar_shape
+            ),
         )
         state_chol = np.zeros((mod.k_posdef, mod.k_posdef), dtype=floatX)
-        state_chol[np.tril_indices(mod.k_posdef)] = np.array([param_d[var] for var in state_cov])
-        state_cov = pm.Deterministic("state_cov", pt.as_tensor_variable(state_chol @ state_chol.T))
+        state_chol[np.tril_indices(mod.k_posdef)] = np.array(
+            [param_d[var] for var in state_cov]
+        )
+        state_cov = pm.Deterministic(
+            "state_cov", pt.as_tensor_variable(state_chol @ state_chol.T)
+        )
         mod._insert_random_variables()
 
         matrices = pm.draw(mod.subbed_ssm)
@@ -174,7 +187,9 @@ parameters = [
     {"n_steps": 10, "shock_size": np.array([1.0, 0.0, 0.0])},
     {
         "n_steps": 10,
-        "shock_cov": np.array([[1.38, 0.58, -1.84], [0.58, 0.99, -0.82], [-1.84, -0.82, 2.51]]),
+        "shock_cov": np.array(
+            [[1.38, 0.58, -1.84], [0.58, 0.99, -0.82], [-1.84, -0.82, 2.51]]
+        ),
     },
     {
         "shock_trajectory": np.r_[
@@ -185,13 +200,21 @@ parameters = [
     },
 ]
 
-ids = ["from-posterior-cov", "scalar_shock_size", "array_shock_size", "user-cov", "trajectory"]
+ids = [
+    "from-posterior-cov",
+    "scalar_shock_size",
+    "array_shock_size",
+    "user-cov",
+    "trajectory",
+]
 
 
 @pytest.mark.parametrize("parameters", parameters, ids=ids)
 @pytest.mark.skipif(floatX == "float32", reason="Impulse covariance not PSD if float32")
 def test_impulse_response(parameters, varma_mod, idata, rng):
-    irf = varma_mod.impulse_response_function(idata.prior, random_seed=rng, **parameters)
+    irf = varma_mod.impulse_response_function(
+        idata.prior, random_seed=rng, **parameters
+    )
 
     assert np.isfinite(irf.irf.values).all()
 
@@ -221,8 +244,14 @@ def test_varmax_workflow(rng, mock_sample):
 
     with pm.Model(coords=ss_mod.coords) as m:
         state_cov_diag = pm.Exponential("state_cov_diag", 1, dims=["shock"])
-        pm.Deterministic("state_cov", pt.diag(state_cov_diag), dims=["shock", "shock_aux"])
-        pm.Normal("ar_params", sigma=0.1, dims=["observed_state", "lag_ar", "observed_state_aux"])
+        pm.Deterministic(
+            "state_cov", pt.diag(state_cov_diag), dims=["shock", "shock_aux"]
+        )
+        pm.Normal(
+            "ar_params",
+            sigma=0.1,
+            dims=["observed_state", "lag_ar", "observed_state_aux"],
+        )
         pm.Exponential("sigma_obs", 1, dims=["observed_state"])
 
         ss_mod.build_statespace_graph(df)
@@ -281,7 +310,11 @@ class TestVARMAXWithExogenous:
         assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
 
     def test_create_varmax_with_exogenous_exog_names_dict(self, data):
-        exog_state_names = {"observed_0": ["a", "b"], "observed_1": ["c"], "observed_2": []}
+        exog_state_names = {
+            "observed_0": ["a", "b"],
+            "observed_1": ["c"],
+            "observed_2": [],
+        }
         mod = BayesianVARMAX(
             endog_names=["observed_0", "observed_1", "observed_2"],
             order=(1, 0),
@@ -307,7 +340,10 @@ class TestVARMAXWithExogenous:
 
         assert mod.coords["exogenous_observed_0"] == ("a", "b")
         assert mod.coords["exogenous_observed_1"] == ("c",)
-        assert "exogenous_observed_2" in mod.coords and mod.coords["exogenous_observed_2"] == ()
+        assert (
+            "exogenous_observed_2" in mod.coords
+            and mod.coords["exogenous_observed_2"] == ()
+        )
 
         assert mod.param_info["beta_observed_0"]["shape"] == (2,)
         assert mod.param_info["beta_observed_0"]["dims"] == ("exogenous_observed_0",)
@@ -354,11 +390,15 @@ class TestVARMAXWithExogenous:
             for var_name, data in exog_data.items():
                 pm.Data(var_name, data, dims=mod.data_info[var_name]["dims"])
 
-            x0 = pm.Deterministic("x0", pt.zeros(mod.k_states), dims=mod.param_dims["x0"])
+            x0 = pm.Deterministic(
+                "x0", pt.zeros(mod.k_states), dims=mod.param_dims["x0"]
+            )
             P0_diag = pm.Exponential("P0_diag", 1.0, dims=mod.param_dims["P0"][0])
             P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=mod.param_dims["P0"])
 
-            ar_params = pm.Normal("ar_params", mu=0, sigma=1, dims=mod.param_dims["ar_params"])
+            ar_params = pm.Normal(
+                "ar_params", mu=0, sigma=1, dims=mod.param_dims["ar_params"]
+            )
             state_cov_diag = pm.Exponential(
                 "state_cov_diag", 1.0, dims=mod.param_dims["state_cov"][0]
             )
@@ -368,12 +408,17 @@ class TestVARMAXWithExogenous:
 
             # Exogenous priors
             if isinstance(mod.exog_state_names, list):
-                beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=mod.param_dims["beta_exog"])
+                beta_exog = pm.Normal(
+                    "beta_exog", mu=0, sigma=1, dims=mod.param_dims["beta_exog"]
+                )
             elif isinstance(mod.exog_state_names, dict):
                 for name in mod.exog_state_names:
                     if mod.exog_state_names.get(name):
                         pm.Normal(
-                            f"beta_{name}", mu=0, sigma=1, dims=mod.param_dims[f"beta_{name}"]
+                            f"beta_{name}",
+                            mu=0,
+                            sigma=1,
+                            dims=mod.param_dims[f"beta_{name}"],
                         )
 
             mod.build_statespace_graph(data=df)
@@ -423,7 +468,9 @@ class TestVARMAXWithExogenous:
             )
 
         prior_cond = mod.sample_conditional_prior(prior, mvn_method="eigh")
-        beta_dot_data = prior_cond.filtered_prior_observed.values - prior_cond.filtered_prior.values
+        beta_dot_data = (
+            prior_cond.filtered_prior_observed.values - prior_cond.filtered_prior.values
+        )
 
         if isinstance(exog_state_names, list):
             beta = prior.prior.beta_exog
@@ -440,14 +487,20 @@ class TestVARMAXWithExogenous:
             assert prior.prior.beta_y2.shape == (1, 10, 1)
 
             obs_intercept = [
-                np.einsum("tx,...x->...t", exog_data[f"{name}_exogenous_data"].values, beta)
-                for name, beta in zip(["y1", "y2"], [prior.prior.beta_y1, prior.prior.beta_y2])
+                np.einsum(
+                    "tx,...x->...t", exog_data[f"{name}_exogenous_data"].values, beta
+                )
+                for name, beta in zip(
+                    ["y1", "y2"], [prior.prior.beta_y1, prior.prior.beta_y2]
+                )
             ]
 
             # y3 has no exogenous variables
             obs_intercept.append(np.zeros_like(obs_intercept[0]))
 
-            np.testing.assert_allclose(beta_dot_data, np.stack(obs_intercept, axis=-1), atol=1e-2)
+            np.testing.assert_allclose(
+                beta_dot_data, np.stack(obs_intercept, axis=-1), atol=1e-2
+            )
 
     @pytest.mark.filterwarnings("ignore::UserWarning")
     def test_forecast_with_exog(self, rng):

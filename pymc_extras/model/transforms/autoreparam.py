@@ -1,5 +1,4 @@
 import logging
-
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import singledispatch
@@ -9,18 +8,11 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import scipy.special
-
 from pymc.distributions import SymbolicRandomVariable
 from pymc.logprob.transforms import Transform
-from pymc.model.fgraph import (
-    ModelDeterministic,
-    ModelNamed,
-    fgraph_from_model,
-    model_deterministic,
-    model_free_rv,
-    model_from_fgraph,
-    model_named,
-)
+from pymc.model.fgraph import (ModelDeterministic, ModelNamed,
+                               fgraph_from_model, model_deterministic,
+                               model_free_rv, model_from_fgraph, model_named)
 from pymc.pytensorf import toposort_replace
 from pytensor.graph.basic import Apply, Variable
 from pytensor.tensor.random.op import RandomVariable
@@ -46,7 +38,9 @@ class VIP:
     _logit_lambda: dict[str, pytensor.tensor.sharedvar.TensorSharedVariable]
 
     @property
-    def variational_parameters(self) -> list[pytensor.tensor.sharedvar.TensorSharedVariable]:
+    def variational_parameters(
+        self,
+    ) -> list[pytensor.tensor.sharedvar.TensorSharedVariable]:
         r"""Return raw :math:`\operatorname{logit}(\lambda_k)` for custom optimization.
 
         Examples
@@ -230,7 +224,9 @@ def _(
 ) -> ModelDeterministic:
     rng, size, loc, scale = node.inputs
     if transform is not None:
-        raise NotImplementedError("Reparametrization of Normal with Transform is not implemented")
+        raise NotImplementedError(
+            "Reparametrization of Normal with Transform is not implemented"
+        )
     vip_rv_ = pm.Normal.dist(
         lam * loc,
         scale**lam,

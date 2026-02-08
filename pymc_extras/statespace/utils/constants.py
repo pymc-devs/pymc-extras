@@ -75,5 +75,13 @@ FILTER_OUTPUT_DIMS = {
     "predicted_observed_covariances": (TIME_DIM, OBS_STATE_DIM, OBS_STATE_AUX_DIM),
 }
 
-POSITION_DERIVATIVE_NAMES = ["level", "trend", "acceleration", "jerk", "snap", "crackle", "pop"]
+POSITION_DERIVATIVE_NAMES = [
+    "level",
+    "trend",
+    "acceleration",
+    "jerk",
+    "snap",
+    "crackle",
+    "pop",
+]
 SARIMAX_STATE_STRUCTURES = ["fast", "interpretable"]

@@ -9,7 +9,8 @@ import xarray as xr
 
 # Mock objects for testing without full dependencies
 from pymc_extras.inference.pathfinder.lbfgs import LBFGSStatus
-from pymc_extras.inference.pathfinder.pathfinder import PathfinderConfig, PathStatus
+from pymc_extras.inference.pathfinder.pathfinder import (PathfinderConfig,
+                                                         PathStatus)
 
 
 @dataclass
@@ -63,7 +64,8 @@ class TestPathfinderResultToXarray:
         # Skip if dependencies not available
         pytest.importorskip("arviz")
 
-        from pymc_extras.inference.pathfinder.idata import pathfinder_result_to_xarray
+        from pymc_extras.inference.pathfinder.idata import \
+            pathfinder_result_to_xarray
 
         # Create mock result
         result = MockPathfinderResult(
@@ -129,12 +131,15 @@ class TestPathfinderResultToXarray:
         """Test that path dimensions are calculated correctly when importance sampling collapses samples."""
         pytest.importorskip("arviz")
 
-        from pymc_extras.inference.pathfinder.idata import multipathfinder_result_to_xarray
+        from pymc_extras.inference.pathfinder.idata import \
+            multipathfinder_result_to_xarray
 
         # Mock a multi-path result where importance sampling has collapsed the samples
         # but per-path diagnostics are still available
         result = MockMultiPathfinderResult(
-            samples=np.random.normal(0, 1, (1000, 2)),  # Collapsed: (total_draws, n_params)
+            samples=np.random.normal(
+                0, 1, (1000, 2)
+            ),  # Collapsed: (total_draws, n_params)
             lbfgs_niter=np.array([50, 45, 55, 40]),  # Per-path: (4,)
             elbo_argmax=np.array([25, 30, 20, 35]),  # Per-path: (4,)
             logP=np.random.normal(-10, 1, (4, 250)),  # Per-path, per-draw: (4, 250)
@@ -191,7 +196,8 @@ class TestPathfinderResultToXarray:
         """Test conversion of status counters to DataArray."""
         pytest.importorskip("arviz")
 
-        from pymc_extras.inference.pathfinder.idata import _status_counter_to_dataarray
+        from pymc_extras.inference.pathfinder.idata import \
+            _status_counter_to_dataarray
 
         counter = Counter({LBFGSStatus.CONVERGED: 2, LBFGSStatus.MAX_ITER_REACHED: 1})
         da = _status_counter_to_dataarray(counter, LBFGSStatus)
@@ -209,8 +215,10 @@ class TestMultiPathfinderResultToXarray:
         """Test conversion of MultiPathfinderResult to consolidated dataset."""
         pytest.importorskip("arviz")
 
-        from pymc_extras.inference.pathfinder.idata import multipathfinder_result_to_xarray
-        from pymc_extras.inference.pathfinder.pathfinder import PathfinderConfig
+        from pymc_extras.inference.pathfinder.idata import \
+            multipathfinder_result_to_xarray
+        from pymc_extras.inference.pathfinder.pathfinder import \
+            PathfinderConfig
 
         # Create mock config
         config = PathfinderConfig(
@@ -243,7 +251,9 @@ class TestMultiPathfinderResultToXarray:
         )
 
         # Test without diagnostics
-        ds = multipathfinder_result_to_xarray(result, model=None, store_diagnostics=False)
+        ds = multipathfinder_result_to_xarray(
+            result, model=None, store_diagnostics=False
+        )
 
         # Check that we get a single consolidated dataset
         assert isinstance(ds, xr.Dataset)
@@ -278,11 +288,15 @@ class TestMultiPathfinderResultToXarray:
         assert ds["config/maxcor"].values == 5
 
         # Check no diagnostics data when store_diagnostics=False
-        diagnostics_vars = [k for k in ds.data_vars.keys() if k.startswith("diagnostics/")]
+        diagnostics_vars = [
+            k for k in ds.data_vars.keys() if k.startswith("diagnostics/")
+        ]
         assert len(diagnostics_vars) == 0
 
         # Test with diagnostics
-        ds_with_diag = multipathfinder_result_to_xarray(result, model=None, store_diagnostics=True)
+        ds_with_diag = multipathfinder_result_to_xarray(
+            result, model=None, store_diagnostics=True
+        )
 
         # Check diagnostics data (diagnostics/ prefix)
         assert "diagnostics/logP_full" in ds_with_diag.data_vars
@@ -303,10 +317,13 @@ class TestAddPathfinderToInferenceData:
 
         import arviz as az
 
-        from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
+        from pymc_extras.inference.pathfinder.idata import \
+            add_pathfinder_to_inference_data
 
         # Create mock InferenceData
-        posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
+        posterior = xr.Dataset(
+            {"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))}
+        )
         idata = az.InferenceData(posterior=posterior)
 
         # Create mock result with proper single-path status values
@@ -341,11 +358,15 @@ class TestDiagnosticsAndConfigGroups:
 
         import arviz as az
 
-        from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
-        from pymc_extras.inference.pathfinder.pathfinder import PathfinderConfig
+        from pymc_extras.inference.pathfinder.idata import \
+            add_pathfinder_to_inference_data
+        from pymc_extras.inference.pathfinder.pathfinder import \
+            PathfinderConfig
 
         # Create mock InferenceData
-        posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
+        posterior = xr.Dataset(
+            {"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))}
+        )
         idata = az.InferenceData(posterior=posterior)
 
         # Create mock config
@@ -391,10 +412,13 @@ class TestDiagnosticsAndConfigGroups:
 
         import arviz as az
 
-        from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
+        from pymc_extras.inference.pathfinder.idata import \
+            add_pathfinder_to_inference_data
 
         # Create mock InferenceData
-        posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
+        posterior = xr.Dataset(
+            {"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))}
+        )
         idata = az.InferenceData(posterior=posterior)
 
         # Create mock result with diagnostic data
@@ -434,10 +458,13 @@ class TestDiagnosticsAndConfigGroups:
 
         import arviz as az
 
-        from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
+        from pymc_extras.inference.pathfinder.idata import \
+            add_pathfinder_to_inference_data
 
         # Create mock InferenceData
-        posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
+        posterior = xr.Dataset(
+            {"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))}
+        )
         idata = az.InferenceData(posterior=posterior)
 
         # Create mock result with diagnostic data
@@ -462,15 +489,9 @@ def test_import_structure():
     """Test that all expected imports work."""
     # This test should pass even without full dependencies
     from pymc_extras.inference.pathfinder.idata import (
-        _add_config_data,
-        _add_diagnostics_data,
-        _add_paths_data,
-        _add_summary_data,
-        add_pathfinder_to_inference_data,
-        get_param_coords,
-        multipathfinder_result_to_xarray,
-        pathfinder_result_to_xarray,
-    )
+        _add_config_data, _add_diagnostics_data, _add_paths_data,
+        _add_summary_data, add_pathfinder_to_inference_data, get_param_coords,
+        multipathfinder_result_to_xarray, pathfinder_result_to_xarray)
 
     # Check functions are callable
     assert callable(get_param_coords)

@@ -2,7 +2,6 @@ from functools import wraps
 from inspect import signature
 
 import pytensor.tensor as pt
-
 from pymc import Data, Model
 
 

@@ -3,29 +3,18 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import pytest
-
 from numpy.testing import assert_allclose
 from scipy.stats import multivariate_normal
 
 from pymc_extras.statespace import structural
 from pymc_extras.statespace.filters.distributions import (
-    LinearGaussianStateSpace,
-    SequenceMvNormal,
-    _LinearGaussianStateSpace,
-)
-from pymc_extras.statespace.utils.constants import (
-    ALL_STATE_DIM,
-    OBS_STATE_DIM,
-    TIME_DIM,
-)
-from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
-    rng,
-)
-from tests.statespace.test_utilities import (
-    delete_rvs_from_model,
-    fast_eval,
-    load_nile_test_data,
-)
+    LinearGaussianStateSpace, SequenceMvNormal, _LinearGaussianStateSpace)
+from pymc_extras.statespace.utils.constants import (ALL_STATE_DIM,
+                                                    OBS_STATE_DIM, TIME_DIM)
+from tests.statespace.shared_fixtures import \
+    rng  # pylint: disable=unused-import
+from tests.statespace.test_utilities import (delete_rvs_from_model, fast_eval,
+                                             load_nile_test_data)
 
 floatX = pytensor.config.floatX
 
@@ -96,13 +85,17 @@ def ss_mod_no_me():
 @pytest.mark.parametrize("kfilter", filter_names)
 def test_loglike_vectors_agree(kfilter, pymc_model):
     # TODO: This test might be flakey, I've gotten random failures
-    ss_mod = structural.LevelTrend(order=2).build("data", verbose=False, filter_type=kfilter)
+    ss_mod = structural.LevelTrend(order=2).build(
+        "data", verbose=False, filter_type=kfilter
+    )
     with pymc_model:
         ss_mod._insert_random_variables()
         matrices = ss_mod.unpack_statespace()
 
         filter_outputs = ss_mod.kalman_filter.build_graph(pymc_model["data"], *matrices)
-        filter_mus, pred_mus, obs_mu, filter_covs, pred_covs, obs_cov, ll = filter_outputs
+        filter_mus, pred_mus, obs_mu, filter_covs, pred_covs, obs_cov, ll = (
+            filter_outputs
+        )
 
     test_ll = fast_eval(ll)
 
@@ -148,7 +141,9 @@ def test_lgss_distribution_from_steps(output_name, ss_mod_me, pymc_model_2):
         matrices = ss_mod_me.unpack_statespace()
 
         # pylint: disable=unpacking-non-sequence
-        latent_states, obs_states = LinearGaussianStateSpace("states", *matrices, steps=100)
+        latent_states, obs_states = LinearGaussianStateSpace(
+            "states", *matrices, steps=100
+        )
         # pylint: enable=unpacking-non-sequence
 
         idata = pm.sample_prior_predictive(draws=10)
@@ -179,10 +174,16 @@ def test_lgss_distribution_with_dims(output_name, ss_mod_me, pymc_model_2):
 
     assert idata.prior.coords["time"].shape == (101,)
     assert all(
-        [dim in idata.prior.states_latent.coords.keys() for dim in [TIME_DIM, ALL_STATE_DIM]]
+        [
+            dim in idata.prior.states_latent.coords.keys()
+            for dim in [TIME_DIM, ALL_STATE_DIM]
+        ]
     )
     assert all(
-        [dim in idata.prior.states_observed.coords.keys() for dim in [TIME_DIM, OBS_STATE_DIM]]
+        [
+            dim in idata.prior.states_observed.coords.keys()
+            for dim in [TIME_DIM, OBS_STATE_DIM]
+        ]
     )
     assert not np.any(np.isnan(idata.prior[output_name].values))
 
@@ -226,10 +227,16 @@ def test_lgss_with_time_varying_inputs(output_name, rng):
 
     assert idata.prior.coords["time"].shape == (10,)
     assert all(
-        [dim in idata.prior.states_latent.coords.keys() for dim in [TIME_DIM, ALL_STATE_DIM]]
+        [
+            dim in idata.prior.states_latent.coords.keys()
+            for dim in [TIME_DIM, ALL_STATE_DIM]
+        ]
     )
     assert all(
-        [dim in idata.prior.states_observed.coords.keys() for dim in [TIME_DIM, OBS_STATE_DIM]]
+        [
+            dim in idata.prior.states_observed.coords.keys()
+            for dim in [TIME_DIM, OBS_STATE_DIM]
+        ]
     )
     assert not np.any(np.isnan(idata.prior[output_name].values))
 

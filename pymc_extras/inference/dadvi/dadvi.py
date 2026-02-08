@@ -3,24 +3,20 @@ import numpy as np
 import pymc
 import pytensor
 import pytensor.tensor as pt
-
-from xarray import DataTree
 from better_optimize import basinhopping, minimize
 from better_optimize.constants import minimize_method
 from pymc import DictToArrayBijection, Model, join_nonshared_inputs
 from pymc.blocking import RaveledVars
 from pymc.util import RandomSeed
 from pytensor.tensor.variable import TensorVariable
+from xarray import DataTree
 
 from pymc_extras.inference.laplace_approx.idata import (
-    add_data_to_inference_data,
-    add_optimizer_result_to_inference_data,
-)
-from pymc_extras.inference.laplace_approx.laplace import draws_from_laplace_approx
+    add_data_to_inference_data, add_optimizer_result_to_inference_data)
+from pymc_extras.inference.laplace_approx.laplace import \
+    draws_from_laplace_approx
 from pymc_extras.inference.laplace_approx.scipy_interface import (
-    scipy_optimize_funcs_from_loss,
-    set_optimizer_function_defaults,
-)
+    scipy_optimize_funcs_from_loss, set_optimizer_function_defaults)
 
 
 def fit_dadvi(
@@ -201,7 +197,9 @@ def fit_dadvi(
     if include_transformed:
         idata["unconstrained_posterior"] = unconstrained_posterior
 
-    var_name_to_model_var = {f"{var_name}_mu": var_name for var_name in initial_point_dict.keys()}
+    var_name_to_model_var = {
+        f"{var_name}_mu": var_name for var_name in initial_point_dict.keys()
+    }
     var_name_to_model_var.update(
         {f"{var_name}_sigma__log": var_name for var_name in initial_point_dict.keys()}
     )
@@ -267,12 +265,16 @@ def create_dadvi_graph(
 
     var_params = pt.vector(name="eta", shape=(2 * n_params,))
 
-    means, log_sds = pt.split(var_params, axis=0, splits_size=[n_params, n_params], n_splits=2)
+    means, log_sds = pt.split(
+        var_params, axis=0, splits_size=[n_params, n_params], n_splits=2
+    )
 
     draw_matrix = pt.constant(draws)
     samples = means + pt.exp(log_sds) * draw_matrix
 
-    logp_vectorized_draws = pytensor.graph.vectorize_graph(logp, replace={flat_input: samples})
+    logp_vectorized_draws = pytensor.graph.vectorize_graph(
+        logp, replace={flat_input: samples}
+    )
 
     mean_log_density = pt.mean(logp_vectorized_draws)
     entropy = pt.sum(log_sds)
