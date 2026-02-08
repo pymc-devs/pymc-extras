@@ -6,6 +6,7 @@ import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
 import pytest
+import xarray as xr
 from arviz_base import dict_to_dataset
 from pymc import Model, draw
 from pymc.distributions import transforms
@@ -884,7 +885,7 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(posterior=dict_to_dataset(prior))
+            idata = xr.DataTree.from_dict({"posterior": dict_to_dataset(prior)})
 
         if explicit_model:
             idata = recover_marginals(idata, model=marginal_m, return_samples=True)
@@ -931,10 +932,12 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(
-                posterior=dict_to_dataset(
-                    {k: np.expand_dims(prior[k], axis=0) for k in prior}
-                )
+            idata = xr.DataTree.from_dict(
+                {
+                    "posterior": dict_to_dataset(
+                        {k: np.expand_dims(prior[k], axis=0) for k in prior}
+                    )
+                }
             )
 
         with marginal_m:
@@ -960,10 +963,12 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(
-                posterior=dict_to_dataset(
-                    {k: np.expand_dims(prior[k], axis=0) for k in prior}
-                )
+            idata = xr.DataTree.from_dict(
+                {
+                    "posterior": dict_to_dataset(
+                        {k: np.expand_dims(prior[k], axis=0) for k in prior}
+                    )
+                }
             )
 
             idata = recover_marginals(idata, return_samples=True)
@@ -990,7 +995,7 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(posterior=dict_to_dataset(prior))
+            idata = xr.DataTree.from_dict({"posterior": dict_to_dataset(prior)})
 
             idata = recover_marginals(idata, return_samples=True)
         post = idata.posterior
