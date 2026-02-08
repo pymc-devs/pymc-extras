@@ -4,13 +4,7 @@ import numpy as np
 
 from pytensor import tensor as pt
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Data,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import Coord, Data, Parameter, Shock, State
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import TIME_DIM
@@ -169,7 +163,7 @@ class Regression(Component):
 
         beta_parameter = Parameter(
             name=f"beta_{self.name}",
-            shape=(k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,),
+            shape=((k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,)),
             dims=(
                 (f"endog_{self.name}", f"state_{self.name}")
                 if k_endog_effective > 1
@@ -232,7 +226,8 @@ class Regression(Component):
         k_states = self.k_states // k_endog_effective
 
         betas = self.make_and_register_variable(
-            f"beta_{self.name}", shape=(k_endog, k_states) if k_endog_effective > 1 else (k_states,)
+            f"beta_{self.name}",
+            shape=(k_endog, k_states) if k_endog_effective > 1 else (k_states,),
         )
         regression_data = self.make_and_register_data(f"data_{self.name}", shape=(None, k_states))
 

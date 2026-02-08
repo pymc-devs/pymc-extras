@@ -136,7 +136,10 @@ def test_add_data_to_inferencedata(use_context, simple_model, rng):
     model, *_ = simple_model
 
     idata = az.from_dict(
-        posterior={"mu": rng.standard_normal((1, 1)), "sigma_log__": rng.standard_normal((1, 1))}
+        posterior={
+            "mu": rng.standard_normal((1, 1)),
+            "sigma_log__": rng.standard_normal((1, 1)),
+        }
     )
 
     context = model if use_context else no_op()

@@ -145,12 +145,18 @@ def test_blackjax_particles_from_pymc_population_multivariate():
         z = pm.Normal("z", 0, 1)
         y = pm.Normal("y", x + z, 1, observed=0)
 
-    population = {"x": np.array([0.34614613, 1.09163261, -0.44526825]), "z": np.array([1, 2, 3])}
+    population = {
+        "x": np.array([0.34614613, 1.09163261, -0.44526825]),
+        "z": np.array([1, 2, 3]),
+    }
     blackjax_particles = blackjax_particles_from_pymc_population(model, population)
     jax.tree.map(
         np.testing.assert_allclose,
         blackjax_particles,
-        [np.array([[0.34614613], [1.09163261], [-0.44526825]]), np.array([[1], [2], [3]])],
+        [
+            np.array([[0.34614613], [1.09163261], [-0.44526825]]),
+            np.array([[1], [2], [3]]),
+        ],
     )
 
 

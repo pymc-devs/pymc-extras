@@ -5,12 +5,7 @@ import numpy as np
 from pytensor import tensor as pt
 from pytensor.tensor.linalg import block_diag
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import Coord, Parameter, Shock, State
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
 
@@ -238,9 +233,11 @@ class Cycle(Component):
         cycle_param = Parameter(
             name=f"params_{self.name}",
             shape=(2,) if k_endog_effective == 1 else (k_endog_effective, 2),
-            dims=(f"state_{self.name}",)
-            if k_endog_effective == 1
-            else (f"endog_{self.name}", f"state_{self.name}"),
+            dims=(
+                (f"state_{self.name}",)
+                if k_endog_effective == 1
+                else (f"endog_{self.name}", f"state_{self.name}")
+            ),
             constraints=None,
         )
 
@@ -288,9 +285,9 @@ class Cycle(Component):
 
         state_coords = Coord(
             dimension=f"state_{self.name}",
-            labels=base_names
-            if k_endog_effective == 1
-            else (f"Cos_{self.name}", f"Sin_{self.name}"),
+            labels=(
+                base_names if k_endog_effective == 1 else (f"Cos_{self.name}", f"Sin_{self.name}")
+            ),
         )
 
         coord_container = [state_coords]

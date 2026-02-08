@@ -82,7 +82,7 @@ class ModelBuilder:
 
         self.model_config = model_config  # parameters for priors etc.
         self.model = None  # Set by build_model
-        self.idata: az.InferenceData | None = None  # idata is generated during fitting
+        self.idata: xr.DataTree | None = None  # idata is generated during fitting
         self.is_fitted_ = False
 
     def _validate_data(self, X, y=None):
@@ -305,8 +305,8 @@ class ModelBuilder:
         with self.model:
             sampler_args = {**self.sampler_config, **kwargs}
             idata = pm.sample(**sampler_args)
-            idata.extend(pm.sample_prior_predictive(), join="right")
-            idata.extend(pm.sample_posterior_predictive(idata), join="right")
+            idata.update(pm.sample_prior_predictive())
+            idata.update(pm.sample_posterior_predictive(idata))
 
         idata = self.set_idata_attrs(idata)
         return idata
@@ -447,7 +447,7 @@ class ModelBuilder:
         )
         model.idata = idata
         model.is_fitted_ = True
-        dataset = idata.fit_data.to_dataframe()
+        dataset = idata["fit_data"].to_dataframe()
         X = dataset.drop(columns=[model.output_var])
         y = dataset[model.output_var]
         model.build_model(X, y)
@@ -468,7 +468,7 @@ class ModelBuilder:
         predictor_names: list[str] | None = None,
         random_seed: RandomState = None,
         **kwargs: Any,
-    ) -> az.InferenceData:
+    ) -> xr.DataTree:
         """
         Fit a model using the data passed as a parameter.
         Sets attrs to inference data of the model.
@@ -525,7 +525,7 @@ class ModelBuilder:
                 category=UserWarning,
                 message="The group fit_data is not defined in the InferenceData scheme",
             )
-            self.idata.add_groups(fit_data=combined_data.to_xarray())  # type: ignore
+            self.idata["fit_data"] = combined_data.to_xarray()  # type: ignore
 
         self.is_fitted_ = True
 
@@ -617,11 +617,11 @@ class ModelBuilder:
         else:
             self._data_setter(X_pred, y_pred)
         with self.model:  # sample with new input data
-            prior_pred: az.InferenceData = pm.sample_prior_predictive(samples, **kwargs)
+            prior_pred: xr.DataTree = pm.sample_prior_predictive(samples, **kwargs)
             self.set_idata_attrs(prior_pred)
             if extend_idata:
                 if self.idata is not None:
-                    self.idata.extend(prior_pred, join="right")
+                    self.idata.update(prior_pred)
                 else:
                     self.idata = prior_pred
 
@@ -653,7 +653,7 @@ class ModelBuilder:
         with self.model:  # sample with new input data
             post_pred = pm.sample_posterior_predictive(self.idata, **kwargs)
             if extend_idata:
-                self.idata.extend(post_pred, join="right")
+                self.idata.update(post_pred)
 
         posterior_predictive_samples = az.extract(
             post_pred, "posterior_predictive", combined=combined

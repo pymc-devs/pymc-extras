@@ -1,7 +1,6 @@
 from itertools import product
 from typing import Literal
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import xarray as xr
@@ -23,7 +22,9 @@ def make_default_labels(name: str, shape: tuple[int, ...]) -> list:
 
 
 def make_unpacked_variable_names(
-    names: list[str], model: pm.Model, var_name_to_model_var: dict[str, str] | None = None
+    names: list[str],
+    model: pm.Model,
+    var_name_to_model_var: dict[str, str] | None = None,
 ) -> list[str]:
     coords = model.coords
     initial_point = model.initial_point()
@@ -117,36 +118,38 @@ def map_results_to_inference_data(
 
     unconstrained_names = sorted(set(all_varnames) - set(constrained_names))
 
-    idata = az.from_dict(
-        posterior={
-            k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in constrained_names
-        },
+    posterior_dict = {
+        k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in constrained_names
+    }
+    posterior_ds = dict_to_dataset(
+        posterior_dict,
         coords=coords,
         dims=dims,
+        sample_dims=["chain", "draw"],
     )
+    idata = xr.DataTree.from_dict({"posterior": xr.DataTree(posterior_ds)})
 
     if unconstrained_names and include_transformed:
-        unconstrained_posterior = az.from_dict(
-            posterior={
-                k: np.expand_dims(v, (0, 1))
-                for k, v in map_point.items()
-                if k in unconstrained_names
-            },
+        unconstrained_dict = {
+            k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in unconstrained_names
+        }
+        unconstrained_ds = dict_to_dataset(
+            unconstrained_dict,
             coords=coords,
             dims=dims,
+            sample_dims=["chain", "draw"],
         )
-
-        idata["unconstrained_posterior"] = unconstrained_posterior.posterior
+        idata["unconstrained_posterior"] = unconstrained_ds
 
     return idata
 
 
 def add_fit_to_inference_data(
-    idata: az.InferenceData,
+    idata: xr.DataTree,
     mu: RaveledVars,
     H_inv: np.ndarray | None,
     model: pm.Model | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
     Add the mean vector and covariance matrix of the Laplace approximation to an InferenceData object.
 
@@ -180,22 +183,25 @@ def add_fit_to_inference_data(
         cov_dataarray = xr.DataArray(
             H_inv,
             dims=["rows", "columns"],
-            coords={"rows": unpacked_variable_names, "columns": unpacked_variable_names},
+            coords={
+                "rows": unpacked_variable_names,
+                "columns": unpacked_variable_names,
+            },
         )
         data["covariance_matrix"] = cov_dataarray
 
     dataset = xr.Dataset(data)
-    idata.add_groups(fit=dataset)
+    idata["fit"] = dataset
 
     return idata
 
 
 def add_data_to_inference_data(
-    idata: az.InferenceData,
+    idata: xr.DataTree,
     progressbar: bool = True,
     model: pm.Model | None = None,
     compile_kwargs: dict | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
     Add observed and constant data to an InferenceData object.
 
@@ -219,13 +225,13 @@ def add_data_to_inference_data(
 
     if model.deterministics:
         expand_dims = {}
-        if "chain" not in idata.posterior.coords:
+        if "chain" not in idata["posterior"].coords:
             expand_dims["chain"] = [0]
-        if "draw" not in idata.posterior.coords:
+        if "draw" not in idata["posterior"].coords:
             expand_dims["draw"] = [0]
 
-        idata.posterior = pm.compute_deterministics(
-            idata.posterior.expand_dims(expand_dims),
+        idata["posterior"] = pm.compute_deterministics(
+            idata["posterior"].expand_dims(expand_dims),
             model=model,
             merge_dataset=True,
             progressbar=progressbar,
@@ -236,25 +242,22 @@ def add_data_to_inference_data(
 
     observed_data = dict_to_dataset(
         find_observations(model),
-        library=pm,
+        inference_library=pm,
         coords=coords,
         dims=dims,
-        default_dims=[],
+        sample_dims=[],
     )
 
     constant_data = dict_to_dataset(
         find_constants(model),
-        library=pm,
+        inference_library=pm,
         coords=coords,
         dims=dims,
-        default_dims=[],
+        sample_dims=[],
     )
 
-    idata.add_groups(
-        {"observed_data": observed_data, "constant_data": constant_data},
-        coords=coords,
-        dims=dims,
-    )
+    idata["observed_data"] = observed_data
+    idata["constant_data"] = constant_data
 
     return idata
 
@@ -340,7 +343,10 @@ def optimizer_result_to_dataset(
         data_vars["hess_inv"] = xr.DataArray(
             hess_inv,
             dims=["variables", "variables_aux"],
-            coords={"variables": unpacked_variable_names, "variables_aux": unpacked_variable_names},
+            coords={
+                "variables": unpacked_variable_names,
+                "variables_aux": unpacked_variable_names,
+            },
         )
 
     if hasattr(result, "nit"):
@@ -375,13 +381,13 @@ def optimizer_result_to_dataset(
 
 
 def add_optimizer_result_to_inference_data(
-    idata: az.InferenceData,
+    idata: xr.DataTree,
     result: OptimizeResult,
     method: minimize_method | Literal["basinhopping"],
     mu: RaveledVars | None = None,
     model: pm.Model | None = None,
     var_name_to_model_var: dict[str, str] | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
     Add the optimization result to an InferenceData object.
 
@@ -407,8 +413,12 @@ def add_optimizer_result_to_inference_data(
         The provided InferenceData, with the optimization results added to the "optimizer" group.
     """
     dataset = optimizer_result_to_dataset(
-        result, method=method, mu=mu, model=model, var_name_to_model_var=var_name_to_model_var
+        result,
+        method=method,
+        mu=mu,
+        model=model,
+        var_name_to_model_var=var_name_to_model_var,
     )
-    idata.add_groups({"optimizer_result": dataset})
+    idata["optimizer_result"] = dataset
 
     return idata

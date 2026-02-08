@@ -75,7 +75,9 @@ class LBFGSHistoryManager:
     def get_history(self) -> LBFGSHistory:
         """returns history of optimisation iterations."""
         return LBFGSHistory(
-            x=self.x_history[: self.count], g=self.g_history[: self.count], count=self.count
+            x=self.x_history[: self.count],
+            g=self.g_history[: self.count],
+            count=self.count,
         )
 
     def entry_condition_met(self, x, value, grad) -> bool:
@@ -151,7 +153,14 @@ class LBFGS:
     """
 
     def __init__(
-        self, value_grad_fn, maxcor, maxiter=1000, ftol=1e-5, gtol=1e-8, maxls=1000, epsilon=1e-8
+        self,
+        value_grad_fn,
+        maxcor,
+        maxiter=1000,
+        ftol=1e-5,
+        gtol=1e-8,
+        maxls=1000,
+        epsilon=1e-8,
     ) -> None:
         self.value_grad_fn = value_grad_fn
         self.maxcor = maxcor
@@ -184,7 +193,10 @@ class LBFGS:
         x0 = np.array(x0, dtype=np.float64)
 
         history_manager = LBFGSHistoryManager(
-            value_grad_fn=self.value_grad_fn, x0=x0, maxiter=self.maxiter, epsilon=self.epsilon
+            value_grad_fn=self.value_grad_fn,
+            x0=x0,
+            maxiter=self.maxiter,
+            epsilon=self.epsilon,
         )
 
         result = minimize(

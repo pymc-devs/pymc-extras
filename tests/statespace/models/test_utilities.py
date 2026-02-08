@@ -268,7 +268,8 @@ class TestJoinDesignMatrices:
 
         Z_1, Z_2 = self._setup_Z(observed_states_1, observed_states_2)
         fn = function(
-            [Z_1, Z_2], join_tensors_by_dim_labels(Z_1, Z_2, observed_states_1, observed_states_2)
+            [Z_1, Z_2],
+            join_tensors_by_dim_labels(Z_1, Z_2, observed_states_1, observed_states_2),
         )
 
         Z_1_val = np.array([[1.0, 0.0]])

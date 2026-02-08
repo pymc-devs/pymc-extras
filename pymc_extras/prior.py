@@ -821,6 +821,7 @@ class Prior:
 
             def transform(var):
                 return pm.Deterministic(name, self.pytensor_transform(var), dims=self.dims)
+
         else:
             var_name = name
 

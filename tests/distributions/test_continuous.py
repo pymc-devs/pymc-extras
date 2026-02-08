@@ -90,7 +90,13 @@ class TestGenExtremeClass:
         "mu, sigma, xi, size, expected",
         [
             (0, 1, 0, None, 0),
-            (1, np.arange(1, 4), 0.1, None, 1 + np.arange(1, 4) * (1.1**-0.1 - 1) / 0.1),
+            (
+                1,
+                np.arange(1, 4),
+                0.1,
+                None,
+                1 + np.arange(1, 4) * (1.1**-0.1 - 1) / 0.1,
+            ),
             (np.arange(5), 1, 0.1, None, np.arange(5) + (1.1**-0.1 - 1) / 0.1),
             (
                 0,

@@ -39,7 +39,12 @@ def rng():
 @pytest.mark.parametrize("vectorize_draws", (True, False))
 @pytest.mark.parametrize(
     "mode, gradient_backend",
-    [(None, "pytensor"), ("NUMBA", "pytensor"), pytest.param("JAX", "jax"), ("JAX", "pytensor")],
+    [
+        (None, "pytensor"),
+        ("NUMBA", "pytensor"),
+        pytest.param("JAX", "jax"),
+        ("JAX", "pytensor"),
+    ],
 )
 def test_fit_laplace_basic(mode, gradient_backend: GradientBackend, vectorize_draws):
     # Example originates from Bayesian Data Analyses, 3rd Edition
@@ -70,17 +75,17 @@ def test_fit_laplace_basic(mode, gradient_backend: GradientBackend, vectorize_dr
             progressbar=False,
         )
 
-    assert idata.posterior["mu"].shape == (1, draws)
-    assert idata.posterior["logsigma"].shape == (1, draws)
-    assert idata.observed_data["y"].shape == (n,)
+    assert idata["posterior"]["mu"].shape == (1, draws)
+    assert idata["posterior"]["logsigma"].shape == (1, draws)
+    assert idata["observed_data"]["y"].shape == (n,)
     assert idata.fit["mean_vector"].shape == (len(vars),)
     assert idata.fit["covariance_matrix"].shape == (len(vars), len(vars))
 
     bda_map = [np.log(y.std()), y.mean()]
     bda_cov = np.array([[1 / (2 * n), 0], [0, y.var() / n]])
 
-    np.testing.assert_allclose(idata.posterior["logsigma"].mean(), bda_map[0], rtol=1e-3)
-    np.testing.assert_allclose(idata.posterior["mu"].mean(), bda_map[1], atol=1)
+    np.testing.assert_allclose(idata["posterior"]["logsigma"].mean(), bda_map[0], rtol=1e-3)
+    np.testing.assert_allclose(idata["posterior"]["mu"].mean(), bda_map[1], atol=1)
 
     np.testing.assert_allclose(idata.fit["mean_vector"].values, bda_map, atol=1, rtol=1e-3)
     np.testing.assert_allclose(idata.fit["covariance_matrix"].values, bda_cov, rtol=1e-3, atol=1e-3)
@@ -105,7 +110,7 @@ def test_fit_laplace_outside_model_context():
     assert hasattr(idata, "fit")
     assert hasattr(idata, "optimizer_result")
 
-    assert idata.posterior["mu"].shape == (1, 100)
+    assert idata["posterior"]["mu"].shape == (1, 100)
 
 
 @pytest.mark.parametrize(
@@ -134,10 +139,14 @@ def test_fit_laplace_coords(include_transformed, rng):
         )
 
     np.testing.assert_allclose(
-        idata.posterior.mu.mean(dim=["chain", "draw"]).values, np.full((3,), 3), atol=0.5
+        idata["posterior"].mu.mean(dim=["chain", "draw"]).values,
+        np.full((3,), 3),
+        atol=0.5,
     )
     np.testing.assert_allclose(
-        idata.posterior.sigma.mean(dim=["chain", "draw"]).values, np.full((3,), 1.5), atol=0.3
+        idata["posterior"].sigma.mean(dim=["chain", "draw"]).values,
+        np.full((3,), 1.5),
+        atol=0.3,
     )
 
     assert idata.fit.rows.values.tolist() == [
@@ -151,8 +160,8 @@ def test_fit_laplace_coords(include_transformed, rng):
 
     assert hasattr(idata, "unconstrained_posterior") == include_transformed
     if include_transformed:
-        assert "sigma_log__" in idata.unconstrained_posterior
-        assert "city" in idata.unconstrained_posterior.coords
+        assert "sigma_log__" in idata["unconstrained_posterior"]
+        assert "city" in idata["unconstrained_posterior"].coords
 
 
 @pytest.mark.parametrize(
@@ -164,7 +173,9 @@ def test_fit_laplace_ragged_coords(draws, use_dims, rng):
     with pm.Model(coords=coords) as ragged_dim_model:
         X = pm.Data("X", np.ones((100, 2)), dims=["obs_idx", "feature"] if use_dims else None)
         beta = pm.Normal(
-            "beta", mu=[[-100.0, 100.0], [-100.0, 100.0], [-100.0, 100.0]], dims=["city", "feature"]
+            "beta",
+            mu=[[-100.0, 100.0], [-100.0, 100.0], [-100.0, 100.0]],
+            dims=["city", "feature"],
         )
         mu = pm.Deterministic(
             "mu",
@@ -190,8 +201,8 @@ def test_fit_laplace_ragged_coords(draws, use_dims, rng):
         )
 
     # These should have been dropped when the laplace idata was created
-    assert "laplace_approximation" not in list(idata.posterior.data_vars.keys())
-    assert "unpacked_var_names" not in list(idata.posterior.coords.keys())
+    assert "laplace_approximation" not in list(idata["posterior"].data_vars.keys())
+    assert "unpacked_var_names" not in list(idata["posterior"].coords.keys())
 
     assert idata["posterior"].beta.shape[-2:] == (3, 2)
     assert idata["posterior"].sigma.shape[-1:] == (3,)
@@ -206,7 +217,11 @@ def test_fit_laplace_ragged_coords(draws, use_dims, rng):
 
 def test_model_with_nonstandard_dimensionality(rng):
     y_obs = np.concatenate(
-        [rng.normal(-1, 2, size=150), rng.normal(3, 1, size=350), rng.normal(5, 4, size=50)]
+        [
+            rng.normal(-1, 2, size=150),
+            rng.normal(3, 1, size=350),
+            rng.normal(5, 4, size=50),
+        ]
     )
 
     with pm.Model(coords={"obs_idx": range(y_obs.size), "class": ["A", "B", "C"]}) as model:
@@ -224,22 +239,26 @@ def test_model_with_nonstandard_dimensionality(rng):
         )
         class_idx = pm.Categorical("class_idx", p=w, dims=["obs_idx"])
         y_hat = pm.Normal(
-            "obs", mu=mu[class_idx], sigma=sigma[class_idx], observed=y, dims=["obs_idx"]
+            "obs",
+            mu=mu[class_idx],
+            sigma=sigma[class_idx],
+            observed=y,
+            dims=["obs_idx"],
         )
 
     with pmx.marginalize(model, [class_idx]):
         idata = pmx.fit_laplace(progressbar=False)
 
     # The dirichlet value variable has a funky shape; check that it got a default
-    assert "w_simplex___dim_0" in list(idata.unconstrained_posterior.w_simplex__.coords.keys())
-    assert "class" not in list(idata.unconstrained_posterior.w_simplex__.coords.keys())
-    assert len(idata.unconstrained_posterior.coords["w_simplex___dim_0"]) == 2
+    assert "w_simplex___dim_0" in list(idata["unconstrained_posterior"].w_simplex__.coords.keys())
+    assert "class" not in list(idata["unconstrained_posterior"].w_simplex__.coords.keys())
+    assert len(idata["unconstrained_posterior"].coords["w_simplex___dim_0"]) == 2
 
     # On the other hand, check that the actual w has the correct dims
-    assert "class" in list(idata.posterior.w.coords.keys())
+    assert "class" in list(idata["posterior"].w.coords.keys())
 
     # The log transform is 1-to-1, so it should have the same dims as the original rv
-    assert "class" in list(idata.unconstrained_posterior.sigma_log__.coords.keys())
+    assert "class" in list(idata["unconstrained_posterior"].sigma_log__.coords.keys())
 
 
 def test_laplace_nonstandard_dims_2d():
@@ -294,8 +313,8 @@ def test_laplace_nonscalar_rv_without_dims():
 
         idata = pmx.fit_laplace(progressbar=False)
 
-    assert idata.posterior["x"].shape == (1, 500, 2, 3)
-    assert all(f"x_dim_{i}" in idata.posterior.coords for i in range(2))
+    assert idata["posterior"]["x"].shape == (1, 500, 2, 3)
+    assert all(f"x_dim_{i}" in idata["posterior"].coords for i in range(2))
     assert idata.fit.rows.values.tolist() == [
         "x_loc[A]",
         "x_loc[B]",
@@ -322,7 +341,10 @@ def test_laplace_scalar_basinhopping(optimizer_method):
 
         idata_laplace = pmx.fit_laplace(
             optimize_method="basinhopping",
-            optimizer_kwargs={"minimizer_kwargs": {"method": optimizer_method}, "niter": 1},
+            optimizer_kwargs={
+                "minimizer_kwargs": {"method": optimizer_method},
+                "niter": 1,
+            },
             progressbar=False,
         )
 

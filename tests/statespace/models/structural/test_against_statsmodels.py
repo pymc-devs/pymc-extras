@@ -21,12 +21,8 @@ from pymc_extras.statespace.utils.constants import (
     SHOCK_DIM,
     SHORT_NAME_TO_LONG,
 )
-from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
-    rng,
-)
-from tests.statespace.test_utilities import (
-    unpack_symbolic_matrices_with_params,
-)
+from tests.statespace.shared_fixtures import rng  # pylint: disable=unused-import
+from tests.statespace.test_utilities import unpack_symbolic_matrices_with_params
 
 floatX = pytensor.config.floatX
 ATOL = 1e-8 if floatX.endswith("64") else 1e-4
@@ -289,7 +285,9 @@ def create_structural_model_and_equivalent_statsmodel(
             sm_params["sigma2.trend"] = sigma
 
         comp = st.LevelTrend(
-            name="level", order=level_trend_order, innovations_order=level_trend_innov_order
+            name="level",
+            order=level_trend_order,
+            innovations_order=level_trend_innov_order,
         )
         components.append(comp)
 

@@ -122,7 +122,11 @@ class BaseFilter(ABC):
         y = args.pop(0)
 
         # There are always two outputs_info wedged between the seqs and non_seqs
-        seqs, (a0, P0), non_seqs = args[:n_seq], args[n_seq : n_seq + 2], args[n_seq + 2 :]
+        seqs, (a0, P0), non_seqs = (
+            args[:n_seq],
+            args[n_seq : n_seq + 2],
+            args[n_seq + 2 :],
+        )
         return_ordered = []
         for name in PARAM_NAMES:
             if name in self.seq_names:

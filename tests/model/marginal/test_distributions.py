@@ -48,10 +48,17 @@ def test_marginalized_hmm_normal_emission(batch_chain, batch_emission):
         P = [[0, 1], [1, 0]]
         init_dist = pm.Categorical.dist(p=[1, 0])
         chain = DiscreteMarkovChain(
-            "chain", P=P, init_dist=init_dist, steps=3, shape=(3, 4) if batch_chain else None
+            "chain",
+            P=P,
+            init_dist=init_dist,
+            steps=3,
+            shape=(3, 4) if batch_chain else None,
         )
         emission = pm.Normal(
-            "emission", mu=chain * 2 - 1, sigma=1e-1, shape=(3, 4) if batch_emission else None
+            "emission",
+            mu=chain * 2 - 1,
+            sigma=1e-1,
+            shape=(3, 4) if batch_emission else None,
         )
 
     marginal_m = marginalize(m, [chain])
@@ -126,7 +133,10 @@ def test_marginalized_hmm_multiple_emissions(batch_chain, batch_emission1, batch
         test_value_emission2 = np.broadcast_to(-test_value[..., None], emission2_shape)
     else:
         test_value_emission2 = np.broadcast_to(-test_value, emission2_shape)
-    test_point = {"emission_1": test_value_emission1, "emission_2": test_value_emission2}
+    test_point = {
+        "emission_1": test_value_emission1,
+        "emission_2": test_value_emission2,
+    }
     res_logp, dummy_logp = logp_fn(test_point)
     assert res_logp.shape == ((3, 1) if batch_chain else ())
     np.testing.assert_allclose(res_logp.sum(), expected_logp)

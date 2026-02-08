@@ -56,7 +56,9 @@ def get_unfitted_model_instance(X, y):
         "obs_error": 2,
     }
     model = test_ModelBuilder(
-        model_config=model_config, sampler_config=sampler_config, test_parameter="test_paramter"
+        model_config=model_config,
+        sampler_config=sampler_config,
+        test_parameter="test_paramter",
     )
     # Do the things that `model.fit` does except sample to create idata.
     model._generate_and_preprocess_model_data(X, y.values.flatten())
@@ -167,7 +169,8 @@ def test_save_input_params(fitted_model_instance):
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32", reason="Permissions for temp files not granted on windows CI."
+    sys.platform == "win32",
+    reason="Permissions for temp files not granted on windows CI.",
 )
 def test_save_load(fitted_model_instance):
     temp = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False)
@@ -237,8 +240,8 @@ def test_sample_posterior_predictive(fitted_model_instance, combined):
     pred = fitted_model_instance.sample_posterior_predictive(
         prediction_data["input"], combined=combined, extend_idata=True
     )
-    chains = fitted_model_instance.idata.sample_stats.sizes["chain"]
-    draws = fitted_model_instance.idata.sample_stats.sizes["draw"]
+    chains = fitted_model_instance.idata["sample_stats"].sizes["chain"]
+    draws = fitted_model_instance.idata["sample_stats"].sizes["draw"]
     expected_shape = (n_pred, chains * draws) if combined else (chains, draws, n_pred)
     assert pred[fitted_model_instance.output_var].shape == expected_shape
     assert np.issubdtype(pred[fitted_model_instance.output_var].dtype, np.floating)

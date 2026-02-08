@@ -15,9 +15,7 @@ from pymc_extras.statespace.filters import (
     UnivariateFilter,
 )
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter
-from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
-    rng,
-)
+from tests.statespace.shared_fixtures import rng  # pylint: disable=unused-import
 from tests.statespace.test_utilities import (
     get_expected_shape,
     get_sm_state_from_output_name,

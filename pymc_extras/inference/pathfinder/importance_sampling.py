@@ -132,7 +132,10 @@ def importance_sampling(
                     samples, size=num_draws, replace=True, p=p, shuffle=False, axis=0
                 )
                 return ImportanceSamplingResult(
-                    samples=resampled, pareto_k=pareto_k, warnings=warnings, method=method
+                    samples=resampled,
+                    pareto_k=pareto_k,
+                    warnings=warnings,
+                    method=method,
                 )
             except ValueError as e2:
                 logger.error(

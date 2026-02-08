@@ -16,7 +16,10 @@ class TrainingFn(Protocol):
 
 
 def compile_svi_training_fn(
-    model: Model, guide: AutoGuideModel, stick_the_landing: bool = True, **compile_kwargs
+    model: Model,
+    guide: AutoGuideModel,
+    stick_the_landing: bool = True,
+    **compile_kwargs,
 ) -> TrainingFn:
     draws = pt.scalar("draws", dtype=int)
     params = guide.params
@@ -33,7 +36,9 @@ def compile_svi_training_fn(
         compile_kwargs["trust_input"] = True
 
     f_loss_dloss = compile(
-        inputs=[draws, *params], outputs=[negative_elbo, *negative_elbo_grads], **compile_kwargs
+        inputs=[draws, *params],
+        outputs=[negative_elbo, *negative_elbo_grads],
+        **compile_kwargs,
     )
 
     return f_loss_dloss

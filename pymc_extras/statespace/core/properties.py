@@ -127,7 +127,11 @@ class ParameterInfo(Info[Parameter]):
 
     def to_dict(self):
         return {
-            param.name: {"shape": param.shape, "constraints": param.constraints, "dims": param.dims}
+            param.name: {
+                "shape": param.shape,
+                "constraints": param.constraints,
+                "dims": param.dims,
+            }
             for param in self.items
         }
 
@@ -158,7 +162,11 @@ class DataInfo(Info[Data]):
 
     def to_dict(self):
         return {
-            data.name: {"shape": data.shape, "dims": data.dims, "exogenous": data.is_exogenous}
+            data.name: {
+                "shape": data.shape,
+                "dims": data.dims,
+                "exogenous": data.is_exogenous,
+            }
             for data in self.items
         }
 

@@ -84,7 +84,13 @@ def test_multilevel():
     model_r, vip = vip_reparametrize(model, ["a_g", "a_ig"])
     assert "a_g" in vip.get_lambda()
     assert "a_ig" in vip.get_lambda()
-    assert {v.name for v in model_r.free_RVs} == {"a", "s", "a_g::tau_", "s_g", "a_ig::tau_"}
+    assert {v.name for v in model_r.free_RVs} == {
+        "a",
+        "s",
+        "a_g::tau_",
+        "s_g",
+        "a_ig::tau_",
+    }
     assert "a_g" in [v.name for v in model_r.deterministics]
 
 

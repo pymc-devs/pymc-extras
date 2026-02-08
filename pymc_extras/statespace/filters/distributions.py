@@ -50,7 +50,10 @@ def make_signature(sequence_names):
 
 class LinearGaussianStateSpaceRV(SymbolicRandomVariable):
     default_output = 1
-    _print_name = ("LinearGuassianStateSpace", "\\operatorname{LinearGuassianStateSpace}")
+    _print_name = (
+        "LinearGuassianStateSpace",
+        "\\operatorname{LinearGuassianStateSpace}",
+    )
 
     def update(self, node: Node):
         return {node.inputs[-1]: node.outputs[0]}
@@ -383,7 +386,9 @@ class SequenceMvNormal(Continuous):
         ).owner.outputs
 
         mvn_seq_op = KalmanFilterRV(
-            inputs=[mus_, covs_, logp_, rng], outputs=[seq_mvn_rng, mvn_seq], ndim_supp=2
+            inputs=[mus_, covs_, logp_, rng],
+            outputs=[seq_mvn_rng, mvn_seq],
+            ndim_supp=2,
         )
 
         mvn_seq = mvn_seq_op(mus, covs, logp, rng)

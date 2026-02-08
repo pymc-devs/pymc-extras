@@ -357,7 +357,10 @@ def _add_config_data(config: PathfinderConfig, data_vars: dict) -> None:
 
 
 def _add_diagnostics_data(
-    result: MultiPathfinderResult, data_vars: dict, coords: dict, param_coords: list[str] | None
+    result: MultiPathfinderResult,
+    data_vars: dict,
+    coords: dict,
+    param_coords: list[str] | None,
 ) -> None:
     """Add detailed diagnostics to the pathfinder dataset with 'diagnostics/' prefix."""
     if result.logP is not None:
@@ -513,5 +516,5 @@ def add_pathfinder_to_inference_data(
     if group in idata.groups():
         warnings.warn(f"Group '{group}' already exists in InferenceData, it will be replaced.")
 
-    idata.add_groups({group: consolidated_ds})
+    idata[group] = consolidated_ds
     return idata
