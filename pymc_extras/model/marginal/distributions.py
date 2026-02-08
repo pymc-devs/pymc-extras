@@ -1,8 +1,10 @@
 import warnings
+
 from collections.abc import Sequence
 
 import numpy as np
 import pytensor.tensor as pt
+
 from pymc.distributions import Bernoulli, Categorical, DiscreteUniform
 from pymc.distributions.distribution import _support_point, support_point
 from pymc.logprob.abstract import MeasurableOp, _logprob
@@ -189,9 +191,7 @@ def reduce_batch_dependent_logps(
             dependent_logp = dependent_logp.sum(supp_axes)
 
             # Finally, we need to align the dependent logp batch dimensions with the marginalized logp
-            dims_alignment = [
-                dim for dim in dependent_dims_connection if dim is not None
-            ]
+            dims_alignment = [dim for dim in dependent_dims_connection if dim is not None]
             dependent_logp = dependent_logp.transpose(*dims_alignment)
 
         reduced_logps.append(dependent_logp)
@@ -200,9 +200,7 @@ def reduce_batch_dependent_logps(
     return reduced_logp
 
 
-def align_logp_dims(
-    dims: tuple[tuple[int, None]], logp: TensorVariable
-) -> TensorVariable:
+def align_logp_dims(dims: tuple[tuple[int, None]], logp: TensorVariable) -> TensorVariable:
     """Align the logp with the order specified in dims."""
     dims_alignment = [dim for dim in dims if dim is not None]
     return logp.transpose(*dims_alignment)
@@ -239,9 +237,7 @@ DUMMY_ZERO = pt.constant(0, name="dummy_zero")
 
 
 @_logprob.register(MarginalFiniteDiscreteRV)
-def finite_discrete_marginal_rv_logp(
-    op: MarginalFiniteDiscreteRV, values, *inputs, **kwargs
-):
+def finite_discrete_marginal_rv_logp(op: MarginalFiniteDiscreteRV, values, *inputs, **kwargs):
     # Clone the inner RV graph of the Marginalized RV
     marginalized_rv, *inner_rvs = inline_ofg_outputs(op, inputs)
 
@@ -265,9 +261,7 @@ def finite_discrete_marginal_rv_logp(
     # batched dimensions of the marginalized RV
 
     # PyMC does not allow RVs in the logp graph, even if we are just using the shape
-    marginalized_rv_shape = constant_fold(
-        tuple(marginalized_rv.shape), raise_not_constant=False
-    )
+    marginalized_rv_shape = constant_fold(tuple(marginalized_rv.shape), raise_not_constant=False)
     marginalized_rv_domain = get_domain_of_finite_discrete_rv(marginalized_rv)
     marginalized_rv_domain_tensor = pt.moveaxis(
         pt.full(
@@ -286,9 +280,7 @@ def finite_discrete_marginal_rv_logp(
     except Exception:
         # Fallback to Scan
         def logp_fn(marginalized_rv_const, *non_sequences):
-            return graph_replace(
-                joint_logp, replace={marginalized_vv: marginalized_rv_const}
-            )
+            return graph_replace(joint_logp, replace={marginalized_vv: marginalized_rv_const})
 
         joint_logps = scan_map(
             fn=logp_fn,
@@ -336,9 +328,7 @@ def marginal_hmm_logp(op, values, *inputs, **kwargs):
     # Add a batch dimension for the domain of the chain
     chain_shape = constant_fold(tuple(chain_rv.shape))
     batch_chain_value = pt.moveaxis(pt.full((*chain_shape, domain.size), domain), -1, 0)
-    batch_logp_emissions = vectorize_graph(
-        reduced_logp_emissions, {chain_value: batch_chain_value}
-    )
+    batch_logp_emissions = vectorize_graph(reduced_logp_emissions, {chain_value: batch_chain_value})
 
     # Step 2: Compute the transition probabilities
     # This is the "forward algorithm", alpha_t = p(y | s_t) * sum_{s_{t-1}}(p(s_t | s_{t-1}) * alpha_{t-1})

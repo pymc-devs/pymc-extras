@@ -17,19 +17,23 @@
 from __future__ import annotations
 
 import warnings
+
 from dataclasses import asdict
 
 import arviz as az
 import numpy as np
 import pymc as pm
 import xarray as xr
+
 from pymc.blocking import DictToArrayBijection
 
 from pymc_extras.inference.pathfinder.lbfgs import LBFGSStatus
-from pymc_extras.inference.pathfinder.pathfinder import (MultiPathfinderResult,
-                                                         PathfinderConfig,
-                                                         PathfinderResult,
-                                                         PathStatus)
+from pymc_extras.inference.pathfinder.pathfinder import (
+    MultiPathfinderResult,
+    PathfinderConfig,
+    PathfinderResult,
+    PathStatus,
+)
 
 
 def get_param_coords(model: pm.Model | None, n_params: int) -> list[str]:
@@ -263,13 +267,9 @@ def _add_summary_data(
     if result.compute_time is not None:
         data_vars["compute_time"] = xr.DataArray(result.compute_time)
         if result.compile_time is not None:
-            data_vars["total_time"] = xr.DataArray(
-                result.compile_time + result.compute_time
-            )
+            data_vars["total_time"] = xr.DataArray(result.compile_time + result.compute_time)
 
-    data_vars["importance_sampling_method"] = xr.DataArray(
-        result.importance_sampling or "none"
-    )
+    data_vars["importance_sampling_method"] = xr.DataArray(result.importance_sampling or "none")
     if result.pareto_k is not None:
         data_vars["pareto_k"] = xr.DataArray(result.pareto_k)
 
@@ -388,11 +388,7 @@ def _add_diagnostics_data(
             coords={"path": coords["path"], "draw_per_path": coords["draw_per_path"]},
         )
 
-    if (
-        result.samples is not None
-        and result.samples.ndim == 3
-        and param_coords is not None
-    ):
+    if result.samples is not None and result.samples.ndim == 3 and param_coords is not None:
         n_paths, n_draws_per_path, n_params = result.samples.shape
 
         if "path" not in coords:
@@ -518,9 +514,7 @@ def add_pathfinder_to_inference_data(
         consolidated_ds = pathfinder_result_to_xarray(result, model=model)
 
     if group in idata.groups():
-        warnings.warn(
-            f"Group '{group}' already exists in InferenceData, it will be replaced."
-        )
+        warnings.warn(f"Group '{group}' already exists in InferenceData, it will be replaced.")
 
     idata[group] = consolidated_ds
     return idata

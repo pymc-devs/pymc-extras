@@ -3,6 +3,7 @@ import pymc as pm
 import pytensor
 import pytest
 import statsmodels.api as sm
+
 from numpy.testing import assert_allclose
 from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.graph.traversal import explicit_graph_inputs
@@ -43,9 +44,7 @@ def test_invalid_order_raises():
         BayesianETS(order=("A", "Ad", "M"), endog_names=["y"])
 
     # seasonal_periods must be provided if seasonal is requested
-    with pytest.raises(
-        ValueError, match="If seasonal is True, seasonal_periods must be provided."
-    ):
+    with pytest.raises(ValueError, match="If seasonal is True, seasonal_periods must be provided."):
         BayesianETS(order=("A", "Ad", "A"), endog_names=["y"])
 
 
@@ -108,9 +107,7 @@ def test_mode_argument():
     assert mod.mode == "FAST_RUN"
 
 
-@pytest.mark.parametrize(
-    "order, expected_params", zip(orders, order_params), ids=order_names
-)
+@pytest.mark.parametrize("order, expected_params", zip(orders, order_params), ids=order_names)
 def test_param_info(order: tuple[str, str, str], expected_params):
     mod = BayesianETS(order=order, endog_names=["y"], seasonal_periods=4)
 
@@ -124,12 +121,8 @@ def test_param_info(order: tuple[str, str, str], expected_params):
     )
 
 
-@pytest.mark.parametrize(
-    "order, expected_params", zip(orders, order_params), ids=order_names
-)
-@pytest.mark.parametrize(
-    "use_transformed", [True, False], ids=["transformed", "untransformed"]
-)
+@pytest.mark.parametrize("order, expected_params", zip(orders, order_params), ids=order_names)
+@pytest.mark.parametrize("use_transformed", [True, False], ids=["transformed", "untransformed"])
 def test_statespace_matrices(
     rng, order: tuple[str, str, str], expected_params: list[str], use_transformed: bool
 ):
@@ -173,9 +166,7 @@ def test_statespace_matrices(
     assert all(name in input_names for name in expected_params)
 
     f_matrices = pytensor.function(inputs, matrices)
-    [x0, P0, c, d, T, Z, R, H, Q] = f_matrices(
-        **{name: test_values[name] for name in input_names}
-    )
+    [x0, P0, c, d, T, Z, R, H, Q] = f_matrices(**{name: test_values[name] for name in input_names})
 
     assert_allclose(H, np.eye(1) * test_values["sigma_obs"] ** 2)
     assert_allclose(Q, np.eye(1) * test_values["sigma_state"] ** 2)
@@ -196,9 +187,7 @@ def test_statespace_matrices(
     else:
         x0_val[2] = test_values["initial_trend"]
         R_val[2] = (
-            test_values["beta"]
-            if use_transformed
-            else test_values["beta"] * test_values["alpha"]
+            test_values["beta"] if use_transformed else test_values["beta"] * test_values["alpha"]
         )
         T_val = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]])
 
@@ -274,9 +263,7 @@ def test_statespace_matches_statsmodels(rng, order: tuple[str, str, str], params
 
     mask = [True, True, order[1] != "N", *(order[2] != "N",) * seasonal_periods]
 
-    sm_mod.initialize_known(
-        initial_state=x0[mask], initial_state_cov=np.eye(mod.k_states)
-    )
+    sm_mod.initialize_known(initial_state=x0[mask], initial_state_cov=np.eye(mod.k_states))
     sm_mod.fit_constrained({name: sm_test_values[name] for name in sm_mod.param_names})
 
     matrices = mod._unpack_statespace_with_placeholders()
@@ -289,9 +276,7 @@ def test_statespace_matches_statsmodels(rng, order: tuple[str, str, str], params
     matrices = f_matrices(**test_values_subset)
     sm_matrices = [sm_mod.ssm[name] for name in LONG_MATRIX_NAMES[2:]]
 
-    for matrix, sm_matrix, name in zip(
-        matrices[2:], sm_matrices, LONG_MATRIX_NAMES[2:]
-    ):
+    for matrix, sm_matrix, name in zip(matrices[2:], sm_matrices, LONG_MATRIX_NAMES[2:]):
         assert_allclose(matrix, sm_matrix, err_msg=f"{name} does not match")
 
 
@@ -317,9 +302,7 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
     )
 
     simplex_params = ["alpha", "beta", "gamma"]
-    test_values = dict(
-        zip(simplex_params, rng.dirichlet(alpha=np.ones(3), size=(mod.k_endog,)).T)
-    )
+    test_values = dict(zip(simplex_params, rng.dirichlet(alpha=np.ones(3), size=(mod.k_endog,)).T))
     test_values["phi"] = rng.beta(1, 1, size=(mod.k_endog,))
 
     test_values["initial_level"] = rng.normal(
@@ -385,9 +368,7 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
             state_slice = slice(cursor, cursor + single_mod.k_states)
             obs_slice = slice(j, j + 1)  # Also endog_slice -- it's doing double duty
             if name in ["state_intercept", "initial_state"]:
-                assert_allclose(
-                    x1[state_slice], x2, err_msg=f"{name} does not match for case {j}"
-                )
+                assert_allclose(x1[state_slice], x2, err_msg=f"{name} does not match for case {j}")
             elif name in ["P0", "initial_state_cov", "transition"]:
                 assert_allclose(
                     x1[state_slice, state_slice],
@@ -407,9 +388,7 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
                     err_msg=f"{name} does not match for case {j}",
                 )
             elif name == "obs_intercept":
-                assert_allclose(
-                    x1[obs_slice], x2, err_msg=f"{name} does not match for case {j}"
-                )
+                assert_allclose(x1[obs_slice], x2, err_msg=f"{name} does not match for case {j}")
             elif name in ["obs_cov", "state_cov"]:
                 assert_allclose(
                     x1[obs_slice, obs_slice],

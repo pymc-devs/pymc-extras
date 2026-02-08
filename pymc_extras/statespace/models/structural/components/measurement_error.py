@@ -144,9 +144,7 @@ class MeasurementError(Component):
         coords_container = []
 
         if k_endog_effective > 1:
-            endog_coord = Coord(
-                dimension=f"endog_{self.name}", labels=observed_state_names
-            )
+            endog_coord = Coord(dimension=f"endog_{self.name}", labels=observed_state_names)
             coords_container.append(endog_coord)
 
         return tuple(coords_container) if coords_container else None
@@ -156,9 +154,7 @@ class MeasurementError(Component):
         k_endog_effective = 1 if self.share_states else k_endog
 
         sigma_shape = () if k_endog_effective == 1 else (k_endog_effective,)
-        error_sigma = self.make_and_register_variable(
-            f"sigma_{self.name}", shape=sigma_shape
-        )
+        error_sigma = self.make_and_register_variable(f"sigma_{self.name}", shape=sigma_shape)
 
         diag_idx = np.diag_indices(self.k_endog)
         idx = np.s_["obs_cov", diag_idx[0], diag_idx[1]]

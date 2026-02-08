@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+
 from pytensor import tensor as pt
 
 from pymc_extras.inference.laplace_approx import scipy_interface

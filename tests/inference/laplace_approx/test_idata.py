@@ -5,13 +5,16 @@ import numpy as np
 import pymc as pm
 import pytest
 import xarray as xr
+
 from pymc.blocking import RaveledVars
 from scipy.optimize import OptimizeResult
 from scipy.sparse.linalg import LinearOperator
 
 from pymc_extras.inference.laplace_approx.idata import (
-    add_data_to_inference_data, add_fit_to_inference_data,
-    optimizer_result_to_dataset)
+    add_data_to_inference_data,
+    add_fit_to_inference_data,
+    optimizer_result_to_dataset,
+)
 
 
 @contextmanager
@@ -79,9 +82,7 @@ class TestFittoInferenceData:
         assert fit.coords["rows"].values.tolist() == var_names
         assert fit.coords["columns"].values.tolist() == var_names
 
-    @pytest.mark.parametrize(
-        "use_context", [False, True], ids=["model_arg", "model_context"]
-    )
+    @pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
     def test_add_fit_to_inferencedata(self, use_context, simple_model, rng):
         model, mu_val, H_inv, test_point = simple_model
         idata = az.from_dict(
@@ -92,18 +93,12 @@ class TestFittoInferenceData:
         model_arg = model if not use_context else None
 
         with context:
-            idata2 = add_fit_to_inference_data(
-                idata, test_point, H_inv, model=model_arg
-            )
+            idata2 = add_fit_to_inference_data(idata, test_point, H_inv, model=model_arg)
 
         self.check_idata(idata2, ["mu", "sigma_log__"], 2)
 
-    @pytest.mark.parametrize(
-        "use_context", [False, True], ids=["model_arg", "model_context"]
-    )
-    def test_add_fit_with_coords_to_inferencedata(
-        self, use_context, hierarchical_model, rng
-    ):
+    @pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
+    def test_add_fit_with_coords_to_inferencedata(self, use_context, hierarchical_model, rng):
         model, mu_val, H_inv, test_point = hierarchical_model
         idata = az.from_dict(
             posterior={
@@ -118,9 +113,7 @@ class TestFittoInferenceData:
         model_arg = model if not use_context else None
 
         with context:
-            idata2 = add_fit_to_inference_data(
-                idata, test_point, H_inv, model=model_arg
-            )
+            idata2 = add_fit_to_inference_data(idata, test_point, H_inv, model=model_arg)
 
         self.check_idata(
             idata2,
@@ -138,9 +131,7 @@ class TestFittoInferenceData:
         )
 
 
-@pytest.mark.parametrize(
-    "use_context", [False, True], ids=["model_arg", "model_context"]
-)
+@pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
 def test_add_data_to_inferencedata(use_context, simple_model, rng):
     model, *_ = simple_model
 
@@ -162,9 +153,7 @@ def test_add_data_to_inferencedata(use_context, simple_model, rng):
     assert "obs" in idata2.observed_data
 
 
-@pytest.mark.parametrize(
-    "use_context", [False, True], ids=["model_arg", "model_context"]
-)
+@pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
 def test_optimizer_result_to_dataset_basic(use_context, simple_model, rng):
     model, mu_val, H_inv, test_point = simple_model
     result = OptimizeResult(
@@ -182,9 +171,7 @@ def test_optimizer_result_to_dataset_basic(use_context, simple_model, rng):
     context = model if use_context else no_op()
     model_arg = model if not use_context else None
     with context:
-        ds = optimizer_result_to_dataset(
-            result, method="BFGS", model=model_arg, mu=test_point
-        )
+        ds = optimizer_result_to_dataset(result, method="BFGS", model=model_arg, mu=test_point)
 
     assert isinstance(ds, xr.Dataset)
     assert all(
@@ -254,8 +241,8 @@ def test_optimizer_result_to_dataset_hess_inv_types(
 
         return model, test_point, hess_inv, expected_names, result
 
-    model, test_point, hess_inv, expected_names, result = (
-        get_hess_inv_and_expected_names(optimizer_method)
+    model, test_point, hess_inv, expected_names, result = get_hess_inv_and_expected_names(
+        optimizer_method
     )
 
     context = model if use_context else no_op()
@@ -299,9 +286,7 @@ def test_optimizer_result_to_dataset_hess_inv_basinhopping(simple_model, rng):
     # Basinhopping returns an OptimizeResult with a nested OptimizeResult
     result = OptimizeResult(
         x=np.ones(n),
-        lowest_optimization_result=OptimizeResult(
-            x=np.ones(n), hess_inv=hess_inv_inner
-        ),
+        lowest_optimization_result=OptimizeResult(x=np.ones(n), hess_inv=hess_inv_inner),
     )
 
     with model:

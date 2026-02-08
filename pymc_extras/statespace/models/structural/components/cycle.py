@@ -1,14 +1,13 @@
 import warnings
 
 import numpy as np
+
 from pytensor import tensor as pt
 from pytensor.tensor.linalg import block_diag
 
-from pymc_extras.statespace.core.properties import (Coord, Parameter, Shock,
-                                                    State)
+from pymc_extras.statespace.core.properties import Coord, Parameter, Shock, State
 from pymc_extras.statespace.models.structural.core import Component
-from pymc_extras.statespace.models.structural.utils import \
-    _frequency_transition_block
+from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
 
 
 class Cycle(Component):
@@ -170,13 +169,9 @@ class Cycle(Component):
             observed_state_names = ["data"]
 
         if cycle_length is None and not estimate_cycle_length:
-            raise ValueError(
-                "Must specify cycle_length if estimate_cycle_length is False"
-            )
+            raise ValueError("Must specify cycle_length if estimate_cycle_length is False")
         if cycle_length is not None and estimate_cycle_length:
-            raise ValueError(
-                "Cannot specify cycle_length if estimate_cycle_length is True"
-            )
+            raise ValueError("Cannot specify cycle_length if estimate_cycle_length is True")
         if name is None:
             cycle = int(cycle_length) if cycle_length is not None else "Estimate"
             name = f"Cycle[s={cycle}, dampen={dampen}, innovations={innovations}]"
@@ -225,12 +220,9 @@ class Cycle(Component):
                 for var_name in observed_state_names
                 for name in base_names
             ]
-        hidden_states = [
-            State(name=name, observed=False, shared=True) for name in state_names
-        ]
+        hidden_states = [State(name=name, observed=False, shared=True) for name in state_names]
         observed_states = [
-            State(name=name, observed=True, shared=False)
-            for name in observed_state_names
+            State(name=name, observed=True, shared=False) for name in observed_state_names
         ]
         return *hidden_states, *observed_states
 
@@ -294,18 +286,14 @@ class Cycle(Component):
         state_coords = Coord(
             dimension=f"state_{self.name}",
             labels=(
-                base_names
-                if k_endog_effective == 1
-                else (f"Cos_{self.name}", f"Sin_{self.name}")
+                base_names if k_endog_effective == 1 else (f"Cos_{self.name}", f"Sin_{self.name}")
             ),
         )
 
         coord_container = [state_coords]
 
         if k_endog_effective != 1:
-            endog_coords = Coord(
-                dimension=f"endog_{self.name}", labels=observed_state_names
-            )
+            endog_coords = Coord(dimension=f"endog_{self.name}", labels=observed_state_names)
             coord_container.append(endog_coords)
 
         return tuple(coord_container)
@@ -336,23 +324,17 @@ class Cycle(Component):
             lamb = self.cycle_length
 
         if self.dampen:
-            rho = self.make_and_register_variable(
-                f"dampening_factor_{self.name}", shape=()
-            )
+            rho = self.make_and_register_variable(f"dampening_factor_{self.name}", shape=())
         else:
             rho = 1
 
         T = rho * _frequency_transition_block(lamb, j=1)
         transition = block_diag(*[T for _ in range(k_endog_effective)])
-        self.ssm["transition"] = pt.specify_shape(
-            transition, (self.k_states, self.k_states)
-        )
+        self.ssm["transition"] = pt.specify_shape(transition, (self.k_states, self.k_states))
 
         if self.innovations:
             if k_endog_effective == 1:
-                sigma_cycle = self.make_and_register_variable(
-                    f"sigma_{self.name}", shape=()
-                )
+                sigma_cycle = self.make_and_register_variable(f"sigma_{self.name}", shape=())
                 self.ssm["state_cov", :, :] = pt.eye(self.k_posdef) * sigma_cycle**2
             else:
                 sigma_cycle = self.make_and_register_variable(
@@ -361,9 +343,7 @@ class Cycle(Component):
                 state_cov = block_diag(
                     *[pt.eye(2) * sigma_cycle[i] ** 2 for i in range(k_endog_effective)]
                 )
-                self.ssm["state_cov"] = pt.specify_shape(
-                    state_cov, (self.k_states, self.k_states)
-                )
+                self.ssm["state_cov"] = pt.specify_shape(state_cov, (self.k_states, self.k_states))
         else:
             # explicitly set state cov to 0 when no innovations
             self.ssm["state_cov", :, :] = pt.zeros((self.k_posdef, self.k_posdef))

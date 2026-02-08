@@ -3,8 +3,7 @@ import warnings
 import numpy as np
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.core.properties import (Coord, Parameter, Shock,
-                                                    State)
+from pymc_extras.statespace.core.properties import Coord, Parameter, Shock, State
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import order_to_mask
 from pymc_extras.statespace.utils.constants import POSITION_DERIVATIVE_NAMES
@@ -184,9 +183,7 @@ class LevelTrend(Component):
         observed_state_names = self.base_observed_state_names
 
         if self.share_states:
-            state_names = [
-                f"{name}[{self.name}_shared]" for name in self.base_state_names
-            ]
+            state_names = [f"{name}[{self.name}_shared]" for name in self.base_state_names]
         else:
             state_names = [
                 f"{name}[{obs_name}]"
@@ -194,12 +191,9 @@ class LevelTrend(Component):
                 for name in self.base_state_names
             ]
 
-        hidden_states = [
-            State(name=name, observed=False, shared=True) for name in state_names
-        ]
+        hidden_states = [State(name=name, observed=False, shared=True) for name in state_names]
         observed_states = [
-            State(name=name, observed=True, shared=False)
-            for name in observed_state_names
+            State(name=name, observed=True, shared=False) for name in observed_state_names
         ]
         return *hidden_states, *observed_states
 
@@ -212,9 +206,7 @@ class LevelTrend(Component):
 
         initial_param = Parameter(
             name=f"initial_{self.name}",
-            shape=(
-                (k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,)
-            ),
+            shape=((k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,)),
             dims=(
                 (f"endog_{self.name}", f"state_{self.name}")
                 if k_endog_effective > 1
@@ -226,11 +218,7 @@ class LevelTrend(Component):
         if self.k_posdef > 0:
             sigma_param = Parameter(
                 name=f"sigma_{self.name}",
-                shape=(
-                    (k_posdef,)
-                    if k_endog_effective == 1
-                    else (k_endog_effective, k_posdef)
-                ),
+                shape=((k_posdef,) if k_endog_effective == 1 else (k_endog_effective, k_posdef)),
                 dims=(
                     (f"shock_{self.name}",)
                     if k_endog_effective == 1
@@ -254,9 +242,7 @@ class LevelTrend(Component):
             ]
 
             if self.share_states:
-                shock_names = [
-                    f"{name}[{self.name}_shared]" for name in base_shock_names
-                ]
+                shock_names = [f"{name}[{self.name}_shared]" for name in base_shock_names]
             else:
                 shock_names = [
                     f"{name}[{obs_name}]"
@@ -275,9 +261,7 @@ class LevelTrend(Component):
 
         base_names = [name for name, mask in zip(name_slice, self._order_mask) if mask]
 
-        base_shock_names = [
-            name for name, mask in zip(name_slice, self.innovations_order) if mask
-        ]
+        base_shock_names = [name for name, mask in zip(name_slice, self.innovations_order) if mask]
 
         state_coord = Coord(dimension=f"state_{self.name}", labels=tuple(base_names))
 
@@ -291,9 +275,7 @@ class LevelTrend(Component):
             coords_container.append(endog_coord)
 
         if self.k_posdef > 0:
-            shock_coord = Coord(
-                dimension=f"shock_{self.name}", labels=tuple(base_shock_names)
-            )
+            shock_coord = Coord(dimension=f"shock_{self.name}", labels=tuple(base_shock_names))
             coords_container.append(shock_coord)
 
         return tuple(coords_container)

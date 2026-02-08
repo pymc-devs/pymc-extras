@@ -16,6 +16,7 @@
 import numpy as np
 import pymc as pm
 import pytest
+
 from pymc.distributions import transforms
 
 import pymc_extras as pmx
@@ -101,6 +102,7 @@ def idata(transformed_data, param_cfg):
         vars[k] = var
     # Create DataTree with posterior group for ArviZ 1.0 compatibility
     import xarray as xr
+
     from arviz import dict_to_dataset
 
     posterior_ds = dict_to_dataset(vars)

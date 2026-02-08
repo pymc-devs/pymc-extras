@@ -1,6 +1,7 @@
 from typing import Protocol
 
 import numpy as np
+
 from pymc import Model, compile
 from pymc.pytensorf import rewrite_pregrad
 from pytensor import tensor as pt
@@ -26,9 +27,7 @@ def compile_svi_training_fn(
     logp, logq = get_logp_logq(model, guide, stick_the_landing=stick_the_landing)
 
     scalar_negative_elbo = advi_objective(logp, logq)
-    [negative_elbo_draws] = vectorize_random_graph(
-        [scalar_negative_elbo], batch_draws=draws
-    )
+    [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
     negative_elbo = negative_elbo_draws.mean(axis=0)
 
     negative_elbo_grads = pt.grad(rewrite_pregrad(negative_elbo), wrt=params)

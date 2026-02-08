@@ -1,11 +1,11 @@
 import numpy as np
 import pymc as pm
 import pytest
+
 from pytensor import function as pytensor_function
 from scipy import special
 
-from pymc_extras.inference.advi.autoguide import (AutoDiagonalNormal,
-                                                  AutoGuideModel)
+from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
 
 # TODO: This is a magic number from AutoDiagonalNormal's scale initialization
 SCALE_INIT = 0.1
@@ -115,10 +115,7 @@ class TestAutoDiagonalNormalSampling:
 
         f = pytensor_function(list(guide.params), x_det, updates=updates)
         samples = np.array(
-            [
-                f(*[guide.params_init_values[p] for p in guide.params])
-                for _ in range(1000)
-            ]
+            [f(*[guide.params_init_values[p] for p in guide.params]) for _ in range(1000)]
         )
 
         EXPECTED_STD = special.softplus(SCALE_INIT)

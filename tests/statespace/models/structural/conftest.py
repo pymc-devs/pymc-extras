@@ -1,11 +1,14 @@
 import numpy as np
 import pytest
 
-from pymc_extras.statespace.utils.constants import (ALL_STATE_AUX_DIM,
-                                                    ALL_STATE_DIM,
-                                                    OBS_STATE_AUX_DIM,
-                                                    OBS_STATE_DIM,
-                                                    SHOCK_AUX_DIM, SHOCK_DIM)
+from pymc_extras.statespace.utils.constants import (
+    ALL_STATE_AUX_DIM,
+    ALL_STATE_DIM,
+    OBS_STATE_AUX_DIM,
+    OBS_STATE_DIM,
+    SHOCK_AUX_DIM,
+    SHOCK_DIM,
+)
 
 TEST_SEED = sum(map(ord, "Structural Statespace"))
 

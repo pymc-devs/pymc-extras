@@ -124,15 +124,9 @@ def test_parameter_fit(toy_X, toy_y, toy_actual_params):
     model = LinearModel(sampler_config=sampler_config)
     model.fit(toy_X, toy_y, random_seed=312)
     fit_params = model.idata["posterior"].mean()
-    np.testing.assert_allclose(
-        fit_params["intercept"], toy_actual_params["intercept"], rtol=0.1
-    )
-    np.testing.assert_allclose(
-        fit_params["slope"], toy_actual_params["slope"], rtol=0.1
-    )
-    np.testing.assert_allclose(
-        fit_params["σ_model_fmc"], toy_actual_params["obs_error"], rtol=0.1
-    )
+    np.testing.assert_allclose(fit_params["intercept"], toy_actual_params["intercept"], rtol=0.1)
+    np.testing.assert_allclose(fit_params["slope"], toy_actual_params["slope"], rtol=0.1)
+    np.testing.assert_allclose(fit_params["σ_model_fmc"], toy_actual_params["obs_error"], rtol=0.1)
 
 
 def test_predict(fitted_linear_model_instance):
@@ -161,14 +155,12 @@ def test_predict_posterior(fitted_linear_model_instance, combined):
 @pytest.mark.parametrize("combined", [True, False])
 def test_sample_prior_predictive(samples, combined, toy_X, toy_y):
     model = LinearModel()
-    prior_pred = model.sample_prior_predictive(
-        toy_X, toy_y, samples, combined=combined
-    )[model.output_var]
+    prior_pred = model.sample_prior_predictive(toy_X, toy_y, samples, combined=combined)[
+        model.output_var
+    ]
     draws = model.sampler_config["draws"] if samples is None else samples
     chains = 1
-    expected_shape = (
-        (len(toy_X), chains * draws) if combined else (chains, draws, len(toy_X))
-    )
+    expected_shape = (len(toy_X), chains * draws) if combined else (chains, draws, len(toy_X))
     assert prior_pred.shape == expected_shape
     # TODO: check that extend_idata has the expected effect
 
@@ -188,17 +180,13 @@ def test_id():
     model = LinearModel(model_config=model_config, sampler_config=sampler_config)
 
     expected_id = hashlib.sha256(
-        str(model_config.values()).encode()
-        + model.version.encode()
-        + model._model_type.encode()
+        str(model_config.values()).encode() + model.version.encode() + model._model_type.encode()
     ).hexdigest()[:16]
 
     assert model.id == expected_id
 
 
-@pytest.mark.skipif(
-    not sklearn_available, reason="scikit-learn package is not available."
-)
+@pytest.mark.skipif(not sklearn_available, reason="scikit-learn package is not available.")
 def test_pipeline_integration(toy_X, toy_y):
     model_config = {
         "intercept": {"loc": 0, "scale": 2},
@@ -211,9 +199,7 @@ def test_pipeline_integration(toy_X, toy_y):
             ("input_scaling", StandardScaler()),
             (
                 "linear_model",
-                TransformedTargetRegressor(
-                    LinearModel(model_config), transformer=StandardScaler()
-                ),
+                TransformedTargetRegressor(LinearModel(model_config), transformer=StandardScaler()),
             ),
         ]
     )

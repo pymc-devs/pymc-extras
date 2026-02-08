@@ -5,18 +5,24 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 import pytest
+
 from numpy.testing import assert_allclose, assert_array_less
 
-from pymc_extras.statespace.filters import (KalmanSmoother, SquareRootFilter,
-                                            StandardFilter, UnivariateFilter)
+from pymc_extras.statespace.filters import (
+    KalmanSmoother,
+    SquareRootFilter,
+    StandardFilter,
+    UnivariateFilter,
+)
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter
-from tests.statespace.shared_fixtures import \
-    rng  # pylint: disable=unused-import
-from tests.statespace.test_utilities import (get_expected_shape,
-                                             get_sm_state_from_output_name,
-                                             initialize_filter,
-                                             make_test_inputs,
-                                             nile_test_test_helper)
+from tests.statespace.shared_fixtures import rng  # pylint: disable=unused-import
+from tests.statespace.test_utilities import (
+    get_expected_shape,
+    get_sm_state_from_output_name,
+    initialize_filter,
+    make_test_inputs,
+    nile_test_test_helper,
+)
 
 floatX = pytensor.config.floatX
 
@@ -78,9 +84,9 @@ def test_output_shapes_one_state_one_observed(filter_name, rng):
 
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert (
-            outputs[output_idx].shape == expected_output
-        ), f"Shape of {name} does not match expected"
+        assert outputs[output_idx].shape == expected_output, (
+            f"Shape of {name} does not match expected"
+        )
 
 
 @pytest.mark.parametrize("filter_name", filter_names)
@@ -91,9 +97,9 @@ def test_output_shapes_when_all_states_are_stochastic(filter_name, rng):
     outputs = get_filter_function(filter_name)(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert (
-            outputs[output_idx].shape == expected_output
-        ), f"Shape of {name} does not match expected"
+        assert outputs[output_idx].shape == expected_output, (
+            f"Shape of {name} does not match expected"
+        )
 
 
 @pytest.mark.parametrize("filter_name", filter_names)
@@ -104,9 +110,9 @@ def test_output_shapes_when_some_states_are_deterministic(filter_name, rng):
     outputs = get_filter_function(filter_name)(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert (
-            outputs[output_idx].shape == expected_output
-        ), f"Shape of {name} does not match expected"
+        assert outputs[output_idx].shape == expected_output, (
+            f"Shape of {name} does not match expected"
+        )
 
 
 @pytest.fixture
@@ -135,9 +141,7 @@ def f_standard_nd():
         ll_obs,
     ) = StandardFilter().build_graph(*inputs)
 
-    smoothed_states, smoothed_covs = ksmoother.build_graph(
-        T, R, Q, filtered_states, filtered_covs
-    )
+    smoothed_states, smoothed_covs = ksmoother.build_graph(T, R, Q, filtered_states, filtered_covs)
 
     outputs = [
         filtered_states,
@@ -168,9 +172,9 @@ def test_output_shapes_with_time_varying_matrices(f_standard_nd, rng):
 
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert (
-            outputs[output_idx].shape == expected_output
-        ), f"Shape of {name} does not match expected"
+        assert outputs[output_idx].shape == expected_output, (
+            f"Shape of {name} does not match expected"
+        )
 
 
 @pytest.mark.parametrize("filter_name", filter_names)
@@ -182,9 +186,9 @@ def test_output_with_deterministic_observation_equation(filter_name, rng):
 
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert (
-            outputs[output_idx].shape == expected_output
-        ), f"Shape of {name} does not match expected"
+        assert outputs[output_idx].shape == expected_output, (
+            f"Shape of {name} does not match expected"
+        )
 
 
 @pytest.mark.parametrize("filter_name", filter_names)
@@ -195,9 +199,9 @@ def test_output_with_multiple_observed(filter_name, rng):
     outputs = get_filter_function(filter_name)(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert (
-            outputs[output_idx].shape == expected_output
-        ), f"Shape of {name} does not match expected"
+        assert outputs[output_idx].shape == expected_output, (
+            f"Shape of {name} does not match expected"
+        )
 
 
 @pytest.mark.parametrize("filter_name", filter_names)
@@ -209,15 +213,13 @@ def test_missing_data(filter_name, p, rng):
     outputs = get_filter_function(filter_name)(*inputs)
     for output_idx, name in enumerate(output_names):
         expected_output = get_expected_shape(name, p, m, r, n)
-        assert (
-            outputs[output_idx].shape == expected_output
-        ), f"Shape of {name} does not match expected"
+        assert outputs[output_idx].shape == expected_output, (
+            f"Shape of {name} does not match expected"
+        )
 
 
 @pytest.mark.parametrize("filter_name", filter_names)
-@pytest.mark.parametrize(
-    "output_idx", [(0, 2), (3, 5)], ids=["smoothed_states", "smoothed_covs"]
-)
+@pytest.mark.parametrize("output_idx", [(0, 2), (3, 5)], ids=["smoothed_states", "smoothed_covs"])
 def test_last_smoother_is_last_filtered(filter_name, output_idx, rng):
     p, m, r, n = 1, 5, 1, 10
     inputs = make_test_inputs(p, m, r, n, rng)
@@ -233,9 +235,7 @@ def test_last_smoother_is_last_filtered(filter_name, output_idx, rng):
 @pytest.mark.parametrize("n_missing", [0, 5], ids=["n_missing=0", "n_missing=5"])
 @pytest.mark.skipif(floatX == "float32", reason="Tests are too sensitive for float32")
 def test_filters_match_statsmodel_output(filter_name, n_missing, rng):
-    fit_sm_mod, [data, a0, P0, c, d, T, Z, R, H, Q] = nile_test_test_helper(
-        rng, n_missing
-    )
+    fit_sm_mod, [data, a0, P0, c, d, T, Z, R, H, Q] = nile_test_test_helper(rng, n_missing)
     if filter_name == "CholeskyFilter":
         P0 = np.linalg.cholesky(P0)
     inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
@@ -280,13 +280,9 @@ def test_filters_match_statsmodel_output(filter_name, n_missing, rng):
 def test_all_covariance_matrices_are_PSD(filter_name, n_missing, obs_noise, rng):
     if (floatX == "float32") & (filter_name == "UnivariateFilter"):
         # TODO: These tests all pass locally for me with float32 but they fail on the CI, so i'm just disabling them.
-        pytest.skip(
-            "Univariate filter not stable at half precision without measurement error"
-        )
+        pytest.skip("Univariate filter not stable at half precision without measurement error")
 
-    fit_sm_mod, [data, a0, P0, c, d, T, Z, R, H, Q] = nile_test_test_helper(
-        rng, n_missing
-    )
+    fit_sm_mod, [data, a0, P0, c, d, T, Z, R, H, Q] = nile_test_test_helper(rng, n_missing)
     if filter_name == "CholeskyFilter":
         P0 = np.linalg.cholesky(P0)
 
@@ -298,9 +294,7 @@ def test_all_covariance_matrices_are_PSD(filter_name, n_missing, obs_noise, rng)
         cov_stack = outputs[output_idx]
         w, v = np.linalg.eig(cov_stack)
 
-        assert_array_less(
-            0, w, err_msg=f"Smallest eigenvalue of {name}: {min(w.ravel())}"
-        )
+        assert_array_less(0, w, err_msg=f"Smallest eigenvalue of {name}: {min(w.ravel())}")
         assert_allclose(
             cov_stack,
             np.swapaxes(cov_stack, -2, -1),
@@ -332,6 +326,4 @@ def test_kalman_filter_jax(filter):
     pt_outputs = f_pt(*inputs_np)
 
     for name, jax_res, pt_res in zip(output_names, jax_outputs, pt_outputs):
-        assert_allclose(
-            jax_res, pt_res, atol=ATOL, rtol=RTOL, err_msg=f"{name} failed!"
-        )
+        assert_allclose(jax_res, pt_res, atol=ATOL, rtol=RTOL, err_msg=f"{name} failed!")

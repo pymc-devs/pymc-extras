@@ -9,12 +9,13 @@ import pytest
 
 from pymc_extras.statespace.models import structural
 from pymc_extras.statespace.models.structural import LevelTrend
-from pymc_extras.statespace.utils.constants import (FILTER_OUTPUT_DIMS,
-                                                    FILTER_OUTPUT_NAMES,
-                                                    SMOOTHER_OUTPUT_NAMES,
-                                                    TIME_DIM)
-from pymc_extras.statespace.utils.data_tools import (NO_FREQ_INFO_WARNING,
-                                                     NO_TIME_INDEX_WARNING)
+from pymc_extras.statespace.utils.constants import (
+    FILTER_OUTPUT_DIMS,
+    FILTER_OUTPUT_NAMES,
+    SMOOTHER_OUTPUT_NAMES,
+    TIME_DIM,
+)
+from pymc_extras.statespace.utils.data_tools import NO_FREQ_INFO_WARNING, NO_TIME_INDEX_WARNING
 from tests.statespace.test_utilities import load_nile_test_data
 
 function_names = [
@@ -83,12 +84,8 @@ def create_model(load_dataset):
             )
             P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=("state", "state_aux"))
             initial_trend = pm.Normal("initial_level_trend", dims="state_level_trend")
-            sigma_trend = pm.Exponential(
-                "sigma_level_trend", 1, dims="shock_level_trend"
-            )
-            ss_mod.build_statespace_graph(
-                data, save_kalman_filter_outputs_in_idata=True
-            )
+            sigma_trend = pm.Exponential("sigma_level_trend", 1, dims="shock_level_trend")
+            ss_mod.build_statespace_graph(data, save_kalman_filter_outputs_in_idata=True)
         return mod
 
     return _create_model
@@ -99,9 +96,7 @@ def test_filter_output_coord_assignment(f, warning, create_model):
     with warning:
         pymc_model = create_model(f)
 
-    for output in (
-        FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES + ["predicted_observed_states"]
-    ):
+    for output in FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES + ["predicted_observed_states"]:
         assert pymc_model.named_vars_to_dims[output] == FILTER_OUTPUT_DIMS[output]
 
 
@@ -127,9 +122,7 @@ def test_data_index_is_coord(f, warning, create_model):
 
 def make_model(index):
     n = len(index)
-    a = pd.DataFrame(
-        index=index, columns=["A", "B", "C", "D"], data=np.arange(n * 4).reshape(n, 4)
-    )
+    a = pd.DataFrame(index=index, columns=["A", "B", "C", "D"], data=np.arange(n * 4).reshape(n, 4))
 
     mod = LevelTrend(order=2, innovations_order=[0, 1])
     ss_mod = mod.build(name="a", verbose=False)
@@ -142,13 +135,9 @@ def make_model(index):
         P0 = pm.Deterministic("P0", pt.eye(ss_mod.k_states) * P0_diag, dims=P0_dims)
 
         initial_trend = pm.Normal("initial_level_trend", dims=initial_trend_dims)
-        sigma_trend = pm.Gamma(
-            "sigma_level_trend", alpha=2, beta=50, dims=sigma_trend_dims
-        )
+        sigma_trend = pm.Gamma("sigma_level_trend", alpha=2, beta=50, dims=sigma_trend_dims)
 
-        with pytest.warns(
-            UserWarning, match="No time index found on the supplied data"
-        ):
+        with pytest.warns(UserWarning, match="No time index found on the supplied data"):
             ss_mod.build_statespace_graph(
                 a["A"],
             )

@@ -1,11 +1,11 @@
 import numpy as np
 import pytensor
+
 from numpy.testing import assert_allclose
 from pytensor import config
 
 from pymc_extras.statespace.models import structural as st
-from tests.statespace.models.structural.conftest import \
-    _assert_basic_coords_correct
+from tests.statespace.models.structural.conftest import _assert_basic_coords_correct
 from tests.statespace.test_utilities import simulate_from_numpy_model
 
 ATOL = 1e-8 if config.floatX.endswith("64") else 1e-4
@@ -148,9 +148,7 @@ def test_level_trend_multiple_observed(rng):
 
     x, y = simulate_from_numpy_model(mod, rng, params)
     assert (np.diff(y, axis=0) == np.array([[1.0, 2.0, 3.0]])).all().all()
-    assert (
-        (np.diff(x, axis=0) == np.array([[1.0, 0.0, 2.0, 0.0, 3.0, 0.0]])).all().all()
-    )
+    assert (np.diff(x, axis=0) == np.array([[1.0, 0.0, 2.0, 0.0, 3.0, 0.0]])).all().all()
 
 
 def test_level_trend_multiple_shared_observed(rng):

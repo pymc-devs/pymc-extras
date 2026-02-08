@@ -1,5 +1,6 @@
 import numpy as np
 import pymc as pm
+
 from rich.console import Console
 
 from pymc_extras.printing import model_table
@@ -14,12 +15,8 @@ def get_text(table) -> str:
 
 def test_model_table():
     with pm.Model(coords={"trial": range(6), "subject": range(20)}) as model:
-        x_data = pm.Data(
-            "x_data", np.random.normal(size=(6, 20)), dims=("trial", "subject")
-        )
-        y_data = pm.Data(
-            "y_data", np.random.normal(size=(6, 20)), dims=("trial", "subject")
-        )
+        x_data = pm.Data("x_data", np.random.normal(size=(6, 20)), dims=("trial", "subject"))
+        y_data = pm.Data("y_data", np.random.normal(size=(6, 20)), dims=("trial", "subject"))
 
         mu = pm.Normal("mu", mu=0, sigma=1)
         sigma = pm.HalfNormal("sigma", sigma=1)
@@ -33,9 +30,7 @@ def test_model_table():
             dims=["trial", "subject"],
         )
         noise = pm.Exponential("noise", lam=1)
-        y = pm.Normal(
-            "y", mu=mu_trial, sigma=noise, observed=y_data, dims=("trial", "subject")
-        )
+        y = pm.Normal("y", mu=mu_trial, sigma=noise, observed=y_data, dims=("trial", "subject"))
 
         pm.Potential("beta_subject_penalty", -pm.math.abs(beta_subject), dims="subject")
 
@@ -61,9 +56,7 @@ def test_model_table():
 
                     y ~  Normal(mu_trial, noise)         trial[6] × subject[20]
 """
-    assert [s.strip() for s in table_txt.splitlines()] == [
-        s.strip() for s in expected.splitlines()
-    ]
+    assert [s.strip() for s in table_txt.splitlines()] == [s.strip() for s in expected.splitlines()]
 
     table_txt = get_text(model_table(model, split_groups=False))
     expected = """               Variable  Expression                      Dimensions
@@ -83,14 +76,10 @@ def test_model_table():
  beta_subject_penalty =  Potential(f(beta_subject))      subject[20]
                                                          Parameter count = 44
 """
-    assert [s.strip() for s in table_txt.splitlines()] == [
-        s.strip() for s in expected.splitlines()
-    ]
+    assert [s.strip() for s in table_txt.splitlines()] == [s.strip() for s in expected.splitlines()]
 
     table_txt = get_text(
-        model_table(
-            model, split_groups=False, truncate_deterministic=30, parameter_count=False
-        )
+        model_table(model, split_groups=False, truncate_deterministic=30, parameter_count=False)
     )
     expected = """               Variable  Expression                  Dimensions
 ────────────────────────────────────────────────────────────────────────────
@@ -106,6 +95,4 @@ def test_model_table():
                     y ~  Normal(mu_trial, noise)     trial[6] × subject[20]
  beta_subject_penalty =  Potential(f(beta_subject))  subject[20]
 """
-    assert [s.strip() for s in table_txt.splitlines()] == [
-        s.strip() for s in expected.splitlines()
-    ]
+    assert [s.strip() for s in table_txt.splitlines()] == [s.strip() for s in expected.splitlines()]

@@ -1,27 +1,38 @@
 import warnings
+
 from collections.abc import Sequence
 
 import numpy as np
 import pymc
 import pytensor.tensor as pt
+
 from arviz_base import dict_to_dataset
-from pymc.backends.arviz import (coords_and_dims_for_inferencedata,
-                                 dataset_to_point_list)
+from pymc.backends.arviz import coords_and_dims_for_inferencedata, dataset_to_point_list
 from pymc.distributions.discrete import Bernoulli, Categorical, DiscreteUniform
 from pymc.distributions.transforms import Chain
 from pymc.logprob.transforms import IntervalTransform
 from pymc.model import Model, modelcontext
-from pymc.model.fgraph import (ModelFreeRV, ModelValuedVar, fgraph_from_model,
-                               model_free_rv, model_from_fgraph)
-from pymc.pytensorf import collect_default_updates
+from pymc.model.fgraph import (
+    ModelFreeRV,
+    ModelValuedVar,
+    fgraph_from_model,
+    model_free_rv,
+    model_from_fgraph,
+)
+from pymc.pytensorf import collect_default_updates, constant_fold, toposort_replace
 from pymc.pytensorf import compile as compile_pymc
-from pymc.pytensorf import constant_fold, toposort_replace
 from pymc.util import RandomState, _get_seeds_per_chain
 from pytensor import In, Out
 from pytensor.compile import SharedVariable
-from pytensor.graph import (FunctionGraph, Variable, clone_replace,
-                            graph_inputs, graph_replace, node_rewriter,
-                            vectorize_graph)
+from pytensor.graph import (
+    FunctionGraph,
+    Variable,
+    clone_replace,
+    graph_inputs,
+    graph_replace,
+    node_rewriter,
+    vectorize_graph,
+)
 from pytensor.graph.rewriting.basic import in2out
 from pytensor.tensor import TensorVariable
 from xarray import DataTree
@@ -33,12 +44,20 @@ from pytensor.tensor.special import log_softmax
 
 from pymc_extras.distributions import DiscreteMarkovChain
 from pymc_extras.model.marginal.distributions import (
-    MarginalDiscreteMarkovChainRV, MarginalFiniteDiscreteRV, MarginalRV,
-    NonSeparableLogpWarning, get_domain_of_finite_discrete_rv,
-    inline_ofg_outputs, reduce_batch_dependent_logps)
+    MarginalDiscreteMarkovChainRV,
+    MarginalFiniteDiscreteRV,
+    MarginalRV,
+    NonSeparableLogpWarning,
+    get_domain_of_finite_discrete_rv,
+    inline_ofg_outputs,
+    reduce_batch_dependent_logps,
+)
 from pymc_extras.model.marginal.graph_analysis import (
-    find_conditional_dependent_rvs, find_conditional_input_rvs,
-    is_conditional_dependent, subgraph_batch_dim_connection)
+    find_conditional_dependent_rvs,
+    find_conditional_input_rvs,
+    is_conditional_dependent,
+    subgraph_batch_dim_connection,
+)
 
 ModelRVs = TensorVariable | Sequence[TensorVariable] | str | Sequence[str]
 
@@ -95,9 +114,7 @@ class MarginalModel(Model):
         )
 
 
-def _warn_interval_transform(
-    rv_to_marginalize, replaced_vars: Sequence[ModelValuedVar]
-) -> None:
+def _warn_interval_transform(rv_to_marginalize, replaced_vars: Sequence[ModelValuedVar]) -> None:
     for replaced_var in replaced_vars:
         if not isinstance(replaced_var.owner.op, ModelValuedVar):
             raise TypeError(f"{replaced_var} is not a ModelValuedVar")
@@ -112,9 +129,7 @@ def _warn_interval_transform(
 
         if isinstance(transform, IntervalTransform) or (
             isinstance(transform, Chain)
-            and any(
-                isinstance(tr, IntervalTransform) for tr in transform.transform_list
-            )
+            and any(isinstance(tr, IntervalTransform) for tr in transform.transform_list)
         ):
             warnings.warn(
                 f"The transform {transform} for the variable {replaced_var}, which depends on the "
@@ -153,18 +168,14 @@ def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
     if isinstance(rvs_to_marginalize, str | Variable):
         rvs_to_marginalize = (rvs_to_marginalize,)
 
-    rvs_to_marginalize = [
-        model[rv] if isinstance(rv, str) else rv for rv in rvs_to_marginalize
-    ]
+    rvs_to_marginalize = [model[rv] if isinstance(rv, str) else rv for rv in rvs_to_marginalize]
 
     if not rvs_to_marginalize:
         return model
 
     for rv_to_marginalize in rvs_to_marginalize:
         if rv_to_marginalize not in model.free_RVs:
-            raise ValueError(
-                f"Marginalized RV {rv_to_marginalize} is not a free RV in the model"
-            )
+            raise ValueError(f"Marginalized RV {rv_to_marginalize} is not a free RV in the model")
 
         rv_op = rv_to_marginalize.owner.op
         if isinstance(rv_op, DiscreteMarkovChain):
@@ -190,9 +201,7 @@ def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
         key=lambda rv: toposort.index(rv.owner),
         reverse=True,
     ):
-        all_rvs = [
-            node.out for node in fg.toposort() if isinstance(node.op, ModelValuedVar)
-        ]
+        all_rvs = [node.out for node in fg.toposort() if isinstance(node.op, ModelValuedVar)]
 
         dependent_rvs = find_conditional_dependent_rvs(rv_to_marginalize, all_rvs)
         if not dependent_rvs:
@@ -205,9 +214,7 @@ def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
 
             if isinstance(transform, IntervalTransform) or (
                 isinstance(transform, Chain)
-                and any(
-                    isinstance(tr, IntervalTransform) for tr in transform.transform_list
-                )
+                and any(isinstance(tr, IntervalTransform) for tr in transform.transform_list)
             ):
                 warnings.warn(
                     f"The transform {transform} for the variable {dependent_rv}, which depends on the "
@@ -227,9 +234,7 @@ def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
                     f"Cannot marginalize {rv_to_marginalize} due to dependent Potential {pot}"
                 )
 
-        marginalized_rv_input_rvs = find_conditional_input_rvs(
-            [rv_to_marginalize], all_rvs
-        )
+        marginalized_rv_input_rvs = find_conditional_input_rvs([rv_to_marginalize], all_rvs)
         other_direct_rv_ancestors = [
             rv
             for rv in find_conditional_input_rvs(dependent_rvs, all_rvs)
@@ -237,18 +242,14 @@ def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
         ]
         input_rvs = _unique((*marginalized_rv_input_rvs, *other_direct_rv_ancestors))
 
-        replace_finite_discrete_marginal_subgraph(
-            fg, rv_to_marginalize, dependent_rvs, input_rvs
-        )
+        replace_finite_discrete_marginal_subgraph(fg, rv_to_marginalize, dependent_rvs, input_rvs)
 
     return model_from_fgraph(fg, mutate_fgraph=True)
 
 
 @node_rewriter(tracks=[MarginalRV])
 def local_unmarginalize(fgraph, node):
-    unmarginalized_rv, *dependent_rvs_and_rngs = inline_ofg_outputs(
-        node.op, node.inputs
-    )
+    unmarginalized_rv, *dependent_rvs_and_rngs = inline_ofg_outputs(node.op, node.inputs)
     rngs = [rng for rng in dependent_rvs_and_rngs if isinstance(rng.type, RandomType)]
     dependent_rvs = [rv for rv in dependent_rvs_and_rngs if rv not in rngs]
 
@@ -257,14 +258,10 @@ def local_unmarginalize(fgraph, node):
     value = unmarginalized_rv.clone()
     fgraph.add_input(value)
     transform = None
-    unmarginalized_free_rv = model_free_rv(
-        unmarginalized_rv, value, transform, *node.op.dims
-    )
+    unmarginalized_free_rv = model_free_rv(unmarginalized_rv, value, transform, *node.op.dims)
 
     # Replace references to the marginalized RV with the FreeRV in the dependent RVs
-    dependent_rvs = graph_replace(
-        dependent_rvs, {unmarginalized_rv: unmarginalized_free_rv}
-    )
+    dependent_rvs = graph_replace(dependent_rvs, {unmarginalized_rv: unmarginalized_free_rv})
 
     return [unmarginalized_free_rv, *dependent_rvs, *rngs]
 
@@ -272,9 +269,7 @@ def local_unmarginalize(fgraph, node):
 unmarginalize_rewrite = in2out(local_unmarginalize, ignore_newtrees=False)
 
 
-def unmarginalize(
-    model: Model, rvs_to_unmarginalize: str | Sequence[str] | None = None
-) -> Model:
+def unmarginalize(model: Model, rvs_to_unmarginalize: str | Sequence[str] | None = None) -> Model:
     """Unmarginalize a subset of variables in a PyMC model.
 
 
@@ -306,9 +301,7 @@ def unmarginalize(
 
     old_free_rv_names = set(rv.name for rv in model.free_RVs)
     new_free_rv_names = set(
-        rv.name
-        for rv in unmarginalized_model.free_RVs
-        if rv.name not in old_free_rv_names
+        rv.name for rv in unmarginalized_model.free_RVs if rv.name not in old_free_rv_names
     )
     if rvs_to_unmarginalize - new_free_rv_names:
         raise ValueError(
@@ -420,9 +413,7 @@ def recover_marginals(
 
     var_names = [var if isinstance(var, str) else var.name for var in var_names]
     var_names_to_recover = [name for name in marginalized_rv_names if name in var_names]
-    missing_names = [
-        name for name in var_names_to_recover if name not in marginalized_rv_names
-    ]
+    missing_names = [name for name in var_names_to_recover if name not in marginalized_rv_names]
     if missing_names:
         raise ValueError(f"Unrecognized var_names: {missing_names}")
 
@@ -453,15 +444,11 @@ def recover_marginals(
         other_marginalized_rvs_names.remove(var_name_to_recover)
         dependent_rvs = [
             rv
-            for rv in find_conditional_dependent_rvs(
-                var_to_recover, unmarginal_model.basic_RVs
-            )
+            for rv in find_conditional_dependent_rvs(var_to_recover, unmarginal_model.basic_RVs)
             if rv.name not in other_marginalized_rvs_names
         ]
         # Handle batch dims for marginalized value and its dependent RVs
-        dependent_rvs_dim_connections = subgraph_batch_dim_connection(
-            var_to_recover, dependent_rvs
-        )
+        dependent_rvs_dim_connections = subgraph_batch_dim_connection(var_to_recover, dependent_rvs)
 
         marginalized_model = marginalize(unmarginal_model, other_marginalized_rvs_names)
 
@@ -481,12 +468,8 @@ def recover_marginals(
             dependent_logps,
         )
 
-        marginalized_value = marginalized_model.rvs_to_values[
-            marginalized_var_to_recover
-        ]
-        other_values = [
-            v for v in marginalized_model.value_vars if v is not marginalized_value
-        ]
+        marginalized_value = marginalized_model.rvs_to_values[marginalized_var_to_recover]
+        other_values = [v for v in marginalized_model.value_vars if v is not marginalized_value]
 
         rv_shape = constant_fold(tuple(var_to_recover.shape), raise_not_constant=False)
         rv_domain = get_domain_of_finite_discrete_rv(var_to_recover)
@@ -529,8 +512,7 @@ def recover_marginals(
             logps = np.asarray(logps)
             samples = np.asarray(samples)
             rv_dict[var_name_to_recover] = samples.reshape(
-                tuple(len(coord) for coord in stacked_dims.values())
-                + samples.shape[1:],
+                tuple(len(coord) for coord in stacked_dims.values()) + samples.shape[1:],
             )
         else:
             logps = np.asarray(logvs)
@@ -598,9 +580,7 @@ def replace_finite_discrete_marginal_subgraph(
         ) from e
 
     output_rvs = [rv_to_marginalize, *dependent_rvs]
-    rng_updates = collect_default_updates(
-        output_rvs, inputs=input_rvs, must_be_shared=False
-    )
+    rng_updates = collect_default_updates(output_rvs, inputs=input_rvs, must_be_shared=False)
     outputs = output_rvs + list(rng_updates.values())
     inputs = input_rvs + list(rng_updates.keys())
     # Add any other shared variable inputs
@@ -629,9 +609,7 @@ def replace_finite_discrete_marginal_subgraph(
 
     model_replacements = []
     for old_output, new_output in zip(outputs, new_outputs):
-        if old_output is rv_to_marginalize or not isinstance(
-            old_output.owner.op, ModelValuedVar
-        ):
+        if old_output is rv_to_marginalize or not isinstance(old_output.owner.op, ModelValuedVar):
             # Replace the marginalized ModelFreeRV (or non model-variables) themselves
             var_to_replace = old_output
         else:

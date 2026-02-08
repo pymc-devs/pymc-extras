@@ -16,14 +16,20 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 import scipy.stats
+
 from pymc.logprob.utils import ParameterValueError
-from pymc.testing import (BaseTestDistributionRandom, Domain, I, Rplus,
-                          assert_support_point_is_expected, check_logp,
-                          discrete_random_tester)
+from pymc.testing import (
+    BaseTestDistributionRandom,
+    Domain,
+    I,
+    Rplus,
+    assert_support_point_is_expected,
+    check_logp,
+    discrete_random_tester,
+)
 from pytensor import config, function
 
-from pymc_extras.distributions import (BetaNegativeBinomial,
-                                       GeneralizedPoisson, Skellam)
+from pymc_extras.distributions import BetaNegativeBinomial, GeneralizedPoisson, Skellam
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:Numba will use object mode to run generalized_poisson_rv:UserWarning"
@@ -102,14 +108,10 @@ class TestGeneralizedPoisson:
             trace = pm.sample(chains=1, draws=10_000, random_seed=96).posterior
 
         expected_mean = mu / (1 - lam)
-        np.testing.assert_allclose(
-            trace["x"].mean(("chain", "draw")), expected_mean, rtol=1e-1
-        )
+        np.testing.assert_allclose(trace["x"].mean(("chain", "draw")), expected_mean, rtol=1e-1)
 
         expected_std = np.sqrt(mu / (1 - lam) ** 3)
-        np.testing.assert_allclose(
-            trace["x"].std(("chain", "draw")), expected_std, rtol=1e-1
-        )
+        np.testing.assert_allclose(trace["x"].std(("chain", "draw")), expected_std, rtol=1e-1)
 
     @pytest.mark.parametrize(
         "mu, lam, size, expected",

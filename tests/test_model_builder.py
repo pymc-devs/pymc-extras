@@ -117,9 +117,7 @@ class test_ModelBuilder(ModelBuilder):
             obs_error = pm.HalfNormal("σ_model_fmc", obs_error)
 
             # observed data
-            output = pm.Normal(
-                "output", a + b * x, obs_error, shape=x.shape, observed=y_data
-            )
+            output = pm.Normal("output", a + b * x, obs_error, shape=x.shape, observed=y_data)
 
     def _save_input_params(self, idata):
         idata.attrs["test_paramter"] = json.dumps(self.test_parameter)
@@ -209,9 +207,7 @@ def test_empty_sampler_config_fit(toy_X, toy_y):
 
 
 def test_fit(fitted_model_instance):
-    prediction_data = pd.DataFrame(
-        {"input": np.random.uniform(low=0, high=1, size=100)}
-    )
+    prediction_data = pd.DataFrame({"input": np.random.uniform(low=0, high=1, size=100)})
     pred = fitted_model_instance.predict(prediction_data["input"])
     post_pred = fitted_model_instance.sample_posterior_predictive(
         prediction_data["input"], extend_idata=True, combined=True
@@ -267,9 +263,7 @@ def test_sample_xxx_extend_idata_param(fitted_model_instance, group, extend_idat
     else:  # group == "posterior_predictive":
         prediction_method = fitted_model_instance.sample_posterior_predictive
 
-    pred = prediction_method(
-        prediction_data["input"], combined=False, extend_idata=extend_idata
-    )
+    pred = prediction_method(prediction_data["input"], combined=False, extend_idata=extend_idata)
 
     pred_unstacked = pred[output_var].values
     idata_now = fitted_model_instance.idata[group][output_var].values

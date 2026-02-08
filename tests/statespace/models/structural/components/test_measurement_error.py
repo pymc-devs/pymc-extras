@@ -1,10 +1,10 @@
 import numpy as np
 import pytensor
+
 from pytensor.graph.traversal import explicit_graph_inputs
 
 from pymc_extras.statespace.models import structural as st
-from tests.statespace.models.structural.conftest import \
-    _assert_basic_coords_correct
+from tests.statespace.models.structural.conftest import _assert_basic_coords_correct
 
 
 def test_measurement_error(rng):
@@ -25,9 +25,7 @@ def test_measurement_error_multiple_observed():
 
 
 def test_measurement_error_share_states():
-    mod = st.MeasurementError(
-        "obs", observed_state_names=["data_1", "data_2"], share_states=True
-    )
+    mod = st.MeasurementError("obs", observed_state_names=["data_1", "data_2"], share_states=True)
     mod = mod.build(verbose=False)
     _assert_basic_coords_correct(mod)
 
@@ -43,9 +41,7 @@ def test_measurement_error_share_states():
 
     outputs = mod.ssm["obs_cov"]
 
-    H = pytensor.function(list(explicit_graph_inputs([outputs])), outputs)(
-        sigma_obs=np.array(0.5)
-    )
+    H = pytensor.function(list(explicit_graph_inputs([outputs])), outputs)(sigma_obs=np.array(0.5))
     np.testing.assert_allclose(H, np.diag([0.5, 0.5]) ** 2)
 
 
@@ -53,9 +49,7 @@ def test_measurement_error_shared_and_not_shared():
     shared = st.MeasurementError(
         "error_shared", observed_state_names=["data_1", "data_2"], share_states=True
     )
-    individual = st.MeasurementError(
-        "error_individual", observed_state_names=["data_1", "data_2"]
-    )
+    individual = st.MeasurementError("error_individual", observed_state_names=["data_1", "data_2"])
     mod = (shared + individual).build(verbose=False)
 
     assert mod.k_endog == 2

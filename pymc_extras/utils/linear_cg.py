@@ -122,9 +122,7 @@ def linear_cg(
     result = np.copy(initial_guess)
 
     if not np.allclose(residual, residual):
-        raise RuntimeError(
-            "NaNs encountered when trying to perform matrix-vector multiplication"
-        )
+        raise RuntimeError("NaNs encountered when trying to perform matrix-vector multiplication")
 
     # sometimes we are lucky and preconditioner solves the system right away
     # check for convergence
@@ -251,20 +249,14 @@ def linear_cg(
             beta_tridiag = np.copy(beta)
 
             alpha_tridiag_is_zero = alpha_tridiag == 0
-            alpha_tridiag = masked_fill(
-                alpha_tridiag, mask=alpha_tridiag_is_zero, fill_value=1
-            )
+            alpha_tridiag = masked_fill(alpha_tridiag, mask=alpha_tridiag_is_zero, fill_value=1)
             alpha_reciprocal = 1 / alpha_tridiag
-            alpha_tridiag = masked_fill(
-                alpha_tridiag, mask=alpha_tridiag_is_zero, fill_value=0
-            )
+            alpha_tridiag = masked_fill(alpha_tridiag, mask=alpha_tridiag_is_zero, fill_value=0)
 
             if k == 0:
                 t_mat[k, k] = alpha_reciprocal
             else:
-                t_mat[k, k] += np.squeeze(
-                    alpha_reciprocal + prev_beta * prev_alpha_reciprocal
-                )
+                t_mat[k, k] += np.squeeze(alpha_reciprocal + prev_beta * prev_alpha_reciprocal)
                 t_mat[k, k - 1] = np.sqrt(prev_beta) * prev_alpha_reciprocal
                 t_mat[k - 1, k] = np.copy(t_mat[k, k - 1])
 

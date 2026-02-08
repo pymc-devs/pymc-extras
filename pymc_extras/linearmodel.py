@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pymc as pm
+
 from sklearn.base import BaseEstimator
 
 from pymc_extras.model_builder import ModelBuilder
@@ -84,9 +85,7 @@ class LinearModel(ModelBuilder, BaseEstimator):
             obs_error = pm.HalfNormal("σ_model_fmc", cfg["obs_error"])
 
             # Model
-            y_model = pm.Deterministic(
-                "y_model", intercept + slope * x, dims="observation"
-            )
+            y_model = pm.Deterministic("y_model", intercept + slope * x, dims="observation")
 
             # observed data
             pm.Normal(

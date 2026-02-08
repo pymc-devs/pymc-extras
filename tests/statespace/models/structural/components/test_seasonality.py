@@ -1,16 +1,14 @@
 import numpy as np
 import pytensor
 import pytest
+
 from pytensor import config
 from pytensor.graph.traversal import explicit_graph_inputs
 
 from pymc_extras.statespace.models import structural as st
-from pymc_extras.statespace.models.structural.components.seasonality import \
-    FrequencySeasonality
-from tests.statespace.models.structural.conftest import \
-    _assert_basic_coords_correct
-from tests.statespace.test_utilities import (assert_pattern_repeats,
-                                             simulate_from_numpy_model)
+from pymc_extras.statespace.models.structural.components.seasonality import FrequencySeasonality
+from tests.statespace.models.structural.conftest import _assert_basic_coords_correct
+from tests.statespace.test_utilities import assert_pattern_repeats, simulate_from_numpy_model
 
 ATOL = 1e-8 if config.floatX.endswith("64") else 1e-4
 RTOL = 0 if config.floatX.endswith("64") else 1e-6
@@ -74,9 +72,7 @@ def test_time_seasonality_multiple_observed(rng, d, remove_first_state):
         observed_state_names=["data_1", "data_2"],
         remove_first_state=remove_first_state,
     )
-    x0 = np.zeros(
-        (mod.k_endog, mod.k_states // mod.k_endog // mod.duration), dtype=config.floatX
-    )
+    x0 = np.zeros((mod.k_endog, mod.k_states // mod.k_endog // mod.duration), dtype=config.floatX)
 
     expected_states = [
         f"state_{i}_{j}[data_{k}]"
@@ -117,9 +113,7 @@ def test_time_seasonality_multiple_observed(rng, d, remove_first_state):
     # the expected T is the diagonal block matrix [[T0, 0], [0, T0]]
     # where T0 is the transition matrix we would have if the
     # seasonality were not multiple observed.
-    mod0 = st.TimeSeasonality(
-        season_length=s, duration=d, remove_first_state=remove_first_state
-    )
+    mod0 = st.TimeSeasonality(season_length=s, duration=d, remove_first_state=remove_first_state)
     T0 = mod0.ssm["transition"].eval()
 
     if remove_first_state:
@@ -131,10 +125,7 @@ def test_time_seasonality_multiple_observed(rng, d, remove_first_state):
             ]
         )
         expected_R = np.array(
-            [[1.0, 1.0]]
-            + [[0.0, 0.0]] * (2 * d - 1)
-            + [[1.0, 1.0]]
-            + [[0.0, 0.0]] * (2 * d - 1)
+            [[1.0, 1.0]] + [[0.0, 0.0]] * (2 * d - 1) + [[1.0, 1.0]] + [[0.0, 0.0]] * (2 * d - 1)
         )
         Z0 = np.zeros((2, d * (s - 1)))
         Z0[0, 0] = 1
@@ -144,14 +135,9 @@ def test_time_seasonality_multiple_observed(rng, d, remove_first_state):
 
     else:
         expected_x0 = np.repeat(np.array([1.0, 0.0, 0.0, 2.0, 0.0, 0.0]), d)
-        expected_T = np.block(
-            [[T0, np.zeros((s * d, s * d))], [np.zeros((s * d, s * d)), T0]]
-        )
+        expected_T = np.block([[T0, np.zeros((s * d, s * d))], [np.zeros((s * d, s * d)), T0]])
         expected_R = np.array(
-            [[1.0, 1.0]]
-            + [[0.0, 0.0]] * (s * d - 1)
-            + [[1.0, 1.0]]
-            + [[0.0, 0.0]] * (s * d - 1)
+            [[1.0, 1.0]] + [[0.0, 0.0]] * (s * d - 1) + [[1.0, 1.0]] + [[0.0, 0.0]] * (s * d - 1)
         )
         Z0 = np.zeros((2, s * d))
         Z0[0, 0] = 1
@@ -201,9 +187,7 @@ def test_time_seasonality_shared_states():
 
     np.testing.assert_allclose(np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), Z)
 
-    np.testing.assert_allclose(
-        np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]), T
-    )
+    np.testing.assert_allclose(np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]), T)
 
     np.testing.assert_allclose(np.array([[1.0], [0.0], [0.0]]), R)
 
@@ -255,9 +239,7 @@ def test_add_mixed_shared_not_shared_time_seasonality():
     )()
 
     np.testing.assert_allclose(
-        np.array(
-            [[1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]]
-        ),
+        np.array([[1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]]),
         Z,
     )
 
@@ -276,9 +258,7 @@ def test_add_mixed_shared_not_shared_time_seasonality():
         T,
     )
 
-    np.testing.assert_allclose(
-        np.array([[1.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0]]), R
-    )
+    np.testing.assert_allclose(np.array([[1.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0]]), R)
 
 
 @pytest.mark.parametrize("d1, d2", [(1, 1), (1, 3), (3, 1), (3, 3)])
@@ -350,9 +330,7 @@ def test_add_two_time_seasonality_different_observed(rng, d1, d2):
     )
 
     np.testing.assert_allclose(
-        np.repeat(
-            np.array([1.0, 0.0, 0.0, 3.0, 0.0, 0.0, 1.2]), [d1, d1, d1, d2, d2, d2, d2]
-        ),
+        np.repeat(np.array([1.0, 0.0, 0.0, 3.0, 0.0, 0.0, 1.2]), [d1, d1, d1, d2, d2, d2, d2]),
         x0,
         atol=ATOL,
         rtol=RTOL,
@@ -466,9 +444,7 @@ def test_frequency_seasonality_multiple_observed(rng):
         "Cos_1_season",
     )
 
-    x0_sym, *_, T_sym, Z_sym, R_sym, _, Q_sym = (
-        mod._unpack_statespace_with_placeholders()
-    )
+    x0_sym, *_, T_sym, Z_sym, R_sym, _, Q_sym = mod._unpack_statespace_with_placeholders()
     input_vars = explicit_graph_inputs([x0_sym, T_sym, Z_sym, R_sym, Q_sym])
     fn = pytensor.function(
         inputs=list(input_vars),
@@ -623,9 +599,7 @@ def test_add_two_frequency_seasonality_different_observed(rng):
     )
 
     # Make sure the extra 0 in from the first component (the saturated state) is there!
-    np.testing.assert_allclose(
-        np.array([1.0, 0.0, 1.2, 0.0, 3.0, 0.0]), x0_v, atol=ATOL, rtol=RTOL
-    )
+    np.testing.assert_allclose(np.array([1.0, 0.0, 1.2, 0.0, 3.0, 0.0]), x0_v, atol=ATOL, rtol=RTOL)
 
     # Transition matrix is block diagonal: 4x4 for freq1, 2x2 for freq2
     # freq1: n=4, lambdas = 2*pi*1/6, 2*pi*2/6
@@ -751,32 +725,22 @@ def test_frequency_seasonality_coordinates(test_case):
     season.populate_component_properties()
 
     # assert parameter shape
-    assert (
-        season.param_info[f"params_{model_name}"].shape == test_case["expected_shape"]
-    )
+    assert season.param_info[f"params_{model_name}"].shape == test_case["expected_shape"]
 
     # generate expected state names based on actual model name
     expected_state_names = tuple(
-        [
-            f"{f}_{i}_{model_name}"
-            for i in range(test_case["n"])
-            for f in ["Cos", "Sin"]
-        ][: test_case["expected_shape"][-1]]
+        [f"{f}_{i}_{model_name}" for i in range(test_case["n"]) for f in ["Cos", "Sin"]][
+            : test_case["expected_shape"][-1]
+        ]
     )
 
     # assert coordinate structure
     if len(test_case["observed_state_names"]) == 1:
-        assert (
-            len(season.coords[f"state_{model_name}"]) == test_case["expected_shape"][0]
-        )
+        assert len(season.coords[f"state_{model_name}"]) == test_case["expected_shape"][0]
         assert season.coords[f"state_{model_name}"] == expected_state_names
     else:
-        assert (
-            len(season.coords[f"endog_{model_name}"]) == test_case["expected_shape"][0]
-        )
-        assert (
-            len(season.coords[f"state_{model_name}"]) == test_case["expected_shape"][1]
-        )
+        assert len(season.coords[f"endog_{model_name}"]) == test_case["expected_shape"][0]
+        assert len(season.coords[f"state_{model_name}"]) == test_case["expected_shape"][1]
         assert season.coords[f"state_{model_name}"] == expected_state_names
 
     # Check coords match the expected shape

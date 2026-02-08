@@ -35,9 +35,7 @@ def vectorize_random_graph(
         root_rv: change_dist_size(root_rv, new_size=batch_draws, expand=True)
         for root_rv in root_rvs
     }
-    return cast(
-        list[TensorVariable], vectorize_graph(graph, replace=vectorized_replacements)
-    )
+    return cast(list[TensorVariable], vectorize_graph(graph, replace=vectorized_replacements))
 
 
 def get_symbolic_rv_shapes(

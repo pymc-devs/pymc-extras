@@ -16,6 +16,7 @@
 import numpy as np
 import pytensor.tensor as pt
 import pytest
+
 from pytensor.sparse import SparseTensorType
 
 import pymc_extras as pmx
@@ -44,9 +45,7 @@ def test_spline_construction(dtype, sparse):
 
 @pytest.mark.parametrize("shape", [(100,), (100, 5)])
 @pytest.mark.parametrize("sparse", [True, False])
-@pytest.mark.parametrize(
-    "points", [dict(n=1001), dict(eval_points=np.linspace(0, 1, 1001))]
-)
+@pytest.mark.parametrize("points", [dict(n=1001), dict(eval_points=np.linspace(0, 1, 1001))])
 def test_interpolation_api(shape, sparse, points):
     x = np.random.randn(*shape)
     yt = pmx.utils.spline.bspline_interpolation(x, **points, sparse=sparse)

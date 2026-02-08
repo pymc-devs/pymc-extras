@@ -3,6 +3,7 @@ from abc import ABC
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
+
 from pymc.pytensorf import constant_fold
 from pytensor.graph.basic import Variable
 from pytensor.raise_op import Assert
@@ -10,10 +11,16 @@ from pytensor.tensor import TensorVariable
 from pytensor.tensor.linalg import solve_triangular
 
 from pymc_extras.statespace.filters.utilities import (
-    quad_form_sym, split_vars_into_seq_and_nonseq, stabilize)
-from pymc_extras.statespace.utils.constants import (FILTER_OUTPUT_NAMES,
-                                                    JITTER_DEFAULT,
-                                                    MATRIX_NAMES, MISSING_FILL)
+    quad_form_sym,
+    split_vars_into_seq_and_nonseq,
+    stabilize,
+)
+from pymc_extras.statespace.utils.constants import (
+    FILTER_OUTPUT_NAMES,
+    JITTER_DEFAULT,
+    MATRIX_NAMES,
+    MISSING_FILL,
+)
 
 MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
 PARAM_NAMES = MATRIX_NAMES[2:]
@@ -197,8 +204,8 @@ class BaseFilter(ABC):
 
         data, a0, P0, *params = self.check_params(data, a0, P0, c, d, T, Z, R, H, Q)
         data = pt.specify_shape(data, (data.type.shape[0], self.n_endog))
-        sequences, non_sequences, seq_names, non_seq_names = (
-            split_vars_into_seq_and_nonseq(params, PARAM_NAMES)
+        sequences, non_sequences, seq_names, non_seq_names = split_vars_into_seq_and_nonseq(
+            params, PARAM_NAMES
         )
 
         self.seq_names = seq_names
@@ -394,9 +401,7 @@ class BaseFilter(ABC):
     @staticmethod
     def update(
         a, P, y, d, Z, H, all_nan_flag
-    ) -> tuple[
-        TensorVariable, TensorVariable, TensorVariable, TensorVariable, TensorVariable
-    ]:
+    ) -> tuple[TensorVariable, TensorVariable, TensorVariable, TensorVariable, TensorVariable]:
         """
         Perform the update step of the Kalman filter.
 
@@ -700,9 +705,7 @@ class SquareRootFilter(BaseFilter):
         )
 
         a_filtered = pt.specify_shape(a_filtered, (self.n_states,))
-        P_chol_filtered = pt.specify_shape(
-            P_chol_filtered, (self.n_states, self.n_states)
-        )
+        P_chol_filtered = pt.specify_shape(P_chol_filtered, (self.n_states, self.n_states))
 
         return a_filtered, P_chol_filtered, y_hat, F_chol, ll
 
@@ -726,15 +729,9 @@ class SquareRootFilter(BaseFilter):
             X = pt.specify_shape(X, (n, k, k))
             return X
 
-        filtered_covariances = square_sequnece(
-            filtered_covariances_cholesky, k=self.n_states
-        )
-        predicted_covariances = square_sequnece(
-            predicted_covariances_cholesky, k=self.n_states
-        )
-        observed_covariances = square_sequnece(
-            observed_covariances_cholesky, k=self.n_endog
-        )
+        filtered_covariances = square_sequnece(filtered_covariances_cholesky, k=self.n_states)
+        predicted_covariances = square_sequnece(predicted_covariances_cholesky, k=self.n_states)
+        observed_covariances = square_sequnece(observed_covariances_cholesky, k=self.n_endog)
 
         return [
             filtered_states,

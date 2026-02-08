@@ -5,11 +5,11 @@ import pandas as pd
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
+
 from pymc import ImputationWarning, modelcontext
 from pytensor.tensor.sharedvar import TensorSharedVariable
 
-from pymc_extras.statespace.utils.constants import (MISSING_FILL,
-                                                    OBS_STATE_DIM, TIME_DIM)
+from pymc_extras.statespace.utils.constants import MISSING_FILL, OBS_STATE_DIM, TIME_DIM
 
 NO_TIME_INDEX_WARNING = (
     "No time index found on the supplied data. A simple range index will be automatically "
@@ -31,9 +31,7 @@ def get_data_dims(data):
     return data_dims
 
 
-def _validate_data_shape(
-    data_shape, n_obs, obs_coords=None, check_col_names=False, col_names=None
-):
+def _validate_data_shape(data_shape, n_obs, obs_coords=None, check_col_names=False, col_names=None):
     if col_names is None:
         col_names = []
 
@@ -185,9 +183,7 @@ def register_data_with_pymc(
     elif isinstance(data, pd.DataFrame | pd.Series):
         values, index = preprocess_pandas_data(data, n_obs, obs_coords)
     else:
-        raise ValueError(
-            "Data should be one of pytensor tensor, numpy array, or pandas dataframe"
-        )
+        raise ValueError("Data should be one of pytensor tensor, numpy array, or pandas dataframe")
 
     data, nan_mask = mask_missing_values_in_data(values, missing_fill_value)
 

@@ -3,17 +3,20 @@ from collections.abc import Sequence
 import pytensor
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.core.properties import (Coord, Data, Parameter,
-                                                    Shock, State)
+from pymc_extras.statespace.core.properties import Coord, Data, Parameter, Shock, State
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.models.utilities import validate_names
-from pymc_extras.statespace.utils.constants import (ALL_STATE_AUX_DIM,
-                                                    ALL_STATE_DIM,
-                                                    AR_PARAM_DIM,
-                                                    ERROR_AR_PARAM_DIM,
-                                                    EXOG_STATE_DIM, FACTOR_DIM,
-                                                    OBS_STATE_AUX_DIM,
-                                                    OBS_STATE_DIM, TIME_DIM)
+from pymc_extras.statespace.utils.constants import (
+    ALL_STATE_AUX_DIM,
+    ALL_STATE_DIM,
+    AR_PARAM_DIM,
+    ERROR_AR_PARAM_DIM,
+    EXOG_STATE_DIM,
+    FACTOR_DIM,
+    OBS_STATE_AUX_DIM,
+    OBS_STATE_DIM,
+    TIME_DIM,
+)
 
 floatX = pytensor.config.floatX
 
@@ -298,9 +301,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         else:
             self.k_exog = 0
 
-        self.k_exog_states = (
-            self.k_exog * self.k_endog if not shared_exog_states else self.k_exog
-        )
+        self.k_exog_states = self.k_exog * self.k_endog if not shared_exog_states else self.k_exog
         self.exog_flag = self.k_exog > 0
 
         # Determine the dimension for the latent factor states.
@@ -466,16 +467,12 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         if self.error_order > 0:
             names.extend(
-                f"L{lag}.error_{i}"
-                for i in range(self.k_endog)
-                for lag in range(self.error_order)
+                f"L{lag}.error_{i}" for i in range(self.k_endog) for lag in range(self.error_order)
             )
 
         if self.exog_flag:
             if self.shared_exog_states:
-                names.extend(
-                    [f"beta_{exog_name}[shared]" for exog_name in self.exog_names]
-                )
+                names.extend([f"beta_{exog_name}[shared]" for exog_name in self.exog_names])
             else:
                 names.extend(
                     f"beta_{exog_name}[{endog_name}]"
@@ -483,9 +480,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                     for endog_name in self.endog_names
                 )
 
-        hidden_states = [
-            State(name=name, observed=False, shared=False) for name in names
-        ]
+        hidden_states = [State(name=name, observed=False, shared=False) for name in names]
         observed_states = [
             State(name=name, observed=True, shared=False) for name in self.endog_names
         ]
@@ -530,7 +525,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         coords = list(self.default_coords())
 
         # Factor coords
-        factor_labels = tuple(f"factor_{i+1}" for i in range(self.k_factors))
+        factor_labels = tuple(f"factor_{i + 1}" for i in range(self.k_factors))
         coords.append(Coord(dimension=FACTOR_DIM, labels=factor_labels))
 
         # AR param coords for factors
@@ -555,9 +550,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
     def make_symbolic_graph(self):
         if not self.exog_flag:
-            x0 = self.make_and_register_variable(
-                "x0", shape=(self.k_states,), dtype=floatX
-            )
+            x0 = self.make_and_register_variable("x0", shape=(self.k_states,), dtype=floatX)
         else:
             initial_factor_loadings = self.make_and_register_variable(
                 "x0", shape=(self.k_states - self.k_exog_states,), dtype=floatX
@@ -615,14 +608,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
             error_matrix = pt.eye(self.k_endog, dtype=floatX)
             matrix_parts.append(error_matrix)
             matrix_parts.append(
-                pt.zeros(
-                    (self.k_endog, self.k_endog * (self.error_order - 1)), dtype=floatX
-                )
+                pt.zeros((self.k_endog, self.k_endog * (self.error_order - 1)), dtype=floatX)
             )
         if len(matrix_parts) == 1:
-            design_matrix = (
-                factor_loadings * 1.0
-            )  # copy to ensure a new PyTensor variable
+            design_matrix = factor_loadings * 1.0  # copy to ensure a new PyTensor variable
             design_matrix.name = "design"
             # TODO: This is a hack to ensure the design matrix isn't identically equal to the factor_loadings when error_order=0 and factor_order=0
         else:
@@ -630,16 +619,12 @@ class BayesianDynamicFactor(PyMCStateSpace):
             design_matrix.name = "design"
         # Handle exogenous variables (if any)
         if self.exog_flag:
-            exog_data = self.make_and_register_data(
-                "exog_data", shape=(None, self.k_exog)
-            )
+            exog_data = self.make_and_register_data("exog_data", shape=(None, self.k_exog))
             if self.shared_exog_states:
                 # Shared exogenous states: same exog data is used across all endogenous variables
                 # Shape becomes (n_timepoints, k_endog, k_exog)
                 Z_exog = pt.specify_shape(
-                    pt.join(
-                        1, *[pt.expand_dims(exog_data, 1) for _ in range(self.k_endog)]
-                    ),
+                    pt.join(1, *[pt.expand_dims(exog_data, 1) for _ in range(self.k_endog)]),
                     (None, self.k_endog, self.k_exog),
                 )
             else:
@@ -648,9 +633,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 Z_exog = pt.linalg.block_diag(
                     *[pt.expand_dims(exog_data, 1) for _ in range(self.k_endog)]
                 )
-                Z_exog = pt.specify_shape(
-                    Z_exog, (None, self.k_endog, self.k_exog * self.k_endog)
-                )
+                Z_exog = pt.specify_shape(Z_exog, (None, self.k_endog, self.k_exog * self.k_endog))
 
             # Repeat base design_matrix over time dimension to match exogenous time series
             n_timepoints = Z_exog.shape[0]
@@ -731,9 +714,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             # Sub-diagonal identity blocks (shift)
             if p > 1:
                 identity_pattern = pt.eye(k_series * (p - 1), dtype=floatX)
-                block = pt.set_subtensor(
-                    block[k_series:, : k_series * (p - 1)], identity_pattern
-                )
+                block = pt.set_subtensor(block[k_series:, : k_series * (p - 1)], identity_pattern)
             return block
 
         transition_blocks = []
@@ -748,9 +729,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 build_var_block_matrix(factor_ar, self.k_factors, self.factor_order)
             )
         else:
-            transition_blocks.append(
-                pt.zeros((self.k_factors, self.k_factors), dtype=floatX)
-            )
+            transition_blocks.append(pt.zeros((self.k_factors, self.k_factors), dtype=floatX))
         # Block B: Errors
         if self.error_order > 0 and self.error_var:
             error_ar = self.make_and_register_variable(
@@ -766,9 +745,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 "error_ar", shape=(self.k_endog, self.error_order), dtype=floatX
             )
             transition_blocks.append(
-                build_independent_var_block_matrix(
-                    error_ar, self.k_endog, self.error_order
-                )
+                build_independent_var_block_matrix(error_ar, self.k_endog, self.error_order)
             )
         # Block C: Exogenous states
         if self.exog_flag:
@@ -805,9 +782,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         # Handle error_sigma and error_cov depending on error_cov_type
         if self.error_cov_type == "scalar":
-            error_sigma = self.make_and_register_variable(
-                "error_sigma", shape=(), dtype=floatX
-            )
+            error_sigma = self.make_and_register_variable("error_sigma", shape=(), dtype=floatX)
             error_cov = pt.eye(self.k_endog) * error_sigma
         elif self.error_cov_type == "diagonal":
             error_sigma = self.make_and_register_variable(
@@ -827,20 +802,12 @@ class BayesianDynamicFactor(PyMCStateSpace):
                     "beta_sigma", shape=(self.k_exog_states,), dtype=floatX
                 )
                 exog_cov = pt.diag(beta_sigma)
-                self.ssm["state_cov", :, :] = pt.linalg.block_diag(
-                    factor_cov, error_cov, exog_cov
-                )
+                self.ssm["state_cov", :, :] = pt.linalg.block_diag(factor_cov, error_cov, exog_cov)
             elif self.exog_flag and not self.exog_innovations:
-                exog_cov = pt.zeros(
-                    (self.k_exog_states, self.k_exog_states), dtype=floatX
-                )
-                self.ssm["state_cov", :, :] = pt.linalg.block_diag(
-                    factor_cov, error_cov, exog_cov
-                )
+                exog_cov = pt.zeros((self.k_exog_states, self.k_exog_states), dtype=floatX)
+                self.ssm["state_cov", :, :] = pt.linalg.block_diag(factor_cov, error_cov, exog_cov)
             elif not self.exog_flag:
-                self.ssm["state_cov", :, :] = pt.linalg.block_diag(
-                    factor_cov, error_cov
-                )
+                self.ssm["state_cov", :, :] = pt.linalg.block_diag(factor_cov, error_cov)
         else:
             if self.exog_flag and self.exog_innovations:
                 beta_sigma = self.make_and_register_variable(
@@ -849,9 +816,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 exog_cov = pt.diag(beta_sigma)
                 self.ssm["state_cov", :, :] = pt.linalg.block_diag(factor_cov, exog_cov)
             elif self.exog_flag and not self.exog_innovations:
-                exog_cov = pt.zeros(
-                    (self.k_exog_states, self.k_exog_states), dtype=floatX
-                )
+                exog_cov = pt.zeros((self.k_exog_states, self.k_exog_states), dtype=floatX)
                 self.ssm["state_cov", :, :] = pt.linalg.block_diag(factor_cov, exog_cov)
             elif not self.exog_flag:
                 # Only latent factor in the state

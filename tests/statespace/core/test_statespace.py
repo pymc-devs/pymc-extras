@@ -1,4 +1,5 @@
 import re
+
 from collections.abc import Sequence
 from functools import partial
 from typing import Any
@@ -9,20 +10,21 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import pytest
+
 from numpy.testing import assert_allclose
 from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.compile import SharedVariable
 from pytensor.graph.traversal import graph_inputs
 
-from pymc_extras.statespace.core.statespace import (FILTER_FACTORY,
-                                                    PyMCStateSpace)
+from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
-from pymc_extras.statespace.utils.constants import (FILTER_OUTPUT_NAMES,
-                                                    MATRIX_NAMES,
-                                                    SMOOTHER_OUTPUT_NAMES)
+from pymc_extras.statespace.utils.constants import (
+    FILTER_OUTPUT_NAMES,
+    MATRIX_NAMES,
+    SMOOTHER_OUTPUT_NAMES,
+)
 from tests.statespace.shared_fixtures import rng
-from tests.statespace.test_utilities import (fast_eval, load_nile_test_data,
-                                             make_test_inputs)
+from tests.statespace.test_utilities import fast_eval, load_nile_test_data, make_test_inputs
 
 floatX = pytensor.config.floatX
 nile = load_nile_test_data()
@@ -30,9 +32,7 @@ ALL_SAMPLE_OUTPUTS = MATRIX_NAMES + FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES
 mock_pymc_sample = pytest.fixture(scope="session")(mock_sample_setup_and_teardown)
 
 
-def make_statespace_mod(
-    k_endog, k_states, k_posdef, filter_type, verbose=False, data_info=None
-):
+def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False, data_info=None):
     class StateSpace(PyMCStateSpace):
         def make_symbolic_graph(self):
             pass
@@ -110,9 +110,7 @@ def pymc_mod(ss_mod):
         rho = pm.Beta("rho", 1, 1)
         zeta = pm.Deterministic("zeta", 1 - rho)
 
-        ss_mod.build_statespace_graph(
-            data=nile, save_kalman_filter_outputs_in_idata=True
-        )
+        ss_mod.build_statespace_graph(data=nile, save_kalman_filter_outputs_in_idata=True)
         names = ["x0", "P0", "c", "d", "T", "Z", "R", "H", "Q"]
         for name, matrix in zip(names, ss_mod.unpack_statespace()):
             pm.Deterministic(name, matrix)
@@ -178,9 +176,7 @@ def exog_ss_mod(exog_data):
     exog = st.Regression(
         name="exog",  # Name of this exogenous variable component
         innovations=False,  # Typically fixed effect (no stochastic evolution)
-        state_names=exog_data[
-            ["x1"]
-        ].columns.tolist(),  # Only one exogenous variable now
+        state_names=exog_data[["x1"]].columns.tolist(),  # Only one exogenous variable now
     )
 
     combined_model = level_trend + exog
@@ -195,9 +191,7 @@ def exog_ss_mod_mv(exog_data_mv):
     exog = st.Regression(
         name="exog",  # Name of this exogenous variable component
         innovations=False,  # Typically fixed effect (no stochastic evolution)
-        state_names=exog_data_mv[
-            ["x1"]
-        ].columns.tolist(),  # Only one exogenous variable now
+        state_names=exog_data_mv[["x1"]].columns.tolist(),  # Only one exogenous variable now
         observed_state_names=["y1", "y2"],
     )
 
@@ -216,12 +210,8 @@ def ss_mod_multi_component(rng):
         state_names=["x1"],
     )
     ar = st.Autoregressive(observed_state_names=["y1"])
-    cycle = st.Cycle(
-        cycle_length=2, observed_state_names=["y1", "y2"], innovations=True
-    )
-    season = st.TimeSeasonality(
-        season_length=2, observed_state_names=["y1"], innovations=True
-    )
+    cycle = st.Cycle(cycle_length=2, observed_state_names=["y1", "y2"], innovations=True)
+    season = st.TimeSeasonality(season_length=2, observed_state_names=["y1"], innovations=True)
 
     fseason = st.FrequencySeasonality(
         season_length=2, observed_state_names=["y1"], innovations=True
@@ -237,18 +227,14 @@ def exog_pymc_mod(exog_ss_mod, exog_data):
         P0_diag = pm.Gamma("P0_diag", alpha=2, beta=4, dims=["state"])
         P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=["state", "state_aux"])
 
-        initial_trend = pm.Normal(
-            "initial_trend", mu=[0], sigma=[0.005], dims=["state_trend"]
-        )
+        initial_trend = pm.Normal("initial_trend", mu=[0], sigma=[0.005], dims=["state_trend"])
 
         data_exog = pm.Data(
             "data_exog", exog_data["x1"].values[:, None], dims=["time", "state_exog"]
         )
         beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=["state_exog"])
 
-        exog_ss_mod.build_statespace_graph(
-            exog_data["y"], save_kalman_filter_outputs_in_idata=True
-        )
+        exog_ss_mod.build_statespace_graph(exog_data["y"], save_kalman_filter_outputs_in_idata=True)
 
     return struct_model
 
@@ -267,9 +253,7 @@ def exog_pymc_mod_mv(exog_ss_mod_mv, exog_data_mv):
         data_exog = pm.Data(
             "data_exog", exog_data_mv["x1"].values[:, None], dims=["time", "state_exog"]
         )
-        beta_exog = pm.Normal(
-            "beta_exog", mu=0, sigma=1, dims=["endog_exog", "state_exog"]
-        )
+        beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=["endog_exog", "state_exog"])
 
         exog_ss_mod_mv.build_statespace_graph(
             exog_data_mv[["y1", "y2"]], save_kalman_filter_outputs_in_idata=True
@@ -308,9 +292,7 @@ def pymc_mod_no_exog_mv(ss_mod_no_exog_mv, rng):
             pt.eye(ss_mod_no_exog_mv.k_states) * P0_sigma,
             dims=["state", "state_aux"],
         )
-        trend_sigma = pm.Exponential(
-            "sigma_trend", 1, dims=["endog_trend", "shock_trend"]
-        )
+        trend_sigma = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "shock_trend"])
         ss_mod_no_exog_mv.build_statespace_graph(y)
 
     return m
@@ -332,9 +314,7 @@ def pymc_mod_no_exog_mv_dt(ss_mod_no_exog_mv, rng):
             pt.eye(ss_mod_no_exog_mv.k_states) * P0_sigma,
             dims=["state", "state_aux"],
         )
-        trend_sigma = pm.Exponential(
-            "sigma_trend", 1, dims=["endog_trend", "shock_trend"]
-        )
+        trend_sigma = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "shock_trend"])
         ss_mod_no_exog_mv.build_statespace_graph(y)
 
     return m
@@ -427,13 +407,9 @@ def idata_no_exog_dt(pymc_mod_no_exog_dt, rng, mock_pymc_sample):
 
 
 def test_invalid_filter_name_raises():
-    msg = "The following are valid filter types: " + ", ".join(
-        list(FILTER_FACTORY.keys())
-    )
+    msg = "The following are valid filter types: " + ", ".join(list(FILTER_FACTORY.keys()))
     with pytest.raises(NotImplementedError, match=msg):
-        mod = make_statespace_mod(
-            k_endog=1, k_states=5, k_posdef=1, filter_type="invalid_filter"
-        )
+        mod = make_statespace_mod(k_endog=1, k_states=5, k_posdef=1, filter_type="invalid_filter")
 
 
 def test_unpack_before_insert_raises(rng):
@@ -480,9 +456,7 @@ def test_update_raises_if_missing_variables(ss_mod):
 
 def test_build_statespace_graph_warns_if_data_has_nans():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(
-        verbose=False
-    )
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))
@@ -495,9 +469,7 @@ def test_build_statespace_graph_warns_if_data_has_nans():
 
 def test_build_statespace_graph_raises_if_data_has_missing_fill():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(
-        verbose=False
-    )
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(verbose=False)
 
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))
@@ -505,9 +477,7 @@ def test_build_statespace_graph_raises_if_data_has_missing_fill():
         with pytest.raises(ValueError, match="Provided data contains the value 1.0"):
             data = np.ones((10, 1), dtype=floatX)
             data[3] = np.nan
-            ss_mod.build_statespace_graph(
-                data=data, missing_fill_value=1.0, register_data=False
-            )
+            ss_mod.build_statespace_graph(data=data, missing_fill_value=1.0, register_data=False)
 
 
 def test_build_statespace_graph(pymc_mod):
@@ -590,9 +560,7 @@ def test_sample_conditional_with_time_varying():
     coords["time"] = empty_data.index
     with pm.Model(coords=coords) as mod:
         log_sigma_cov = pm.Normal("log_sigma_cov", mu=0, sigma=0.1, dims=["time"])
-        pm.Deterministic(
-            "sigma_cov", pm.math.exp(log_sigma_cov.cumsum()), dims=["time"]
-        )
+        pm.Deterministic("sigma_cov", pm.math.exp(log_sigma_cov.cumsum()), dims=["time"])
 
         ss_mod.build_statespace_graph(data=empty_data)
 
@@ -681,9 +649,7 @@ def test_forecast_index(use_datetime_index):
     delta = pd.DateOffset(years=10) if use_datetime_index else 11
     end = start + delta
 
-    x0_index, forecast_idx = ss_mod._build_forecast_index(
-        time_idx, start=start, end=end
-    )
+    x0_index, forecast_idx = ss_mod._build_forecast_index(time_idx, start=start, end=end)
     assert start not in forecast_idx
     assert x0_index == start
     assert forecast_idx.shape == (10,)
@@ -692,18 +658,14 @@ def test_forecast_index(use_datetime_index):
     start = time_idx[-1]
     periods = 10
 
-    x0_index, forecast_idx = ss_mod._build_forecast_index(
-        time_idx, start=start, periods=periods
-    )
+    x0_index, forecast_idx = ss_mod._build_forecast_index(time_idx, start=start, periods=periods)
     assert start not in forecast_idx
     assert x0_index == start
     assert forecast_idx.shape == (10,)
 
     # From integer start
     start = 10
-    x0_index, forecast_idx = ss_mod._build_forecast_index(
-        time_idx, start=start, periods=periods
-    )
+    x0_index, forecast_idx = ss_mod._build_forecast_index(time_idx, start=start, periods=periods)
     delta = forecast_idx.freq if use_datetime_index else 1
 
     assert x0_index == time_idx[start]
@@ -828,12 +790,8 @@ def test_finalize_scenario_single(data_type, use_datetime_index):
     scenario = data_type(np.zeros((10,)))
 
     scenario = ss_mod._validate_scenario_data(scenario)
-    t0, forecast_idx = ss_mod._build_forecast_index(
-        time_idx, start=time_idx[-1], periods=10
-    )
-    scenario = ss_mod._finalize_scenario_initialization(
-        scenario, forecast_index=forecast_idx
-    )
+    t0, forecast_idx = ss_mod._build_forecast_index(time_idx, start=time_idx[-1], periods=10)
+    scenario = ss_mod._finalize_scenario_initialization(scenario, forecast_index=forecast_idx)
 
     assert isinstance(scenario, pd.DataFrame)
     assert scenario.index.equals(forecast_idx)
@@ -860,9 +818,7 @@ def test_finalize_secenario_dict(data_type, use_datetime_index, use_scenario_ind
         verbose=False,
         data_info=data_info,
     )
-    ss_mod._fit_coords = dict(
-        features_a=["column_1"], features_b=["column_1", "column_2"]
-    )
+    ss_mod._fit_coords = dict(features_a=["column_1"], features_b=["column_1", "column_2"])
     time_idx = _make_time_idx(ss_mod, use_datetime_index)
 
     initial_index = (
@@ -897,13 +853,9 @@ def test_finalize_secenario_dict(data_type, use_datetime_index, use_scenario_ind
             time_idx, scenario=scenario, start=-1, periods=10, use_scenario_index=True
         )
     else:
-        t0, forecast_idx = ss_mod._build_forecast_index(
-            time_idx, start=time_idx[-1], periods=10
-        )
+        t0, forecast_idx = ss_mod._build_forecast_index(time_idx, start=time_idx[-1], periods=10)
 
-    scenario = ss_mod._finalize_scenario_initialization(
-        scenario, forecast_index=forecast_idx
-    )
+    scenario = ss_mod._finalize_scenario_initialization(scenario, forecast_index=forecast_idx)
 
     assert list(scenario.keys()) == ["a", "b"]
     assert all(isinstance(value, pd.DataFrame) for value in scenario.values())
@@ -999,12 +951,8 @@ def test_invalid_scenarios():
         match="Scenario data must have the same number of time steps for all variables",
     ):
         scenario = {
-            "a": pd.DataFrame(
-                np.zeros((10, 2)), columns=ss_mod._fit_coords["features_a"]
-            ),
-            "b": pd.DataFrame(
-                np.zeros((11, 2)), columns=ss_mod._fit_coords["features_b"]
-            ),
+            "a": pd.DataFrame(np.zeros((10, 2)), columns=ss_mod._fit_coords["features_a"]),
+            "b": pd.DataFrame(np.zeros((11, 2)), columns=ss_mod._fit_coords["features_b"]),
         }
         ss_mod._validate_scenario_data(scenario)
 
@@ -1058,9 +1006,7 @@ def test_invalid_scenarios():
         "multivariate_datetime_datetime",
     ],
 )
-def test_forecast(
-    filter_output, mod_name, idata_name, start, end, periods, rng, request
-):
+def test_forecast(filter_output, mod_name, idata_name, start, end, periods, rng, request):
     mod = request.getfixturevalue(mod_name)
     idata = request.getfixturevalue(idata_name)
     time_idx = mod._get_fit_time_index()
@@ -1085,9 +1031,7 @@ def test_forecast(
     )
 
     forecast_idx = forecast_idata.coords["time"].values
-    forecast_idx = (
-        pd.DatetimeIndex(forecast_idx) if is_datetime else pd.Index(forecast_idx)
-    )
+    forecast_idx = pd.DatetimeIndex(forecast_idx) if is_datetime else pd.Index(forecast_idx)
 
     assert forecast_idx.shape == (10,)
     assert forecast_idata.forecast_latent.dims == ("chain", "draw", "time", "state")
@@ -1108,9 +1052,7 @@ def test_forecast(
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings(
-    "ignore:No frequency was specific on the data's DateTimeIndex."
-)
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
 @pytest.mark.parametrize("start", [None, -1, 5])
 def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
     scenario = pd.DataFrame(np.zeros((10, 1)), columns=["x1"])
@@ -1142,9 +1084,7 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings(
-    "ignore:No frequency was specific on the data's DateTimeIndex."
-)
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
 @pytest.mark.parametrize("start", [None, -1, 5])
 def test_forecast_with_exog_data_mv(rng, exog_ss_mod_mv, idata_exog_mv, start):
     scenario = pd.DataFrame(np.zeros((10, 1)), columns=["x1"])
@@ -1175,14 +1115,10 @@ def test_forecast_with_exog_data_mv(rng, exog_ss_mod_mv, idata_exog_mv, start):
         .assign_coords(state=["exog[x1[y2]]"])
     )
 
-    regression_effect_y1 = (
-        forecast_idata.forecast_observed.isel(observed_state=0) - level_y1
-    )
+    regression_effect_y1 = forecast_idata.forecast_observed.isel(observed_state=0) - level_y1
     regression_effect_expected_y1 = (betas_y1 * scenario_xr_y1).sum(dim=["state"])
 
-    regression_effect_y2 = (
-        forecast_idata.forecast_observed.isel(observed_state=1) - level_y2
-    )
+    regression_effect_y2 = forecast_idata.forecast_observed.isel(observed_state=1) - level_y2
     regression_effect_expected_y2 = (betas_y2 * scenario_xr_y2).sum(dim=["state"])
 
     np.testing.assert_allclose(regression_effect_y1, regression_effect_expected_y1)
@@ -1193,13 +1129,9 @@ def test_forecast_with_exog_data_mv(rng, exog_ss_mod_mv, idata_exog_mv, start):
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings(
-    "ignore:No frequency was specific on the data's DateTimeIndex."
-)
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
 def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_exog):
-    data_before_build_forecast_model = {
-        d.name: d.get_value() for d in exog_pymc_mod.data_vars
-    }
+    data_before_build_forecast_model = {d.name: d.get_value() for d in exog_pymc_mod.data_vars}
 
     scenario = pd.DataFrame(
         {
@@ -1228,9 +1160,7 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
 
     frozen_shared_inputs = [
         inpt
-        for inpt in graph_inputs(
-            [test_forecast_model.x0_slice, test_forecast_model.P0_slice]
-        )
+        for inpt in graph_inputs([test_forecast_model.x0_slice, test_forecast_model.P0_slice])
         if isinstance(inpt, SharedVariable)
         and not isinstance(inpt.get_value(), np.random.Generator)
     ]
@@ -1250,9 +1180,7 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
     assert len(unfrozen_shared_inputs) == 1
     assert unfrozen_shared_inputs[0].name == "data_exog"
 
-    data_after_build_forecast_model = {
-        d.name: d.get_value() for d in test_forecast_model.data_vars
-    }
+    data_after_build_forecast_model = {d.name: d.get_value() for d in test_forecast_model.data_vars}
 
     with test_forecast_model:
         dummy_obs_data = np.zeros((len(forecast_index), exog_ss_mod.k_endog))
@@ -1270,23 +1198,16 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
 
     for k in data_before_build_forecast_model.keys():
         assert (  # check that the data needed to init the forecasts doesn't change
-            data_before_build_forecast_model[k].mean()
-            == data_after_build_forecast_model[k].mean()
+            data_before_build_forecast_model[k].mean() == data_after_build_forecast_model[k].mean()
         )
 
     # Check that the frozen states and covariances correctly match the sliced index
     np.testing.assert_allclose(
-        idata_exog.posterior["predicted_covariances"]
-        .sel(time=t0)
-        .mean(("chain", "draw"))
-        .values,
+        idata_exog.posterior["predicted_covariances"].sel(time=t0).mean(("chain", "draw")).values,
         idata_forecast.posterior_predictive["P0_slice"].mean(("chain", "draw")).values,
     )
     np.testing.assert_allclose(
-        idata_exog.posterior["predicted_states"]
-        .sel(time=t0)
-        .mean(("chain", "draw"))
-        .values,
+        idata_exog.posterior["predicted_states"].sel(time=t0).mean(("chain", "draw")).values,
         idata_forecast.posterior_predictive["x0_slice"].mean(("chain", "draw")).values,
     )
 
@@ -1295,9 +1216,7 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings(
-    "ignore:No frequency was specific on the data's DateTimeIndex."
-)
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
 def test_foreacast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
     # Regression test for issue reported at  https://github.com/pymc-devs/pymc-extras/issues/424
     with exog_pymc_mod:
@@ -1315,9 +1234,7 @@ def test_foreacast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
     }
 
     # Generate the forecast
-    forecasts = exog_ss_mod.forecast(
-        idata.prior, scenario=scenario, use_scenario_index=True
-    )
+    forecasts = exog_ss_mod.forecast(idata.prior, scenario=scenario, use_scenario_index=True)
     assert "forecast_latent" in forecasts
     assert "forecast_observed" in forecasts
 
@@ -1337,18 +1254,16 @@ def test_param_dims_coords(ss_mod_multi_component):
             assert dims is None
             continue
         for i, s in zip(shape, dims):
-            assert i == len(
-                ss_mod_multi_component.coords[s]
-            ), f"Mismatch between shape {i} and dimension {s}"
+            assert i == len(ss_mod_multi_component.coords[s]), (
+                f"Mismatch between shape {i} and dimension {s}"
+            )
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings(
-    "ignore:No frequency was specific on the data's DateTimeIndex."
-)
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
 def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
     # Simple tests
     idata_filter_prior = exog_ss_mod.sample_filter_outputs(
@@ -1369,6 +1284,4 @@ def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
     msg = "['filter_covariances' 'filter_states'] not a valid filter output name!"
     incorrect_outputs = ["filter_states", "filter_covariances"]
     with pytest.raises(ValueError, match=re.escape(msg)):
-        exog_ss_mod.sample_filter_outputs(
-            idata_exog, filter_output_names=incorrect_outputs
-        )
+        exog_ss_mod.sample_filter_outputs(idata_exog, filter_output_names=incorrect_outputs)

@@ -3,8 +3,7 @@ import warnings
 import numpy as np
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.core.properties import (Coord, Parameter, Shock,
-                                                    State)
+from pymc_extras.statespace.core.properties import Coord, Parameter, Shock, State
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import order_to_mask
 
@@ -108,9 +107,7 @@ class Autoregressive(Component):
             combine_hidden_states=True,
             base_observed_state_names=observed_state_names,
             base_state_names=state_names,
-            obs_state_idxs=np.tile(
-                np.r_[[1.0], np.zeros(k_states - 1)], k_endog_effective
-            ),
+            obs_state_idxs=np.tile(np.r_[[1.0], np.zeros(k_states - 1)], k_endog_effective),
             share_states=share_states,
         )
 
@@ -127,12 +124,9 @@ class Autoregressive(Component):
                 for name in base_names
             ]
 
-        hidden_states = [
-            State(name=name, observed=False, shared=True) for name in state_names
-        ]
+        hidden_states = [State(name=name, observed=False, shared=True) for name in state_names]
         observed_states = [
-            State(name=name, observed=True, shared=False)
-            for name in observed_state_names
+            State(name=name, observed=True, shared=False) for name in observed_state_names
         ]
         return *hidden_states, *observed_states
 
@@ -140,15 +134,11 @@ class Autoregressive(Component):
         k_endog = self.k_endog
         k_endog_effective = 1 if self.share_states else k_endog
 
-        k_states = (
-            self.k_states // k_endog_effective
-        )  # this is also the number of AR lags
+        k_states = self.k_states // k_endog_effective  # this is also the number of AR lags
 
         ar_param = Parameter(
             name=f"params_{self.name}",
-            shape=(
-                (k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,)
-            ),
+            shape=((k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,)),
             dims=(
                 (f"lag_{self.name}",)
                 if k_endog_effective == 1
@@ -175,9 +165,7 @@ class Autoregressive(Component):
         if self.share_states:
             shock_names = [f"{self.name}[shared]"]
         else:
-            shock_names = [
-                f"{self.name}[{obs_name}]" for obs_name in observed_state_names
-            ]
+            shock_names = [f"{self.name}[{obs_name}]" for obs_name in observed_state_names]
 
         return tuple(Shock(name=name) for name in shock_names)
 
@@ -191,9 +179,7 @@ class Autoregressive(Component):
         coord_container = [lag_coord]
 
         if k_endog_effective > 1:
-            endog_coord = Coord(
-                dimension=f"endog_{self.name}", labels=observed_state_names
-            )
+            endog_coord = Coord(dimension=f"endog_{self.name}", labels=observed_state_names)
             coord_container.append(endog_coord)
 
         return tuple(coord_container)
@@ -208,11 +194,7 @@ class Autoregressive(Component):
         k_nonzero = int(sum(self.order))
         ar_params = self.make_and_register_variable(
             f"params_{self.name}",
-            shape=(
-                (k_nonzero,)
-                if k_endog_effective == 1
-                else (k_endog_effective, k_nonzero)
-            ),
+            shape=((k_nonzero,) if k_endog_effective == 1 else (k_endog_effective, k_nonzero)),
         )
         sigma_ar = self.make_and_register_variable(
             f"sigma_{self.name}",

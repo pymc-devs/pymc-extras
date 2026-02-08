@@ -1,4 +1,5 @@
 import itertools
+
 from collections.abc import Sequence
 from itertools import zip_longest
 
@@ -13,8 +14,7 @@ from pytensor.tensor.elemwise import CAReduce, DimShuffle, Elemwise
 from pytensor.tensor.random.op import RandomVariable
 from pytensor.tensor.rewriting.subtensor import is_full_slice
 from pytensor.tensor.shape import Shape
-from pytensor.tensor.subtensor import (AdvancedSubtensor, Subtensor,
-                                       get_idx_list)
+from pytensor.tensor.subtensor import AdvancedSubtensor, Subtensor, get_idx_list
 from pytensor.tensor.type_other import NoneTypeT
 
 from pymc_extras.model.marginal.distributions import MarginalRV
@@ -55,10 +55,7 @@ def find_conditional_dependent_rvs(dependable_rv, all_rvs):
     return [
         rv
         for rv in all_rvs
-        if (
-            rv is not dependable_rv
-            and is_conditional_dependent(rv, dependable_rv, all_rvs)
-        )
+        if (rv is not dependable_rv and is_conditional_dependent(rv, dependable_rv, all_rvs))
     ]
 
 
@@ -92,9 +89,7 @@ def _advanced_indexing_axis_and_ndim(idxs) -> tuple[int, int]:
             # Special non-consecutive case
             simple_group_after_adv = True
 
-    adv_group_ndim = max(
-        idx.type.ndim for idx in idxs if isinstance(idx.type, TensorType)
-    )
+    adv_group_ndim = max(idx.type.ndim for idx in idxs if isinstance(idx.type, TensorType))
     return adv_group_axis, adv_group_ndim
 
 
@@ -109,8 +104,7 @@ def _broadcast_dims(
 
     # Add missing dims
     inputs_dims = [
-        (None,) * (output_ndim - len(input_dim)) + input_dim
-        for input_dim in inputs_dims
+        (None,) * (output_ndim - len(input_dim)) + input_dim for input_dim in inputs_dims
     ]
 
     # Find which known dims show in the output, while checking no mixing
@@ -128,21 +122,15 @@ def _broadcast_dims(
     # Check for duplicates
     known_dims = [dim for dim in output_dims if dim is not None]
     if len(known_dims) > len(set(known_dims)):
-        raise ValueError(
-            "Same known dimension used in different axis after broadcasting"
-        )
+        raise ValueError("Same known dimension used in different axis after broadcasting")
 
     return tuple(output_dims)
 
 
-def _subgraph_batch_dim_connection(
-    var_dims: VAR_DIMS, input_vars, output_vars
-) -> VAR_DIMS:
+def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) -> VAR_DIMS:
     for node in io_toposort(input_vars, output_vars):
         inputs_dims = [
-            var_dims.get(
-                inp, ((None,) * inp.type.ndim) if hasattr(inp.type, "ndim") else ()
-            )
+            var_dims.get(inp, ((None,) * inp.type.ndim) if hasattr(inp.type, "ndim") else ())
             for inp in node.inputs
         ]
 
@@ -155,14 +143,11 @@ def _subgraph_batch_dim_connection(
 
         elif isinstance(node.op, DimShuffle):
             [input_dims] = inputs_dims
-            output_dims = tuple(
-                None if i == "x" else input_dims[i] for i in node.op.new_order
-            )
+            output_dims = tuple(None if i == "x" else input_dims[i] for i in node.op.new_order)
             var_dims[node.outputs[0]] = output_dims
 
         elif isinstance(node.op, MarginalRV) or (
-            isinstance(node.op, SymbolicRandomVariable)
-            and node.op.extended_signature is None
+            isinstance(node.op, SymbolicRandomVariable) and node.op.extended_signature is None
         ):
             # MarginalRV and SymbolicRandomVariables without signature are a wild-card,
             # so we need to introspect the inner graph.
@@ -186,17 +171,12 @@ def _subgraph_batch_dim_connection(
                 if inner_out in inner_var_dims:
                     out_dims = inner_var_dims[inner_out]
                     if any(
-                        dim is not None
-                        for dim in (out_dims[axis] for axis in support_axes_out)
+                        dim is not None for dim in (out_dims[axis] for axis in support_axes_out)
                     ):
-                        raise ValueError(
-                            f"Known dim corresponds to core dimension of {node.op}"
-                        )
+                        raise ValueError(f"Known dim corresponds to core dimension of {node.op}")
                     var_dims[out] = out_dims
 
-        elif isinstance(
-            node.op, Elemwise | Blockwise | RandomVariable | SymbolicRandomVariable
-        ):
+        elif isinstance(node.op, Elemwise | Blockwise | RandomVariable | SymbolicRandomVariable):
             # NOTE: User-provided CustomDist may not respect core dimensions on the left.
 
             if isinstance(node.op, Elemwise):
@@ -215,9 +195,7 @@ def _subgraph_batch_dim_connection(
                     inputs_dims[param_idx] = (None,) * missing_ndim + param_dims
 
             if any(
-                dim is not None
-                for input_dim in inputs_dims
-                for dim in input_dim[op_batch_ndim:]
+                dim is not None for input_dim in inputs_dims for dim in input_dim[op_batch_ndim:]
             ):
                 raise ValueError(
                     f"Use of known dimensions as core dimensions of op {node.op} not supported."
@@ -276,10 +254,7 @@ def _subgraph_batch_dim_connection(
             value_dims, *keys_dims = inputs_dims
 
             # Just to stay sane, we forbid any boolean indexing...
-            if any(
-                isinstance(idx.type, TensorType) and idx.type.dtype == "bool"
-                for idx in keys
-            ):
+            if any(isinstance(idx.type, TensorType) and idx.type.dtype == "bool" for idx in keys):
                 raise NotImplementedError(
                     f"Array indexing with boolean variables in node {node} not supported."
                 )
@@ -305,9 +280,7 @@ def _subgraph_batch_dim_connection(
                     )
 
                 non_adv_dims = []
-                for value_dim, idx in zip_longest(
-                    value_dims, keys, fillvalue=slice(None)
-                ):
+                for value_dim, idx in zip_longest(value_dims, keys, fillvalue=slice(None)):
                     if is_full_slice(idx):
                         non_adv_dims.append(value_dim)
                     elif value_dim is not None:
@@ -345,9 +318,7 @@ def _subgraph_batch_dim_connection(
             var_dims[node.outputs[0]] = inputs_dims[0]
 
         else:
-            raise NotImplementedError(
-                f"Marginalization through operation {node} not supported."
-            )
+            raise NotImplementedError(f"Marginalization through operation {node} not supported.")
 
     return var_dims
 

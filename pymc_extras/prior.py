@@ -84,6 +84,7 @@ Create a prior with a custom transform function by registering it with
 from __future__ import annotations
 
 import copy
+
 from collections.abc import Callable
 from functools import partial
 from inspect import signature
@@ -93,6 +94,7 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 import xarray as xr
+
 from pydantic import InstanceOf, validate_call
 from pydantic.dataclasses import dataclass
 from pymc.distributions.shape_utils import Dims
@@ -185,10 +187,7 @@ def handle_dims(x: pt.TensorLike, dims: Dims, desired_dims: Dims) -> pt.TensorVa
     missing_dims = aligned_dims.sum(axis=0) == 0
     new_idx = aligned_dims.argmax(axis=0)
 
-    args = [
-        "x" if missing else idx
-        for (idx, missing) in zip(new_idx, missing_dims, strict=False)
-    ]
+    args = ["x" if missing else idx for (idx, missing) in zip(new_idx, missing_dims, strict=False)]
     args = _remove_leading_xs(args)
     return x.dimshuffle(*args)
 
@@ -239,16 +238,12 @@ def _dims_to_str(obj: tuple[str, ...]) -> str:
     if len(obj) == 1:
         return f'"{obj[0]}"'
 
-    return (
-        "(" + ", ".join(f'"{i}"' if isinstance(i, str) else str(i) for i in obj) + ")"
-    )
+    return "(" + ", ".join(f'"{i}"' if isinstance(i, str) else str(i) for i in obj) + ")"
 
 
 def _get_pymc_distribution(name: str) -> type[pm.Distribution]:
     if not hasattr(pm, name):
-        raise UnsupportedDistributionError(
-            f"PyMC doesn't have a distribution of name {name!r}"
-        )
+        raise UnsupportedDistributionError(f"PyMC doesn't have a distribution of name {name!r}")
 
     return getattr(pm, name)
 
@@ -657,9 +652,7 @@ class Prior:
 
             return np.array(x)
 
-        self.parameters = {
-            key: convert(value) for key, value in self.parameters.items()
-        }
+        self.parameters = {key: convert(value) for key, value in self.parameters.items()}
 
     def _parameters_are_correct_type(self) -> None:
         supported_types = (
@@ -684,18 +677,13 @@ class Prior:
             raise ValueError(msg)
 
     def _correct_non_centered_distribution(self) -> None:
-        if (
-            not self.centered
-            and self.distribution not in self.non_centered_distributions
-        ):
+        if not self.centered and self.distribution not in self.non_centered_distributions:
             raise UnsupportedParameterizationError(
                 f"{self.distribution!r} is not supported for non-centered parameterization. "
                 f"Choose from {list(self.non_centered_distributions.keys())}"
             )
 
-        required_parameters = set(
-            self.non_centered_distributions[self.distribution].keys()
-        )
+        required_parameters = set(self.non_centered_distributions[self.distribution].keys())
 
         if set(self.parameters.keys()) < required_parameters:
             msg = " and ".join([f"{param!r}" for param in required_parameters])
@@ -723,9 +711,7 @@ class Prior:
 
     def __str__(self) -> str:
         """Return a string representation of the prior."""
-        param_str = ", ".join(
-            [f"{param}={value}" for param, value in self.parameters.items()]
-        )
+        param_str = ", ".join([f"{param}={value}" for param, value in self.parameters.items()])
         param_str = "" if not param_str else f", {param_str}"
 
         dim_str = f", dims={_dims_to_str(self.dims)}" if self.dims else ""
@@ -834,9 +820,7 @@ class Prior:
             var_name = f"{name}_raw"
 
             def transform(var):
-                return pm.Deterministic(
-                    name, self.pytensor_transform(var), dims=self.dims
-                )
+                return pm.Deterministic(name, self.pytensor_transform(var), dims=self.dims)
 
         else:
             var_name = name
@@ -845,9 +829,7 @@ class Prior:
                 return var
 
         create_variable = (
-            self._create_centered_variable
-            if self.centered
-            else self._create_non_centered_variable
+            self._create_centered_variable if self.centered else self._create_non_centered_variable
         )
         var = create_variable(name=var_name)
         return transform(var)
@@ -1006,9 +988,7 @@ class Prior:
 
         return cls(dist, dims=dims, centered=centered, transform=transform, **kwargs)
 
-    def constrain(
-        self, lower: float, upper: float, mass: float = 0.95, kwargs=None
-    ) -> Prior:
+    def constrain(self, lower: float, upper: float, mass: float = 0.95, kwargs=None) -> Prior:
         """Create a new prior with a given mass constrained within the given bounds.
 
         Wrapper around `preliz.maxent`.
@@ -1061,13 +1041,9 @@ class Prior:
             kwargs.setdefault("plot", False)
 
         if kwargs["plot"]:
-            new_parameters = maxent(self.preliz, lower, upper, mass, **kwargs)[
-                0
-            ].params_dict
+            new_parameters = maxent(self.preliz, lower, upper, mass, **kwargs)[0].params_dict
         else:
-            new_parameters = maxent(
-                self.preliz, lower, upper, mass, **kwargs
-            ).params_dict
+            new_parameters = maxent(self.preliz, lower, upper, mass, **kwargs).params_dict
 
         return Prior(
             self.distribution,

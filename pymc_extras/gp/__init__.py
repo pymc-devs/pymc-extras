@@ -13,7 +13,6 @@
 #   limitations under the License.
 
 
-from pymc_extras.gp.latent_approx import (KarhunenLoeveExpansion,
-                                          ProjectedProcess)
+from pymc_extras.gp.latent_approx import KarhunenLoeveExpansion, ProjectedProcess
 
 __all__ = ["KarhunenLoeveExpansion", "ProjectedProcess"]

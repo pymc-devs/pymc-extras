@@ -2,13 +2,13 @@ import numpy as np
 import pandas as pd
 import pymc as pm
 import pytest
+
 from numpy.testing import assert_allclose
 from pytensor import config
 from pytensor import tensor as pt
 
 from pymc_extras.statespace.models import structural as st
-from tests.statespace.models.structural.conftest import \
-    _assert_basic_coords_correct
+from tests.statespace.models.structural.conftest import _assert_basic_coords_correct
 from tests.statespace.test_utilities import simulate_from_numpy_model
 
 ATOL = 1e-8 if config.floatX.endswith("64") else 1e-4
@@ -58,9 +58,7 @@ class TestRegression:
 
         if not innovations:
             # Check that the generated data is just a linear regression
-            assert_allclose(
-                y, regression_data @ params["beta_exog"], atol=ATOL, rtol=RTOL
-            )
+            assert_allclose(y, regression_data @ params["beta_exog"], atol=ATOL, rtol=RTOL)
         else:
             # With innovations, the coefficients should vary over time
             # The initial state should match the beta parameters
@@ -77,9 +75,7 @@ class TestRegression:
     @pytest.mark.parametrize("innovations", [False, True])
     def test_adding_exogenous_component(self, rng, regression_data, innovations):
         """Test adding regression component to other components."""
-        reg = st.Regression(
-            state_names=["a", "b"], name="exog", innovations=innovations
-        )
+        reg = st.Regression(state_names=["a", "b"], name="exog", innovations=innovations)
         ll = st.LevelTrend(name="level")
         seasonal = st.FrequencySeasonality(name="annual", season_length=12, n=4)
         mod = reg + ll + seasonal
@@ -103,9 +99,7 @@ class TestMultivariateRegression:
     """Test multivariate regression functionality."""
 
     @pytest.mark.parametrize("innovations", [False, True])
-    def test_regression_with_multiple_observed_states(
-        self, rng, regression_data, innovations
-    ):
+    def test_regression_with_multiple_observed_states(self, rng, regression_data, innovations):
         """Test multivariate regression with and without innovations."""
         from scipy.linalg import block_diag
 
@@ -118,9 +112,7 @@ class TestMultivariateRegression:
 
         params = {"beta_exog": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=config.floatX)}
         if innovations:
-            params["sigma_beta_exog"] = np.array(
-                [[0.1, 0.2], [0.3, 0.4]], dtype=config.floatX
-            )
+            params["sigma_beta_exog"] = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=config.floatX)
 
         exog_data = {"data_exog": regression_data}
         x, y = simulate_from_numpy_model(mod, rng, params, exog_data)
@@ -130,12 +122,8 @@ class TestMultivariateRegression:
 
         if not innovations:
             # Check that the generated data are two independent linear regressions
-            assert_allclose(
-                y[:, 0], regression_data @ params["beta_exog"][0], atol=ATOL, rtol=RTOL
-            )
-            assert_allclose(
-                y[:, 1], regression_data @ params["beta_exog"][1], atol=ATOL, rtol=RTOL
-            )
+            assert_allclose(y[:, 0], regression_data @ params["beta_exog"][0], atol=ATOL, rtol=RTOL)
+            assert_allclose(y[:, 1], regression_data @ params["beta_exog"][1], atol=ATOL, rtol=RTOL)
         else:
             # Check that initial states match the beta parameters
             assert_allclose(x[0, :2], params["beta_exog"][0], atol=ATOL, rtol=RTOL)
@@ -209,9 +197,7 @@ class TestMultipleRegressions:
                 "beta_exog2": np.array([5.0], dtype=config.floatX),
             }
         )
-        np.testing.assert_allclose(
-            x0, np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=config.floatX)
-        )
+        np.testing.assert_allclose(x0, np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=config.floatX))
 
         if innovations:
             # Check that sigma_beta parameters are included
@@ -223,30 +209,22 @@ class TestPyMCIntegration:
     """Test PyMC integration functionality."""
 
     @pytest.mark.parametrize("innovations", [False, True])
-    def test_filter_scans_time_varying_design_matrix(
-        self, rng, time_series_data, innovations
-    ):
+    def test_filter_scans_time_varying_design_matrix(self, rng, time_series_data, innovations):
         """Test PyMC integration with and without innovations."""
         data, y = time_series_data
 
-        reg = st.Regression(
-            state_names=["a", "b"], name="exog", innovations=innovations
-        )
+        reg = st.Regression(state_names=["a", "b"], name="exog", innovations=innovations)
         mod = reg.build(verbose=False)
 
         with pm.Model(coords=mod.coords) as m:
             data_exog = pm.Data("data_exog", data.values)
 
             x0 = pm.Normal("x0", dims=["state"])
-            P0 = pm.Deterministic(
-                "P0", pt.eye(mod.k_states), dims=["state", "state_aux"]
-            )
+            P0 = pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
             beta_exog = pm.Normal("beta_exog", dims=["state_exog"])
 
             if innovations:
-                sigma_beta_exog = pm.Exponential(
-                    "sigma_beta_exog", 1, dims=["state_exog"]
-                )
+                sigma_beta_exog = pm.Exponential("sigma_beta_exog", 1, dims=["state_exog"])
 
             mod.build_statespace_graph(y)
             x0, P0, c, d, T, Z, R, H, Q = mod.unpack_statespace()
@@ -348,9 +326,7 @@ def test_regression_mixed_shared_and_not_shared():
 
     data_joint = np.random.standard_normal(size=(10, 2))
     data_individual = np.random.standard_normal(size=(10, 1))
-    Z = mod.ssm["design"].eval(
-        {"data_joint": data_joint, "data_individual": data_individual}
-    )
+    Z = mod.ssm["design"].eval({"data_joint": data_joint, "data_individual": data_individual})
     T = mod.ssm["transition"].eval()
     R = mod.ssm["selection"].eval()
 

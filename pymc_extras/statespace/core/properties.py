@@ -7,11 +7,14 @@ from typing import Generic, Protocol, Self, TypeVar
 
 from pytensor.tensor.variable import TensorVariable
 
-from pymc_extras.statespace.utils.constants import (ALL_STATE_AUX_DIM,
-                                                    ALL_STATE_DIM,
-                                                    OBS_STATE_AUX_DIM,
-                                                    OBS_STATE_DIM,
-                                                    SHOCK_AUX_DIM, SHOCK_DIM)
+from pymc_extras.statespace.utils.constants import (
+    ALL_STATE_AUX_DIM,
+    ALL_STATE_DIM,
+    OBS_STATE_AUX_DIM,
+    OBS_STATE_DIM,
+    SHOCK_AUX_DIM,
+    SHOCK_DIM,
+)
 
 
 class StateSpaceLike(Protocol):
@@ -67,9 +70,7 @@ class Info(Generic[T]):
             return self._index[key]
         except KeyError as e:
             available = ", ".join(str(k) for k in self._index.keys())
-            raise KeyError(
-                f"No {self.key_field} '{key}'. Available: [{available}]"
-            ) from e
+            raise KeyError(f"No {self.key_field} '{key}'. Available: [{available}]") from e
 
     def __contains__(self, key: object) -> bool:
         return key in self._index
@@ -88,20 +89,14 @@ class Info(Generic[T]):
 
     def merge(self, other: Self, overwrite_duplicates: bool = False) -> Self:
         if not isinstance(other, type(self)):
-            raise TypeError(
-                f"Cannot merge {type(other).__name__} with {type(self).__name__}"
-            )
+            raise TypeError(f"Cannot merge {type(other).__name__} with {type(self).__name__}")
 
         overlapping = set(self._index.keys()) & set(other._index.keys())
         if overlapping and overwrite_duplicates:
             return type(self)(
                 (
                     *self.items,
-                    *(
-                        item
-                        for item in other.items
-                        if self._key(item) not in overlapping
-                    ),
+                    *(item for item in other.items if self._key(item) not in overlapping),
                 )
             )
 
@@ -210,9 +205,7 @@ class CoordInfo(Info[Coord]):
             (SHOCK_AUX_DIM, shocks),
         )
 
-        coords = tuple(
-            Coord(dimension=dim, labels=labels) for dim, labels in dim_to_labels
-        )
+        coords = tuple(Coord(dimension=dim, labels=labels) for dim, labels in dim_to_labels)
         return cls(coords=coords)
 
     def to_dict(self):
@@ -237,7 +230,9 @@ class StateInfo(Info[State]):
         return key in self._index
 
     def __str__(self) -> str:
-        return f"states: {[s.name for s in self.items]}\nobserved: {[s.observed for s in self.items]}"
+        return (
+            f"states: {[s.name for s in self.items]}\nobserved: {[s.observed for s in self.items]}"
+        )
 
     @property
     def observed_state_names(self) -> tuple[str, ...]:

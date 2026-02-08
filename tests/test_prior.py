@@ -6,21 +6,29 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 import xarray as xr
+
 from graphviz.graphs import Digraph
 from preliz.distributions import distributions as preliz_distributions
 from pydantic import ValidationError
 from pymc.model_graph import fast_eval
 
 import pymc_extras.prior as pr
-from pymc_extras.deserialize import (DESERIALIZERS, deserialize,
-                                     register_deserialization)
-from pymc_extras.prior import (Censored, MuAlreadyExistsError, Prior, Scaled,
-                               UnknownTransformError,
-                               UnsupportedDistributionError,
-                               UnsupportedParameterizationError,
-                               UnsupportedShapeError, VariableFactory,
-                               handle_dims, register_tensor_transform,
-                               sample_prior)
+
+from pymc_extras.deserialize import DESERIALIZERS, deserialize, register_deserialization
+from pymc_extras.prior import (
+    Censored,
+    MuAlreadyExistsError,
+    Prior,
+    Scaled,
+    UnknownTransformError,
+    UnsupportedDistributionError,
+    UnsupportedParameterizationError,
+    UnsupportedShapeError,
+    VariableFactory,
+    handle_dims,
+    register_tensor_transform,
+    sample_prior,
+)
 
 
 @pytest.mark.parametrize(
@@ -412,10 +420,7 @@ def mmm_default_model_config():
 
 
 def test_backwards_compat(mmm_default_model_config) -> None:
-    result = {
-        param: Prior.from_dict(value)
-        for param, value in mmm_default_model_config.items()
-    }
+    result = {param: Prior.from_dict(value) for param, value in mmm_default_model_config.items()}
     assert result == {
         "intercept": Prior("Normal", mu=0, sigma=2),
         "likelihood": Prior("Normal", sigma=Prior("HalfNormal", sigma=2)),
@@ -584,9 +589,7 @@ def test_nonstring_transform() -> None:
 
 
 def test_checks_param_value_types() -> None:
-    with pytest.raises(
-        ValueError, match="Parameters must be one of the following types"
-    ):
+    with pytest.raises(ValueError, match="Parameters must be one of the following types"):
         Prior("Normal", mu="str", sigma="str")
 
 
@@ -1116,9 +1119,7 @@ def test_scaled_with_tensor_factor() -> None:
 
 def test_scaled_with_hierarchical_prior() -> None:
     """Test that the Scaled class works with hierarchical priors."""
-    normal = Prior(
-        "Normal", mu=Prior("Normal"), sigma=Prior("HalfNormal"), dims="channel"
-    )
+    normal = Prior("Normal", mu=Prior("Normal"), sigma=Prior("HalfNormal"), dims="channel")
     scaled = Scaled(normal, factor=2.0)
 
     coords = {"channel": ["A", "B", "C"]}

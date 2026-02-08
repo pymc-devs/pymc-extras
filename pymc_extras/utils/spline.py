@@ -18,6 +18,7 @@ import pytensor
 import pytensor.sparse as ps
 import pytensor.tensor as pt
 import scipy.interpolate
+
 from pytensor.graph.op import Apply, Op
 
 
@@ -41,9 +42,7 @@ class BSplineBasis(Op):
 
     def make_node(self, *inputs) -> Apply:
         eval_points, k, d = map(pt.as_tensor, inputs)
-        if not (
-            eval_points.ndim == 1 and np.issubdtype(eval_points.dtype, np.floating)
-        ):
+        if not (eval_points.ndim == 1 and np.issubdtype(eval_points.dtype, np.floating)):
             raise TypeError("eval_points should be a vector of floats")
         if k.type not in pt.int_types:
             raise TypeError("k should be integer")

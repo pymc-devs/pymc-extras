@@ -1,9 +1,11 @@
 import logging
+
 from collections.abc import Callable
 from typing import Literal, cast
 
 import numpy as np
 import pymc as pm
+
 from better_optimize import basinhopping, minimize
 from better_optimize.constants import minimize_method
 from pymc.blocking import DictToArrayBijection, RaveledVars
@@ -14,11 +16,16 @@ from pytensor.tensor import TensorVariable
 from scipy.optimize import OptimizeResult
 
 from pymc_extras.inference.laplace_approx.idata import (
-    add_data_to_inference_data, add_fit_to_inference_data,
-    add_optimizer_result_to_inference_data, map_results_to_inference_data)
+    add_data_to_inference_data,
+    add_fit_to_inference_data,
+    add_optimizer_result_to_inference_data,
+    map_results_to_inference_data,
+)
 from pymc_extras.inference.laplace_approx.scipy_interface import (
-    GradientBackend, scipy_optimize_funcs_from_loss,
-    set_optimizer_function_defaults)
+    GradientBackend,
+    scipy_optimize_funcs_from_loss,
+    set_optimizer_function_defaults,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -61,11 +68,7 @@ def _make_initial_point(model, initvals=None, random_seed=None, jitter_rvs=None)
     start_dict = ipfn(random_seed)
     vars_dict = {var.name: var for var in model.continuous_value_vars}
     initial_params = DictToArrayBijection.map(
-        {
-            var_name: value
-            for var_name, value in start_dict.items()
-            if var_name in vars_dict
-        }
+        {var_name: value for var_name, value in start_dict.items() if var_name in vars_dict}
     )
 
     return initial_params
@@ -107,9 +110,7 @@ def _compute_inverse_hessian(
         The inverse Hessian matrix, computed based on the optimization method and available functions.
     """
     if optimal_point is None and optimizer_result is None:
-        raise ValueError(
-            "At least one of `optimal_point` or `optimizer_result` must be provided."
-        )
+        raise ValueError("At least one of `optimal_point` or `optimizer_result` must be provided.")
 
     x_star = optimizer_result.x if optimizer_result is not None else optimal_point
     n_vars = len(x_star)
@@ -119,9 +120,7 @@ def _compute_inverse_hessian(
         # re-computing something
         if hasattr(optimizer_result, "lowest_optimization_result"):
             # We did basinhopping, need to get the inner optimizer results
-            H_inv = getattr(
-                optimizer_result.lowest_optimization_result, "hess_inv", None
-            )
+            H_inv = getattr(optimizer_result.lowest_optimization_result, "hess_inv", None)
         else:
             H_inv = getattr(optimizer_result, "hess_inv", None)
 
@@ -129,9 +128,7 @@ def _compute_inverse_hessian(
         # Here we will have a LinearOperator representing the inverse Hessian-Vector product.
         if hasattr(optimizer_result, "lowest_optimization_result"):
             # We did basinhopping, need to get the inner optimizer results
-            f_hessp_inv = getattr(
-                optimizer_result.lowest_optimization_result, "hess_inv", None
-            )
+            f_hessp_inv = getattr(optimizer_result.lowest_optimization_result, "hess_inv", None)
         else:
             f_hessp_inv = getattr(optimizer_result, "hess_inv", None)
 
@@ -316,9 +313,7 @@ def find_MAP(
         H_inv = None
 
     raveled_optimized = RaveledVars(optimizer_result.x, initial_params.point_map_info)
-    unobserved_vars = get_default_varnames(
-        model.unobserved_value_vars, include_transformed=True
-    )
+    unobserved_vars = get_default_varnames(model.unobserved_value_vars, include_transformed=True)
     unobserved_vars_values = model.compile_fn(unobserved_vars, mode="FAST_COMPILE")(
         DictToArrayBijection.rmap(raveled_optimized)
     )
@@ -331,9 +326,7 @@ def find_MAP(
         map_point=optimized_point, model=model, include_transformed=include_transformed
     )
 
-    idata = add_fit_to_inference_data(
-        idata=idata, mu=raveled_optimized, H_inv=H_inv, model=model
-    )
+    idata = add_fit_to_inference_data(idata=idata, mu=raveled_optimized, H_inv=H_inv, model=model)
 
     idata = add_optimizer_result_to_inference_data(
         idata=idata,

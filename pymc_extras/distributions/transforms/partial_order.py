@@ -13,6 +13,7 @@
 #   limitations under the License.
 import numpy as np
 import pytensor.tensor as pt
+
 from pymc.logprob.transforms import Transform
 
 __all__ = ["PartialOrder"]
@@ -20,9 +21,7 @@ __all__ = ["PartialOrder"]
 
 def dtype_minval(dtype):
     """Find the minimum value for a given dtype"""
-    return (
-        np.iinfo(dtype).min if np.issubdtype(dtype, np.integer) else np.finfo(dtype).min
-    )
+    return np.iinfo(dtype).min if np.issubdtype(dtype, np.integer) else np.finfo(dtype).min
 
 
 def padded_where(x, to_len, padval=-1):
@@ -142,9 +141,7 @@ class PartialOrder(Transform):
         self.ts_inds = ts_inds
 
         # Change the dag to adjacency lists (with -1 for NA)
-        dag_T = np.apply_along_axis(
-            padded_where, axis=-2, arr=adj_mat, padval=-1, to_len=dag_idim
-        )
+        dag_T = np.apply_along_axis(padded_where, axis=-2, arr=adj_mat, padval=-1, to_len=dag_idim)
         self.dag = np.swapaxes(dag_T, -2, -1)
         self.is_start = np.all(self.dag[..., :, :] == -1, axis=-1)
 
@@ -207,18 +204,14 @@ class PartialOrder(Transform):
             ist = self.is_start[ni]
 
             mval = pt.max(x[(Ellipsis, *idx2, self.dag[ni])], axis=-1)
-            x = pt.set_subtensor(
-                x[eni], ist * value[eni] + (1 - ist) * (mval + pt.exp(value[eni]))
-            )
+            x = pt.set_subtensor(x[eni], ist * value[eni] + (1 - ist) * (mval + pt.exp(value[eni])))
         return x[..., :-1]
 
     def forward(self, value, *inputs):
         y = pt.zeros_like(value)
 
         minv = dtype_minval(value.dtype)
-        vx = pt.concatenate(
-            [value, pt.full(value.shape[:-1], minv)[..., None]], axis=-1
-        )
+        vx = pt.concatenate([value, pt.full(value.shape[:-1], minv)[..., None]], axis=-1)
 
         # Indices to allow broadcasting the max over the last dimension
         idx = np.ix_(*[np.arange(s) for s in self.dag.shape[:-2]])

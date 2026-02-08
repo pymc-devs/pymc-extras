@@ -1,14 +1,24 @@
 import pytest
 
-from pymc_extras.statespace.core.properties import (CoordInfo, Data, DataInfo,
-                                                    Parameter, ParameterInfo,
-                                                    Shock, ShockInfo, State,
-                                                    StateInfo)
-from pymc_extras.statespace.utils.constants import (ALL_STATE_AUX_DIM,
-                                                    ALL_STATE_DIM,
-                                                    OBS_STATE_AUX_DIM,
-                                                    OBS_STATE_DIM,
-                                                    SHOCK_AUX_DIM, SHOCK_DIM)
+from pymc_extras.statespace.core.properties import (
+    CoordInfo,
+    Data,
+    DataInfo,
+    Parameter,
+    ParameterInfo,
+    Shock,
+    ShockInfo,
+    State,
+    StateInfo,
+)
+from pymc_extras.statespace.utils.constants import (
+    ALL_STATE_AUX_DIM,
+    ALL_STATE_DIM,
+    OBS_STATE_AUX_DIM,
+    OBS_STATE_DIM,
+    SHOCK_AUX_DIM,
+    SHOCK_DIM,
+)
 
 
 def test_property_str_formats_fields():

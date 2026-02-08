@@ -90,9 +90,7 @@ def unstable_lbfgs_update_mask_model() -> pm.Model:
         )
         fprobs = pm.math.softmax(s_mu[None, :] + phi[None, :] * mu[:, None], axis=-1)
 
-        pm.Multinomial(
-            "y_res", p=fprobs, n=np.ones(len(inp)), observed=res, dims=("obs", "outp")
-        )
+        pm.Multinomial("y_res", p=fprobs, n=np.ones(len(inp)), observed=res, dims=("obs", "outp"))
 
     return mdl
 
@@ -122,9 +120,7 @@ def test_unstable_lbfgs_update_mask(capsys, jitter):
     else:
         # High jitter values (>=500) cause numerical overflow and all paths fail
         # jitter=500 raises "All paths failed", jitter=1000 fails earlier with "BUG: Failed to iterate"
-        with pytest.raises(
-            ValueError, match="(All paths failed|BUG: Failed to iterate)"
-        ):
+        with pytest.raises(ValueError, match="(All paths failed|BUG: Failed to iterate)"):
             with model:
                 idata = pmx.fit(
                     method="pathfinder",
@@ -213,20 +209,19 @@ def test_seed(reference_idata):
             inference_backend="pymc",
         )
 
-    assert not np.allclose(
-        idata_41.posterior.mu.data.mean(), idata_123.posterior.mu.data.mean()
-    )
+    assert not np.allclose(idata_41.posterior.mu.data.mean(), idata_123.posterior.mu.data.mean())
 
-    assert np.allclose(
-        idata_41.posterior.mu.data.mean(), idata_41.posterior.mu.data.mean()
-    )
+    assert np.allclose(idata_41.posterior.mu.data.mean(), idata_41.posterior.mu.data.mean())
 
 
 def test_bfgs_sample():
     import pytensor.tensor as pt
 
     from pymc_extras.inference.pathfinder.pathfinder import (
-        alpha_recover, bfgs_sample, inverse_hessian_factors)
+        alpha_recover,
+        bfgs_sample,
+        inverse_hessian_factors,
+    )
 
     """test BFGS sampling"""
     Lp1, N = 8, 10
@@ -302,6 +297,5 @@ def test_pathfinder_initvals():
 
     # Check that the samples are ordered to make sure transform was applied
     assert np.all(
-        idata.posterior["ordered"][..., 1:].values
-        > idata.posterior["ordered"][..., :-1].values
+        idata.posterior["ordered"][..., 1:].values > idata.posterior["ordered"][..., :-1].values
     )

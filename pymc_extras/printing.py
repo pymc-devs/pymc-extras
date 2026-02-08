@@ -1,4 +1,5 @@
 import numpy as np
+
 from pymc import Model
 from pymc.printing import str_for_dist, str_for_potential_or_deterministic
 from pytensor import Mode
@@ -20,10 +21,7 @@ def variable_expression(
         str_repr = str_for_potential_or_deterministic(var, dist_name="")
         _, var_expr = str_repr.split(" ~ ")
         var_expr = var_expr[1:-1]  # Remove outer parentheses (f(...))
-        if (
-            truncate_deterministic is not None
-            and len(var_expr) > truncate_deterministic
-        ):
+        if truncate_deterministic is not None and len(var_expr) > truncate_deterministic:
             contents = var_expr[2:-1].split(", ")
             str_len = 0
             for show_n, content in enumerate(contents):
@@ -32,9 +30,7 @@ def variable_expression(
                     break
             var_expr = f"f({', '.join(contents[:show_n])}, ...)"
     elif var in model.potentials:
-        var_expr = str_for_potential_or_deterministic(var, dist_name="Potential").split(
-            " ~ "
-        )[1]
+        var_expr = str_for_potential_or_deterministic(var, dist_name="Potential").split(" ~ ")[1]
     else:  # basic_RVs
         var_expr = str_for_dist(var).split(" ~ ")[1]
     return var_expr
@@ -53,18 +49,14 @@ def dims_expression(model: Model, var: Variable) -> str:
         dim_sizes = {dim: _extract_dim_value(model.dim_lengths[dim]) for dim in dims}
         return " × ".join(f"{dim}[{dim_size}]" for dim, dim_size in dim_sizes.items())
     else:
-        dim_sizes = list(
-            var.shape.eval(mode=Mode(linker="py", optimizer="fast_compile"))
-        )
+        dim_sizes = list(var.shape.eval(mode=Mode(linker="py", optimizer="fast_compile")))
         return f"[{', '.join(map(str, dim_sizes))}]" if dim_sizes else ""
 
 
 def model_parameter_count(model: Model) -> int:
     """Count the number of parameters in the model."""
     rv_shapes = model.eval_rv_shapes()  # Includes transformed variables
-    return np.sum(
-        [np.prod(rv_shapes[free_rv.name]).astype(int) for free_rv in model.free_RVs]
-    )
+    return np.sum([np.prod(rv_shapes[free_rv.name]).astype(int) for free_rv in model.free_RVs])
 
 
 def model_table(

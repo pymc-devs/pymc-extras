@@ -14,6 +14,7 @@
 
 
 import logging
+
 from collections.abc import Callable
 from typing import Literal
 
@@ -22,6 +23,7 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import xarray as xr
+
 from arviz import dict_to_dataset
 from better_optimize.constants import minimize_method
 from numpy.typing import ArrayLike
@@ -36,9 +38,14 @@ from pytensor.tensor.optimize import minimize
 from xarray import Dataset
 
 from pymc_extras.inference.laplace_approx.find_map import (
-    _compute_inverse_hessian, _make_initial_point, find_MAP)
+    _compute_inverse_hessian,
+    _make_initial_point,
+    find_MAP,
+)
 from pymc_extras.inference.laplace_approx.scipy_interface import (
-    GradientBackend, scipy_optimize_funcs_from_loss)
+    GradientBackend,
+    scipy_optimize_funcs_from_loss,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -225,14 +232,10 @@ def draws_from_laplace_approx(
     size = (draws,) if vectorize_draws else ()
     if covariance is not None:
         sigma_pt = pt.matrix("cov", shape=(n, n), dtype=covariance.dtype)
-        laplace_approximation = pm.MvNormal.dist(
-            mu=mu_pt, cov=sigma_pt, size=size, method="svd"
-        )
+        laplace_approximation = pm.MvNormal.dist(mu=mu_pt, cov=sigma_pt, size=size, method="svd")
     else:
         sigma_pt = pt.vector("sigma", shape=(n,), dtype=standard_deviation.dtype)
-        laplace_approximation = pm.Normal.dist(
-            mu=mu_pt, sigma=sigma_pt, size=(*size, n)
-        )
+        laplace_approximation = pm.Normal.dist(mu=mu_pt, sigma=sigma_pt, size=(*size, n))
 
     constrained_vars = unpack_last_axis(
         laplace_approximation,
@@ -289,9 +292,7 @@ def draws_from_laplace_approx(
                 # constrained == unconstrained, dims already shared
                 continue
             constrained_dims = model_dims.get(get_untransformed_name(var_name))
-            if constrained_dims is None or (
-                len(constrained_dims) != (var_draws.ndim - 2)
-            ):
+            if constrained_dims is None or (len(constrained_dims) != (var_draws.ndim - 2)):
                 continue
             # Reuse dims from constrained variable if they match in length with unconstrained draws
             inferred_dims = []
@@ -455,18 +456,13 @@ def fit_laplace(
     if "covariance_matrix" not in idata.fit:
         # The user didn't use `use_hess` or `use_hessp` (or an optimization method that returns an inverse Hessian), so
         # we have to go back and compute the Hessian at the MAP point now.
-        unpacked_variable_names = (
-            idata.fit["mean_vector"].coords["rows"].values.tolist()
-        )
+        unpacked_variable_names = idata.fit["mean_vector"].coords["rows"].values.tolist()
         frozen_model = freeze_dims_and_data(model)
-        initial_params = _make_initial_point(
-            frozen_model, initvals, random_seed, jitter_rvs
-        )
+        initial_params = _make_initial_point(frozen_model, initvals, random_seed, jitter_rvs)
 
         _, f_hessp = scipy_optimize_funcs_from_loss(
             loss=-frozen_model.logp(jacobian=False),
-            inputs=frozen_model.continuous_value_vars
-            + frozen_model.discrete_value_vars,
+            inputs=frozen_model.continuous_value_vars + frozen_model.discrete_value_vars,
             initial_point_dict=DictToArrayBijection.rmap(initial_params),
             use_grad=False,
             use_hess=False,

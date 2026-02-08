@@ -1,31 +1,43 @@
 import functools as ft
 import logging
+
 from itertools import pairwise
 from typing import Any
 
 import numpy as np
 import xarray as xr
+
 from pytensor import Mode, Variable, config
 from pytensor import tensor as pt
 
-from pymc_extras.statespace.core.properties import (Coord, CoordInfo, Data,
-                                                    DataInfo, Parameter,
-                                                    ParameterInfo, Shock,
-                                                    ShockInfo, State,
-                                                    StateInfo, SymbolicData,
-                                                    SymbolicDataInfo,
-                                                    SymbolicVariable,
-                                                    SymbolicVariableInfo)
+from pymc_extras.statespace.core.properties import (
+    Coord,
+    CoordInfo,
+    Data,
+    DataInfo,
+    Parameter,
+    ParameterInfo,
+    Shock,
+    ShockInfo,
+    State,
+    StateInfo,
+    SymbolicData,
+    SymbolicDataInfo,
+    SymbolicVariable,
+    SymbolicVariableInfo,
+)
 from pymc_extras.statespace.core.representation import PytensorRepresentation
-from pymc_extras.statespace.core.statespace import (PyMCStateSpace,
-                                                    _validate_property)
+from pymc_extras.statespace.core.statespace import PyMCStateSpace, _validate_property
 from pymc_extras.statespace.models.utilities import (
     add_tensors_by_dim_labels,
     conform_time_varying_and_time_invariant_matrices,
-    join_tensors_by_dim_labels)
-from pymc_extras.statespace.utils.constants import (ALL_STATE_AUX_DIM,
-                                                    ALL_STATE_DIM,
-                                                    LONG_MATRIX_NAMES)
+    join_tensors_by_dim_labels,
+)
+from pymc_extras.statespace.utils.constants import (
+    ALL_STATE_AUX_DIM,
+    ALL_STATE_DIM,
+    LONG_MATRIX_NAMES,
+)
 
 _log = logging.getLogger(__name__)
 floatX = config.floatX
@@ -224,9 +236,7 @@ class StructuralTimeSeries(PyMCStateSpace):
             return self._strip_data_names_if_unambiguous(names, k_endog)
 
         self._state_names = strip(self._state_info.unobserved_state_names)
-        self._data_names = strip(
-            [d.name for d in self._data_info if not d.is_exogenous]
-        )
+        self._data_names = strip([d.name for d in self._data_info if not d.is_exogenous])
         self._shock_names = strip(self._shock_info.names)
         self._param_names = strip(self._param_info.names)
 
@@ -249,9 +259,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         # the __init__ method.
         pass
 
-    def _strip_data_names_if_unambiguous(
-        self, names: list[str] | tuple[str, ...], k_endog: int
-    ):
+    def _strip_data_names_if_unambiguous(self, names: list[str] | tuple[str, ...], k_endog: int):
         """
         State names from components should always be of the form name[data_name], in the case that the component is
         associated with multiple observed states. Not doing so leads to ambiguity -- we might have two level states,
@@ -356,10 +364,7 @@ class StructuralTimeSeries(PyMCStateSpace):
                     # observed state names. Note this happens even if this *component* has only 1 state for consistency,
                     # as long as the statespace model has multiple observed states.
                     result.extend(
-                        [
-                            f"{name}[{obs_name}]"
-                            for obs_name in info[name]["observed_state_names"]
-                        ]
+                        [f"{name}[{obs_name}]" for obs_name in info[name]["observed_state_names"]]
                     )
             else:
                 comp_names = self.state_names[s]
@@ -527,13 +532,9 @@ class Component:
         self.share_states = share_states
         self.measurement_error = measurement_error
 
-        base_state_names = (
-            list(base_state_names) if base_state_names is not None else []
-        )
+        base_state_names = list(base_state_names) if base_state_names is not None else []
         base_observed_state_names = (
-            list(base_observed_state_names)
-            if base_observed_state_names is not None
-            else []
+            list(base_observed_state_names) if base_observed_state_names is not None else []
         )
 
         self._k_posdef = k_posdef
@@ -572,9 +573,7 @@ class Component:
     ) -> None:
         """Initialize state space model representation."""
         if representation is None:
-            self.ssm = PytensorRepresentation(
-                k_endog=k_endog, k_states=k_states, k_posdef=k_posdef
-            )
+            self.ssm = PytensorRepresentation(k_endog=k_endog, k_states=k_states, k_posdef=k_posdef)
         else:
             self.ssm = representation
 
@@ -597,8 +596,7 @@ class Component:
         ]
 
         hidden_states = [
-            State(name=name, observed=False, shared=self.share_states)
-            for name in state_names
+            State(name=name, observed=False, shared=self.share_states) for name in state_names
         ]
         observed_states = [
             State(name=name, observed=True, shared=self.share_states)
@@ -702,11 +700,7 @@ class Component:
 
     @property
     def param_dims(self):
-        return {
-            param.name: param.dims
-            for param in self._param_info
-            if param.dims is not None
-        }
+        return {param.name: param.dims for param in self._param_info if param.dims is not None}
 
     @property
     def needs_exog_data(self):
@@ -824,9 +818,7 @@ class Component:
         k_posdef = self.k_posdef + other.k_posdef
 
         # To count endog states, we have to count unique names between the two components.
-        combined_states = self._state_info.merge(
-            other._state_info, overwrite_duplicates=True
-        )
+        combined_states = self._state_info.merge(other._state_info, overwrite_duplicates=True)
         k_endog = len(combined_states.observed_state_names)
 
         return k_states, k_posdef, k_endog
@@ -853,17 +845,13 @@ class Component:
             for name, x, o_x in zip(LONG_MATRIX_NAMES, self_matrices, other_matrices)
         )
 
-        initial_state = pt.concatenate(
-            conform_time_varying_and_time_invariant_matrices(x0, o_x0)
-        )
+        initial_state = pt.concatenate(conform_time_varying_and_time_invariant_matrices(x0, o_x0))
         initial_state.name = x0.name
 
         initial_state_cov = pt.linalg.block_diag(P0, o_P0)
         initial_state_cov.name = P0.name
 
-        state_intercept = pt.concatenate(
-            conform_time_varying_and_time_invariant_matrices(c, o_c)
-        )
+        state_intercept = pt.concatenate(conform_time_varying_and_time_invariant_matrices(c, o_c))
         state_intercept.name = c.name
 
         obs_intercept = add_tensors_by_dim_labels(
@@ -958,14 +946,10 @@ class Component:
         param_info = self._param_info.merge(other._param_info)
         data_info = self._data_info.merge(other._data_info)
         shock_info = self._shock_info.merge(other._shock_info)
-        state_info = self._state_info.merge(
-            other._state_info, overwrite_duplicates=True
-        )
+        state_info = self._state_info.merge(other._state_info, overwrite_duplicates=True)
         coords_info = self._coords_info.merge(other._coords_info)
         observed_state_names = state_info.observed_state_names
-        tensor_variable_info = self._tensor_variable_info.merge(
-            other._tensor_variable_info
-        )
+        tensor_variable_info = self._tensor_variable_info.merge(other._tensor_variable_info)
         tensor_data_info = self._tensor_data_info.merge(other._tensor_data_info)
 
         measurement_error = any([self.measurement_error, other.measurement_error])

@@ -9,9 +9,7 @@ import pymc_extras as pmx
 class TestR2D2M2CP:
     @pytest.fixture(autouse=True)
     def fast_compile(self):
-        with pytensor.config.change_flags(
-            mode="FAST_COMPILE", exception_verbosity="high"
-        ):
+        with pytensor.config.change_flags(mode="FAST_COMPILE", exception_verbosity="high"):
             yield
 
     @pytest.fixture(autouse=True)
@@ -125,9 +123,7 @@ class TestR2D2M2CP:
         assert beta.eval().shape == input_std.shape
         # r2 rv is only created if r2 std is not None
         assert "beta" in model.named_vars
-        assert ("beta::r2" in model.named_vars) == (r2_std is not None), set(
-            model.named_vars
-        )
+        assert ("beta::r2" in model.named_vars) == (r2_std is not None), set(model.named_vars)
         # phi is only created if variable importance is not None and there is more than one var
         assert np.isfinite(model.compile_logp()(model.initial_point()))
 
@@ -234,9 +230,7 @@ class TestR2D2M2CP:
             )
 
     def test_failing_mutual_exclusive(self, model: pm.Model):
-        with pytest.raises(
-            TypeError, match="variable importance with variance explained"
-        ):
+        with pytest.raises(TypeError, match="variable importance with variance explained"):
             with model:
                 model.add_coord("a", range(2))
             pmx.distributions.R2D2M2CP(
@@ -306,9 +300,7 @@ class TestR2D2M2CP:
     def test_zero_length_rvs_not_created(self, model: pm.Model):
         model.add_coord("a", range(2))
         # deterministic case which should not have any new variables
-        b = pmx.distributions.R2D2M2CP(
-            "b1", 1, [1, 1], r2=0.5, positive_probs=[1, 1], dims="a"
-        )
+        b = pmx.distributions.R2D2M2CP("b1", 1, [1, 1], r2=0.5, positive_probs=[1, 1], dims="a")
         assert not model.free_RVs, model.free_RVs
 
         b = pmx.distributions.R2D2M2CP(

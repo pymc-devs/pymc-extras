@@ -1,25 +1,28 @@
 import functools as ft
 import warnings
+
 from collections import defaultdict
 
 import numpy as np
 import pytensor
 import pytest
 import statsmodels.api as sm
+
 from numpy.testing import assert_allclose
 
 from pymc_extras.statespace import structural as st
-from pymc_extras.statespace.utils.constants import (ALL_STATE_AUX_DIM,
-                                                    ALL_STATE_DIM,
-                                                    AR_PARAM_DIM,
-                                                    OBS_STATE_AUX_DIM,
-                                                    OBS_STATE_DIM,
-                                                    SHOCK_AUX_DIM, SHOCK_DIM,
-                                                    SHORT_NAME_TO_LONG)
-from tests.statespace.shared_fixtures import \
-    rng  # pylint: disable=unused-import
-from tests.statespace.test_utilities import \
-    unpack_symbolic_matrices_with_params
+from pymc_extras.statespace.utils.constants import (
+    ALL_STATE_AUX_DIM,
+    ALL_STATE_DIM,
+    AR_PARAM_DIM,
+    OBS_STATE_AUX_DIM,
+    OBS_STATE_DIM,
+    SHOCK_AUX_DIM,
+    SHOCK_DIM,
+    SHORT_NAME_TO_LONG,
+)
+from tests.statespace.shared_fixtures import rng  # pylint: disable=unused-import
+from tests.statespace.test_utilities import unpack_symbolic_matrices_with_params
 
 floatX = pytensor.config.floatX
 ATOL = 1e-8 if floatX.endswith("64") else 1e-4
@@ -60,19 +63,17 @@ def _assert_coord_shapes_match_matrices(mod, params):
     n_shocks = max(1, len(mod.coords[SHOCK_DIM]))
     n_obs = len(mod.coords[OBS_STATE_DIM])
 
-    assert x0.shape[-1:] == (
-        n_states,
-    ), f"x0 expected to have shape (n_states, ), found {x0.shape[-1:]}"
+    assert x0.shape[-1:] == (n_states,), (
+        f"x0 expected to have shape (n_states, ), found {x0.shape[-1:]}"
+    )
     assert P0.shape[-2:] == (
         n_states,
         n_states,
     ), f"P0 expected to have shape (n_states, n_states), found {P0.shape[-2:]}"
-    assert c.shape[-1:] == (
-        n_states,
-    ), f"c expected to have shape (n_states, ), found {c.shape[-1:]}"
-    assert d.shape[-1:] == (
-        n_obs,
-    ), f"d expected to have shape (n_obs, ), found {d.shape[-1:]}"
+    assert c.shape[-1:] == (n_states,), (
+        f"c expected to have shape (n_states, ), found {c.shape[-1:]}"
+    )
+    assert d.shape[-1:] == (n_obs,), f"d expected to have shape (n_obs, ), found {d.shape[-1:]}"
     assert T.shape[-2:] == (
         n_states,
         n_states,
@@ -99,14 +100,12 @@ def _assert_keys_match(test_dict, expected_dict):
     expected_keys = list(expected_dict.keys())
     param_keys = list(test_dict.keys())
     key_diff = set(expected_keys) - set(param_keys)
-    assert (
-        len(key_diff) == 0
-    ), f"{', '.join(key_diff)} were not found in the test_dict keys."
+    assert len(key_diff) == 0, f"{', '.join(key_diff)} were not found in the test_dict keys."
 
     key_diff = set(param_keys) - set(expected_keys)
-    assert (
-        len(key_diff) == 0
-    ), f"{', '.join(key_diff)} were keys of the tests_dict not in expected_dict."
+    assert len(key_diff) == 0, (
+        f"{', '.join(key_diff)} were keys of the tests_dict not in expected_dict."
+    )
 
 
 def _assert_param_dims_correct(param_dims, expected_dims):
@@ -303,8 +302,7 @@ def create_structural_model_and_equivalent_statsmodel(
         expected_coords[ALL_STATE_AUX_DIM] += state_names
 
         seasonal_dict = {
-            "seasonal" if i == 0 else f"seasonal.L{i}": c
-            for i, c in enumerate(seasonal_coefs)
+            "seasonal" if i == 0 else f"seasonal.L{i}": c for i, c in enumerate(seasonal_coefs)
         }
         sm_init.update(seasonal_dict)
 
@@ -331,9 +329,7 @@ def create_structural_model_and_equivalent_statsmodel(
             s = d["period"]
             last_state_not_identified = (s / n) == 2.0
             n_states = 2 * n - int(last_state_not_identified)
-            state_names = [
-                f"{f}_{i}_seasonal_{s}" for i in range(n) for f in ["Cos", "Sin"]
-            ]
+            state_names = [f"{f}_{i}_seasonal_{s}" for i in range(n) for f in ["Cos", "Sin"]]
 
             seasonal_params = rng.normal(size=n_states).astype(floatX)
 
@@ -342,9 +338,7 @@ def create_structural_model_and_equivalent_statsmodel(
             expected_coords[ALL_STATE_DIM] += state_names
             expected_coords[ALL_STATE_AUX_DIM] += state_names
             expected_coords[f"state_seasonal_{s}"] += (
-                tuple(state_names[:-1])
-                if last_state_not_identified
-                else tuple(state_names)
+                tuple(state_names[:-1]) if last_state_not_identified else tuple(state_names)
             )
 
             for param in seasonal_params:
@@ -462,9 +456,7 @@ def create_structural_model_and_equivalent_statsmodel(
     ],
 )
 @pytest.mark.parametrize("autoregressive", [None, 3])
-@pytest.mark.parametrize(
-    "seasonal, stochastic_seasonal", [(None, False), (12, False), (12, True)]
-)
+@pytest.mark.parametrize("seasonal, stochastic_seasonal", [(None, False), (12, False), (12, True)])
 @pytest.mark.parametrize(
     "freq_seasonal, stochastic_freq_seasonal",
     [
@@ -477,12 +469,8 @@ def create_structural_model_and_equivalent_statsmodel(
     "cycle, damped_cycle, stochastic_cycle",
     [(False, False, False), (True, False, True), (True, True, True)],
 )
-@pytest.mark.filterwarnings(
-    "ignore::statsmodels.tools.sm_exceptions.ConvergenceWarning"
-)
-@pytest.mark.filterwarnings(
-    "ignore::statsmodels.tools.sm_exceptions.SpecificationWarning"
-)
+@pytest.mark.filterwarnings("ignore::statsmodels.tools.sm_exceptions.ConvergenceWarning")
+@pytest.mark.filterwarnings("ignore::statsmodels.tools.sm_exceptions.SpecificationWarning")
 def test_structural_model_against_statsmodels(
     level,
     trend,
@@ -522,11 +510,7 @@ def test_structural_model_against_statsmodels(
 
     if len(sm_init) > 0:
         init_array = np.concatenate(
-            [
-                np.atleast_1d(sm_init[k]).ravel()
-                for k in sm_mod.state_names
-                if k != "dummy"
-            ]
+            [np.atleast_1d(sm_init[k]).ravel() for k in sm_mod.state_names if k != "dummy"]
         )
         sm_mod.initialize_known(init_array, np.eye(sm_mod.k_states))
     else:
@@ -546,6 +530,4 @@ def test_structural_model_against_statsmodels(
     _assert_coord_shapes_match_matrices(built_model, params)
     _assert_param_dims_correct(built_model.param_dims, expected_dims)
     _assert_coords_correct(built_model.coords, expected_coords)
-    _assert_params_info_correct(
-        built_model.param_info, built_model.coords, built_model.param_dims
-    )
+    _assert_params_info_correct(built_model.param_info, built_model.coords, built_model.param_dims)

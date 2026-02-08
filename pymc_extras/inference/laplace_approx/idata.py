@@ -4,10 +4,10 @@ from typing import Literal
 import numpy as np
 import pymc as pm
 import xarray as xr
+
 from arviz import dict_to_dataset
 from better_optimize.constants import minimize_method
-from pymc.backends.arviz import (coords_and_dims_for_inferencedata,
-                                 find_constants, find_observations)
+from pymc.backends.arviz import coords_and_dims_for_inferencedata, find_constants, find_observations
 from pymc.blocking import RaveledVars
 from pymc.util import get_default_varnames
 from scipy.optimize import OptimizeResult
@@ -105,30 +105,21 @@ def map_results_to_inference_data(
         {
             value_name: dims[var_name]
             for var_name, value_name in var_name_to_value_name.items()
-            if var_name in dims
-            and (initial_point[value_name].shape == map_point[var_name].shape)
+            if var_name in dims and (initial_point[value_name].shape == map_point[var_name].shape)
         }
     )
 
     constrained_names = [
-        x.name
-        for x in get_default_varnames(
-            model.unobserved_value_vars, include_transformed=False
-        )
+        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=False)
     ]
     all_varnames = [
-        x.name
-        for x in get_default_varnames(
-            model.unobserved_value_vars, include_transformed=True
-        )
+        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=True)
     ]
 
     unconstrained_names = sorted(set(all_varnames) - set(constrained_names))
 
     posterior_dict = {
-        k: np.expand_dims(v, (0, 1))
-        for k, v in map_point.items()
-        if k in constrained_names
+        k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in constrained_names
     }
     posterior_ds = dict_to_dataset(
         posterior_dict,
@@ -140,9 +131,7 @@ def map_results_to_inference_data(
 
     if unconstrained_names and include_transformed:
         unconstrained_dict = {
-            k: np.expand_dims(v, (0, 1))
-            for k, v in map_point.items()
-            if k in unconstrained_names
+            k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in unconstrained_names
         }
         unconstrained_ds = dict_to_dataset(
             unconstrained_dict,
@@ -186,9 +175,7 @@ def add_fit_to_inference_data(
 
     unpacked_variable_names = make_unpacked_variable_names(variable_names, model)
 
-    mean_dataarray = xr.DataArray(
-        mu.data, dims=["rows"], coords={"rows": unpacked_variable_names}
-    )
+    mean_dataarray = xr.DataArray(mu.data, dims=["rows"], coords={"rows": unpacked_variable_names})
 
     data = {"mean_vector": mean_dataarray}
 
@@ -349,9 +336,7 @@ def optimizer_result_to_dataset(
         if isinstance(hess_inv, LinearOperator):
             n = hess_inv.shape[0]
             eye = np.eye(n)
-            hess_inv_mat = np.column_stack(
-                [hess_inv.matvec(eye[:, i]) for i in range(n)]
-            )
+            hess_inv_mat = np.column_stack([hess_inv.matvec(eye[:, i]) for i in range(n)])
             hess_inv = hess_inv_mat
         else:
             hess_inv = np.asarray(hess_inv)
@@ -387,9 +372,7 @@ def optimizer_result_to_dataset(
         data_vars[key] = xr.DataArray(
             arr,
             dims=dims,
-            coords={
-                f"{key}_dim_{i}": np.arange(arr.shape[i]) for i in range(len(dims))
-            },
+            coords={f"{key}_dim_{i}": np.arange(arr.shape[i]) for i in range(len(dims))},
         )
 
     data_vars["method"] = xr.DataArray(np.array(method), dims=[])
