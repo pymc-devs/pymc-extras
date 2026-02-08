@@ -165,6 +165,7 @@ def find_MAP(
     use_hess: bool | None = None,
     initvals: dict | None = None,
     random_seed: int | np.random.Generator | None = None,
+    jacobian: bool = True,
     jitter_rvs: list[TensorVariable] | None = None,
     progressbar: bool = True,
     include_transformed: bool = True,
@@ -205,6 +206,8 @@ def find_MAP(
          If None, the model's default initial values are used.
     random_seed : None | int | np.random.Generator, optional
         Seed for the random number generator or a numpy Generator for reproducibility
+    jacobian : bool, optional
+        Whether to include jacobian terms in logprob graph. Defaults to True.
     jitter_rvs : list of TensorVariables, optional
         Variables whose initial values should be jittered. If None, all variables are jittered.
     progressbar : bool, optional
@@ -258,7 +261,7 @@ def find_MAP(
     )
 
     f_fused, f_hessp = scipy_optimize_funcs_from_loss(
-        loss=-model.logp(),
+        loss=-model.logp(jacobian=jacobian),
         inputs=model.continuous_value_vars + model.discrete_value_vars,
         initial_point_dict=DictToArrayBijection.rmap(initial_params),
         use_grad=use_grad,
