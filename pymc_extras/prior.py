@@ -1338,22 +1338,14 @@ class VariableNotFound(Exception):
 
 
 def _remove_random_variable(var: pt.TensorVariable) -> None:
-    if var.name is None:
-        raise ValueError("This isn't removable")
-
-    name: str = var.name
-
+    # This is brittle, as it doesn't rely on any official model API.
+    # Fix this by allowing `Prior.create_dist` instead
     model = pm.modelcontext(None)
-    for idx, free_rv in enumerate(model.free_RVs):
-        if var == free_rv:
-            index_to_remove = idx
-            break
-    else:
-        raise VariableNotFound(f"Variable {var.name!r} not found")
-
-    var.name = None
-    model.free_RVs.pop(index_to_remove)
-    model.named_vars.pop(name)
+    model.rvs_to_initial_values.pop(var)
+    model.rvs_to_transforms.pop(var)
+    model.rvs_to_values.pop(var)
+    model.free_RVs.remove(var)
+    model.named_vars.pop(var.name)
 
 
 @dataclass
