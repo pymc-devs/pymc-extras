@@ -84,11 +84,12 @@ Create a prior with a custom transform function by registering it with
 from __future__ import annotations
 
 import copy
+import typing
 
 from collections.abc import Callable
 from functools import partial
 from inspect import signature
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeAlias, runtime_checkable
 
 import numpy as np
 import pymc as pm
@@ -98,8 +99,19 @@ import xarray as xr
 from pydantic import InstanceOf, validate_call
 from pydantic.dataclasses import dataclass
 from pymc.distributions.shape_utils import Dims
+from pytensor.graph import Variable
+from pytensor.tensor import TensorVariable
 
 from pymc_extras.deserialize import deserialize, register_deserialization
+
+if typing.TYPE_CHECKING:
+    # Lazy import of experimental modules
+    from pymc.dims import DimDistribution
+    from pytensor.tensor import TensorLike
+    from pytensor.xtensor.type import XTensorVariable
+    from xarray import DataArray
+
+    XTensorLike: TypeAlias = TensorLike | DataArray
 
 
 class UnsupportedShapeError(Exception):
@@ -242,10 +254,21 @@ def _dims_to_str(obj: tuple[str, ...]) -> str:
 
 
 def _get_pymc_distribution(name: str) -> type[pm.Distribution]:
-    if not hasattr(pm, name):
+    try:
+        return getattr(pm, name)
+    except AttributeError:
         raise UnsupportedDistributionError(f"PyMC doesn't have a distribution of name {name!r}")
 
-    return getattr(pm, name)
+
+def _get_pymc_dim_distribution(name: str) -> type[DimDistribution]:
+    import pymc.dims as pmd
+
+    try:
+        return getattr(pmd, name)
+    except AttributeError:
+        raise UnsupportedDistributionError(
+            f"PyMC.dims doesn't have a distribution of name {name!r}"
+        )
 
 
 Transform = Callable[[pt.TensorLike], pt.TensorLike]
@@ -287,27 +310,32 @@ def register_tensor_transform(name: str, transform: Transform) -> None:
     CUSTOM_TRANSFORMS[name] = transform
 
 
-def _get_transform(name: str):
+def _get_transform(name: str, xdist: bool = False) -> Transform:
     if name in CUSTOM_TRANSFORMS:
         return CUSTOM_TRANSFORMS[name]
 
-    for module in (pt, pm.math):
-        if hasattr(module, name):
-            break
-    else:
-        module = None
+    if xdist:
+        import pytensor.xtensor as ptx
 
-    if not module:
-        msg = (
-            f"Neither pytensor.tensor nor pymc.math have the function {name!r}. "
-            "If this is a custom function, register it with the "
-            "`pymc_extras.prior.register_tensor_transform` function before "
-            "previous function call."
+        for module in (ptx.math, ptx.linalg, ptx):
+            try:
+                return getattr(module, name)
+            except AttributeError:
+                continue
+        raise UnknownTransformError(
+            f"Function {name!r} not present in pytensor.xtensor or its submodules. "
+            "If this is a custom function, register it with `pymc_extras.prior.register_tensor_transform` first."
         )
-
-        raise UnknownTransformError(msg)
-
-    return getattr(module, name)
+    else:
+        for module in (pt, pm.math):
+            try:
+                return getattr(module, name)
+            except AttributeError:
+                continue
+        raise UnknownTransformError(
+            f"Function {name!r} not present in pytensor.tensor or pymc.math. "
+            "If this is a custom function, register it with `pymc_extras.prior.register_tensor_transform` first."
+        )
 
 
 def _get_pymc_parameters(distribution: pm.Distribution) -> set[str]:
@@ -361,8 +389,8 @@ class VariableFactory(Protocol):
     dims: tuple[str, ...]
     """The dimensions of the variable to create."""
 
-    def create_variable(self, name: str) -> pt.TensorVariable:
-        """Create a TensorVariable."""
+    def create_variable(self, name: str, xdist: bool = False) -> TensorVariable | XTensorVariable:
+        """Create a variable."""
 
 
 def sample_prior(
@@ -370,6 +398,7 @@ def sample_prior(
     coords=None,
     name: str = "variable",
     wrap: bool = False,
+    xdist: bool = False,
     **sample_prior_predictive_kwargs,
 ) -> xr.Dataset:
     """Sample the prior for an arbitrary VariableFactory.
@@ -387,6 +416,8 @@ def sample_prior(
         Whether to wrap the variable in a `pm.Deterministic` node, by default False.
     sample_prior_predictive_kwargs : dict
         Additional arguments to pass to `pm.sample_prior_predictive`.
+    xdist: bool, default False
+        Whether to create a pymc.dims variable or a regular pymc variable
 
     Returns
     -------
@@ -435,10 +466,20 @@ def sample_prior(
         raise KeyError(f"Coords are missing the following dims: {missing_keys}")
 
     with pm.Model(coords=coords) as model:
-        if wrap:
-            pm.Deterministic(name, factory.create_variable(name), dims=factory.dims)
+        if xdist:
+            var = factory.create_variable(name, xdist=True)
         else:
-            factory.create_variable(name)
+            # Backwards compatibility when the xdist kwarg didn't exist
+            var = factory.create_variable(name)
+        if wrap:
+            if xdist:
+                from pymc.dims import Deterministic
+
+                det_class = Deterministic
+            else:
+                det_class = pm.Deterministic
+
+            det_class(name, var, dims=factory.dims)
 
     return pm.sample_prior_predictive(
         model=model,
@@ -561,9 +602,6 @@ class Prior:
     pymc_distribution: type[pm.Distribution]
     """The PyMC distribution class."""
 
-    pytensor_transform: Callable[[pt.TensorLike], pt.TensorLike] | None
-    """The PyTensor transform function."""
-
     @validate_call
     def __init__(
         self,
@@ -603,7 +641,9 @@ class Prior:
     @transform.setter
     def transform(self, transform: str | None) -> None:
         self._transform = transform
-        self.pytensor_transform = not transform or _get_transform(transform)  # type: ignore
+        if transform is not None:
+            # Validate transform exists
+            _get_transform(transform)
 
     @property
     def dims(self) -> Dims:
@@ -656,11 +696,12 @@ class Prior:
 
     def _parameters_are_correct_type(self) -> None:
         supported_types = (
+            Variable,
+            Prior,
             int,
             float,
             np.ndarray,
-            Prior,
-            pt.TensorVariable,
+            xr.DataArray,
             VariableFactory,
         )
 
@@ -723,30 +764,45 @@ class Prior:
         """Return a string representation of the prior."""
         return f"{self}"
 
-    def _create_parameter(self, param, value, name):
+    def _create_parameter(self, param, value, name, xdist: bool = False):
         if not hasattr(value, "create_variable"):
             return value
 
         child_name = f"{name}_{param}"
-        return self.dim_handler(value.create_variable(child_name), value.dims)
+        if xdist:
+            return value.create_variable(child_name, xdist=True)
+        else:
+            return self.dim_handler(value.create_variable(child_name), value.dims)
 
-    def _create_centered_variable(self, name: str):
+    def _create_centered_variable(self, name: str, xdist: bool = False):
         parameters = {
-            param: self._create_parameter(param, value, name)
+            param: self._create_parameter(param, value, name, xdist=xdist)
             for param, value in self.parameters.items()
         }
-        return self.pymc_distribution(name, **parameters, dims=self.dims)
+        if xdist:
+            pymc_distribution = _get_pymc_dim_distribution(self.distribution)
+        else:
+            pymc_distribution = self.pymc_distribution
 
-    def _create_non_centered_variable(self, name: str) -> pt.TensorVariable:
+        return pymc_distribution(name, **parameters, dims=self.dims)
+
+    def _create_non_centered_variable(
+        self, name: str, xdist: bool = False
+    ) -> TensorVariable | XTensorVariable:
         def handle_variable(var_name: str):
             parameter = self.parameters[var_name]
             if not hasattr(parameter, "create_variable"):
                 return parameter
 
-            return self.dim_handler(
-                parameter.create_variable(f"{name}_{var_name}"),
-                parameter.dims,
-            )
+            if xdist:
+                return parameter.create_variable(
+                    f"{name}_{var_name}", dims=parameter.dims, xdist=True
+                )
+            else:
+                return self.dim_handler(
+                    parameter.create_variable(f"{name}_{var_name}"),
+                    parameter.dims,
+                )
 
         defaults = self.non_centered_distributions[self.distribution]
         other_parameters = {
@@ -754,12 +810,18 @@ class Prior:
             for param in self.parameters.keys()
             if param not in defaults
         }
-        offset = self.pymc_distribution(
+        if xdist:
+            pymc_distribution = _get_pymc_dim_distribution(self.distribution)
+        else:
+            pymc_distribution = self.pymc_distribution
+
+        offset = pymc_distribution(
             f"{name}_offset",
             **defaults,
             **other_parameters,
             dims=self.dims,
         )
+
         if "mu" in self.parameters:
             mu = (
                 handle_variable("mu")
@@ -775,13 +837,21 @@ class Prior:
             else self.parameters["sigma"]
         )
 
-        return pm.Deterministic(
+        if xdist:
+            from pymc.dims import Deterministic
+
+            det_class = Deterministic
+
+        else:
+            det_class = pm.Deterministic
+
+        return det_class(
             name,
             mu + sigma * offset,
             dims=self.dims,
         )
 
-    def create_variable(self, name: str) -> pt.TensorVariable:
+    def create_variable(self, name: str, xdist: bool = False) -> TensorVariable | XTensorVariable:
         """Create a PyMC variable from the prior.
 
         Must be used in a PyMC model context.
@@ -790,10 +860,12 @@ class Prior:
         ----------
         name : str
             The name of the variable.
+        xdist: bool, default False
+            Whether to create a variable from pymc.dims or regular pymc distributions
 
         Returns
         -------
-        pt.TensorVariable
+        TensorVariable | XTensorVariable
             The PyMC variable.
 
         Examples
@@ -814,13 +886,23 @@ class Prior:
                 var = dist.create_variable("var")
 
         """
+        # FIXME: We shouldn't mutate self when creating variables
         self.dim_handler = create_dim_handler(self.dims)
 
         if self.transform:
             var_name = f"{name}_raw"
+            pytensor_transform = _get_transform(self.transform, xdist=xdist)
 
             def transform(var):
-                return pm.Deterministic(name, self.pytensor_transform(var), dims=self.dims)
+                if xdist:
+                    from pymc.dims import Deterministic
+
+                    det_class = Deterministic
+                else:
+                    det_class = pm.Deterministic
+
+                return det_class(name, pytensor_transform(var), dims=self.dims)
+
         else:
             var_name = name
 
@@ -830,7 +912,7 @@ class Prior:
         create_variable = (
             self._create_centered_variable if self.centered else self._create_non_centered_variable
         )
-        var = create_variable(name=var_name)
+        var = create_variable(name=var_name, xdist=xdist)
         return transform(var)
 
     @property
@@ -902,11 +984,28 @@ class Prior:
                 if isinstance(value, Prior):
                     return value.to_dict()
 
-                if isinstance(value, pt.TensorVariable):
-                    value = value.eval()
+                if isinstance(value, Variable):
+                    if isinstance(value.type, pt.TensorType):
+                        value = value.eval()
+
+                    # Avoid XTensor import warnings, remove this when the warnings are gone
+                    elif value.type.__class__.__name__.startswith("XTensor"):
+                        value = xr.DataArray(value.eval(), dims=value.type.dims)
+
+                    else:
+                        raise ValueError(
+                            f"Prior does not know how to serialize pytensor variable of type {value.type}"
+                        )
 
                 if isinstance(value, np.ndarray):
                     return value.tolist()
+
+                if isinstance(value, xr.DataArray):
+                    return {
+                        "class": "DataArray",
+                        "data": value.data.tolist(),
+                        "dims": list(value.dims),
+                    }
 
                 if hasattr(value, "to_dict"):
                     return value.to_dict()
@@ -1073,6 +1172,7 @@ class Prior:
         self,
         coords=None,
         name: str = "variable",
+        xdist: bool = False,
         **sample_prior_predictive_kwargs,
     ) -> xr.Dataset:
         """Sample the prior distribution for the variable.
@@ -1113,6 +1213,7 @@ class Prior:
             factory=self,
             coords=coords,
             name=name,
+            xdist=xdist,
             **sample_prior_predictive_kwargs,
         )
 
@@ -1177,9 +1278,10 @@ class Prior:
     def create_likelihood_variable(
         self,
         name: str,
-        mu: pt.TensorLike,
-        observed: pt.TensorLike,
-    ) -> pt.TensorVariable:
+        mu: TensorLike | XTensorLike,
+        observed: TensorLike | XTensorLike,
+        xdist: bool = False,
+    ) -> TensorVariable | XTensorVariable:
         """Create a likelihood variable from the prior.
 
         Will require that the distribution has a `mu` parameter
@@ -1189,14 +1291,16 @@ class Prior:
         ----------
         name : str
             The name of the variable.
-        mu : pt.TensorLike
+        mu : TensorLike or XTensorLike
             The mu parameter for the likelihood.
-        observed : pt.TensorLike
+        observed : TensorLike or XTensorLike
             The observed data.
+        xdist: bool, default False
+            Whether to create a variable from pymc.dims or regular pymc distributions
 
         Returns
         -------
-        pt.TensorVariable
+        TensorVariable or XTensorVariable
             The PyMC variable.
 
         Examples
@@ -1226,7 +1330,7 @@ class Prior:
         distribution = self.deepcopy()
         distribution.parameters["mu"] = mu
         distribution.parameters["observed"] = observed
-        return distribution.create_variable(name)
+        return distribution.create_variable(name, xdist=xdist)
 
 
 class VariableNotFound(Exception):
@@ -1311,8 +1415,11 @@ class Censored:
     def dims(self, dims) -> None:
         self.distribution.dims = dims
 
-    def create_variable(self, name: str) -> pt.TensorVariable:
+    def create_variable(self, name: str, xdist: bool = False) -> pt.TensorVariable:
         """Create censored random variable."""
+        if xdist:
+            raise NotImplementedError("Censored does not support xdist yet")
+
         dist = self.distribution.create_variable(name)
         _remove_random_variable(var=dist)
 
@@ -1356,6 +1463,7 @@ class Censored:
         self,
         coords=None,
         name: str = "variable",
+        xdist: bool = False,
         **sample_prior_predictive_kwargs,
     ) -> xr.Dataset:
         """Sample the prior distribution for the variable.
@@ -1392,6 +1500,7 @@ class Censored:
             factory=self,
             coords=coords,
             name=name,
+            xdist=xdist,
             **sample_prior_predictive_kwargs,
         )
 
@@ -1514,7 +1623,7 @@ class Scaled:
 
     """
 
-    def __init__(self, dist: Prior, factor: pt.TensorLike) -> None:
+    def __init__(self, dist: Prior, factor: XTensorLike) -> None:
         self.dist = dist
         self.factor = factor
 
@@ -1523,7 +1632,7 @@ class Scaled:
         """The dimensions of the scaled distribution."""
         return self.dist.dims
 
-    def create_variable(self, name: str) -> pt.TensorVariable:
+    def create_variable(self, name: str, xdist: bool = False) -> TensorVariable | XTensorVariable:
         """Create a scaled variable.
 
         Parameters
@@ -1536,8 +1645,15 @@ class Scaled:
         pt.TensorVariable
             The scaled variable.
         """
-        var = self.dist.create_variable(f"{name}_unscaled")
-        return pm.Deterministic(name, var * self.factor, dims=self.dims)
+        var = self.dist.create_variable(f"{name}_unscaled", xdist=xdist)
+        if xdist:
+            from pymc.dims import Deterministic
+
+            det_class = Deterministic
+        else:
+            det_class = pm.Deterministic
+
+        return det_class(name, var * self.factor, dims=self.dims)
 
 
 def _is_prior_type(data: dict) -> bool:
@@ -1548,8 +1664,13 @@ def _is_censored_type(data: dict) -> bool:
     return data.keys() == {"class", "data"} and data["class"] == "Censored"
 
 
+def _is_data_array_type(data: dict) -> bool:
+    return data.keys() == {"class", "data", "dims"} and data["class"] == "DataArray"
+
+
 register_deserialization(is_type=_is_prior_type, deserialize=Prior.from_dict)
 register_deserialization(is_type=_is_censored_type, deserialize=Censored.from_dict)
+register_deserialization(is_type=_is_data_array_type, deserialize=xr.DataArray.from_dict)
 
 
 def __getattr__(name: str):
