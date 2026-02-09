@@ -49,7 +49,6 @@ complete = [
 ]
 dev = [
   "pytest>=6.0",
-  "pytest-mock",
   "dask[all]<2025.1.1",
   "blackjax>=0.12",
   "statsmodels",
