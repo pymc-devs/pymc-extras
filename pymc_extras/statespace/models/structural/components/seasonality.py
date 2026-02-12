@@ -495,7 +495,8 @@ class FrequencySeasonality(Component):
     Unlike a ``TimeSeasonality`` component, a ``FrequencySeasonality`` component does not require integer season
     length. In addition, for long seasonal periods, it is possible to obtain a more compact state space representation
     by choosing ``n << s // 2``. Using ``TimeSeasonality``, an annual seasonal pattern in daily data requires 364
-    states, whereas ``FrequencySeasonality`` always requires ``2 * n`` states, regardless of the ``seasonal_length``.
+    states, whereas ``FrequencySeasonality`` uses 2n states in general. If ``season_length`` is an even integer and
+    ``n = season_length // 2``, the Nyquist frequency is represented by a single state, resulting in ``2n − 1`` states.
     The price of this compactness is less representational power. At ``n = 1``, the seasonal pattern will be a pure
     sine wave. At ``n = s // 2``, any arbitrary pattern can be represented.
 
@@ -533,11 +534,21 @@ class FrequencySeasonality(Component):
         # If the model is completely saturated (n = s // 2), the last state will not be identified, so it shouldn't
         # get a parameter assigned to it and should just be fixed to zero.
         # Test this way (rather than n == s // 2) to catch cases when n is non-integer.
-        self.last_state_not_identified = (self.season_length / self.n) == 2.0
+        self.last_state_not_identified = (
+            float(self.season_length).is_integer()
+            and int(self.season_length) % 2 == 0
+            and self.n == int(self.season_length // 2)
+        )
+
         self.n_coefs = k_states - int(self.last_state_not_identified)
+        k_states = self.n_coefs
 
         obs_state_idx = np.zeros(k_states)
-        obs_state_idx[slice(0, k_states, 2)] = 1
+        obs_state_idx[: 2 * (self.n - int(self.last_state_not_identified)) : 2] = 1
+
+        if self.last_state_not_identified:
+            obs_state_idx[-1] = 1  # Nyquist
+
         obs_state_idx = np.tile(obs_state_idx, 1 if share_states else k_endog)
 
         super().__init__(
@@ -556,15 +567,23 @@ class FrequencySeasonality(Component):
 
     def set_states(self) -> State | tuple[State, ...] | None:
         observed_state_names = self.base_observed_state_names
-        base_names = [f"{f}_{i}_{self.name}" for i in range(self.n) for f in ["Cos", "Sin"]]
+
+        base_names = []
+        for j in range(self.n):
+            if self.last_state_not_identified and j == self.n:
+                base_names.append(f"Nyquist_{self.name}")
+            else:
+                base_names.extend([f"Cos_{j}_{self.name}", f"Sin_{j}_{self.name}"])
+
+        n_coefs = self.n_coefs
 
         if self.share_states:
-            state_names = [f"{name}[shared]" for name in base_names]
+            state_names = [f"{name}[shared]" for name in base_names[:n_coefs]]
         else:
             state_names = [
                 f"{name}[{obs_state_name}]"
                 for obs_state_name in self.base_observed_state_names
-                for name in base_names
+                for name in base_names[:n_coefs]
             ]
 
         hidden_states = [State(name=name, observed=False, shared=True) for name in state_names]
@@ -611,12 +630,16 @@ class FrequencySeasonality(Component):
         n_coefs = self.n_coefs
         observed_state_names = self.observed_state_names
 
-        base_names = [f"{f}_{i}_{self.name}" for i in range(self.n) for f in ["Cos", "Sin"]]
+        base_names = []
+        for j in range(self.n):
+            if self.last_state_not_identified and j == self.n:
+                base_names.append(f"Nyquist_{self.name}")
+            else:
+                base_names.extend([f"Cos_{j}_{self.name}", f"Sin_{j}_{self.name}"])
 
-        # Trim state names if the model is saturated
-        param_state_names = base_names[:n_coefs]
+        base_names = base_names[:n_coefs]
 
-        state_coords = Coord(dimension=f"state_{self.name}", labels=tuple(param_state_names))
+        state_coords = Coord(dimension=f"state_{self.name}", labels=tuple(base_names))
 
         coord_container = [state_coords]
 
@@ -629,12 +652,9 @@ class FrequencySeasonality(Component):
     def make_symbolic_graph(self) -> None:
         k_endog = self.k_endog
         k_endog_effective = 1 if self.share_states else k_endog
-
-        k_states = self.k_states // k_endog_effective
-        k_posdef = self.k_posdef // k_endog_effective
         n_coefs = self.n_coefs
 
-        Z = pt.zeros((1, k_states))[0, slice(0, k_states, 2)].set(1.0)
+        Z = pt.zeros((1, n_coefs))[0, slice(0, n_coefs, 2)].set(1.0)
 
         self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
 
@@ -642,25 +662,41 @@ class FrequencySeasonality(Component):
             f"params_{self.name}", shape=(n_coefs,) if k_endog == 1 else (k_endog, n_coefs)
         )
 
-        init_state_idx = np.concatenate(
-            [
-                np.arange(k_states * i, (i + 1) * k_states, dtype=int)[:n_coefs]
-                for i in range(k_endog_effective)
-            ],
-            axis=0,
-        )
+        self.ssm["initial_state", :] = init_state.ravel()
 
-        self.ssm["initial_state", init_state_idx] = init_state.ravel()
+        T_blocks = []
 
-        T_mats = [_frequency_transition_block(self.season_length, j + 1) for j in range(self.n)]
-        T = pt.linalg.block_diag(*T_mats)
+        # Number of full 2D harmonics
+        max_full = self.n
+
+        if self.last_state_not_identified:
+            max_full -= 1  # last harmonic is Nyquist
+
+        for j in range(1, max_full + 1):
+            T_blocks.append(_frequency_transition_block(self.season_length, j))
+
+        if self.last_state_not_identified:
+            T_blocks.append(pt.stack([[-1.0]]))  # Nyquist
+
+        T = pt.linalg.block_diag(*T_blocks)
+
         self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
 
         if self.innovations:
             sigma_season = self.make_and_register_variable(
                 f"sigma_{self.name}", shape=() if k_endog_effective == 1 else (k_endog_effective,)
             )
-            self.ssm["selection", :, :] = pt.eye(self.k_states)
-            self.ssm["state_cov", :, :] = pt.eye(self.k_posdef) * pt.repeat(
-                sigma_season**2, k_posdef
-            )
+
+            if k_endog_effective == 1:
+                sigma_season_val = sigma_season
+                self.ssm["selection", :, :] = pt.eye(n_coefs)
+                self.ssm["state_cov", :, :] = pt.eye(n_coefs) * sigma_season_val**2
+            else:
+                # k_endog_effective > 1
+                Q_blocks = [
+                    pt.eye(n_coefs) * sigma_season[i] ** 2 for i in range(k_endog_effective)
+                ]
+                self.ssm["selection", :, :] = pt.linalg.block_diag(
+                    *[pt.eye(n_coefs) for _ in range(k_endog_effective)]
+                )
+                self.ssm["state_cov", :, :] = pt.linalg.block_diag(*Q_blocks)
