@@ -395,18 +395,22 @@ def test_frequency_seasonality_multiple_observed(rng):
         "Cos_0_season[data_1]",
         "Sin_0_season[data_1]",
         "Cos_1_season[data_1]",
+        "Sin_1_season[data_1]",
         "Cos_0_season[data_2]",
         "Sin_0_season[data_2]",
         "Cos_1_season[data_2]",
+        "Sin_1_season[data_2]",
     )
     assert mod.state_names == expected_state_names
     assert mod.shock_names == (
         "Cos_0_season[data_1]",
         "Sin_0_season[data_1]",
         "Cos_1_season[data_1]",
+        "Sin_1_season[data_1]",
         "Cos_0_season[data_2]",
         "Sin_0_season[data_2]",
         "Cos_1_season[data_2]",
+        "Sin_1_season[data_2]",
     )
 
     x0 = np.zeros((2, 3), dtype=config.floatX)
@@ -437,9 +441,11 @@ def test_frequency_seasonality_multiple_observed(rng):
     x0_v, T_v, Z_v, R_v, Q_v = fn(**params)
 
     # x0 should be raveled into a single vector, with data_1 states first, then data_2 states
-    np.testing.assert_allclose(x0_v, np.array([1.0, 0.0, 0.0, 2.0, 0.0, 0.0]), atol=ATOL, rtol=RTOL)
+    np.testing.assert_allclose(
+        x0_v, np.array([1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0]), atol=ATOL, rtol=RTOL
+    )
 
-    # T_v shape: (6, 6) (k_endog * k_states)
+    # T_v shape: (8, 8) (k_endog * k_states)
     # The transition matrix is block diagonal, each block is:
     # For n=2, season_length=4:
     # lambda_1 = 2*pi*1/4 = pi/2, cos(pi/2)=0, sin(pi/2)=1
@@ -450,33 +456,28 @@ def test_frequency_seasonality_multiple_observed(rng):
     # Block 2 (Cos_1, Sin_1):
     # [[-1, 0], [0, -1]]
     expected_T_block1 = np.array([[0.0, 1.0], [-1.0, 0.0]])
-    expected_T_block2 = np.array([[-1.0]])
-
-    block3 = np.zeros((3, 3))
-    block3[0:2, 0:2] = expected_T_block1
-    block3[2:3, 2:3] = expected_T_block2
-    expected_T = np.zeros((6, 6))
+    expected_T_block2 = np.array([[-1.0, 0.0], [0.0, -1.0]])
+    expected_T = np.zeros((8, 8))
     # data_1
-    expected_T[0:3, 0:3] = block3
-
+    expected_T[0:2, 0:2] = expected_T_block1
+    expected_T[2:4, 2:4] = expected_T_block2
     # data_2
-    expected_T[3:6, 3:6] = block3
-
+    expected_T[4:6, 4:6] = expected_T_block1
+    expected_T[6:8, 6:8] = expected_T_block2
     np.testing.assert_allclose(T_v, expected_T, atol=ATOL, rtol=RTOL)
 
     # Only the first two states (one sin and one cos component) of each observed series are observed
-    expected_Z = np.zeros((2, 6))
+    expected_Z = np.zeros((2, 8))
     expected_Z[0, 0] = 1.0
     expected_Z[0, 2] = 1.0
-    expected_Z[1, 3] = 1.0
-    expected_Z[1, 5] = 1.0
-
+    expected_Z[1, 4] = 1.0
+    expected_Z[1, 6] = 1.0
     np.testing.assert_allclose(Z_v, expected_Z, atol=ATOL, rtol=RTOL)
 
-    np.testing.assert_allclose(R_v, np.eye(6), atol=ATOL, rtol=RTOL)
+    np.testing.assert_allclose(R_v, np.eye(8), atol=ATOL, rtol=RTOL)
 
     Q_diag = np.diag(Q_v)
-    expected_Q_diag = np.r_[np.full(3, 0.1**2), np.full(3, 0.8**2)]
+    expected_Q_diag = np.r_[np.full(4, 0.1**2), np.full(4, 0.8**2)]
     np.testing.assert_allclose(Q_diag, expected_Q_diag, atol=ATOL, rtol=RTOL)
 
 
@@ -554,6 +555,7 @@ def test_add_two_frequency_seasonality_different_observed(rng):
         "Cos_0_freq1[data_1]",
         "Sin_0_freq1[data_1]",
         "Cos_1_freq1[data_1]",
+        "Sin_1_freq1[data_1]",
         "Cos_0_freq2[data_2]",
         "Sin_0_freq2[data_2]",
     )
@@ -562,6 +564,7 @@ def test_add_two_frequency_seasonality_different_observed(rng):
         "Cos_0_freq1[data_1]",
         "Sin_0_freq1[data_1]",
         "Cos_1_freq1[data_1]",
+        "Sin_1_freq1[data_1]",
         "Cos_0_freq2[data_2]",
         "Sin_0_freq2[data_2]",
     )
@@ -580,26 +583,26 @@ def test_add_two_frequency_seasonality_different_observed(rng):
     )
 
     # Make sure the extra 0 in from the first component (the saturated state) is there!
-    np.testing.assert_allclose(np.array([1.0, 0.0, 1.2, 3.0, 0.0]), x0_v, atol=ATOL, rtol=RTOL)
+    np.testing.assert_allclose(np.array([1.0, 0.0, 1.2, 0.0, 3.0, 0.0]), x0_v, atol=ATOL, rtol=RTOL)
 
     # Transition matrix is block diagonal: 4x4 for freq1, 2x2 for freq2
     # freq1: n=4, lambdas = 2*pi*1/6, 2*pi*2/6
     lam1 = 2 * np.pi * 1 / 4
-    # lam2 = 2 * np.pi * 2 / 4
+    lam2 = 2 * np.pi * 2 / 4
     freq1_T1 = np.array([[np.cos(lam1), np.sin(lam1)], [-np.sin(lam1), np.cos(lam1)]])
-    freq1_T2 = np.array([[-1.0]])
-    freq1_T = np.zeros((3, 3))
+    freq1_T2 = np.array([[np.cos(lam2), np.sin(lam2)], [-np.sin(lam2), np.cos(lam2)]])
+    freq1_T = np.zeros((4, 4))
 
     # freq2: n=4, lambdas = 2*pi*1/6
     lam3 = 2 * np.pi * 1 / 6
     freq2_T = np.array([[np.cos(lam3), np.sin(lam3)], [-np.sin(lam3), np.cos(lam3)]])
 
     freq1_T[0:2, 0:2] = freq1_T1
-    freq1_T[2:3, 2:3] = freq1_T2
+    freq1_T[2:4, 2:4] = freq1_T2
 
-    expected_T = np.zeros((5, 5))
-    expected_T[0:3, 0:3] = freq1_T
-    expected_T[3:5, 3:5] = freq2_T
+    expected_T = np.zeros((6, 6))
+    expected_T[0:4, 0:4] = freq1_T
+    expected_T[4:6, 4:6] = freq2_T
 
     np.testing.assert_allclose(expected_T, T_v, atol=ATOL, rtol=RTOL)
 
@@ -626,8 +629,8 @@ def test_add_frequency_seasonality_shared_and_not_shared():
     mod = (shared_season + individual_season).build(verbose=False)
 
     assert mod.k_endog == 2
-    assert mod.k_states == 8
-    assert mod.k_posdef == 8
+    assert mod.k_states == 10
+    assert mod.k_posdef == 10
 
     assert mod.coords["state_shared_season"] == (
         "Cos_0_shared_season",

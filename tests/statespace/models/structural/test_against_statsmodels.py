@@ -33,14 +33,10 @@ ATOL = 1e-8 if floatX.endswith("64") else 1e-4
 RTOL = 0 if floatX.endswith("64") else 1e-6
 
 
-def _assert_all_statespace_matrices_match(mod, params, sm_mod, freq_seasonal):
+def _assert_all_statespace_matrices_match(mod, params, sm_mod):
     x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(mod, params)
 
     sm_x0, sm_H0, sm_P0 = sm_mod.initialization()
-
-    # Still Need to figure out how to adjust x0, T, R, since the shapes no longer match
-    if freq_seasonal:
-        return
 
     if len(x0) > 0:
         assert_allclose(x0, sm_x0)
@@ -337,16 +333,15 @@ def create_structural_model_and_equivalent_statsmodel(
             n_states = 2 * n - int(last_state_not_identified)
             state_names = [f"{f}_{i}_seasonal_{s}" for i in range(n) for f in ["Cos", "Sin"]]
 
-            if last_state_not_identified:
-                state_names = state_names[:-1]
-
             seasonal_params = rng.normal(size=n_states).astype(floatX)
 
             params[f"params_seasonal_{s}"] = seasonal_params
             expected_param_dims[f"params_seasonal_{s}"] += (f"state_seasonal_{s}",)
             expected_coords[ALL_STATE_DIM] += state_names
             expected_coords[ALL_STATE_AUX_DIM] += state_names
-            expected_coords[f"state_seasonal_{s}"] += tuple(state_names)
+            expected_coords[f"state_seasonal_{s}"] += (
+                tuple(state_names[:-1]) if last_state_not_identified else tuple(state_names)
+            )
 
             for param in seasonal_params:
                 sm_init[f"freq_seasonal.{state_count}"] = param
@@ -529,7 +524,7 @@ def test_structural_model_against_statsmodels(
         )
         sm_mod.update(param_array, transformed=True)
 
-    _assert_all_statespace_matrices_match(mod, params, sm_mod, freq_seasonal)
+    _assert_all_statespace_matrices_match(mod, params, sm_mod)
 
     built_model = mod.build(verbose=False, mode="FAST_RUN")
     assert built_model.mode == "FAST_RUN"
