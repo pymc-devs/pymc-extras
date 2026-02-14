@@ -185,6 +185,10 @@ def handle_dims(x: pt.TensorLike, dims: Dims, desired_dims: Dims) -> pt.TensorVa
     if np.ndim(x) == 0:
         return x
 
+    if dims is None:
+        raise ValueError("handle_dims requires explicit dims, got None")
+    if desired_dims is None:
+        raise ValueError("handle_dims requires explicit derised_dims, got None")
     dims = dims if isinstance(dims, tuple) else (dims,)
     desired_dims = desired_dims if isinstance(desired_dims, tuple) else (desired_dims,)
 
@@ -386,7 +390,7 @@ class VariableFactory(Protocol):
 
     '''
 
-    dims: tuple[str, ...]
+    dims: tuple[str, ...] | None
     """The dimensions of the variable to create."""
 
     def create_variable(self, name: str, xdist: bool = False) -> TensorVariable | XTensorVariable:
@@ -457,13 +461,15 @@ def sample_prior(
     """
     coords = coords or {}
 
-    if isinstance(factory.dims, str):
-        dims = (factory.dims,)
-    else:
-        dims = factory.dims
+    dims = factory.dims
+    if dims is not None:
+        if isinstance(factory.dims, str):
+            dims = (factory.dims,)
+        else:
+            dims = factory.dims
 
-    if missing_keys := set(dims) - set(coords.keys()):
-        raise KeyError(f"Coords are missing the following dims: {missing_keys}")
+        if missing_keys := set(dims) - set(coords.keys()):
+            raise KeyError(f"Coords are missing the following dims: {missing_keys}")
 
     with pm.Model(coords=coords) as model:
         if xdist:
@@ -479,7 +485,7 @@ def sample_prior(
             else:
                 det_class = pm.Deterministic
 
-            det_class(name, var, dims=factory.dims)
+            det_class(name, var, dims=dims)
 
     return pm.sample_prior_predictive(
         model=model,
@@ -646,20 +652,22 @@ class Prior:
             _get_transform(transform)
 
     @property
-    def dims(self) -> Dims:
+    def dims(self) -> Dims | None:
         """The dimensions of the variable."""
         return self._dims
 
     @dims.setter
     def dims(self, dims) -> None:
+        if dims is None:
+            self._dims = None
+            return
+
         if isinstance(dims, str):
             dims = (dims,)
-
-        if isinstance(dims, list):
+        elif not isinstance(dims, tuple):
             dims = tuple(dims)
 
-        self._dims = dims or ()
-
+        self._dims = dims
         self._param_dims_work()
         self._unique_dims()
 
@@ -740,12 +748,15 @@ class Prior:
             raise ValueError("Dims must be unique")
 
     def _param_dims_work(self) -> None:
-        other_dims = set()
-        for value in self.parameters.values():
-            if hasattr(value, "dims"):
-                other_dims.update(value.dims)
+        if self.dims is None:
+            return
 
-        if not other_dims.issubset(self.dims):
+        other_dims_set = set()
+        for value in self.parameters.values():
+            if (other_dims := getattr(value, "dims", None)) is not None:
+                other_dims_set.update(other_dims)
+
+        if not other_dims_set.issubset(self.dims):
             raise UnsupportedShapeError(
                 f"Parameter dims {other_dims} are not a subset of the prior dims {self.dims}"
             )
@@ -755,7 +766,7 @@ class Prior:
         param_str = ", ".join([f"{param}={value}" for param, value in self.parameters.items()])
         param_str = "" if not param_str else f", {param_str}"
 
-        dim_str = f", dims={_dims_to_str(self.dims)}" if self.dims else ""
+        dim_str = f", dims={_dims_to_str(self.dims)}" if self.dims is not None else ""
         centered_str = f", centered={self.centered}" if not self.centered else ""
         transform_str = f', transform="{self.transform}"' if self.transform else ""
         return f'Prior("{self.distribution}"{param_str}{dim_str}{centered_str}{transform_str})'
@@ -772,7 +783,7 @@ class Prior:
         if xdist:
             return value.create_variable(child_name, xdist=True)
         else:
-            return self.dim_handler(value.create_variable(child_name), value.dims)
+            return self.dim_handler(value.create_variable(child_name), value.dims or ())
 
     def _create_centered_variable(self, name: str, xdist: bool = False):
         parameters = {
@@ -795,9 +806,7 @@ class Prior:
                 return parameter
 
             if xdist:
-                return parameter.create_variable(
-                    f"{name}_{var_name}", dims=parameter.dims, xdist=True
-                )
+                return parameter.create_variable(f"{name}_{var_name}", xdist=True)
             else:
                 return self.dim_handler(
                     parameter.create_variable(f"{name}_{var_name}"),
@@ -887,7 +896,7 @@ class Prior:
 
         """
         # FIXME: We shouldn't mutate self when creating variables
-        self.dim_handler = create_dim_handler(self.dims)
+        self.dim_handler = create_dim_handler(self.dims or ())
 
         if self.transform:
             var_name = f"{name}_raw"
@@ -1018,7 +1027,7 @@ class Prior:
         if not self.centered:
             data["centered"] = False
 
-        if self.dims:
+        if self.dims is not None:
             data["dims"] = self.dims
 
         if self.transform:
@@ -1269,7 +1278,7 @@ class Prior:
             :alt: Example graph
 
         """
-        coords = {name: ["DUMMY"] for name in self.dims}
+        coords = {name: ["DUMMY"] for name in self.dims or ()}
         with pm.Model(coords=coords) as model:
             self.create_variable("var")
 
@@ -1399,7 +1408,7 @@ class Censored:
             )
 
     @property
-    def dims(self) -> tuple[str, ...]:
+    def dims(self) -> tuple[str, ...] | None:
         """The dims from the distribution to censor."""
         return self.distribution.dims
 
@@ -1415,13 +1424,7 @@ class Censored:
         dist = self.distribution.create_variable(name)
         _remove_random_variable(var=dist)
 
-        return pm.Censored(
-            name,
-            dist,
-            lower=self.lower,
-            upper=self.upper,
-            dims=self.dims,
-        )
+        return pm.Censored(name, dist, lower=self.lower, upper=self.upper, dims=self.dims)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the censored distribution to a dictionary."""
@@ -1513,7 +1516,7 @@ class Censored:
             censored_normal.to_graph()
 
         """
-        coords = {name: ["DUMMY"] for name in self.dims}
+        coords = {name: ["DUMMY"] for name in self.dims or ()}
         with pm.Model(coords=coords) as model:
             self.create_variable("var")
 
@@ -1620,7 +1623,7 @@ class Scaled:
         self.factor = factor
 
     @property
-    def dims(self) -> Dims:
+    def dims(self) -> Dims | None:
         """The dimensions of the scaled distribution."""
         return self.dist.dims
 
