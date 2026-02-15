@@ -631,7 +631,7 @@ class FrequencySeasonality(Component):
         k_endog_effective = 1 if self.share_states else k_endog
 
         k_states = self.k_states // k_endog_effective
-        k_posdef = self.k_posdef // k_endog_effective
+        self.k_posdef // k_endog_effective
         n_coefs = self.n_coefs
 
         Z = pt.zeros((1, k_states))[0, slice(0, k_states, 2)].set(1.0)
@@ -660,7 +660,6 @@ class FrequencySeasonality(Component):
             sigma_season = self.make_and_register_variable(
                 f"sigma_{self.name}", shape=() if k_endog_effective == 1 else (k_endog_effective,)
             )
+            sigma_vec = pt.repeat(sigma_season**2, k_states)
             self.ssm["selection", :, :] = pt.eye(self.k_states)
-            self.ssm["state_cov", :, :] = pt.eye(self.k_posdef) * pt.repeat(
-                sigma_season**2, k_posdef
-            )
+            self.ssm["state_cov", :, :] = pt.diag(sigma_vec)
