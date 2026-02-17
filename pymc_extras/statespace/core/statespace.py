@@ -1040,6 +1040,20 @@ class PyMCStateSpace:
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
         self._fit_data = data
 
+        # --- FIX FOR ISSUE #556 START ---
+        if isinstance(data, pd.DataFrame):
+            data_cols = data.columns.tolist()
+            # self.observed_state_names is defined during model initialization
+            expected_cols = list(self.observed_state_names)
+
+            if data_cols != expected_cols:
+                raise ValueError(
+                    f"Column mismatch in observed data.\n"
+                    f"The state space model expects columns in this order: {expected_cols}\n"
+                    f"But the provided DataFrame has: {data_cols}"
+                )
+        # --- FIX FOR ISSUE #556 END ---
+
         data, nan_mask = register_data_with_pymc(
             data,
             n_obs=self.ssm.k_endog,
