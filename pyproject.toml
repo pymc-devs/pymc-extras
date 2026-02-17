@@ -116,6 +116,9 @@ filterwarnings =[
     # Numba warnings that are filtered by PyTensor but re-introduced by pytest
     'ignore::numba.core.errors.NumbaPerformanceWarning',
     'ignore:.*Cannot cache compiled function.*:numba.core.errors.NumbaWarning',
+
+    # PyMC use of cachetools raises this warning: https://github.com/pymc-devs/pymc/issues/8106
+    'ignore:decorating class methods with @cachedmethod is deprecated:DeprecationWarning'
 ]
 
 [tool.coverage.report]
