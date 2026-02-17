@@ -1,0 +1,1 @@
+import pymc_extras.model.marginal.rewrites  # Need import to register rewrites

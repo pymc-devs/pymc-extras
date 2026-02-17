@@ -22,6 +22,7 @@ def test_marginalized_bernoulli_logp():
         [idx, y],
         dims_connections=(((),),),
         dims=(),
+        n_dependent_rvs=1,
     )(mu)[0].owner
 
     y_vv = y.clone()

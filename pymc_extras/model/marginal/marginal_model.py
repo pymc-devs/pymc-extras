@@ -62,50 +62,6 @@ ModelRVs = TensorVariable | Sequence[TensorVariable] | str | Sequence[str]
 
 
 class MarginalModel(Model):
-    """Subclass of PyMC Model that implements functionality for automatic
-    marginalization of variables in the logp transformation
-
-    After defining the full Model, the `marginalize` method can be used to indicate a
-    subset of variables that should be marginalized
-
-    Notes
-    -----
-    Marginalization functionality is still very restricted. Only finite discrete
-    variables can be marginalized. Deterministics and Potentials cannot be conditionally
-    dependent on the marginalized variables.
-
-    Furthermore, not all instances of such variables can be marginalized. If a variable
-    has batched dimensions, it is required that any conditionally dependent variables
-    use information from an individual batched dimension. In other words, the graph
-    connecting the marginalized variable(s) to the dependent variable(s) must be
-    composed strictly of Elemwise Operations. This is necessary to ensure an efficient
-    logprob graph can be generated. If you want to bypass this restriction you can
-    separate each dimension of the marginalized variable into the scalar components
-    and then stack them together. Note that such graphs will grow exponentially in the
-    number of  marginalized variables.
-
-    For the same reason, it's not possible to marginalize RVs with multivariate
-    dependent RVs.
-
-    Examples
-    --------
-    Marginalize over a single variable
-
-    .. code-block:: python
-
-        import pymc as pm
-        from pymc_extras import MarginalModel
-
-        with MarginalModel() as m:
-            p = pm.Beta("p", 1, 1)
-            x = pm.Bernoulli("x", p=p, shape=(3,))
-            y = pm.Normal("y", pm.math.switch(x, -10, 10), observed=[10, 10, -10])
-
-            m.marginalize([x])
-
-            idata = pm.sample()
-
-    """
 
     def __init__(self, *args, **kwargs):
         raise TypeError(
@@ -147,10 +103,29 @@ def _unique(seq: Sequence) -> list:
 def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
     """Marginalize a subset of variables in a PyMC model.
 
-    This creates a class of `MarginalModel` from an existing `Model`, with the specified
-    variables marginalized.
+    Notes
+    -----
+    Marginalization functionality is still very restricted. Only finite discrete
+    variables and some closed from graphs can be marginalized.
+    Deterministics and Potentials cannot be conditionally dependent on the marginalized variables.
 
-    See documentation for `MarginalModel` for more information.
+
+    Examples
+    --------
+    Marginalize over a single variable
+
+    .. code-block:: python
+
+        import pymc as pm
+        from pymc_extras import marginalize
+
+        with pm.Model() as m:
+            p = pm.Beta("p", 1, 1)
+            x = pm.Bernoulli("x", p=p, shape=(3,))
+            y = pm.Normal("y", pm.math.switch(x, -10, 10), observed=[10, 10, -10])
+
+        with marginalize(m, [x]) as marginal_m:
+            idata = pm.sample()
 
     Parameters
     ----------
@@ -161,8 +136,8 @@ def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
 
     Returns
     -------
-    marginal_model: MarginalModel
-        Marginal model with the specified variables marginalized.
+    marginal_model: Model
+        PyMC model with the specified variables marginalized.
     """
     if isinstance(rvs_to_marginalize, str | Variable):
         rvs_to_marginalize = (rvs_to_marginalize,)
@@ -176,20 +151,20 @@ def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
         if rv_to_marginalize not in model.free_RVs:
             raise ValueError(f"Marginalized RV {rv_to_marginalize} is not a free RV in the model")
 
-        rv_op = rv_to_marginalize.owner.op
-        if isinstance(rv_op, DiscreteMarkovChain):
-            if rv_op.n_lags > 1:
-                raise NotImplementedError(
-                    "Marginalization for DiscreteMarkovChain with n_lags > 1 is not supported"
-                )
-            if rv_to_marginalize.owner.inputs[0].type.ndim > 2:
-                raise NotImplementedError(
-                    "Marginalization for DiscreteMarkovChain with non-matrix transition probability is not supported"
-                )
-        elif not isinstance(rv_op, Bernoulli | Categorical | DiscreteUniform):
-            raise NotImplementedError(
-                f"Marginalization of RV with distribution {rv_to_marginalize.owner.op} is not supported"
-            )
+        # rv_op = rv_to_marginalize.owner.op
+        # if isinstance(rv_op, DiscreteMarkovChain):
+        #     if rv_op.n_lags > 1:
+        #         raise NotImplementedError(
+        #             "Marginalization for DiscreteMarkovChain with n_lags > 1 is not supported"
+        #         )
+        #     if rv_to_marginalize.owner.inputs[0].type.ndim > 2:
+        #         raise NotImplementedError(
+        #             "Marginalization for DiscreteMarkovChain with non-matrix transition probability is not supported"
+        #         )
+        # elif not isinstance(rv_op, Bernoulli | Categorical | DiscreteUniform):
+        #     raise NotImplementedError(
+        #         f"Marginalization of RV with distribution {rv_to_marginalize.owner.op} is not supported"
+        #     )
 
     fg, memo = fgraph_from_model(model)
     rvs_to_marginalize = [memo[rv] for rv in rvs_to_marginalize]
@@ -241,9 +216,50 @@ def marginalize(model: Model, rvs_to_marginalize: ModelRVs) -> MarginalModel:
         ]
         input_rvs = _unique((*marginalized_rv_input_rvs, *other_direct_rv_ancestors))
 
-        replace_finite_discrete_marginal_subgraph(fg, rv_to_marginalize, dependent_rvs, input_rvs)
+        marginalize_subgraph(fg, rv_to_marginalize, dependent_rvs, input_rvs)
 
     return model_from_fgraph(fg, mutate_fgraph=True)
+
+
+def marginalize_subgraph(
+    fgraph, rv_to_marginalize, dependent_rvs, input_rvs
+) -> None:
+
+    output_rvs = [rv_to_marginalize, *dependent_rvs]
+    rng_updates = collect_default_updates(output_rvs, inputs=input_rvs, must_be_shared=False)
+    outputs = output_rvs + list(rng_updates.values())
+    inputs = input_rvs + list(rng_updates.keys())
+    # Add any other shared variable inputs
+    inputs += collect_shared_vars(output_rvs, blockers=inputs)
+
+    inner_inputs = [inp.clone() for inp in inputs]
+    inner_outputs = clone_replace(outputs, replace=dict(zip(inputs, inner_inputs)))
+    inner_outputs = remove_model_vars(inner_outputs)
+
+    _, _, *dims = rv_to_marginalize.owner.inputs
+    marginalization_op = MarginalRV(
+        inputs=inner_inputs,
+        outputs=inner_outputs,
+        dims=dims,
+        n_dependent_rvs=len(dependent_rvs)
+    )
+
+    new_outputs = marginalization_op(*inputs)
+    assert len(new_outputs) == len(outputs)
+    for old_output, new_output in zip(outputs, new_outputs):
+        new_output.name = old_output.name
+
+    model_replacements = []
+    for old_output, new_output in zip(outputs, new_outputs):
+        if old_output is rv_to_marginalize or not isinstance(old_output.owner.op, ModelValuedVar):
+            # Replace the marginalized ModelFreeRV (or non model-variables) themselves
+            var_to_replace = old_output
+        else:
+            # Replace the underlying RV, keeping the same value, transform and dims
+            var_to_replace = old_output.owner.inputs[0]
+        model_replacements.append((var_to_replace, new_output))
+
+    fgraph.replace_all(model_replacements)
 
 
 @node_rewriter(tracks=[MarginalRV])
