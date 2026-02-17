@@ -240,7 +240,7 @@ def discrete_mc_moment(op, rv, P, steps, init_dist, state_rng):
     def greedy_transition(*args):
         *states, transition_probs = args
         p = transition_probs[tuple(states)]
-        return pt.argmax(p)
+        return pt.argmax(p, axis=-1)
 
     chain_moment = pytensor.scan(
         greedy_transition,
@@ -250,8 +250,8 @@ def discrete_mc_moment(op, rv, P, steps, init_dist, state_rng):
         strict=True,
         return_updates=False,
     )
-    chain_moment = pt.concatenate([init_dist_moment, chain_moment])
-    return chain_moment
+    chain_moment = pt.concatenate([init_dist_moment, chain_moment], axis=0)
+    return pt.moveaxis(chain_moment, 0, -1)
 
 
 @_logprob.register(DiscreteMarkovChainRV)
