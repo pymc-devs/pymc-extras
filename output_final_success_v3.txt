@@ -1,0 +1,41 @@
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: divide by zero encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: overflow encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: invalid value encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+PyMC model constructed successfully.
+Completed ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00 / 0:00:10
+Pathfinder Results                          
+                                            
+  No. model parameters     357              
+                                            
+  Configuration:                            
+  num_draws_per_path       1000             
+  history size (maxcor)    18               
+  max iterations           1000             
+  ftol                     1.00e-05         
+  gtol                     1.00e-08         
+  max line search          1000             
+  jitter                   2                
+  epsilon                  1.00e-08         
+  ELBO draws               10               
+                                            
+  LBFGS Status:                             
+  CONVERGED                4                
+  L-BFGS iterations        mean 29 ± std 8  
+                                            
+  Path Status:                              
+  SUCCESS                  4                
+  ELBO argmax              mean 20 ± std 2  
+                                            
+  Importance Sampling:                      
+  Method                   psis             
+  Pareto k                 6.81             
+                                            
+  Timing (seconds):                         
+  Compile                  4.72             
+  Compute                  10.99            
+  Total                    15.71            
+Computing ... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+Pathfinder inference finished.

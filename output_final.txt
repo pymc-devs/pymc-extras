@@ -1,0 +1,93 @@
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: divide by zero encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: overflow encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: invalid value encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+DEBUG: len(use_df) = 458
+DEBUG: col=unit, idx_data.type=Vector(int32, shape=(?,)), effect.type=Matrix(float64, shape=(?, ?)), mu.type=Matrix(float64, shape=(458, 18))
+DEBUG: col=nationality, idx_data.type=Vector(int32, shape=(?,)), effect.type=Matrix(float64, shape=(?, ?)), mu.type=Matrix(float64, shape=(458, 18))
+DEBUG: col=gender, idx_data.type=Vector(int32, shape=(?,)), effect.type=Matrix(float64, shape=(?, ?)), mu.type=Matrix(float64, shape=(458, 18))
+DEBUG: col=age_group, idx_data.type=Vector(int32, shape=(?,)), effect.type=Matrix(float64, shape=(?, ?)), mu.type=Matrix(float64, shape=(458, 18))
+DEBUG: col=education, idx_data.type=Vector(int32, shape=(?,)), effect.type=Matrix(float64, shape=(?, ?)), mu.type=Matrix(float64, shape=(458, 18))
+PyMC model constructed successfully.
+Completed ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00 / 0:00:11
+Pathfinder Results                          
+                                            
+  No. model parameters     357              
+                                            
+  Configuration:                            
+  num_draws_per_path       1000             
+  history size (maxcor)    18               
+  max iterations           1000             
+  ftol                     1.00e-05         
+  gtol                     1.00e-08         
+  max line search          1000             
+  jitter                   2                
+  epsilon                  1.00e-08         
+  ELBO draws               10               
+                                            
+  LBFGS Status:                             
+  CONVERGED                4                
+  L-BFGS iterations        mean 32 ± std 8  
+                                            
+  Path Status:                              
+  SUCCESS                  4                
+  ELBO argmax              mean 19 ± std 5  
+                                            
+  Importance Sampling:                      
+  Method                   psis             
+  Pareto k                 6.12             
+                                            
+  Timing (seconds):                         
+  Compile                  5.27             
+  Compute                  11.25            
+  Total                    16.52            
+Traceback (most recent call last):
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 599, in fit_model
+    return pmx.fit(
+           ^^^^^^^^
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/fit.py", line 37, in fit
+    return fit_pathfinder(**kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 1821, in fit_pathfinder
+    idata = convert_flat_trace_to_idata(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 252, in convert_flat_trace_to_idata
+    idata = az.from_dict(trace, dims=dims, coords=coords)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/arviz/data/io_dict.py", line 459, in from_dict
+    ).to_inference_data()
+      ^^^^^^^^^^^^^^^^^^^
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/arviz/data/io_dict.py", line 334, in to_inference_data
+    "posterior": self.posterior_to_xarray(),
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/arviz/data/base.py", line 71, in wrapped
+    return func(cls)
+           ^^^^^^^^^
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/arviz/data/io_dict.py", line 97, in posterior_to_xarray
+    dict_to_dataset(
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/arviz/data/base.py", line 406, in dict_to_dataset
+    key: numpy_to_data_array(
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/arviz/data/base.py", line 306, in numpy_to_data_array
+    return xr.DataArray(ary, coords=coords, dims=dims)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/xarray/core/dataarray.py", line 461, in __init__
+    coords, dims = _infer_coords_and_dims(data.shape, coords, dims)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/xarray/core/dataarray.py", line 191, in _infer_coords_and_dims
+    validate_dataarray_coords(shape, new_coords, dims_tuple)
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/xarray/core/coordinates.py", line 1326, in validate_dataarray_coords
+    raise CoordinateValidationError(
+xarray.core.coordinates.CoordinateValidationError: conflicting sizes for dimension 'maxdiff': length 1 on the data but length 18 on coordinate 'maxdiff'
+/Users/erik/Projects/pymc-extras/extracted2.py:609: UserWarning: Pathfinder failed (conflicting sizes for dimension 'maxdiff': length 1 on the data but length 18 on coordinate 'maxdiff'); falling back to NUTS sampling.
+  warnings.warn(f"Pathfinder failed ({exc}); falling back to NUTS sampling.")
+Initializing NUTS using jitter+adapt_diag...
+Multiprocess sampling (2 chains in 2 jobs)
+NUTS: [intercept_maxdiff, α_unit_maxdiff, α_nationality_maxdiff, α_gender_maxdiff, α_age_group_maxdiff, α_education_maxdiff]
+Sampling 2 chains for 200 tune and 200 draw iterations (400 + 400 draws total) took 302 seconds.
+We recommend running at least 4 chains for robust computation of convergence diagnostics
+The rhat statistic is larger than 1.01 for some parameters. This indicates problems during sampling. See https://arxiv.org/abs/1903.08008 for details
+The effective sample size per chain is smaller than 100 for some parameters.  A higher number is needed for reliable rhat and ess computation. See https://arxiv.org/abs/1903.08008 for details
+Pathfinder inference finished.

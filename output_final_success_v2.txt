@@ -1,0 +1,49 @@
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: divide by zero encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: overflow encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: invalid value encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+PyMC model constructed successfully.
+Completed ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00 / 0:00:11
+Pathfinder Results                          
+                                            
+  No. model parameters     357              
+                                            
+  Configuration:                            
+  num_draws_per_path       1000             
+  history size (maxcor)    18               
+  max iterations           1000             
+  ftol                     1.00e-05         
+  gtol                     1.00e-08         
+  max line search          1000             
+  jitter                   2                
+  epsilon                  1.00e-08         
+  ELBO draws               10               
+                                            
+  LBFGS Status:                             
+  CONVERGED                4                
+  L-BFGS iterations        mean 37 ± std 1  
+                                            
+  Path Status:                              
+  SUCCESS                  4                
+  ELBO argmax              mean 25 ± std 6  
+                                            
+  Importance Sampling:                      
+  Method                   psis             
+  Pareto k                 7.82             
+                                            
+  Timing (seconds):                         
+  Compile                  5.41             
+  Compute                  11.72            
+  Total                    17.12            
+/Users/erik/Projects/pymc-extras/extracted2.py:605: UserWarning: Pathfinder failed (name 'pt' is not defined); falling back to NUTS sampling.
+  warnings.warn(f"Pathfinder failed ({exc}); falling back to NUTS sampling.")
+Initializing NUTS using jitter+adapt_diag...
+Multiprocess sampling (2 chains in 2 jobs)
+NUTS: [intercept_maxdiff, α_unit_maxdiff, α_nationality_maxdiff, α_gender_maxdiff, α_age_group_maxdiff, α_education_maxdiff]
+Sampling 2 chains for 200 tune and 200 draw iterations (400 + 400 draws total) took 306 seconds.
+We recommend running at least 4 chains for robust computation of convergence diagnostics
+The rhat statistic is larger than 1.01 for some parameters. This indicates problems during sampling. See https://arxiv.org/abs/1903.08008 for details
+The effective sample size per chain is smaller than 100 for some parameters.  A higher number is needed for reliable rhat and ess computation. See https://arxiv.org/abs/1903.08008 for details
+Pathfinder inference finished.

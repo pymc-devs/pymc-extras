@@ -1,0 +1,21 @@
+Traceback (most recent call last):
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 25, in <module>
+    import pymc as pm
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/pymc/__init__.py", line 48, in <module>
+    __set_compiler_flags()
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/pymc/__init__.py", line 31, in __set_compiler_flags
+    import pytensor
+  File "/Users/erik/Projects/pytensor/pytensor/__init__.py", line 120, in <module>
+    from pytensor import scalar, tensor
+  File "/Users/erik/Projects/pytensor/pytensor/tensor/__init__.py", line 103, in <module>
+    import pytensor.tensor.rewriting
+  File "/Users/erik/Projects/pytensor/pytensor/tensor/rewriting/__init__.py", line 1, in <module>
+    import pytensor.tensor.rewriting.basic
+  File "/Users/erik/Projects/pytensor/pytensor/tensor/rewriting/basic.py", line 85, in <module>
+    from pytensor.tensor.extra_ops import broadcast_arrays
+  File "/Users/erik/Projects/pytensor/pytensor/tensor/extra_ops.py", line 50, in <module>
+    from pytensor.tensor.subtensor import advanced_inc_subtensor1, set_subtensor
+  File "/Users/erik/Projects/pytensor/pytensor/tensor/subtensor.py", line 3820
+    x_batch_ndim = batch_x.type.ndim - x.type.ndim
+    ^^^^^^^^^^^^
+IndentationError: expected an indented block after 'if' statement on line 3816

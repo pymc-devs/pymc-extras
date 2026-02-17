@@ -178,6 +178,8 @@ def convert_flat_trace_to_idata(
         # samples.ndim == 3 in this case, otherwise ndim == 2
         num_paths, num_pdraws, N = samples.shape
         samples = samples.reshape(-1, N)
+    else:
+        num_draws = samples.shape[0]
 
     model = modelcontext(model)
     ip = model.initial_point()
@@ -215,6 +217,25 @@ def convert_flat_trace_to_idata(
 
         if importance_sampling is None:
             result = [res.reshape(num_paths, num_pdraws, *res.shape[2:]) for res in result]
+        else:
+            # Add chain dimension if not present (assuming 1 chain)
+            # Also handle cases where variables are constant across draws (missing draw dimension)
+            new_result = []
+            for res in result:
+                if res.shape[0] == 1:
+                    if num_draws > 1 and (res.ndim < 2 or res.shape[1] != num_draws):
+                        # Broadcast constant variable to (1, num_draws, ...)
+                        new_result.append(np.repeat(res[:, None, ...], num_draws, axis=1))
+                    else:
+                        # Already (1, num_draws, ...) or num_draws=1
+                        new_result.append(res)
+                elif res.shape[0] == num_draws:
+                    new_result.append(res[None, ...])
+                else:
+                    # Constant variable with shape (dim1, ...), missing chain and draw dims
+                    # Broadcast to (1, num_draws, dim1, ...)
+                    new_result.append(np.tile(res[None, None, ...], (1, num_draws, *[1] * res.ndim)))
+            result = new_result
 
     elif inference_backend == "blackjax":
         import jax
@@ -228,6 +249,7 @@ def convert_flat_trace_to_idata(
 
     trace = {v.name: r for v, r in zip(vars_to_sample, result)}
     coords, dims = coords_and_dims_for_inferencedata(model)
+
     idata = az.from_dict(trace, dims=dims, coords=coords)
 
     return idata
@@ -263,9 +285,12 @@ def alpha_recover(
         # alpha_lm1: (N,)
         # s_l: (N,)
         # z_l: (N,)
-        a = z_l.T @ pt.diag(alpha_lm1) @ z_l
-        b = z_l.T @ s_l
-        c = s_l.T @ pt.diag(1.0 / alpha_lm1) @ s_l
+        # Use element-wise ops instead of forming (N, N) diagonal matrices:
+        # z.T @ diag(alpha) @ z = sum(z**2 * alpha)
+        # s.T @ diag(1/alpha) @ s = sum(s**2 / alpha)
+        a = pt.sum(z_l ** 2 * alpha_lm1)
+        b = pt.dot(z_l, s_l)
+        c = pt.sum(s_l ** 2 / alpha_lm1)
         inv_alpha_l = (
             a / (b * alpha_lm1)
             + z_l ** 2 / b
@@ -379,8 +404,8 @@ def inverse_hessian_factors(
     eta = pt.diagonal(E, axis1=-2, axis2=-1)
 
     # beta: (L, N, 2J)
-    alpha_diag = pytensor.scan(lambda a: pt.diag(a), sequences=[alpha], return_updates=False)
-    beta = pt.concatenate([alpha_diag @ Z, S], axis=-1)
+    # Use element-wise multiply instead of forming (L, N, N) diagonal matrices
+    beta = pt.concatenate([alpha[..., None] * Z, S], axis=-1)
 
     # more performant and numerically precise to use solve than inverse: https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.linalg.inv.html
 
@@ -389,8 +414,9 @@ def inverse_hessian_factors(
     eta_diag = pytensor.scan(pt.diag, sequences=[eta], return_updates=False)
 
     # block_dd: (L, J, J)
+    # Z.T @ diag(alpha) @ Z = Z.T @ (alpha[..., None] * Z) — avoids (L, N, N) intermediate
     block_dd = (
-        pt.matrix_transpose(E_inv) @ (eta_diag + pt.matrix_transpose(Z) @ alpha_diag @ Z) @ E_inv
+        pt.matrix_transpose(E_inv) @ (eta_diag + pt.matrix_transpose(Z) @ (alpha[..., None] * Z)) @ E_inv
     )
 
     # (L, J, 2J)
@@ -411,9 +437,8 @@ def bfgs_sample_dense(
     alpha: TensorVariable,
     beta: TensorVariable,
     gamma: TensorVariable,
-    alpha_diag: TensorVariable,
-    inv_sqrt_alpha_diag: TensorVariable,
-    sqrt_alpha_diag: TensorVariable,
+    inv_sqrt_alpha: TensorVariable,
+    sqrt_alpha: TensorVariable,
     u: TensorVariable,
 ) -> tuple[TensorVariable, TensorVariable]:
     """sample from the BFGS approximation using dense matrix operations.
@@ -430,12 +455,10 @@ def bfgs_sample_dense(
         low-rank update matrix, shape (L, N, 2J)
     gamma : TensorVariable
         low-rank update matrix, shape (L, 2J, 2J)
-    alpha_diag : TensorVariable
-        diagonal matrix of alpha, shape (L, N, N)
-    inv_sqrt_alpha_diag : TensorVariable
-        inverse sqrt of alpha diagonal, shape (L, N, N)
-    sqrt_alpha_diag : TensorVariable
-        sqrt of alpha diagonal, shape (L, N, N)
+    inv_sqrt_alpha : TensorVariable
+        1/sqrt(alpha) vector, shape (L, N)
+    sqrt_alpha : TensorVariable
+        sqrt(alpha) vector, shape (L, N)
     u : TensorVariable
         random normal samples, shape (L, M, N)
 
@@ -449,21 +472,18 @@ def bfgs_sample_dense(
     Notes
     -----
     shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
+    This path is only used when 2J >= N (i.e. N is small), so (N, N) matrices are acceptable.
     """
 
     N = x.shape[-1]
     IdN = pt.eye(N)[None, ...]
     IdN += IdN * REGULARISATION_TERM
 
-    # inverse Hessian
-    H_inv = (
-        sqrt_alpha_diag
-        @ (
-            IdN
-            + inv_sqrt_alpha_diag @ beta @ gamma @ pt.matrix_transpose(beta) @ inv_sqrt_alpha_diag
-        )
-        @ sqrt_alpha_diag
-    )
+    # inverse Hessian — use element-wise ops for diagonal parts
+    # H_inv = diag(sqrt_alpha) @ (I + diag(1/sqrt_alpha) @ beta @ gamma @ beta.T @ diag(1/sqrt_alpha)) @ diag(sqrt_alpha)
+    scaled_beta = inv_sqrt_alpha[..., None] * beta  # (L, N, 2J)
+    inner = IdN + scaled_beta @ gamma @ pt.matrix_transpose(scaled_beta)  # (L, N, N)
+    H_inv = sqrt_alpha[..., None] * inner * sqrt_alpha[:, None, :]  # (L, N, N)
 
     Lchol = pt.linalg.cholesky(H_inv, lower=False, check_finite=False, on_error="nan")
 
@@ -490,9 +510,8 @@ def bfgs_sample_sparse(
     alpha: TensorVariable,
     beta: TensorVariable,
     gamma: TensorVariable,
-    alpha_diag: TensorVariable,
-    inv_sqrt_alpha_diag: TensorVariable,
-    sqrt_alpha_diag: TensorVariable,
+    inv_sqrt_alpha: TensorVariable,
+    sqrt_alpha: TensorVariable,
     u: TensorVariable,
 ) -> tuple[TensorVariable, TensorVariable]:
     """sample from the BFGS approximation using sparse matrix operations.
@@ -509,12 +528,10 @@ def bfgs_sample_sparse(
         low-rank update matrix, shape (L, N, 2J)
     gamma : TensorVariable
         low-rank update matrix, shape (L, 2J, 2J)
-    alpha_diag : TensorVariable
-        diagonal matrix of alpha, shape (L, N, N)
-    inv_sqrt_alpha_diag : TensorVariable
-        inverse sqrt of alpha diagonal, shape (L, N, N)
-    sqrt_alpha_diag : TensorVariable
-        sqrt of alpha diagonal, shape (L, N, N)
+    inv_sqrt_alpha : TensorVariable
+        1/sqrt(alpha) vector, shape (L, N)
+    sqrt_alpha : TensorVariable
+        sqrt(alpha) vector, shape (L, N)
     u : TensorVariable
         random normal samples, shape (L, M, N)
 
@@ -530,8 +547,8 @@ def bfgs_sample_sparse(
     shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
     """
 
-    # qr_input: (L, N, 2J)
-    qr_input = inv_sqrt_alpha_diag @ beta
+    # qr_input: (L, N, 2J) — element-wise multiply instead of (L, N, N) @ (L, N, 2J)
+    qr_input = inv_sqrt_alpha[..., None] * beta
     Q, R = pytensor.scan(
         fn=pt.linalg.qr, sequences=[qr_input], allow_gc=False, return_updates=False
     )
@@ -547,30 +564,24 @@ def bfgs_sample_sparse(
     logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
     logdet += pt.sum(pt.log(alpha), axis=-1)
 
-    # inverse Hessian
-    # (L, N, N) + (L, N, 2J), (L, 2J, 2J), (L, 2J, N) -> (L, N, N)
-    H_inv = alpha_diag + (beta @ gamma @ pt.matrix_transpose(beta))
+    # Compute mu = x - H_inv @ g without forming (L, N, N) inverse Hessian.
+    # H_inv = diag(alpha) + beta @ gamma @ beta.T, so:
+    # H_inv @ g = alpha * g + beta @ (gamma @ (beta.T @ g))
+    # NOTE: changed the sign from "x + " to "x -" to match Stan (differs from Zhang et al., 2022).
+    btg = pt.matrix_transpose(beta) @ g[..., None]  # (L, 2J, 1)
+    mu = x - alpha * g - (beta @ (gamma @ btg))[..., 0]  # (L, N)
 
-    # NOTE: changed the sign from "x + " to "x -" of the expression to match Stan which differs from Zhang et al., (2022). same for dense version.
-
-    # mu = x - pt.einsum("ijk,ik->ij", H_inv, g) # causes error: Multiple destroyers of g
-
-    batched_dot = pt.vectorize(pt.dot, signature="(ijk),(ilk)->(ij)")
-    mu = x - batched_dot(H_inv, pt.matrix_transpose(g[..., None]))
-
+    # phi computation — element-wise multiply instead of (L, N, N) matmul
+    inner = (
+        # (L, N, 2J) @ (L, 2J, 2J) -> (L, N, 2J)
+        (Q @ (Lchol - IdN))
+        # (L, 2J, N) @ (L, N, M) -> (L, 2J, M)
+        @ (pt.matrix_transpose(Q) @ pt.matrix_transpose(u))
+        # (L, N, M)
+        + pt.matrix_transpose(u)
+    )
     phi = pt.matrix_transpose(
-        # (L, N, 1)
-        mu[..., None]
-        # (L, N, N), (L, N, M) -> (L, N, M)
-        + sqrt_alpha_diag
-        @ (
-            # (L, N, 2J), (L, 2J, 2J) -> (L, N, 2J)
-            (Q @ (Lchol - IdN))
-            # (L, 2J, N), (L, N, M) -> (L, 2J, M)
-            @ (pt.matrix_transpose(Q) @ pt.matrix_transpose(u))
-            # (L, N, M)
-            + pt.matrix_transpose(u)
-        )
+        mu[..., None] + sqrt_alpha[..., None] * inner
     )  # fmt: off
 
     return phi, logdet
@@ -627,12 +638,9 @@ def bfgs_sample(
 
     L, N, JJ = beta.shape
 
-    alpha_diag, inv_sqrt_alpha_diag, sqrt_alpha_diag = pytensor.scan(
-        lambda a: [pt.diag(a), pt.diag(pt.sqrt(1.0 / a)), pt.diag(pt.sqrt(a))],
-        sequences=[alpha],
-        allow_gc=False,
-        return_updates=False,
-    )
+    # Precompute sqrt variants as vectors (L, N) — NOT (L, N, N) diagonal matrices
+    inv_sqrt_alpha = pt.sqrt(1.0 / alpha)  # (L, N)
+    sqrt_alpha = pt.sqrt(alpha)  # (L, N)
 
     u = pt.random.normal(size=(L, num_samples, N))
 
@@ -642,9 +650,8 @@ def bfgs_sample(
         alpha,
         beta,
         gamma,
-        alpha_diag,
-        inv_sqrt_alpha_diag,
-        sqrt_alpha_diag,
+        inv_sqrt_alpha,
+        sqrt_alpha,
         u,
     )
 
@@ -845,6 +852,7 @@ def make_single_pathfinder_fn(
     num_elbo_draws: int,
     jitter: float,
     epsilon: float,
+    num_retries: int,
     pathfinder_kwargs: dict = {},
     compile_kwargs: dict = {},
 ) -> SinglePathfinderFn:
@@ -910,51 +918,94 @@ def make_single_pathfinder_fn(
     pathfinder_body_fn = make_pathfinder_body(
         logp_func, num_draws, maxcor, num_elbo_draws, **compile_kwargs
     )
+
+    # DEBUG: dump compiled function storage info
+    def _dump_fn_info(fn, name):
+        total = 0
+        shapes = {}
+        for var, storage in fn.vm.storage_map.items():
+            val = storage[0]
+            if hasattr(val, 'nbytes'):
+                total += val.nbytes
+                key = str(val.shape)
+                shapes[key] = shapes.get(key, 0) + val.nbytes
+        print(f"\n=== {name} compiled function ===", flush=True)
+        print(f"  Total variables: {len(fn.vm.storage_map)}", flush=True)
+        print(f"  Pre-allocated storage: {total / 1024**2:.1f} MB", flush=True)
+        for shape, nbytes in sorted(shapes.items(), key=lambda x: -x[1])[:15]:
+            print(f"  shape {shape}: {nbytes / 1024**2:.1f} MB", flush=True)
+        # Also check inner functions (scans)
+        for node in fn.maker.fgraph.apply_nodes:
+            if hasattr(node.op, 'fn') and hasattr(node.op.fn, 'vm'):
+                inner_total = 0
+                for v, s in node.op.fn.vm.storage_map.items():
+                    if s[0] is not None and hasattr(s[0], 'nbytes'):
+                        inner_total += s[0].nbytes
+                if inner_total > 1024*1024:
+                    print(f"  inner fn ({node.op}): {inner_total / 1024**2:.1f} MB", flush=True)
+    _dump_fn_info(logp_dlogp_func, "logp_dlogp")
+    _dump_fn_info(pathfinder_body_fn, "pathfinder_body")
+
     rngs = find_rng_nodes(pathfinder_body_fn.maker.fgraph.outputs)
 
     def single_pathfinder_fn(random_seed: int) -> PathfinderResult:
-        try:
-            init_seed, *bfgs_seeds = _get_seeds_per_chain(random_seed, 3)
-            rng = np.random.default_rng(init_seed)
-            jitter_value = rng.uniform(-jitter, jitter, size=x_base.shape)
-            x0 = x_base + jitter_value
-            x, g, lbfgs_niter, lbfgs_status = lbfgs.minimize(x0)
+        for attempt in range(num_retries + 1):
+            try:
+                if isinstance(random_seed, (int, np.integer)):
+                    seed_input = random_seed + attempt
+                else:
+                    seed_input = random_seed
+                
+                init_seed, *bfgs_seeds = _get_seeds_per_chain(seed_input, 3)
+                rng = np.random.default_rng(init_seed)
+                jitter_value = rng.uniform(-jitter, jitter, size=x_base.shape)
+                x0 = x_base + jitter_value
+                x, g, lbfgs_niter, lbfgs_status = lbfgs.minimize(x0)
 
-            if lbfgs_status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
-                raise LBFGSInitFailed(lbfgs_status)
-            elif lbfgs_status == LBFGSStatus.LBFGS_FAILED:
-                raise LBFGSException()
+                # DEBUG: print L-BFGS result shape
+                print(f"\n=== L-BFGS done: x.shape={x.shape}, niter={lbfgs_niter}, status={lbfgs_status} ===", flush=True)
+                print(f"  x_history bytes: {x.nbytes / 1024**2:.1f} MB, g_history bytes: {g.nbytes / 1024**2:.1f} MB", flush=True)
 
-            reseed_rngs(rngs, bfgs_seeds)
-            psi, logP_psi, logQ_psi, elbo_argmax = pathfinder_body_fn(x, g)
+                if lbfgs_status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
+                    raise LBFGSInitFailed(lbfgs_status)
+                elif lbfgs_status == LBFGSStatus.LBFGS_FAILED:
+                    raise LBFGSException()
 
-            if np.all(~np.isfinite(logQ_psi)):
-                raise PathInvalidLogQ()
+                reseed_rngs(rngs, bfgs_seeds)
+                psi, logP_psi, logQ_psi, elbo_argmax = pathfinder_body_fn(x, g)
 
-            if elbo_argmax == 0:
-                path_status = PathStatus.ELBO_ARGMAX_AT_ZERO
-            else:
-                path_status = PathStatus.SUCCESS
+                if np.all(~np.isfinite(logQ_psi)):
+                    raise PathInvalidLogQ()
 
-            return PathfinderResult(
-                samples=psi,
-                logP=logP_psi,
-                logQ=logQ_psi,
-                lbfgs_niter=lbfgs_niter,
-                elbo_argmax=elbo_argmax,
-                lbfgs_status=lbfgs_status,
-                path_status=path_status,
-            )
-        except LBFGSException as e:
-            return PathfinderResult(
-                lbfgs_status=e.status,
-                path_status=PathStatus.LBFGS_FAILED,
-            )
-        except PathException as e:
-            return PathfinderResult(
-                lbfgs_status=lbfgs_status,
-                path_status=e.status,
-            )
+                if elbo_argmax == 0:
+                    path_status = PathStatus.ELBO_ARGMAX_AT_ZERO
+                else:
+                    path_status = PathStatus.SUCCESS
+
+                return PathfinderResult(
+                    samples=psi,
+                    logP=logP_psi,
+                    logQ=logQ_psi,
+                    lbfgs_niter=lbfgs_niter,
+                    elbo_argmax=elbo_argmax,
+                    lbfgs_status=lbfgs_status,
+                    path_status=path_status,
+                )
+            except (LBFGSException, PathException, ValueError) as e:
+                if attempt == num_retries:
+                    if isinstance(e, ValueError):
+                        raise e
+                    elif isinstance(e, LBFGSException):
+                        return PathfinderResult(
+                            lbfgs_status=e.status,
+                            path_status=PathStatus.LBFGS_FAILED,
+                        )
+                    elif isinstance(e, PathException):
+                        return PathfinderResult(
+                            lbfgs_status=lbfgs_status,
+                            path_status=e.status,
+                        )
+                logger.warning(f"Pathfinder failed attempt {attempt+1}/{num_retries+1} with error: {e}. Retrying...")
 
     return single_pathfinder_fn
 
@@ -1124,6 +1175,7 @@ class PathfinderConfig:
     jitter: float
     epsilon: float
     num_elbo_draws: int
+    num_retries: int
 
 
 @dataclass(slots=True, frozen=True)
@@ -1395,6 +1447,7 @@ def multipath_pathfinder(
     num_elbo_draws: int,
     jitter: float,
     epsilon: float,
+    num_retries: int,
     importance_sampling: Literal["psis", "psir", "identity"] | None,
     progressbar: bool,
     concurrent: Literal["thread", "process"] | None,
@@ -1432,6 +1485,8 @@ def multipath_pathfinder(
         Amount of jitter to apply to initial points (default is 2.0). Note that Pathfinder may be highly sensitive to the jitter value. It is recommended to increase num_paths when increasing the jitter value.
     epsilon: float
         value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if delta_theta[l] * delta_grad[l] > epsilon * L2_norm(delta_grad[l]) for each l in L. (default is 1e-8).
+    num_retries: int
+        Number of retries for each path if optimization fails (default is 0).
     importance_sampling : str, None, optional
         Method to apply sampling based on log importance weights (logP - logQ).
         "psis" : Pareto Smoothed Importance Sampling (default)
@@ -1444,16 +1499,14 @@ def multipath_pathfinder(
         Whether to display a progress bar (default is False). Setting this to True will likely increase the computation time.
     random_seed : RandomSeed, optional
         Random seed for reproducibility.
-    postprocessing_backend : str, optional
-        Backend for postprocessing transformations, either "cpu" or "gpu" (default is "cpu"). This is only relevant if inference_backend is "blackjax".
-    inference_backend : str, optional
-        Backend for inference, either "pymc" or "blackjax" (default is "pymc").
     concurrent : str, optional
         Whether to run paths concurrently, either "thread" or "process" or None (default is None). Setting concurrent to None runs paths serially and is generally faster with smaller models because of the overhead that comes with concurrency.
     pathfinder_kwargs
         Additional keyword arguments for the Pathfinder algorithm.
     compile_kwargs
         Additional keyword arguments for the PyTensor compiler. If not provided, the default linker is "cvm_nogc".
+    display_summary : bool, optional
+        Whether to display the pathfinder results summary (default is True).
 
     Returns
     -------
@@ -1473,6 +1526,7 @@ def multipath_pathfinder(
         num_elbo_draws=num_elbo_draws,
         jitter=jitter,
         epsilon=epsilon,
+        num_retries=num_retries,
     )
 
     compile_start = time.time()
@@ -1596,6 +1650,7 @@ def fit_pathfinder(
     num_elbo_draws: int = 10,  # K
     jitter: float = 2.0,
     epsilon: float = 1e-8,
+    num_retries: int = 0,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
     progressbar: bool = True,
     concurrent: Literal["thread", "process"] | None = None,
@@ -1645,6 +1700,8 @@ def fit_pathfinder(
         Amount of jitter to apply to initial points (default is 2.0). Note that Pathfinder may be highly sensitive to the jitter value. It is recommended to increase num_paths when increasing the jitter value.
     epsilon: float
         value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if delta_theta[l] * delta_grad[l] > epsilon * L2_norm(delta_grad[l]) for each l in L. (default is 1e-8).
+    num_retries: int
+        Number of retries for each path if optimization fails (default is 0).
     importance_sampling : str, None, optional
         Method to apply sampling based on log importance weights (logP - logQ).
         Options are:
@@ -1740,6 +1797,7 @@ def fit_pathfinder(
             num_elbo_draws=num_elbo_draws,
             jitter=jitter,
             epsilon=epsilon,
+            num_retries=num_retries,
             importance_sampling=importance_sampling,
             progressbar=progressbar,
             concurrent=concurrent,

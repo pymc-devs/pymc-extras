@@ -1,0 +1,212 @@
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: divide by zero encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: overflow encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: invalid value encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+DEBUG: len(use_df) = 458
+PyMC model constructed successfully.
+Completed ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00 / 0:00:10
+Pathfinder Results                          
+                                            
+  No. model parameters     357              
+                                            
+  Configuration:                            
+  num_draws_per_path       1000             
+  history size (maxcor)    18               
+  max iterations           1000             
+  ftol                     1.00e-05         
+  gtol                     1.00e-08         
+  max line search          1000             
+  jitter                   2                
+  epsilon                  1.00e-08         
+  ELBO draws               10               
+                                            
+  LBFGS Status:                             
+  CONVERGED                4                
+  L-BFGS iterations        mean 32 ± std 8  
+                                            
+  Path Status:                              
+  SUCCESS                  4                
+  ELBO argmax              mean 16 ± std 3  
+                                            
+  Importance Sampling:                      
+  Method                   psis             
+  Pareto k                 5.10             
+                                            
+  Timing (seconds):                         
+  Compile                  5.65             
+  Compute                  10.68            
+  Total                    16.32            
+Traceback (most recent call last):
+  File "/Users/erik/Projects/pytensor/pytensor/link/vm.py", line 406, in __call__
+    thunk()
+  File "/Users/erik/Projects/pytensor/pytensor/graph/op.py", line 545, in rval
+    r = p(n, [x[0] for x in i], o)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/tensor/subtensor.py", line 3135, in perform
+    rval = x.__getitem__(tuple(full_indices))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+IndexError: index 1 is out of bounds for axis 2 with size 1
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 598, in fit_model
+    return pmx.fit(
+           ^^^^^^^^
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/fit.py", line 37, in fit
+    return fit_pathfinder(**kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 1821, in fit_pathfinder
+    idata = convert_flat_trace_to_idata(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 216, in convert_flat_trace_to_idata
+    result = fn(*list(trace.values()))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/compile/function/types.py", line 1038, in __call__
+    outputs = vm() if output_subset is None else vm(output_subset=output_subset)
+              ^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/link/vm.py", line 410, in __call__
+    raise_with_op(self.fgraph, node, thunk)
+  File "/Users/erik/Projects/pytensor/pytensor/link/utils.py", line 526, in raise_with_op
+    raise exc_value.with_traceback(exc_trace)
+  File "/Users/erik/Projects/pytensor/pytensor/link/vm.py", line 406, in __call__
+    thunk()
+  File "/Users/erik/Projects/pytensor/pytensor/graph/op.py", line 545, in rval
+    r = p(n, [x[0] for x in i], o)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/tensor/subtensor.py", line 3135, in perform
+    rval = x.__getitem__(tuple(full_indices))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+IndexError: index 1 is out of bounds for axis 2 with size 1
+Apply node that caused the error: AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}(Exp.0, [  0   0 ... 7 457 457])
+Toposort index: 24
+Inputs types: [TensorType(float64, shape=(None, None, 1, None)), TensorType(int64, shape=(1832,))]
+Inputs shapes: [(1, 1, 1, 18), (1832,)]
+Inputs strides: [(144, 144, 144, 8), (16,)]
+Inputs values: ['not shown', 'not shown']
+Outputs clients: [[Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 1. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 1.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[1. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 1.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0)]]
+
+Backtrace when the node is created (use PyTensor flag traceback__limit=N to make it longer):
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 629, in main
+    idata = fit_model(model)
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 598, in fit_model
+    return pmx.fit(
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/fit.py", line 37, in fit
+    return fit_pathfinder(**kwargs)
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 1821, in fit_pathfinder
+    idata = convert_flat_trace_to_idata(
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 207, in convert_flat_trace_to_idata
+    outputs = vectorize_graph(vars_to_sample, replace=replace)
+  File "/Users/erik/Projects/pytensor/pytensor/graph/replace.py", line 303, in vectorize_graph
+    vect_node = vectorize_node(node, *vect_inputs)
+  File "/Users/erik/Projects/pytensor/pytensor/graph/replace.py", line 219, in vectorize_node
+    return _vectorize_node(op, node, *batched_inputs)
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/functools.py", line 912, in wrapper
+    return dispatch(args[0].__class__)(*args, **kw)
+
+HINT: Use the PyTensor flag `exception_verbosity=high` for a debug print-out and storage map footprint of this Apply node.
+/Users/erik/Projects/pymc-extras/extracted2.py:608: UserWarning: Pathfinder failed (index 1 is out of bounds for axis 2 with size 1
+Apply node that caused the error: AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}(Exp.0, [  0   0 ... 7 457 457])
+Toposort index: 24
+Inputs types: [TensorType(float64, shape=(None, None, 1, None)), TensorType(int64, shape=(1832,))]
+Inputs shapes: [(1, 1, 1, 18), (1832,)]
+Inputs strides: [(144, 144, 144, 8), (16,)]
+Inputs values: ['not shown', 'not shown']
+Outputs clients: [[Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 1. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 1.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[1. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 1.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0), Mul([[[[0. 0. ... 0. 0.]]]], AdvancedSubtensor{idx_list=(slice(None, None, None), slice(None, None, None), TensorType(int64, shape=(1832,)))}.0)]]
+
+Backtrace when the node is created (use PyTensor flag traceback__limit=N to make it longer):
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 629, in main
+    idata = fit_model(model)
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 598, in fit_model
+    return pmx.fit(
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/fit.py", line 37, in fit
+    return fit_pathfinder(**kwargs)
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 1821, in fit_pathfinder
+    idata = convert_flat_trace_to_idata(
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 207, in convert_flat_trace_to_idata
+    outputs = vectorize_graph(vars_to_sample, replace=replace)
+  File "/Users/erik/Projects/pytensor/pytensor/graph/replace.py", line 303, in vectorize_graph
+    vect_node = vectorize_node(node, *vect_inputs)
+  File "/Users/erik/Projects/pytensor/pytensor/graph/replace.py", line 219, in vectorize_node
+    return _vectorize_node(op, node, *batched_inputs)
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/functools.py", line 912, in wrapper
+    return dispatch(args[0].__class__)(*args, **kw)
+
+HINT: Use the PyTensor flag `exception_verbosity=high` for a debug print-out and storage map footprint of this Apply node.); falling back to NUTS sampling.
+  warnings.warn(f"Pathfinder failed ({exc}); falling back to NUTS sampling.")
+Initializing NUTS using jitter+adapt_diag...
+Traceback (most recent call last):
+  File "/Users/erik/Projects/pytensor/pytensor/compile/function/types.py", line 1038, in __call__
+    outputs = vm() if output_subset is None else vm(output_subset=output_subset)
+              ^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/graph/op.py", line 545, in rval
+    r = p(n, [x[0] for x in i], o)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/tensor/subtensor.py", line 3135, in perform
+    rval = x.__getitem__(tuple(full_indices))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+IndexError: index 1 is out of bounds for axis 0 with size 1
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 637, in <module>
+    main()
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 629, in main
+    idata = fit_model(model)
+            ^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 611, in fit_model
+    return pm.sample(draws=200, tune=200, chains=2, target_accept=0.9, progressbar=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/pymc/sampling/mcmc.py", line 868, in sample
+    run, traces = init_traces(
+                  ^^^^^^^^^^^^
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/pymc/backends/__init__.py", line 156, in init_traces
+    _init_trace(
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/pymc/backends/__init__.py", line 110, in _init_trace
+    strace = NDArray(model=model, vars=trace_vars, test_point=initial_point)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/pymc/backends/ndarray.py", line 44, in __init__
+    super().__init__(name, model, vars, test_point, **kwargs)
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/site-packages/pymc/backends/base.py", line 186, in __init__
+    var_values = tuple(zip(vars, fn(**test_point)))
+                                 ^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/compile/function/types.py", line 1048, in __call__
+    raise_with_op(
+  File "/Users/erik/Projects/pytensor/pytensor/link/utils.py", line 526, in raise_with_op
+    raise exc_value.with_traceback(exc_trace)
+  File "/Users/erik/Projects/pytensor/pytensor/compile/function/types.py", line 1038, in __call__
+    outputs = vm() if output_subset is None else vm(output_subset=output_subset)
+              ^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/graph/op.py", line 545, in rval
+    r = p(n, [x[0] for x in i], o)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/tensor/subtensor.py", line 3135, in perform
+    rval = x.__getitem__(tuple(full_indices))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+IndexError: index 1 is out of bounds for axis 0 with size 1
+Apply node that caused the error: AdvancedSubtensor{idx_list=(TensorType(int64, shape=(458,)), TensorType(int64, shape=(458,)))}(Exp.0, [  0   1 ... 5 456 457], [ 9  0 10 ... 4  8  1])
+Toposort index: 107
+Inputs types: [TensorType(float64, shape=(1, None)), TensorType(int64, shape=(458,)), TensorType(int64, shape=(458,))]
+Inputs shapes: [(1, 18), (458,), (458,)]
+Inputs strides: [(144, 8), (16,), (16,)]
+Inputs values: ['not shown', 'not shown', 'not shown']
+Outputs clients: [[Composite{log((i0 / (i0 + i1)))}(AdvancedSubtensor{idx_list=(TensorType(int64, shape=(458,)), TensorType(int64, shape=(458,)))}.0, Sum{axis=1}.0)]]
+
+Backtrace when the node is created (use PyTensor flag traceback__limit=N to make it longer):
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 637, in <module>
+    main()
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 626, in main
+    model = build_maxdiff_model()
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 576, in build_maxdiff_model
+    model_ordinal_ranking_output(
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 392, in model_ordinal_ranking_output
+    logp, logc = observe_model(model_type, po_am, current_mu, {}, initvals, oname)
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 331, in observe_model
+    return observe_po_multinomial(po_am, mu, observe_name=oname)
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 316, in observe_po_multinomial
+    cur_odds = odds[nz]
+
+HINT: Use the PyTensor flag `exception_verbosity=high` for a debug print-out and storage map footprint of this Apply node.

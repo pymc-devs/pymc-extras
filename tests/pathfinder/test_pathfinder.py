@@ -22,7 +22,6 @@ import pytest
 
 import pymc_extras as pmx
 
-
 def eight_schools_model() -> pm.Model:
     J = 8
     y = np.array([28.0, 8.0, -3.0, 7.0, -1.0, 1.0, 18.0, 12.0])

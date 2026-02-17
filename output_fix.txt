@@ -1,0 +1,149 @@
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: divide by zero encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: overflow encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+/Users/erik/Projects/pytensor/pytensor/tensor/math.py:3031: RuntimeWarning: invalid value encountered in matmul
+  output_storage[0][0] = np.matmul(*inputs)
+DEBUG: len(use_df) = 458
+DEBUG: col=unit, idx_data.type=Vector(int32, shape=(?,)), effect.type=Matrix(float64, shape=(?, ?)), mu.type=Matrix(float64, shape=(458, 18))
+DEBUG: col=nationality, idx_data.type=Vector(int32, shape=(?,)), effect.type=Matrix(float64, shape=(?, ?)), mu.type=Matrix(float64, shape=(458, 18))
+DEBUG: col=gender, idx_data.type=Vector(int32, shape=(?,)), effect.type=Matrix(float64, shape=(?, ?)), mu.type=Matrix(float64, shape=(458, 18))
+DEBUG: col=age_group, idx_data.type=Vector(int32, shape=(?,)), effect.type=Matrix(float64, shape=(?, ?)), mu.type=Matrix(float64, shape=(458, 18))
+DEBUG: col=education, idx_data.type=Vector(int32, shape=(?,)), effect.type=Matrix(float64, shape=(?, ?)), mu.type=Matrix(float64, shape=(458, 18))
+PyMC model constructed successfully.
+Completed ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00 / 0:00:11
+Pathfinder Results                          
+                                            
+  No. model parameters     357              
+                                            
+  Configuration:                            
+  num_draws_per_path       1000             
+  history size (maxcor)    18               
+  max iterations           1000             
+  ftol                     1.00e-05         
+  gtol                     1.00e-08         
+  max line search          1000             
+  jitter                   2                
+  epsilon                  1.00e-08         
+  ELBO draws               10               
+                                            
+  LBFGS Status:                             
+  CONVERGED                4                
+  L-BFGS iterations        mean 37 ± std 0  
+                                            
+  Path Status:                              
+  SUCCESS                  4                
+  ELBO argmax              mean 21 ± std 8  
+                                            
+  Importance Sampling:                      
+  Method                   psis             
+  Pareto k                 9.19             
+                                            
+  Timing (seconds):                         
+  Compile                  4.16             
+  Compute                  11.10            
+  Total                    15.26            
+Traceback (most recent call last):
+  File "/Users/erik/Projects/pytensor/pytensor/link/vm.py", line 406, in __call__
+    thunk()
+  File "/Users/erik/Projects/pytensor/pytensor/graph/op.py", line 545, in rval
+    r = p(n, [x[0] for x in i], o)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/tensor/subtensor.py", line 3385, in perform
+    np.add.at(out[0], tuple(full_indices), y)
+ValueError: array is not broadcastable to correct shape
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 599, in fit_model
+    return pmx.fit(
+           ^^^^^^^^
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/fit.py", line 37, in fit
+    return fit_pathfinder(**kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 1821, in fit_pathfinder
+    idata = convert_flat_trace_to_idata(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 216, in convert_flat_trace_to_idata
+    result = fn(*list(trace.values()))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/compile/function/types.py", line 1038, in __call__
+    outputs = vm() if output_subset is None else vm(output_subset=output_subset)
+              ^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/link/vm.py", line 410, in __call__
+    raise_with_op(self.fgraph, node, thunk)
+  File "/Users/erik/Projects/pytensor/pytensor/link/utils.py", line 526, in raise_with_op
+    raise exc_value.with_traceback(exc_trace)
+  File "/Users/erik/Projects/pytensor/pytensor/link/vm.py", line 406, in __call__
+    thunk()
+  File "/Users/erik/Projects/pytensor/pytensor/graph/op.py", line 545, in rval
+    r = p(n, [x[0] for x in i], o)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/erik/Projects/pytensor/pytensor/tensor/subtensor.py", line 3385, in perform
+    np.add.at(out[0], tuple(full_indices), y)
+ValueError: array is not broadcastable to correct shape
+Apply node that caused the error: AdvancedIncSubtensor(Alloc.0, Log.0, [  0   0 ... 7 457 457])
+Toposort index: 32
+Inputs types: [TensorType(float64, shape=(458,)), TensorType(float64, shape=(None, None, 1832)), TensorType(int64, shape=(1832,))]
+Inputs shapes: [(458,), (1, 1, 1832), (1832,)]
+Inputs strides: [(8,), (14656, 14656, 8), (16,)]
+Inputs values: ['not shown', 'not shown', 'not shown']
+Outputs clients: [[Sub(AdvancedIncSubtensor.0, AdvancedIncSubtensor.0)]]
+
+Backtrace when the node is created (use PyTensor flag traceback__limit=N to make it longer):
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 630, in main
+    idata = fit_model(model)
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 599, in fit_model
+    return pmx.fit(
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/fit.py", line 37, in fit
+    return fit_pathfinder(**kwargs)
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 1821, in fit_pathfinder
+    idata = convert_flat_trace_to_idata(
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 207, in convert_flat_trace_to_idata
+    outputs = vectorize_graph(vars_to_sample, replace=replace)
+  File "/Users/erik/Projects/pytensor/pytensor/graph/replace.py", line 303, in vectorize_graph
+    vect_node = vectorize_node(node, *vect_inputs)
+  File "/Users/erik/Projects/pytensor/pytensor/graph/replace.py", line 219, in vectorize_node
+    return _vectorize_node(op, node, *batched_inputs)
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/functools.py", line 912, in wrapper
+    return dispatch(args[0].__class__)(*args, **kw)
+
+HINT: Use the PyTensor flag `exception_verbosity=high` for a debug print-out and storage map footprint of this Apply node.
+/Users/erik/Projects/pymc-extras/extracted2.py:609: UserWarning: Pathfinder failed (array is not broadcastable to correct shape
+Apply node that caused the error: AdvancedIncSubtensor(Alloc.0, Log.0, [  0   0 ... 7 457 457])
+Toposort index: 32
+Inputs types: [TensorType(float64, shape=(458,)), TensorType(float64, shape=(None, None, 1832)), TensorType(int64, shape=(1832,))]
+Inputs shapes: [(458,), (1, 1, 1832), (1832,)]
+Inputs strides: [(8,), (14656, 14656, 8), (16,)]
+Inputs values: ['not shown', 'not shown', 'not shown']
+Outputs clients: [[Sub(AdvancedIncSubtensor.0, AdvancedIncSubtensor.0)]]
+
+Backtrace when the node is created (use PyTensor flag traceback__limit=N to make it longer):
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 630, in main
+    idata = fit_model(model)
+  File "/Users/erik/Projects/pymc-extras/extracted2.py", line 599, in fit_model
+    return pmx.fit(
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/fit.py", line 37, in fit
+    return fit_pathfinder(**kwargs)
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 1821, in fit_pathfinder
+    idata = convert_flat_trace_to_idata(
+  File "/Users/erik/Projects/pymc-extras/pymc_extras/inference/pathfinder/pathfinder.py", line 207, in convert_flat_trace_to_idata
+    outputs = vectorize_graph(vars_to_sample, replace=replace)
+  File "/Users/erik/Projects/pytensor/pytensor/graph/replace.py", line 303, in vectorize_graph
+    vect_node = vectorize_node(node, *vect_inputs)
+  File "/Users/erik/Projects/pytensor/pytensor/graph/replace.py", line 219, in vectorize_node
+    return _vectorize_node(op, node, *batched_inputs)
+  File "/opt/anaconda3/envs/salk2/lib/python3.12/functools.py", line 912, in wrapper
+    return dispatch(args[0].__class__)(*args, **kw)
+
+HINT: Use the PyTensor flag `exception_verbosity=high` for a debug print-out and storage map footprint of this Apply node.); falling back to NUTS sampling.
+  warnings.warn(f"Pathfinder failed ({exc}); falling back to NUTS sampling.")
+Initializing NUTS using jitter+adapt_diag...
+Multiprocess sampling (2 chains in 2 jobs)
+NUTS: [intercept_maxdiff, α_unit_maxdiff, α_nationality_maxdiff, α_gender_maxdiff, α_age_group_maxdiff, α_education_maxdiff]
+Sampling 2 chains for 200 tune and 200 draw iterations (400 + 400 draws total) took 297 seconds.
+We recommend running at least 4 chains for robust computation of convergence diagnostics
+The rhat statistic is larger than 1.01 for some parameters. This indicates problems during sampling. See https://arxiv.org/abs/1903.08008 for details
+The effective sample size per chain is smaller than 100 for some parameters.  A higher number is needed for reliable rhat and ess computation. See https://arxiv.org/abs/1903.08008 for details
+Pathfinder inference finished.
