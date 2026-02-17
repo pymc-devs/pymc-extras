@@ -631,7 +631,6 @@ class FrequencySeasonality(Component):
         k_endog_effective = 1 if self.share_states else k_endog
 
         k_states = self.k_states // k_endog_effective
-        self.k_posdef // k_endog_effective
         n_coefs = self.n_coefs
 
         Z = pt.zeros((1, k_states))[0, slice(0, k_states, 2)].set(1.0)
