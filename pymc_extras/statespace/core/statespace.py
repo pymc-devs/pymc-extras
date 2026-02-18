@@ -138,6 +138,10 @@ class PyMCStateSpace:
         Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
         to all sampling methods.
 
+    name : str, optional
+        Prefix used to namespace internal graph variable and data names so multiple state space models can coexist
+        in the same PyMC model without naming collisions. If ``None``, the default naming behavior is used.
+
     Notes
     -----
     Based on the statsmodels statespace implementation https://github.com/statsmodels/statsmodels/blob/main/statsmodels/tsa/statespace/representation.py,
@@ -261,6 +265,7 @@ class PyMCStateSpace:
         verbose: bool = True,
         measurement_error: bool = False,
         mode: str | None = None,
+        name: str | None = None,
     ):
         self._fit_coords: dict[str, Sequence[str]] | None = None
         self._fit_dims: dict[str, Sequence[str]] | None = None
@@ -274,6 +279,7 @@ class PyMCStateSpace:
         self.k_endog = k_endog
         self.k_states = k_states
         self.k_posdef = k_posdef
+        self.name = name
         self.measurement_error = measurement_error
         self.mode = mode
 
@@ -304,6 +310,12 @@ class PyMCStateSpace:
         if verbose and self.requirement_table:
             console = Console()
             console.print(self.requirement_table)
+
+    def graph_name(self, base: str) -> str:
+        if not self.name:
+            return base
+        prefix = f"{self.name}_"
+        return base if base.startswith(prefix) else f"{self.name}_{base}"
 
     def _populate_properties(self) -> None:
         self._set_parameters()
@@ -649,14 +661,16 @@ class PyMCStateSpace:
                 f"parameters."
             )
 
-        if name in self._tensor_variable_info:
+        gname = self.graph_name(name)
+
+        if gname in self._tensor_variable_info:
             raise ValueError(
-                f"{name} is already a registered placeholder variable with shape "
-                f"{self._tensor_variable_info[name].type.shape}"
+                f"{gname} is already a registered placeholder variable with shape "
+                f"{self._tensor_variable_info[gname].type.shape}"
             )
 
-        placeholder = pt.tensor(name, shape=shape, dtype=dtype)
-        tensor_var = SymbolicVariable(name=name, symbolic_variable=placeholder)
+        placeholder = pt.tensor(gname, shape=shape, dtype=dtype)
+        tensor_var = SymbolicVariable(name=gname, symbolic_variable=placeholder)
         self._tensor_variable_info = self._tensor_variable_info.add(tensor_var)
         return placeholder
 
@@ -685,18 +699,20 @@ class PyMCStateSpace:
         """
         if name not in self.data_names:
             raise ValueError(
-                f"{name} is not a model parameter. All placeholder variables should correspond to model "
-                f"parameters."
+                f"{name} is not a model data-variable. All placeholder variables should correspond to model "
+                f"data-variables."
             )
 
-        if name in self._tensor_data_info:
+        gname = self.graph_name(name)
+
+        if gname in self._tensor_data_info:
             raise ValueError(
-                f"{name} is already a registered placeholder variable with shape "
-                f"{self._tensor_data_info[name].type.shape}"
+                f"{gname} is already a registered placeholder variable with shape "
+                f"{self._tensor_data_info[gname].type.shape}"
             )
 
-        placeholder = pt.tensor(name, shape=shape, dtype=dtype)
-        tensor_data = SymbolicData(name=name, symbolic_data=placeholder)
+        placeholder = pt.tensor(gname, shape=shape, dtype=dtype)
+        tensor_data = SymbolicData(name=gname, symbolic_data=placeholder)
         self._tensor_data_info = self._tensor_data_info.add(tensor_data)
         return placeholder
 
@@ -800,11 +816,12 @@ class PyMCStateSpace:
         """
         pymc_mod = modelcontext(None)
         for data_name in self.data_names:
-            data = pymc_mod[data_name]
+            gname = self.graph_name(data_name)
+            data = pymc_mod[gname]
             self._fit_exog_data[data_name] = {
-                "name": data_name,
+                "name": gname,
                 "value": data.get_value(),
-                "dims": pymc_mod.named_vars_to_dims.get(data_name, None),
+                "dims": pymc_mod.named_vars_to_dims.get(gname, None),
             }
 
     def _insert_random_variables(self):
@@ -843,9 +860,10 @@ class PyMCStateSpace:
         found_params = []
         with pymc_model:
             for param_name in self.param_names:
-                param = getattr(pymc_model, param_name, None)
+                gname = self.graph_name(param_name)
+                param = getattr(pymc_model, gname, None)
                 if param is not None:
-                    found_params.append(param.name)
+                    found_params.append(param_name)
 
         missing_params = list(set(self.param_names) - set(found_params))
         if len(missing_params) > 0:
@@ -880,9 +898,10 @@ class PyMCStateSpace:
         found_data = []
         with pymc_model:
             for data_name in data_names:
-                data = getattr(pymc_model, data_name, None)
+                gname = self.graph_name(data_name)
+                data = getattr(pymc_model, gname, None)
                 if data is not None:
-                    found_data.append(data.name)
+                    found_data.append(data_name)
 
         missing_data = list(set(data_names) - set(found_data))
         if len(missing_data) > 0:
@@ -1046,6 +1065,7 @@ class PyMCStateSpace:
             obs_coords=obs_coords,
             register_data=register_data,
             missing_fill_value=missing_fill_value,
+            data_name=self.graph_name("data"),
         )
 
         filter_outputs = self.kalman_filter.build_graph(
@@ -1145,11 +1165,12 @@ class PyMCStateSpace:
         """
 
         def infer_variable_shape(name):
-            shape = self._name_to_variable[name].type.shape
+            gname = self.graph_name(name)
+            shape = self._name_to_variable[gname].type.shape
             if not any(dim is None for dim in shape):
                 return shape
 
-            dim_names = self._fit_dims.get(name, None)
+            dim_names = self._fit_dims.get(gname, None)
             if dim_names is None:
                 raise ValueError(
                     f"Could not infer shape for {name}, because it was not given coords during model"
@@ -1166,9 +1187,9 @@ class PyMCStateSpace:
 
         for name in self.param_names:
             pm.Flat(
-                name,
+                self.graph_name(name),
                 shape=infer_variable_shape(name),
-                dims=self._fit_dims.get(name, None),
+                dims=self._fit_dims.get(self.graph_name(name), None),
             )
 
     def _kalman_filter_outputs_from_dummy_graph(
@@ -1208,14 +1229,14 @@ class PyMCStateSpace:
         self._insert_random_variables()
 
         for name in self.data_names:
-            if name not in pm_mod:
+            if self.graph_name(name) not in pm_mod:
                 pm.Data(**self._fit_exog_data[name])
 
         self._insert_data_variables()
 
         for name in self.data_names:
             if name in scenario.keys():
-                pm.set_data({name: scenario[name]})
+                pm.set_data({self.graph_name(name): scenario[name]})
 
         x0, P0, c, d, T, Z, R, H, Q = self.unpack_statespace()
 
@@ -1230,6 +1251,7 @@ class PyMCStateSpace:
             obs_coords=obs_coords,
             data_dims=data_dims,
             register_data=True,
+            data_name=self.graph_name("data"),
         )
 
         filter_outputs = self.kalman_filter.build_graph(
@@ -1786,7 +1808,7 @@ class PyMCStateSpace:
             self._insert_random_variables()
 
             for name in self.data_names:
-                pm.Data(**self.data_info[name])
+                pm.Data(name=self.graph_name(name), **self.data_info[name])
 
             self._insert_data_variables()
             matrices = self.unpack_statespace()
@@ -1852,6 +1874,7 @@ class PyMCStateSpace:
                 n_obs=self.ssm.k_endog,
                 obs_coords=obs_coords,
                 register_data=True,
+                data_name=self.graph_name("data"),
             )
 
             filter_outputs = self.kalman_filter.build_graph(
@@ -2283,12 +2306,15 @@ class PyMCStateSpace:
             mu, cov = grouped_outputs[group_idx]
 
             sub_dict = {
-                data_var: pt.as_tensor_variable(data_var.get_value(), name="data")
+                data_var: pt.as_tensor_variable(
+                    data_var.get_value(), name=self.graph_name("data")
+                )
                 for data_var in forecast_model.data_vars
             }
 
             missing_data_vars = np.setdiff1d(
-                ar1=[*self.data_names, "data"], ar2=[k.name for k, _ in sub_dict.items()]
+                ar1=[*[self.graph_name(name) for name in self.data_names], self.graph_name("data")],
+                ar2=[k.name for k, _ in sub_dict.items()],
             )
             if missing_data_vars.size > 0:
                 raise ValueError(f"{missing_data_vars} data used for fitting not found!")
@@ -2466,8 +2492,9 @@ class PyMCStateSpace:
         with forecast_model:
             if scenario is not None:
                 dummy_obs_data = np.zeros((len(forecast_index), self.k_endog))
+                scoped_scenario = {self.graph_name(name): value for name, value in scenario.items()}
                 pm.set_data(
-                    scenario | {"data": dummy_obs_data},
+                    scoped_scenario | {self.graph_name("data"): dummy_obs_data},
                     coords={"data_time": np.arange(len(forecast_index))},
                 )
 
