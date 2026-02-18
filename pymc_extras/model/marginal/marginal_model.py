@@ -532,7 +532,7 @@ def recover_marginals(
     dims.update(rv_dims)
     rv_dataset = dict_to_dataset(
         rv_dict,
-        library=pymc,
+        inference_library=pymc,
         dims=dims,
         coords=coords,
         skip_event_dims=True,
