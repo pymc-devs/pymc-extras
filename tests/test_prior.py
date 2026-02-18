@@ -11,6 +11,7 @@ from graphviz.graphs import Digraph
 from preliz.distributions import distributions as preliz_distributions
 from pydantic import ValidationError
 from pymc.model_graph import fast_eval
+from xarray import DataArray
 
 import pymc_extras.prior as pr
 
@@ -29,6 +30,7 @@ from pymc_extras.prior import (
     register_tensor_transform,
     sample_prior,
 )
+from pymc_extras.utils.model_equivalence import equivalent_models
 
 
 @pytest.mark.parametrize(
@@ -83,7 +85,7 @@ def test_handle_dims_with_impossible_dims(x, dims, desired_dims) -> None:
 
 
 def test_missing_transform() -> None:
-    match = "Neither pytensor.tensor nor pymc.math have the function 'foo_bar'"
+    match = r"Function 'foo_bar' not present in pytensor.tensor or pymc.math"
     with pytest.raises(UnknownTransformError, match=match):
         Prior("Normal", transform="foo_bar")
 
@@ -660,7 +662,9 @@ class Arbitrary:
     def __init__(self, dims: str | tuple[str, ...]) -> None:
         self.dims = dims
 
-    def create_variable(self, name: str):
+    def create_variable(self, name: str, xdist: bool = False):
+        if xdist:
+            raise NotImplementedError
         return pm.Normal(name, dims=self.dims)
 
 
@@ -668,7 +672,10 @@ class ArbitraryWithoutName:
     def __init__(self, dims: str | tuple[str, ...]) -> None:
         self.dims = dims
 
-    def create_variable(self, name: str):
+    def create_variable(self, name: str, xdist: bool = False):
+        if xdist:
+            raise NotImplementedError
+
         with pm.Model(name=name):
             location = pm.Normal("location", dims=self.dims)
             scale = pm.HalfNormal("scale", dims=self.dims)
@@ -1199,3 +1206,112 @@ def test_censored_with_alternative(alternative_prior_deserialize) -> None:
     assert instance.lower == 0
     assert instance.upper == 10
     assert instance.distribution == Prior("Normal")
+
+
+@pytest.mark.filterwarnings(
+    "ignore:The `pymc.dims` module is experimental and may contain critical bugs"
+)
+class TestXDist:
+    def test_xdist_serialization(self):
+        import pymc.dims as pmd
+
+        mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
+        sigma = DataArray([4, 5], dims=("country",))
+        dims = ("city", "batch", "country")
+
+        prior = Prior(
+            "Normal",
+            mu=mu,
+            sigma=sigma,
+            dims=dims,
+        )
+
+        data = prior.to_dict()
+        assert data == {
+            "dims": ("city", "batch", "country"),
+            "dist": "Normal",
+            "kwargs": {
+                "mu": {
+                    "class": "DataArray",
+                    "data": [1, 2, 3],
+                    "dims": ["city"],
+                },
+                "sigma": {
+                    "class": "DataArray",
+                    "data": [4, 5],
+                    "dims": ["country"],
+                },
+            },
+        }
+
+        prior_again = deserialize(data)
+        # Commented out because Prior equality fails with PyTensor / Xarray variables in the parameters
+        # assert prior_again == prior
+
+        data_again = prior_again.to_dict()
+        assert data_again == data
+
+    @pytest.mark.parametrize("transform", (None, "exp"))
+    def test_xdist_prior(self, transform):
+        import pymc.dims as pmd
+
+        mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
+        sigma = DataArray([4, 5], dims=("country",))
+        dims = ("city", "batch", "country")
+        coords = {
+            "city": range(3),
+            "country": range(2),
+            "batch": range(5),
+        }
+
+        prior = Prior(
+            "Normal",
+            mu=mu,
+            sigma=sigma,
+            dims=dims,
+            transform=transform,
+        )
+
+        res = prior.sample_prior(draws=7, coords=coords, xdist=True)
+        assert res.sizes == {"chain": 1, "draw": 7, "city": 3, "batch": 5, "country": 2}
+
+        with pm.Model(coords=coords) as prior_m:
+            prior.create_variable("x", xdist=True)
+
+        if transform is None:
+            with pm.Model(coords=coords) as expected_prior_m:
+                pmd.Normal("x", mu=mu, sigma=sigma, dims=dims)
+        else:
+            with pm.Model(coords=coords) as expected_prior_m:
+                x_raw = pmd.Normal("x_raw", mu=mu, sigma=sigma, dims=dims)
+                pmd.Deterministic("x", pmd.math.exp(x_raw))
+
+        assert equivalent_models(prior_m, expected_prior_m)
+
+    def test_xdist_likelihood(self):
+        import pymc.dims as pmd
+
+        mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
+        sigma = DataArray([4, 5], dims=("country",))
+        dims = ("city", "batch", "country")
+        coords = {
+            "batch": range(5),
+            "city": range(3),
+            "country": range(2),
+        }
+
+        likelihood = Prior(
+            "Normal",
+            sigma=sigma,
+            dims=dims,
+        )
+        observed = np.random.normal(size=(3, 5, 2))
+        with pm.Model(coords=coords) as obs_m:
+            x_obs = pmd.Data("x_obs", observed, dims=dims)
+            likelihood.create_likelihood_variable("x", mu=mu, observed=x_obs.T, xdist=True)
+
+        with pm.Model(coords=coords) as expected_obs_m:
+            x_obs = pmd.Data("x_obs", observed, dims=dims)
+            pmd.Normal("x", mu=mu, sigma=sigma, observed=x_obs.T, dims=dims)
+
+        assert equivalent_models(obs_m, expected_obs_m)
