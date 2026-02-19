@@ -834,6 +834,57 @@ def make_pathfinder_body(
     return pathfinder_body_fn
 
 
+def make_elbo_fn(
+    logp_func: Callable,
+    maxcor: int,
+    num_elbo_draws: int,
+    **compile_kwargs: dict,
+) -> Function:
+    """
+    Compile a function returning per-step ELBO values from LBFGS history.
+
+    Parameters
+    ----------
+    logp_func : Callable
+        The target log-density function.
+    maxcor : int
+        L-BFGS history size (number of variable metric corrections).
+    num_elbo_draws : int
+        Number of Monte Carlo draws for ELBO estimation per step.
+    compile_kwargs : dict
+        Additional keyword arguments for the PyTensor compiler.
+
+    Returns
+    -------
+    elbo_fn : Function
+        Compiled function: inputs (x_full, g_full) of shape (L+1, N),
+        output elbo of shape (L,).
+    """
+    x_full = pt.matrix("x", dtype="float64")
+    g_full = pt.matrix("g", dtype="float64")
+
+    maxcor = pt.constant(maxcor, "maxcor", dtype="int32")
+    num_elbo_draws = pt.constant(num_elbo_draws, "num_elbo_draws", dtype="int32")
+
+    alpha, s, z = alpha_recover(x_full, g_full)
+    beta, gamma = inverse_hessian_factors(alpha, s, z, J=maxcor)
+
+    x = x_full[1:]
+    g = g_full[1:]
+
+    phi, logQ_phi = bfgs_sample(
+        num_samples=num_elbo_draws, x=x, g=g, alpha=alpha, beta=beta, gamma=gamma
+    )
+
+    loglike = LogLike(logp_func)
+    logP_phi = loglike(phi)
+    elbo = pt.mean(logP_phi - logQ_phi, axis=-1)
+
+    elbo_fn = compile([x_full, g_full], [elbo], **compile_kwargs)
+    elbo_fn.trust_input = True
+    return elbo_fn
+
+
 def make_single_pathfinder_fn(
     model,
     num_draws: int,
