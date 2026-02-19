@@ -778,7 +778,10 @@ class UnivariateFilter(BaseFilter):
 
         return a_filtered, P_filtered, pt.atleast_1d(y_hat), pt.atleast_2d(F), ll_inner
 
-    def kalman_step(self, y, a, P, c, d, T, Z, R, H, Q):
+    def kalman_step(self, *args):
+
+        y, a, P, c, d, T, Z, R, H, Q = self.unpack_args(args)
+
         nan_mask = pt.isnan(y)
 
         W = pt.set_subtensor(pt.eye(y.shape[0])[nan_mask, nan_mask], 0.0)
