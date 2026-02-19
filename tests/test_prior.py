@@ -383,6 +383,22 @@ def test_to_dict_numpy() -> None:
     }
 
 
+@pytest.mark.parametrize("dims", (None, (), ("city",)))
+def test_dict_round_trip_dims(dims) -> None:
+    prior = Prior("Normal", dims=dims)
+    d = prior.to_dict()
+
+    expected_d = {"dist": "Normal"}
+    if dims is not None:
+        expected_d["dims"] = dims
+    assert d == expected_d
+
+    prior_again = Prior.from_dict(d)
+    assert prior_again.dims == dims
+    assert prior_again == prior
+    assert prior_again.to_dict() == expected_d
+
+
 def test_constrain_with_transform_error() -> None:
     var = Prior("Normal", transform="sigmoid")
 
@@ -422,7 +438,7 @@ def test_deepcopy() -> None:
     new_priors = deepcopy(priors)
     priors["alpha"].dims = "channel"
 
-    assert new_priors["alpha"].dims == ()
+    assert new_priors["alpha"].dims is None
 
 
 def test_backwards_compat() -> None:
@@ -1265,3 +1281,29 @@ class TestXDist:
             pmd.Normal("x", mu=mu, sigma=sigma, observed=x_obs.T, dims=dims)
 
         assert equivalent_models(obs_m, expected_obs_m)
+
+    def test_dims(self) -> None:
+        assert Prior("Normal").dims is None
+        assert Prior("Normal", dims=()).dims == ()
+
+        p = Prior("Normal", mu=Prior("Normal", dims=("city",)))
+        assert p.dims is None
+
+        coords = {"city": range(3)}
+        with pm.Model(coords=coords) as m:
+            with pytest.raises(UnsupportedShapeError):
+                p.create_variable("x")
+
+        with pm.Model(coords=coords) as m:
+            # xdist can infer dims on its own
+            p.create_variable("x", xdist=True)
+            assert m.named_vars_to_dims["x"] == ("city",)
+
+        p.dims = ("city",)
+        with pm.Model(coords=coords) as m:
+            p.create_variable("x")
+            assert m.named_vars_to_dims["x"] == ("city",)
+
+        # This is always invalid
+        with pytest.raises(UnsupportedShapeError):
+            p.dims = ()
