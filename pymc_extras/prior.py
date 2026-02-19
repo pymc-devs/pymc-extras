@@ -188,7 +188,7 @@ def handle_dims(x: pt.TensorLike, dims: Dims, desired_dims: Dims) -> pt.TensorVa
     if dims is None:
         raise ValueError("handle_dims requires explicit dims, got None")
     if desired_dims is None:
-        raise ValueError("handle_dims requires explicit derised_dims, got None")
+        raise ValueError("handle_dims requires explicit desired_dims, got None")
     dims = dims if isinstance(dims, tuple) else (dims,)
     desired_dims = desired_dims if isinstance(desired_dims, tuple) else (desired_dims,)
 
