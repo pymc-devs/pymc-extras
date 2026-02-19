@@ -263,9 +263,9 @@ def alpha_recover(
         # alpha_lm1: (N,)
         # s_l: (N,)
         # z_l: (N,)
-        a = z_l.T @ pt.diag(alpha_lm1) @ z_l
-        b = z_l.T @ s_l
-        c = s_l.T @ pt.diag(1.0 / alpha_lm1) @ s_l
+        a = pt.sum(alpha_lm1 * z_l**2)
+        b = pt.sum(z_l * s_l)
+        c = pt.sum(s_l**2 / alpha_lm1)
         inv_alpha_l = (
             a / (b * alpha_lm1)
             + z_l ** 2 / b
@@ -378,20 +378,25 @@ def inverse_hessian_factors(
     # eta: (L, J)
     eta = pt.diagonal(E, axis1=-2, axis2=-1)
 
+    # AZ: (L, N, J) — replaces alpha_diag @ Z (avoids (L, N, N))
+    AZ = alpha[..., None] * Z
+
     # beta: (L, N, 2J)
-    alpha_diag = pytensor.scan(lambda a: pt.diag(a), sequences=[alpha], return_updates=False)
-    beta = pt.concatenate([alpha_diag @ Z, S], axis=-1)
+    beta = pt.concatenate([AZ, S], axis=-1)
 
     # more performant and numerically precise to use solve than inverse: https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.linalg.inv.html
 
     # E_inv: (L, J, J)
     E_inv = pt.linalg.solve_triangular(E, Ij, check_finite=False)
-    eta_diag = pytensor.scan(pt.diag, sequences=[eta], return_updates=False)
+
+    # eta_diag: (L, J, J) — broadcast diagonal, avoids scan(diag)
+    eta_diag = pt.eye(J)[None, :, :] * eta[:, None, :]
+
+    # Zt_AZ: (L, J, J) — replaces Z.T @ alpha_diag @ Z
+    Zt_AZ = pt.matrix_transpose(Z) @ AZ
 
     # block_dd: (L, J, J)
-    block_dd = (
-        pt.matrix_transpose(E_inv) @ (eta_diag + pt.matrix_transpose(Z) @ alpha_diag @ Z) @ E_inv
-    )
+    block_dd = pt.matrix_transpose(E_inv) @ (eta_diag + Zt_AZ) @ E_inv
 
     # (L, J, 2J)
     gamma_top = pt.concatenate([pt.zeros((L, J, J)), -E_inv], axis=-1)
@@ -411,9 +416,8 @@ def bfgs_sample_dense(
     alpha: TensorVariable,
     beta: TensorVariable,
     gamma: TensorVariable,
-    alpha_diag: TensorVariable,
-    inv_sqrt_alpha_diag: TensorVariable,
-    sqrt_alpha_diag: TensorVariable,
+    inv_sqrt_alpha: TensorVariable,
+    sqrt_alpha: TensorVariable,
     u: TensorVariable,
 ) -> tuple[TensorVariable, TensorVariable]:
     """sample from the BFGS approximation using dense matrix operations.
@@ -425,17 +429,15 @@ def bfgs_sample_dense(
     g : TensorVariable
         gradient array, shape (L, N)
     alpha : TensorVariable
-        diagonal scaling matrix, shape (L, N)
+        diagonal scaling vector, shape (L, N)
     beta : TensorVariable
         low-rank update matrix, shape (L, N, 2J)
     gamma : TensorVariable
         low-rank update matrix, shape (L, 2J, 2J)
-    alpha_diag : TensorVariable
-        diagonal matrix of alpha, shape (L, N, N)
-    inv_sqrt_alpha_diag : TensorVariable
-        inverse sqrt of alpha diagonal, shape (L, N, N)
-    sqrt_alpha_diag : TensorVariable
-        sqrt of alpha diagonal, shape (L, N, N)
+    inv_sqrt_alpha : TensorVariable
+        1/sqrt(alpha) vector, shape (L, N)
+    sqrt_alpha : TensorVariable
+        sqrt(alpha) vector, shape (L, N)
     u : TensorVariable
         random normal samples, shape (L, M, N)
 
@@ -449,7 +451,17 @@ def bfgs_sample_dense(
     Notes
     -----
     shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
+    Dense path is used when 2J >= N (small-N regime); (N,N) diagonals are
+    acceptable here.
     """
+
+    # Re-expand vectors to diagonal matrices (small-N regime: 2J >= N)
+    sqrt_alpha_diag = pytensor.scan(
+        lambda a: pt.diag(a), sequences=[sqrt_alpha], return_updates=False
+    )
+    inv_sqrt_alpha_diag = pytensor.scan(
+        lambda a: pt.diag(a), sequences=[inv_sqrt_alpha], return_updates=False
+    )
 
     N = x.shape[-1]
     IdN = pt.eye(N)[None, ...]
@@ -490,9 +502,8 @@ def bfgs_sample_sparse(
     alpha: TensorVariable,
     beta: TensorVariable,
     gamma: TensorVariable,
-    alpha_diag: TensorVariable,
-    inv_sqrt_alpha_diag: TensorVariable,
-    sqrt_alpha_diag: TensorVariable,
+    inv_sqrt_alpha: TensorVariable,
+    sqrt_alpha: TensorVariable,
     u: TensorVariable,
 ) -> tuple[TensorVariable, TensorVariable]:
     """sample from the BFGS approximation using sparse matrix operations.
@@ -504,17 +515,15 @@ def bfgs_sample_sparse(
     g : TensorVariable
         gradient array, shape (L, N)
     alpha : TensorVariable
-        diagonal scaling matrix, shape (L, N)
+        diagonal scaling vector, shape (L, N)
     beta : TensorVariable
         low-rank update matrix, shape (L, N, 2J)
     gamma : TensorVariable
         low-rank update matrix, shape (L, 2J, 2J)
-    alpha_diag : TensorVariable
-        diagonal matrix of alpha, shape (L, N, N)
-    inv_sqrt_alpha_diag : TensorVariable
-        inverse sqrt of alpha diagonal, shape (L, N, N)
-    sqrt_alpha_diag : TensorVariable
-        sqrt of alpha diagonal, shape (L, N, N)
+    inv_sqrt_alpha : TensorVariable
+        1/sqrt(alpha) vector, shape (L, N)
+    sqrt_alpha : TensorVariable
+        sqrt(alpha) vector, shape (L, N)
     u : TensorVariable
         random normal samples, shape (L, M, N)
 
@@ -530,8 +539,8 @@ def bfgs_sample_sparse(
     shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
     """
 
-    # qr_input: (L, N, 2J)
-    qr_input = inv_sqrt_alpha_diag @ beta
+    # qr_input: (L, N, 2J) — A3.2: broadcast instead of (L,N,N) matmul
+    qr_input = beta * inv_sqrt_alpha[..., None]
     Q, R = pytensor.scan(
         fn=pt.linalg.qr, sequences=[qr_input], allow_gc=False, return_updates=False
     )
@@ -547,23 +556,21 @@ def bfgs_sample_sparse(
     logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
     logdet += pt.sum(pt.log(alpha), axis=-1)
 
-    # inverse Hessian
-    # (L, N, N) + (L, N, 2J), (L, 2J, 2J), (L, 2J, N) -> (L, N, N)
-    H_inv = alpha_diag + (beta @ gamma @ pt.matrix_transpose(beta))
-
-    # NOTE: changed the sign from "x + " to "x -" of the expression to match Stan which differs from Zhang et al., (2022). same for dense version.
-
-    # mu = x - pt.einsum("ijk,ik->ij", H_inv, g) # causes error: Multiple destroyers of g
-
-    batched_dot = pt.vectorize(pt.dot, signature="(ijk),(ilk)->(ij)")
-    mu = x - batched_dot(H_inv, pt.matrix_transpose(g[..., None]))
+    # A3.3: compute H_inv @ g without forming (L, N, N) H_inv
+    # NOTE: sign is "x -" to match Stan (differs from Zhang et al., 2022); same for dense.
+    g_col = g[..., None]  # (L, N, 1)
+    ag = (alpha * g)[..., None]  # (L, N, 1)
+    btg = pt.matrix_transpose(beta) @ g_col  # (L, 2J, 1)
+    corr = beta @ (gamma @ btg)  # (L, N, 1)
+    Hinv_g = ag + corr  # (L, N, 1)
+    mu = x - Hinv_g[..., 0]  # (L, N)
 
     phi = pt.matrix_transpose(
         # (L, N, 1)
         mu[..., None]
-        # (L, N, N), (L, N, M) -> (L, N, M)
-        + sqrt_alpha_diag
-        @ (
+        # A3.4: (L, N, 1) * (L, N, M) — broadcast instead of (L, N, N) matmul
+        + sqrt_alpha[..., None]
+        * (
             # (L, N, 2J), (L, 2J, 2J) -> (L, N, 2J)
             (Q @ (Lchol - IdN))
             # (L, 2J, N), (L, N, M) -> (L, 2J, M)
@@ -627,12 +634,9 @@ def bfgs_sample(
 
     L, N, JJ = beta.shape
 
-    alpha_diag, inv_sqrt_alpha_diag, sqrt_alpha_diag = pytensor.scan(
-        lambda a: [pt.diag(a), pt.diag(pt.sqrt(1.0 / a)), pt.diag(pt.sqrt(a))],
-        sequences=[alpha],
-        allow_gc=False,
-        return_updates=False,
-    )
+    # A3.1: compute vectors instead of (L, N, N) diagonal matrices
+    inv_sqrt_alpha = pt.sqrt(1.0 / alpha)  # (L, N)
+    sqrt_alpha = pt.sqrt(alpha)  # (L, N)
 
     u = pt.random.normal(size=(L, num_samples, N))
 
@@ -642,9 +646,8 @@ def bfgs_sample(
         alpha,
         beta,
         gamma,
-        alpha_diag,
-        inv_sqrt_alpha_diag,
-        sqrt_alpha_diag,
+        inv_sqrt_alpha,
+        sqrt_alpha,
         u,
     )
 
