@@ -10,7 +10,6 @@ import threading
 from unittest.mock import patch
 
 import numpy as np
-import pytest
 
 from pytensor.compile.mode import Mode
 
@@ -37,7 +36,7 @@ JITTER = 2.0
 EPSILON = 1e-8
 
 
-def _make_single_fn(model, streaming: bool = True, max_init_retries: int = 10):
+def _make_single_fn(model, max_init_retries: int = 10):
     return make_single_pathfinder_fn(
         model=model,
         num_draws=NUM_DRAWS,
@@ -49,7 +48,6 @@ def _make_single_fn(model, streaming: bool = True, max_init_retries: int = 10):
         num_elbo_draws=NUM_ELBO_DRAWS,
         jitter=JITTER,
         epsilon=EPSILON,
-        streaming=streaming,
         max_init_retries=max_init_retries,
         compile_kwargs=COMPILE_KWARGS,
     )
@@ -95,12 +93,6 @@ def _make_failing_lbfgs_patcher(fail_k: int, real_neg_logp_dlogp_func):
 
             self._real = RealLBFGS(*args, **kwargs)
 
-        def minimize(self, x0):
-            call_count[0] += 1
-            if call_count[0] <= fail_k:
-                raise LBFGSInitFailed(LBFGSStatus.INIT_FAILED)
-            return self._real.minimize(x0)
-
         def minimize_streaming(self, callback, x0):
             call_count[0] += 1
             if call_count[0] <= fail_k:
@@ -110,8 +102,7 @@ def _make_failing_lbfgs_patcher(fail_k: int, real_neg_logp_dlogp_func):
     return patch("pymc_extras.inference.pathfinder.pathfinder.LBFGS", PatchedLBFGS), call_count
 
 
-@pytest.mark.parametrize("streaming", [True, False])
-def test_tc1_retry_succeeds(streaming):
+def test_tc1_retry_succeeds():
     """Path succeeds after K LBFGSInitFailed attempts when max_init_retries >= K."""
     model = make_iso_gaussian()
     fail_k = 3
@@ -120,7 +111,7 @@ def test_tc1_retry_succeeds(streaming):
     patcher, call_count = _make_failing_lbfgs_patcher(fail_k, None)
 
     with patcher:
-        fn = _make_single_fn(model, streaming=streaming, max_init_retries=max_init_retries)
+        fn = _make_single_fn(model, max_init_retries=max_init_retries)
         result = fn(42)
 
     assert (
@@ -131,8 +122,7 @@ def test_tc1_retry_succeeds(streaming):
     assert call_count[0] == fail_k + 1, f"Expected {fail_k + 1} LBFGS calls, got {call_count[0]}"
 
 
-@pytest.mark.parametrize("streaming", [True, False])
-def test_tc1_retry_exhausted(streaming):
+def test_tc1_retry_exhausted():
     """Path returns LBFGS_FAILED after all max_init_retries are exhausted."""
     model = make_iso_gaussian()
     max_init_retries = 2
@@ -141,7 +131,7 @@ def test_tc1_retry_exhausted(streaming):
     patcher, call_count = _make_failing_lbfgs_patcher(fail_k, None)
 
     with patcher:
-        fn = _make_single_fn(model, streaming=streaming, max_init_retries=max_init_retries)
+        fn = _make_single_fn(model, max_init_retries=max_init_retries)
         result = fn(99)
 
     assert (
@@ -163,10 +153,6 @@ def test_tc1_no_retry_on_non_init_failure():
     class FailWithLBFGSException:
         def __init__(self, *args, **kwargs):
             pass
-
-        def minimize(self, x0):
-            call_count[0] += 1
-            raise LBFGSException("non-init failure", LBFGSStatus.LBFGS_FAILED)
 
         def minimize_streaming(self, callback, x0):
             call_count[0] += 1
@@ -235,7 +221,6 @@ def test_tc2_thread_vs_serial_parity():
         epsilon=EPSILON,
         importance_sampling=None,
         progressbar=False,
-        streaming=True,
         max_init_retries=0,
         random_seed=random_seed,
         compile_kwargs=COMPILE_KWARGS,
@@ -262,8 +247,13 @@ def test_tc2_thread_vs_serial_parity():
     ), f"lbfgs_niter differ: serial={serial_niters}, thread={thread_niters}"
 
 
-def test_tc2_default_concurrent_is_thread():
-    """fit_pathfinder and multipath_pathfinder default to concurrent='thread'."""
+def test_tc2_default_concurrent_is_process():
+    """fit_pathfinder and multipath_pathfinder default to concurrent='process'.
+
+    'thread' is not a supported option: pytensor's Function.copy(share_memory=False)
+    only replaces I/O storage, not intermediate op buffers, so concurrent thread calls
+    corrupt each other's in-flight state.  Processes have fully independent memory.
+    """
     import inspect
 
     from pymc_extras.inference.pathfinder.pathfinder import fit_pathfinder
@@ -272,11 +262,11 @@ def test_tc2_default_concurrent_is_thread():
     fp_sig = inspect.signature(fit_pathfinder)
 
     assert (
-        mp_sig.parameters["concurrent"].default == "thread"
-    ), "multipath_pathfinder should default concurrent='thread'"
+        mp_sig.parameters["concurrent"].default == "process"
+    ), "multipath_pathfinder should default concurrent='process'"
     assert (
-        fp_sig.parameters["concurrent"].default == "thread"
-    ), "fit_pathfinder should default concurrent='thread'"
+        fp_sig.parameters["concurrent"].default == "process"
+    ), "fit_pathfinder should default concurrent='process'"
 
 
 def test_tc2_progress_callback_called_per_path():
