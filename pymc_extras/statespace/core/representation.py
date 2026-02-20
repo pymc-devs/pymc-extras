@@ -4,10 +4,7 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.utils.constants import (
-    NEVER_TIME_VARYING,
-    VECTOR_VALUED,
-)
+from pymc_extras.statespace.utils.constants import NEVER_TIME_VARYING, VECTOR_VALUED
 
 floatX = pytensor.config.floatX
 KeyLike = tuple[str | int, ...] | str

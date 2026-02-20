@@ -18,9 +18,7 @@ from tests.statespace.core.test_statespace import (  # pylint: disable=unused-im
     exog_ss_mod,
     ss_mod,
 )
-from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
-    rng,
-)
+from tests.statespace.shared_fixtures import rng  # pylint: disable=unused-import
 from tests.statespace.test_utilities import load_nile_test_data
 
 pytest.importorskip("jax")
@@ -144,12 +142,21 @@ def test_forecast(filter_output, ss_mod, idata, rng):
     time_idx = idata.posterior.coords["time"].values
 
     forecast_idata = ss_mod.forecast(
-        idata, start=time_idx[-1], periods=10, filter_output=filter_output, random_seed=rng
+        idata,
+        start=time_idx[-1],
+        periods=10,
+        filter_output=filter_output,
+        random_seed=rng,
     )
 
     assert forecast_idata.coords["time"].values.shape == (10,)
     assert forecast_idata.forecast_latent.dims == ("chain", "draw", "time", "state")
-    assert forecast_idata.forecast_observed.dims == ("chain", "draw", "time", "observed_state")
+    assert forecast_idata.forecast_observed.dims == (
+        "chain",
+        "draw",
+        "time",
+        "observed_state",
+    )
 
     assert not np.any(np.isnan(forecast_idata.forecast_latent.values))
     assert not np.any(np.isnan(forecast_idata.forecast_observed.values))

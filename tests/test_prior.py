@@ -14,11 +14,7 @@ from xarray import DataArray
 
 import pymc_extras.prior as pr
 
-from pymc_extras.deserialize import (
-    DESERIALIZERS,
-    deserialize,
-    register_deserialization,
-)
+from pymc_extras.deserialize import DESERIALIZERS, deserialize, register_deserialization
 from pymc_extras.prior import (
     Censored,
     MuAlreadyExistsError,

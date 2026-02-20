@@ -329,7 +329,11 @@ def find_MAP(
     idata = add_fit_to_inference_data(idata=idata, mu=raveled_optimized, H_inv=H_inv, model=model)
 
     idata = add_optimizer_result_to_inference_data(
-        idata=idata, result=optimizer_result, method=method, mu=raveled_optimized, model=model
+        idata=idata,
+        result=optimizer_result,
+        method=method,
+        mu=raveled_optimized,
+        model=model,
     )
 
     idata = add_data_to_inference_data(

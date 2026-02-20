@@ -1,8 +1,6 @@
 import warnings
 
-from pymc_extras.statespace.models.structural.components.autoregressive import (
-    Autoregressive,
-)
+from pymc_extras.statespace.models.structural.components.autoregressive import Autoregressive
 from pymc_extras.statespace.models.structural.components.cycle import Cycle
 from pymc_extras.statespace.models.structural.components.level_trend import LevelTrend
 from pymc_extras.statespace.models.structural.components.measurement_error import MeasurementError

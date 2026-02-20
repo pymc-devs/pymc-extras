@@ -221,7 +221,12 @@ class TestR2D2M2CP:
                 )
         else:
             pmx.distributions.R2D2M2CP(
-                "beta", output_std, input_std, dims=dims, r2=0.8, variance_explained=abs(input_std)
+                "beta",
+                output_std,
+                input_std,
+                dims=dims,
+                r2=0.8,
+                variance_explained=abs(input_std),
             )
 
     def test_failing_mutual_exclusive(self, model: pm.Model):
@@ -299,6 +304,12 @@ class TestR2D2M2CP:
         assert not model.free_RVs, model.free_RVs
 
         b = pmx.distributions.R2D2M2CP(
-            "b2", 1, [1, 1], r2=0.5, positive_probs=[1, 1], positive_probs_std=[0, 0], dims="a"
+            "b2",
+            1,
+            [1, 1],
+            r2=0.5,
+            positive_probs=[1, 1],
+            positive_probs_std=[0, 0],
+            dims="a",
         )
         assert not model.free_RVs, model.free_RVs

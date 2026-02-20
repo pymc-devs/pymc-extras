@@ -26,7 +26,9 @@ def test_level_trend_model(rng):
 
 def test_level_trend_multiple_observed_construction():
     mod = st.LevelTrend(
-        order=2, innovations_order=1, observed_state_names=["data_1", "data_2", "data_3"]
+        order=2,
+        innovations_order=1,
+        observed_state_names=["data_1", "data_2", "data_3"],
     )
     mod = mod.build(verbose=False)
     assert mod.k_endog == 3
@@ -47,7 +49,9 @@ def test_level_trend_multiple_observed_construction():
     assert mod.shock_names == ("level[data_1]", "level[data_2]", "level[data_3]")
 
     Z, T, R = pytensor.function(
-        [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
+        [],
+        [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]],
+        mode="FAST_COMPILE",
     )()
 
     np.testing.assert_allclose(
@@ -92,7 +96,10 @@ def test_level_trend_multiple_observed_construction():
 
 def test_level_trend_multiple_shared_construction():
     mod = st.LevelTrend(
-        order=2, innovations_order=1, observed_state_names=["data_1", "data_2"], share_states=True
+        order=2,
+        innovations_order=1,
+        observed_state_names=["data_1", "data_2"],
+        share_states=True,
     )
     mod = mod.build(verbose=False)
     _assert_basic_coords_correct(mod)
@@ -111,7 +118,9 @@ def test_level_trend_multiple_shared_construction():
     assert mod.shock_names == ("level[level_trend_shared]",)
 
     Z, T, R = pytensor.function(
-        [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
+        [],
+        [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]],
+        mode="FAST_COMPILE",
     )()
 
     np.testing.assert_allclose(
@@ -131,7 +140,9 @@ def test_level_trend_multiple_shared_construction():
 
 def test_level_trend_multiple_observed(rng):
     mod = st.LevelTrend(
-        order=2, innovations_order=0, observed_state_names=["data_1", "data_2", "data_3"]
+        order=2,
+        innovations_order=0,
+        observed_state_names=["data_1", "data_2", "data_3"],
     )
     params = {"initial_level_trend": np.array([[0.0, 1.0], [0.0, 2.0], [0.0, 3.0]])}
 
@@ -180,7 +191,9 @@ def test_add_level_trend_with_different_observed():
     )
 
     Z, T, R = pytensor.function(
-        [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
+        [],
+        [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]],
+        mode="FAST_COMPILE",
     )()
 
     np.testing.assert_allclose(
@@ -254,7 +267,9 @@ def test_mixed_shared_and_not_shared():
     )
 
     Z, T, R = pytensor.function(
-        [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
+        [],
+        [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]],
+        mode="FAST_COMPILE",
     )()
 
     np.testing.assert_allclose(

@@ -6,13 +6,7 @@ import pytensor.tensor as pt
 from pytensor.compile.mode import Mode
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Data,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import Coord, Data, Parameter, Shock, State
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
 from pymc_extras.statespace.models.utilities import (
     make_harvey_state_names,
@@ -509,7 +503,9 @@ class BayesianSARIMAX(PyMCStateSpace):
 
                 if q > 0:
                     cross_term_idx = np.s_[
-                        "selection", idx_rows.repeat(q) + np.tile(np.arange(q), Q) + 1, 0
+                        "selection",
+                        idx_rows.repeat(q) + np.tile(np.arange(q), Q) + 1,
+                        0,
                     ]
                     self.ssm[cross_term_idx] = pt.repeat(seasonal_ma_params, q) * pt.tile(
                         ma_params, Q
@@ -544,7 +540,9 @@ class BayesianSARIMAX(PyMCStateSpace):
 
                 if p > 0:
                     cross_term_idx = np.s_[
-                        "transition", 0, idx_cols.repeat(p) + np.tile(np.arange(p), P) + 1
+                        "transition",
+                        0,
+                        idx_cols.repeat(p) + np.tile(np.arange(p), P) + 1,
                     ]
                     self.ssm[cross_term_idx] = -pt.repeat(seasonal_ar_params, p) * pt.tile(
                         ar_params, P
@@ -566,7 +564,9 @@ class BayesianSARIMAX(PyMCStateSpace):
 
                 if q > 0:
                     cross_term_idx = np.s_[
-                        "transition", 0, idx_cols.repeat(q) + np.tile(np.arange(q), Q) + 1
+                        "transition",
+                        0,
+                        idx_cols.repeat(q) + np.tile(np.arange(q), Q) + 1,
                     ]
                     self.ssm[cross_term_idx] = pt.repeat(seasonal_ma_params, q) * pt.tile(
                         ma_params, Q
@@ -587,14 +587,18 @@ class BayesianSARIMAX(PyMCStateSpace):
         # Set up the state covariance matrix
         state_cov_idx = ("state_cov", *np.diag_indices(self.k_posdef))
         state_cov = self.make_and_register_variable(
-            "sigma_state", shape=() if self.k_posdef == 1 else (self.k_posdef,), dtype=floatX
+            "sigma_state",
+            shape=() if self.k_posdef == 1 else (self.k_posdef,),
+            dtype=floatX,
         )
         self.ssm[state_cov_idx] = state_cov**2
 
         if self.measurement_error:
             obs_cov_idx = ("obs_cov", *np.diag_indices(self.k_endog))
             obs_cov = self.make_and_register_variable(
-                "sigma_obs", shape=() if self.k_endog == 1 else (self.k_endog,), dtype=floatX
+                "sigma_obs",
+                shape=() if self.k_endog == 1 else (self.k_endog,),
+                dtype=floatX,
             )
             self.ssm[obs_cov_idx] = obs_cov**2
 

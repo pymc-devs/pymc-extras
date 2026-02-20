@@ -5,13 +5,7 @@ import pytensor.tensor as pt
 from pytensor.compile.mode import Mode
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Data,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import Coord, Data, Parameter, Shock, State
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import (
@@ -414,7 +408,11 @@ class BayesianVARMAX(PyMCStateSpace):
             self.ssm[("transition", *idx)] = np.eye(self.k_endog * (self.q - 1))
 
         if self.p > 0:
-            ar_param_idx = ("transition", slice(0, self.k_endog), slice(0, self.k_endog * self.p))
+            ar_param_idx = (
+                "transition",
+                slice(0, self.k_endog),
+                slice(0, self.k_endog * self.p),
+            )
 
             # Register the AR parameter matrix as a (k, p, k), then reshape it and allocate it in the transition matrix
             # This way the user can use 3 dimensions in the prior (clearer?)

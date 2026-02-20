@@ -4,12 +4,7 @@ import numpy as np
 
 from pytensor import tensor as pt
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import Coord, Parameter, Shock, State
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
 
@@ -335,9 +330,11 @@ class TimeSeasonality(Component):
         seasonal_param = Parameter(
             name=f"params_{self.name}",
             shape=(k_states,) if k_endog == 1 else (k_endog, k_states),
-            dims=(f"state_{self.name}",)
-            if k_endog_effective == 1
-            else (f"endog_{self.name}", f"state_{self.name}"),
+            dims=(
+                (f"state_{self.name}",)
+                if k_endog_effective == 1
+                else (f"endog_{self.name}", f"state_{self.name}")
+            ),
             constraints=None,
         )
 
@@ -425,9 +422,11 @@ class TimeSeasonality(Component):
 
         initial_states = self.make_and_register_variable(
             f"params_{self.name}",
-            shape=(k_unique_states,)
-            if k_endog_effective == 1
-            else (k_endog_effective, k_unique_states),
+            shape=(
+                (k_unique_states,)
+                if k_endog_effective == 1
+                else (k_endog_effective, k_unique_states)
+            ),
         )
         if k_endog_effective == 1:
             self.ssm["initial_state", :] = pt.extra_ops.repeat(initial_states, duration, axis=0)
@@ -440,7 +439,8 @@ class TimeSeasonality(Component):
             R = pt.zeros((k_states, k_posdef))[0, 0].set(1.0)
             self.ssm["selection", :, :] = pt.join(0, *[R for _ in range(k_endog_effective)])
             season_sigma = self.make_and_register_variable(
-                f"sigma_{self.name}", shape=() if k_endog_effective == 1 else (k_endog_effective,)
+                f"sigma_{self.name}",
+                shape=() if k_endog_effective == 1 else (k_endog_effective,),
             )
             cov_idx = ("state_cov", *np.diag_indices(k_posdef * k_endog_effective))
             self.ssm[cov_idx] = season_sigma**2
@@ -544,9 +544,11 @@ class FrequencySeasonality(Component):
             name=name,
             k_endog=k_endog,
             k_states=k_states if share_states else k_states * k_endog,
-            k_posdef=k_states * int(self.innovations)
-            if share_states
-            else k_states * int(self.innovations) * k_endog,
+            k_posdef=(
+                k_states * int(self.innovations)
+                if share_states
+                else k_states * int(self.innovations) * k_endog
+            ),
             share_states=share_states,
             base_observed_state_names=observed_state_names,
             measurement_error=False,
@@ -580,10 +582,12 @@ class FrequencySeasonality(Component):
 
         freq_param = Parameter(
             name=f"params_{self.name}",
-            shape=(n_coefs,) if k_endog_effective == 1 else (k_endog_effective, n_coefs),
-            dims=(f"state_{self.name}",)
-            if k_endog_effective == 1
-            else (f"endog_{self.name}", f"state_{self.name}"),
+            shape=((n_coefs,) if k_endog_effective == 1 else (k_endog_effective, n_coefs)),
+            dims=(
+                (f"state_{self.name}",)
+                if k_endog_effective == 1
+                else (f"endog_{self.name}", f"state_{self.name}")
+            ),
             constraints=None,
         )
 
@@ -638,7 +642,8 @@ class FrequencySeasonality(Component):
         self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
 
         init_state = self.make_and_register_variable(
-            f"params_{self.name}", shape=(n_coefs,) if k_endog == 1 else (k_endog, n_coefs)
+            f"params_{self.name}",
+            shape=(n_coefs,) if k_endog == 1 else (k_endog, n_coefs),
         )
 
         init_state_idx = np.concatenate(
@@ -657,7 +662,8 @@ class FrequencySeasonality(Component):
 
         if self.innovations:
             sigma_season = self.make_and_register_variable(
-                f"sigma_{self.name}", shape=() if k_endog_effective == 1 else (k_endog_effective,)
+                f"sigma_{self.name}",
+                shape=() if k_endog_effective == 1 else (k_endog_effective,),
             )
             sigma_vec = pt.repeat(sigma_season**2, k_states)
             self.ssm["selection", :, :] = pt.eye(self.k_states)

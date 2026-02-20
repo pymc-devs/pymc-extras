@@ -29,11 +29,7 @@ from pymc.testing import (
 )
 from pytensor import config, function
 
-from pymc_extras.distributions import (
-    BetaNegativeBinomial,
-    GeneralizedPoisson,
-    Skellam,
-)
+from pymc_extras.distributions import BetaNegativeBinomial, GeneralizedPoisson, Skellam
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:Numba will use object mode to run generalized_poisson_rv:UserWarning"

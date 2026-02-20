@@ -84,7 +84,8 @@ def test_autoregressive_multiple_observed_build(rng):
     )
 
     np.testing.assert_allclose(
-        R, np.array([[1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]])
+        R,
+        np.array([[1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]]),
     )
 
     np.testing.assert_allclose(Q, np.diag([0.05**2, 0.12**2]))
@@ -211,7 +212,12 @@ def test_autoregressive_shared_and_not_shared():
     assert mod.coords["lag_shared_ar"] == (1, 2, 3)
     assert mod.coords["lag_individual_ar"] == (1, 2, 3)
 
-    outputs = [mod.ssm["transition"], mod.ssm["design"], mod.ssm["selection"], mod.ssm["state_cov"]]
+    outputs = [
+        mod.ssm["transition"],
+        mod.ssm["design"],
+        mod.ssm["selection"],
+        mod.ssm["state_cov"],
+    ]
     T, Z, R, Q = pytensor.function(
         list(explicit_graph_inputs(outputs)),
         outputs,

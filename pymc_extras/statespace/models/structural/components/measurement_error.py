@@ -1,9 +1,6 @@
 import numpy as np
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Parameter,
-)
+from pymc_extras.statespace.core.properties import Coord, Parameter
 from pymc_extras.statespace.models.structural.core import Component
 
 

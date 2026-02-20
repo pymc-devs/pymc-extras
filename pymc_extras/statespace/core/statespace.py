@@ -10,7 +10,6 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 
-from arviz import InferenceData
 from pymc.model import modelcontext
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import RandomState
@@ -18,6 +17,7 @@ from pytensor import Variable, graph_replace
 from rich.box import SIMPLE_HEAD
 from rich.console import Console
 from rich.table import Table
+from xarray import DataTree
 
 from pymc_extras.statespace.core.properties import (
     Coord,
@@ -42,10 +42,7 @@ from pymc_extras.statespace.filters import (
     StandardFilter,
     UnivariateFilter,
 )
-from pymc_extras.statespace.filters.distributions import (
-    LinearGaussianStateSpace,
-    SequenceMvNormal,
-)
+from pymc_extras.statespace.filters.distributions import LinearGaussianStateSpace, SequenceMvNormal
 from pymc_extras.statespace.filters.utilities import stabilize
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
@@ -926,7 +923,9 @@ class PyMCStateSpace:
         return registered_matrices
 
     @staticmethod
-    def _register_kalman_filter_outputs_with_pymc_model(outputs: tuple[pt.TensorVariable]) -> None:
+    def _register_kalman_filter_outputs_with_pymc_model(
+        outputs: tuple[pt.TensorVariable],
+    ) -> None:
         mod = modelcontext(None)
         coords = mod.coords
 
@@ -1265,7 +1264,7 @@ class PyMCStateSpace:
 
     def _sample_conditional(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         group: str,
         random_seed: RandomState | None = None,
         data: pt.TensorLike | None = None,
@@ -1391,7 +1390,7 @@ class PyMCStateSpace:
 
     def _sample_unconditional(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         group: str,
         steps: int | None = None,
         use_data_time_dim: bool = False,
@@ -1486,7 +1485,8 @@ class PyMCStateSpace:
 
             if not self.measurement_error:
                 H_jittered = pm.Deterministic(
-                    "H_jittered", pt.specify_shape(stabilize(H), (self.k_endog, self.k_endog))
+                    "H_jittered",
+                    pt.specify_shape(stabilize(H), (self.k_endog, self.k_endog)),
                 )
                 matrices = [x0, P0, c, d, T, Z, R, H_jittered, Q]
 
@@ -1519,11 +1519,11 @@ class PyMCStateSpace:
 
     def sample_conditional_prior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Sample from the conditional prior; that is, given parameter draws from the prior distribution,
         compute Kalman filtered trajectories. Trajectories are drawn from a single multivariate normal with mean and
@@ -1567,7 +1567,7 @@ class PyMCStateSpace:
 
     def sample_conditional_posterior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
@@ -1614,13 +1614,13 @@ class PyMCStateSpace:
 
     def sample_unconditional_prior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Draw unconditional sample trajectories according to state space dynamics, using random samples from the prior
         distribution over model parameters. The state space update equations are:
@@ -1682,13 +1682,13 @@ class PyMCStateSpace:
 
     def sample_unconditional_posterior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Draw unconditional sample trajectories according to state space dynamics, using random samples from the
         posterior distribution over model parameters. The state space update equations are:
@@ -1747,7 +1747,11 @@ class PyMCStateSpace:
         )
 
     def sample_statespace_matrices(
-        self, idata, matrix_names: str | list[str] | None, group: str = "posterior", **kwargs
+        self,
+        idata,
+        matrix_names: str | list[str] | None,
+        group: str = "posterior",
+        **kwargs,
     ):
         """
         Draw samples of requested statespace matrices from provided idata
@@ -1804,7 +1808,7 @@ class PyMCStateSpace:
         frozen_model = freeze_dims_and_data(forward_model)
         with frozen_model:
             matrix_idata = pm.sample_posterior_predictive(
-                idata if group == "posterior" else idata.prior,
+                idata if group == "posterior" else idata["prior"],
                 var_names=matrix_names,
                 extend_inferencedata=False,
                 compile_kwargs=compile_kwargs,
@@ -1814,7 +1818,11 @@ class PyMCStateSpace:
         return matrix_idata
 
     def sample_filter_outputs(
-        self, idata, filter_output_names: str | list[str] | None, group: str = "posterior", **kwargs
+        self,
+        idata,
+        filter_output_names: str | list[str] | None,
+        group: str = "posterior",
+        **kwargs,
     ):
         if isinstance(filter_output_names, str):
             filter_output_names = [filter_output_names]
@@ -1879,7 +1887,7 @@ class PyMCStateSpace:
 
         with freeze_dims_and_data(m):
             return pm.sample_posterior_predictive(
-                idata if group == "posterior" else idata.prior,
+                idata if group == "posterior" else idata["prior"],
                 var_names=filter_output_names,
                 compile_kwargs=compile_kwargs,
                 **kwargs,
@@ -1947,7 +1955,7 @@ class PyMCStateSpace:
 
     def _validate_scenario_data(
         self,
-        scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
+        scenario: (pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None),
         name: str | None = None,
         verbose=True,
     ):
@@ -2212,7 +2220,7 @@ class PyMCStateSpace:
 
     def _finalize_scenario_initialization(
         self,
-        scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
+        scenario: (pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None),
         forecast_index: pd.RangeIndex | pd.DatetimeIndex,
         name=None,
     ):
@@ -2288,7 +2296,8 @@ class PyMCStateSpace:
             }
 
             missing_data_vars = np.setdiff1d(
-                ar1=[*self.data_names, "data"], ar2=[k.name for k, _ in sub_dict.items()]
+                ar1=[*self.data_names, "data"],
+                ar2=[k.name for k, _ in sub_dict.items()],
             )
             if missing_data_vars.size > 0:
                 raise ValueError(f"{missing_data_vars} data used for fitting not found!")
@@ -2296,10 +2305,14 @@ class PyMCStateSpace:
             mu_frozen, cov_frozen = graph_replace([mu, cov], replace=sub_dict, strict=True)
 
             x0 = pm.Deterministic(
-                "x0_slice", mu_frozen[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
+                "x0_slice",
+                mu_frozen[t0_idx],
+                dims=mu_dims[1:] if mu_dims is not None else None,
             )
             P0 = pm.Deterministic(
-                "P0_slice", cov_frozen[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
+                "P0_slice",
+                cov_frozen[t0_idx],
+                dims=cov_dims[1:] if cov_dims is not None else None,
             )
 
             _ = LinearGaussianStateSpace(
@@ -2319,18 +2332,18 @@ class PyMCStateSpace:
 
     def forecast(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         start: int | pd.Timestamp | None = None,
         periods: int | None = None,
         end: int | pd.Timestamp = None,
-        scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None = None,
+        scenario: (pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None) = None,
         use_scenario_index: bool = False,
         filter_output="smoothed",
         random_seed: RandomState | None = None,
         verbose: bool = True,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Generate forecasts of state space model trajectories into the future.
 
@@ -2619,7 +2632,11 @@ class PyMCStateSpace:
                 shock_trajectory = pt.zeros((n_steps, self.k_posdef))
                 if Q is not None:
                     init_shock = pm.MvNormal(
-                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
+                        "initial_shock",
+                        mu=0,
+                        cov=Q,
+                        dims=[SHOCK_DIM],
+                        method=mvn_method,
                     )
                 else:
                     init_shock = pm.Deterministic(
@@ -2656,7 +2673,7 @@ class PyMCStateSpace:
                 **kwargs,
             )
 
-            return irf_idata.posterior_predictive
+            return irf_idata["posterior_predictive"]
 
     def _sort_obs_inputs_by_time_varying(self, d, Z):
         seqs = []

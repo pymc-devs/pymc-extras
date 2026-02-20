@@ -28,7 +28,11 @@ def test_cycle_component_deterministic(rng):
 
 def test_cycle_component_with_dampening(rng):
     cycle = st.Cycle(
-        name="cycle", cycle_length=12, estimate_cycle_length=False, innovations=False, dampen=True
+        name="cycle",
+        cycle_length=12,
+        estimate_cycle_length=False,
+        innovations=False,
+        dampen=True,
     )
     params = {
         "params_cycle": np.array([10.0, 10.0], dtype=config.floatX),
@@ -295,7 +299,9 @@ def test_add_multivariate_cycle_components_with_different_observed():
 
     # evaluate design, transition, selection matrices
     Z, T, R = pytensor.function(
-        [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
+        [],
+        [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]],
+        mode="FAST_COMPILE",
     )()
 
     # design: each row selects first state of its block
@@ -370,7 +376,10 @@ def test_add_multivariate_shared_and_not_shared():
 
     assert "endog_shared_cycle" not in mod.coords
     assert mod.coords["state_shared_cycle"] == ("Cos_shared_cycle", "Sin_shared_cycle")
-    assert mod.coords["state_individual_cycle"] == ("Cos_individual_cycle", "Sin_individual_cycle")
+    assert mod.coords["state_individual_cycle"] == (
+        "Cos_individual_cycle",
+        "Sin_individual_cycle",
+    )
     assert mod.coords["endog_individual_cycle"] == (
         "gdp",
         "inflation",
@@ -402,13 +411,21 @@ def test_add_multivariate_shared_and_not_shared():
 
     lamb = 2 * np.pi / 12  # dampening factor for individual cycle
     transition_block = np.array(
-        [[np.cos(lamb), np.sin(lamb)], [-np.sin(lamb), np.cos(lamb)]], dtype=config.floatX
+        [[np.cos(lamb), np.sin(lamb)], [-np.sin(lamb), np.cos(lamb)]],
+        dtype=config.floatX,
     )
     T_expected = linalg.block_diag(transition_block, *[0.95 * transition_block] * 3)
     np.testing.assert_allclose(T, T_expected)
 
     np.testing.assert_allclose(
-        Z, np.array([[1, 0, 1, 0, 0, 0, 0, 0], [1, 0, 0, 0, 1, 0, 0, 0], [1, 0, 0, 0, 0, 0, 1, 0]])
+        Z,
+        np.array(
+            [
+                [1, 0, 1, 0, 0, 0, 0, 0],
+                [1, 0, 0, 0, 1, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0, 1, 0],
+            ]
+        ),
     )
 
     np.testing.assert_allclose(R, np.eye(8, dtype=config.floatX))

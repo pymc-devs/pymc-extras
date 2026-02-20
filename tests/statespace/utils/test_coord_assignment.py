@@ -15,13 +15,16 @@ from pymc_extras.statespace.utils.constants import (
     SMOOTHER_OUTPUT_NAMES,
     TIME_DIM,
 )
-from pymc_extras.statespace.utils.data_tools import (
-    NO_FREQ_INFO_WARNING,
-    NO_TIME_INDEX_WARNING,
-)
+from pymc_extras.statespace.utils.data_tools import NO_FREQ_INFO_WARNING, NO_TIME_INDEX_WARNING
 from tests.statespace.test_utilities import load_nile_test_data
 
-function_names = ["pandas_date_freq", "pandas_date_nofreq", "pandas_nodate", "numpy", "pytensor"]
+function_names = [
+    "pandas_date_freq",
+    "pandas_date_nofreq",
+    "pandas_nodate",
+    "numpy",
+    "pytensor",
+]
 expected_warning = [
     does_not_raise(),
     pytest.warns(UserWarning, match=NO_FREQ_INFO_WARNING),

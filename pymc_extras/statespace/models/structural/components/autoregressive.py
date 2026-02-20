@@ -3,12 +3,7 @@ import warnings
 import numpy as np
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import Coord, Parameter, Shock, State
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import order_to_mask
 
@@ -143,12 +138,14 @@ class Autoregressive(Component):
 
         ar_param = Parameter(
             name=f"params_{self.name}",
-            shape=(k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,),
-            dims=(f"lag_{self.name}",)
-            if k_endog_effective == 1
-            else (
-                f"endog_{self.name}",
-                f"lag_{self.name}",
+            shape=((k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,)),
+            dims=(
+                (f"lag_{self.name}",)
+                if k_endog_effective == 1
+                else (
+                    f"endog_{self.name}",
+                    f"lag_{self.name}",
+                )
             ),
             constraints=None,
         )
@@ -197,10 +194,11 @@ class Autoregressive(Component):
         k_nonzero = int(sum(self.order))
         ar_params = self.make_and_register_variable(
             f"params_{self.name}",
-            shape=(k_nonzero,) if k_endog_effective == 1 else (k_endog_effective, k_nonzero),
+            shape=((k_nonzero,) if k_endog_effective == 1 else (k_endog_effective, k_nonzero)),
         )
         sigma_ar = self.make_and_register_variable(
-            f"sigma_{self.name}", shape=() if k_endog_effective == 1 else (k_endog_effective,)
+            f"sigma_{self.name}",
+            shape=() if k_endog_effective == 1 else (k_endog_effective,),
         )
 
         if k_endog_effective == 1:
@@ -217,7 +215,8 @@ class Autoregressive(Component):
                 T = T[ar_idx].set(ar_params[i])
                 transition_matrices.append(T)
             T = pt.specify_shape(
-                pt.linalg.block_diag(*transition_matrices), (self.k_states, self.k_states)
+                pt.linalg.block_diag(*transition_matrices),
+                (self.k_states, self.k_states),
             )
 
         self.ssm["transition", :, :] = T
@@ -228,7 +227,8 @@ class Autoregressive(Component):
         R = R[:, R_mask]
 
         self.ssm["selection", :, :] = pt.specify_shape(
-            pt.linalg.block_diag(*[R for _ in range(k_endog_effective)]), (self.k_states, k_posdef)
+            pt.linalg.block_diag(*[R for _ in range(k_endog_effective)]),
+            (self.k_states, k_posdef),
         )
 
         Zs = [pt.zeros((1, k_states))[0, 0].set(1.0) for _ in range(k_endog)]

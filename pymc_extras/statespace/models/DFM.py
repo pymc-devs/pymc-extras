@@ -3,13 +3,7 @@ from collections.abc import Sequence
 import pytensor
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Data,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import Coord, Data, Parameter, Shock, State
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import (
@@ -531,7 +525,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         coords = list(self.default_coords())
 
         # Factor coords
-        factor_labels = tuple(f"factor_{i+1}" for i in range(self.k_factors))
+        factor_labels = tuple(f"factor_{i + 1}" for i in range(self.k_factors))
         coords.append(Coord(dimension=FACTOR_DIM, labels=factor_labels))
 
         # AR param coords for factors
@@ -604,7 +598,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
         # Add zero block for the factors lags when factor_order > 1
         if self.factor_order > 1:
             matrix_parts.append(
-                pt.zeros((self.k_endog, self.k_factors * (self.factor_order - 1)), dtype=floatX)
+                pt.zeros(
+                    (self.k_endog, self.k_factors * (self.factor_order - 1)),
+                    dtype=floatX,
+                )
             )
         # Add identity and zero blocks for error lags when error_order > 0
         if self.error_order > 0:
@@ -736,7 +733,9 @@ class BayesianDynamicFactor(PyMCStateSpace):
         # Block B: Errors
         if self.error_order > 0 and self.error_var:
             error_ar = self.make_and_register_variable(
-                "error_ar", shape=(self.k_endog, self.error_order * self.k_endog), dtype=floatX
+                "error_ar",
+                shape=(self.k_endog, self.error_order * self.k_endog),
+                dtype=floatX,
             )
             transition_blocks.append(
                 build_var_block_matrix(error_ar, self.k_endog, self.error_order)

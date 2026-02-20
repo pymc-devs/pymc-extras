@@ -30,6 +30,7 @@ import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
+import xarray as xr
 
 from numpy.typing import NDArray
 from packaging import version
@@ -40,16 +41,8 @@ from pymc.initial_point import make_initial_point_fn
 from pymc.model import modelcontext
 from pymc.model.core import Point
 from pymc.progress_bar import CustomProgress, default_progress_theme
-from pymc.pytensorf import (
-    compile,
-    find_rng_nodes,
-    reseed_rngs,
-)
-from pymc.util import (
-    RandomSeed,
-    _get_seeds_per_chain,
-    get_default_varnames,
-)
+from pymc.pytensorf import compile, find_rng_nodes, reseed_rngs
+from pymc.util import RandomSeed, _get_seeds_per_chain, get_default_varnames
 from pytensor.compile.function.types import Function
 from pytensor.compile.mode import FAST_COMPILE, Mode
 from pytensor.graph import Apply, Op, vectorize_graph
@@ -150,7 +143,7 @@ def convert_flat_trace_to_idata(
     inference_backend: Literal["pymc", "blackjax"] = "pymc",
     model: Model | None = None,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
-) -> az.InferenceData:
+) -> xr.DataTree:
     """convert flattened samples to arviz InferenceData format.
 
     Parameters
@@ -267,9 +260,7 @@ def alpha_recover(
         b = z_l.T @ s_l
         c = s_l.T @ pt.diag(1.0 / alpha_lm1) @ s_l
         inv_alpha_l = (
-            a / (b * alpha_lm1)
-            + z_l ** 2 / b
-            - (a * s_l ** 2) / (b * c * alpha_lm1**2)
+            a / (b * alpha_lm1) + z_l**2 / b - (a * s_l**2) / (b * c * alpha_lm1**2)
         )  # fmt:off
         return 1.0 / inv_alpha_l
 
@@ -655,9 +646,7 @@ def bfgs_sample(
     )
 
     logQ_phi = -0.5 * (
-        logdet[..., None]
-        + pt.sum(u * u, axis=-1)
-        + N * pt.log(2.0 * pt.pi)
+        logdet[..., None] + pt.sum(u * u, axis=-1) + N * pt.log(2.0 * pt.pi)
     )  # fmt: off
 
     mask = pt.isnan(logQ_phi) | pt.isinf(logQ_phi)
@@ -885,7 +874,10 @@ def make_single_pathfinder_fn(
     """
 
     compile_kwargs = {"mode": Mode(linker=DEFAULT_LINKER), **compile_kwargs}
-    logp_dlogp_kwargs = {"jacobian": pathfinder_kwargs.get("jacobian", True), **compile_kwargs}
+    logp_dlogp_kwargs = {
+        "jacobian": pathfinder_kwargs.get("jacobian", True),
+        **compile_kwargs,
+    }
 
     logp_dlogp_func = get_logp_dlogp_of_ravel_inputs(model, **logp_dlogp_kwargs)
 
@@ -920,7 +912,10 @@ def make_single_pathfinder_fn(
             x0 = x_base + jitter_value
             x, g, lbfgs_niter, lbfgs_status = lbfgs.minimize(x0)
 
-            if lbfgs_status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
+            if lbfgs_status in {
+                LBFGSStatus.INIT_FAILED,
+                LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT,
+            }:
                 raise LBFGSInitFailed(lbfgs_status)
             elif lbfgs_status == LBFGSStatus.LBFGS_FAILED:
                 raise LBFGSException()
@@ -1553,7 +1548,9 @@ def multipath_pathfinder(
                 MultiPathfinderResult.from_path_results(results)
                 .with_pathfinder_config(config=pathfinder_config)
                 .with_importance_sampling(
-                    num_draws=num_draws, method=importance_sampling, random_seed=choice_seed
+                    num_draws=num_draws,
+                    method=importance_sampling,
+                    random_seed=choice_seed,
                 )
                 .with_timing(
                     compile_time=compile_end - compile_start,
@@ -1613,7 +1610,7 @@ def fit_pathfinder(
     paths_group: str = "pathfinder_paths",
     diagnostics_group: str = "pathfinder_diagnostics",
     config_group: str = "pathfinder_config",
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
     Fit the Pathfinder Variational Inference algorithm.
 

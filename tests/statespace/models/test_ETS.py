@@ -80,7 +80,15 @@ order_params = (
     ["alpha", "initial_level", "beta", "initial_trend", "phi"],
     ["alpha", "initial_level", "gamma", "initial_seasonal"],
     ["alpha", "initial_level", "beta", "initial_trend", "gamma", "initial_seasonal"],
-    ["alpha", "initial_level", "beta", "initial_trend", "gamma", "initial_seasonal", "phi"],
+    [
+        "alpha",
+        "initial_level",
+        "beta",
+        "initial_trend",
+        "gamma",
+        "initial_seasonal",
+        "phi",
+    ],
 )
 
 
@@ -363,21 +371,29 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
                 assert_allclose(x1[state_slice], x2, err_msg=f"{name} does not match for case {j}")
             elif name in ["P0", "initial_state_cov", "transition"]:
                 assert_allclose(
-                    x1[state_slice, state_slice], x2, err_msg=f"{name} does not match for case {j}"
+                    x1[state_slice, state_slice],
+                    x2,
+                    err_msg=f"{name} does not match for case {j}",
                 )
             elif name == "selection":
                 assert_allclose(
-                    x1[state_slice, obs_slice], x2, err_msg=f"{name} does not match for case {j}"
+                    x1[state_slice, obs_slice],
+                    x2,
+                    err_msg=f"{name} does not match for case {j}",
                 )
             elif name == "design":
                 assert_allclose(
-                    x1[obs_slice, state_slice], x2, err_msg=f"{name} does not match for case {j}"
+                    x1[obs_slice, state_slice],
+                    x2,
+                    err_msg=f"{name} does not match for case {j}",
                 )
             elif name == "obs_intercept":
                 assert_allclose(x1[obs_slice], x2, err_msg=f"{name} does not match for case {j}")
             elif name in ["obs_cov", "state_cov"]:
                 assert_allclose(
-                    x1[obs_slice, obs_slice], x2, err_msg=f"{name} does not match for case {j}"
+                    x1[obs_slice, obs_slice],
+                    x2,
+                    err_msg=f"{name} does not match for case {j}",
                 )
             else:
                 raise ValueError(f"You forgot {name} !")

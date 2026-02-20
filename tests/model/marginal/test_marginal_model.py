@@ -7,8 +7,9 @@ import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
 import pytest
+import xarray as xr
 
-from arviz import InferenceData, dict_to_dataset
+from arviz_base import dict_to_dataset
 from pymc import Model, draw
 from pymc.distributions import transforms
 from pymc.distributions.transforms import ordered
@@ -19,11 +20,7 @@ from scipy.special import log_softmax, logsumexp
 from scipy.stats import halfnorm, norm
 
 from pymc_extras.model.marginal.distributions import MarginalRV
-from pymc_extras.model.marginal.marginal_model import (
-    marginalize,
-    recover_marginals,
-    unmarginalize,
-)
+from pymc_extras.model.marginal.marginal_model import marginalize, recover_marginals, unmarginalize
 from pymc_extras.utils.model_equivalence import equivalent_models
 
 # FIXME: A Blockwise of Reshape should be rewritten into a Reshape, as it's rather inneficient
@@ -500,7 +497,8 @@ def test_not_supported_marginalized_deterministic_and_potential():
         det = pm.Deterministic("det", x + y)
 
     with pytest.raises(
-        NotImplementedError, match="Cannot marginalize x due to dependent Deterministic det"
+        NotImplementedError,
+        match="Cannot marginalize x due to dependent Deterministic det",
     ):
         marginalize(m, [x])
 
@@ -525,13 +523,15 @@ def test_not_supported_marginalized_deterministic_and_potential():
         (
             transforms.Interval(0, 2),
             pytest.warns(
-                UserWarning, match="which depends on the marginalized idx may no longer work"
+                UserWarning,
+                match="which depends on the marginalized idx may no longer work",
             ),
         ),
         (
             transforms.Chain([transforms.log, transforms.Interval(-1, 1)]),
             pytest.warns(
-                UserWarning, match="which depends on the marginalized idx may no longer work"
+                UserWarning,
+                match="which depends on the marginalized idx may no longer work",
             ),
         ),
     ),
@@ -842,7 +842,7 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(posterior=dict_to_dataset(prior))
+            idata = xr.DataTree.from_dict({"posterior": dict_to_dataset(prior)})
 
         if explicit_model:
             idata = recover_marginals(idata, model=marginal_m, return_samples=True)
@@ -889,8 +889,8 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(
-                posterior=dict_to_dataset({k: np.expand_dims(prior[k], axis=0) for k in prior})
+            idata = xr.DataTree.from_dict(
+                {"posterior": dict_to_dataset({k: np.expand_dims(prior[k], axis=0) for k in prior})}
             )
 
         with marginal_m:
@@ -916,8 +916,8 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(
-                posterior=dict_to_dataset({k: np.expand_dims(prior[k], axis=0) for k in prior})
+            idata = xr.DataTree.from_dict(
+                {"posterior": dict_to_dataset({k: np.expand_dims(prior[k], axis=0) for k in prior})}
             )
 
             idata = recover_marginals(idata, return_samples=True)
@@ -944,7 +944,7 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = InferenceData(posterior=dict_to_dataset(prior))
+            idata = xr.DataTree.from_dict({"posterior": dict_to_dataset(prior)})
 
             idata = recover_marginals(idata, return_samples=True)
         post = idata.posterior

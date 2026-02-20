@@ -18,11 +18,7 @@ from importlib.metadata import version
 from pymc_extras import gp, statespace, utils
 from pymc_extras.distributions import *
 from pymc_extras.inference import find_MAP, fit, fit_laplace, fit_pathfinder
-from pymc_extras.model.marginal.marginal_model import (
-    MarginalModel,
-    marginalize,
-    recover_marginals,
-)
+from pymc_extras.model.marginal.marginal_model import MarginalModel, marginalize, recover_marginals
 from pymc_extras.model.model_api import as_model
 
 _log = logging.getLogger("pmx")

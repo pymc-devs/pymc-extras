@@ -5,9 +5,9 @@ from pymc_extras.statespace.models.SARIMAX import BayesianSARIMAX
 from pymc_extras.statespace.models.VARMAX import BayesianVARMAX
 
 __all__ = [
+    "BayesianDynamicFactor",
+    "BayesianETS",
     "BayesianSARIMAX",
     "BayesianVARMAX",
-    "BayesianETS",
-    "BayesianDynamicFactor",
     "structural",
 ]

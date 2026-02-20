@@ -13,19 +13,9 @@ from pymc_extras.statespace.filters.distributions import (
     SequenceMvNormal,
     _LinearGaussianStateSpace,
 )
-from pymc_extras.statespace.utils.constants import (
-    ALL_STATE_DIM,
-    OBS_STATE_DIM,
-    TIME_DIM,
-)
-from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
-    rng,
-)
-from tests.statespace.test_utilities import (
-    delete_rvs_from_model,
-    fast_eval,
-    load_nile_test_data,
-)
+from pymc_extras.statespace.utils.constants import ALL_STATE_DIM, OBS_STATE_DIM, TIME_DIM
+from tests.statespace.shared_fixtures import rng  # pylint: disable=unused-import
+from tests.statespace.test_utilities import delete_rvs_from_model, fast_eval, load_nile_test_data
 
 floatX = pytensor.config.floatX
 

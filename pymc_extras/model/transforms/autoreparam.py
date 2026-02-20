@@ -46,7 +46,9 @@ class VIP:
     _logit_lambda: dict[str, pytensor.tensor.sharedvar.TensorSharedVariable]
 
     @property
-    def variational_parameters(self) -> list[pytensor.tensor.sharedvar.TensorSharedVariable]:
+    def variational_parameters(
+        self,
+    ) -> list[pytensor.tensor.sharedvar.TensorSharedVariable]:
         r"""Return raw :math:`\operatorname{logit}(\lambda_k)` for custom optimization.
 
         Examples

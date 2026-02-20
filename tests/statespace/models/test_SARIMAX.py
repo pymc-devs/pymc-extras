@@ -16,13 +16,8 @@ from pymc_extras.statespace.models.utilities import (
     make_harvey_state_names,
     make_SARIMA_transition_matrix,
 )
-from pymc_extras.statespace.utils.constants import (
-    SARIMAX_STATE_STRUCTURES,
-    SHORT_NAME_TO_LONG,
-)
-from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
-    rng,
-)
+from pymc_extras.statespace.utils.constants import SARIMAX_STATE_STRUCTURES, SHORT_NAME_TO_LONG
+from tests.statespace.shared_fixtures import rng  # pylint: disable=unused-import
 from tests.statespace.test_utilities import (
     load_nile_test_data,
     make_stationary_params,
@@ -46,7 +41,16 @@ test_state_names = [
     ["data", "D1.data", "data_star", "state_star_1", "state_star_2"],
     ["data", "D1.data", "D1^2.data", "data_star", "state_star_1", "state_star_2"],
     ["data", "state_1", "state_2", "state_3"],
-    ["data", "state_1", "state_2", "state_3", "state_4", "state_5", "state_6", "state_7"],
+    [
+        "data",
+        "state_1",
+        "state_2",
+        "state_3",
+        "state_4",
+        "state_5",
+        "state_6",
+        "state_7",
+    ],
     [
         "data",
         "state_1",
@@ -214,7 +218,9 @@ def pymc_mod_interp(arima_mod_interp):
         x0 = pm.Normal("x0", dims=["state"])
         P0_sigma = pm.Exponential("P0_sigma", 1)
         P0 = pm.Deterministic(
-            "P0", pt.eye(arima_mod_interp.k_states) * P0_sigma, dims=["state", "state_aux"]
+            "P0",
+            pt.eye(arima_mod_interp.k_states) * P0_sigma,
+            dims=["state", "state_aux"],
         )
         ar_params = pm.Normal("ar_params", sigma=0.1, dims=["lag_ar"])
         ma_params = pm.Normal("ma_params", sigma=1, dims=["lag_ma"])
@@ -279,7 +285,10 @@ def test_SARIMAX_update_matches_statsmodels(p, d, q, P, D, Q, S, data, rng):
 
     res = sm_sarimax.fit_constrained(param_d)
     mod = BayesianSARIMAX(
-        order=(p, d, q), seasonal_order=(P, D, Q, S), verbose=False, stationary_initialization=False
+        order=(p, d, q),
+        seasonal_order=(P, D, Q, S),
+        verbose=False,
+        stationary_initialization=False,
     )
 
     with pm.Model() as pm_mod:
@@ -338,7 +347,8 @@ def test_all_prior_covariances_are_PSD(filter_output, pymc_mod, rng):
 
 def test_interpretable_raises_if_d_nonzero():
     with pytest.raises(
-        ValueError, match="Cannot use interpretable state structure with statespace differencing"
+        ValueError,
+        match="Cannot use interpretable state structure with statespace differencing",
     ):
         BayesianSARIMAX(
             order=(2, 1, 1),

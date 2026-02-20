@@ -3,7 +3,7 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.core import PyMCStateSpace
+from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.filters.distributions import LinearGaussianStateSpace
 from pymc_extras.statespace.utils.constants import SHORT_NAME_TO_LONG
 

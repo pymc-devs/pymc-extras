@@ -18,11 +18,7 @@ Experimental probability distributions for stochastic nodes in PyMC.
 """
 
 from pymc_extras.distributions.continuous import Chi, GenExtreme, Maxwell
-from pymc_extras.distributions.discrete import (
-    BetaNegativeBinomial,
-    GeneralizedPoisson,
-    Skellam,
-)
+from pymc_extras.distributions.discrete import BetaNegativeBinomial, GeneralizedPoisson, Skellam
 from pymc_extras.distributions.histogram_utils import histogram_approximation
 from pymc_extras.distributions.multivariate import R2D2M2CP
 from pymc_extras.distributions.timeseries import DiscreteMarkovChain

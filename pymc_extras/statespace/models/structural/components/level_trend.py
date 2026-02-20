@@ -3,12 +3,7 @@ import warnings
 import numpy as np
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import Coord, Parameter, Shock, State
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import order_to_mask
 from pymc_extras.statespace.utils.constants import POSITION_DERIVATIVE_NAMES
@@ -178,7 +173,8 @@ class LevelTrend(Component):
             measurement_error=False,
             combine_hidden_states=False,
             obs_state_idxs=np.tile(
-                np.array([1.0] + [0.0] * (k_states - 1)), k_endog if not share_states else 1
+                np.array([1.0] + [0.0] * (k_states - 1)),
+                k_endog if not share_states else 1,
             ),
             share_states=share_states,
         )
@@ -210,20 +206,24 @@ class LevelTrend(Component):
 
         initial_param = Parameter(
             name=f"initial_{self.name}",
-            shape=(k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,),
-            dims=(f"endog_{self.name}", f"state_{self.name}")
-            if k_endog_effective > 1
-            else (f"state_{self.name}",),
+            shape=((k_endog_effective, k_states) if k_endog_effective > 1 else (k_states,)),
+            dims=(
+                (f"endog_{self.name}", f"state_{self.name}")
+                if k_endog_effective > 1
+                else (f"state_{self.name}",)
+            ),
             constraints=None,
         )
 
         if self.k_posdef > 0:
             sigma_param = Parameter(
                 name=f"sigma_{self.name}",
-                shape=(k_posdef,) if k_endog_effective == 1 else (k_endog_effective, k_posdef),
-                dims=(f"shock_{self.name}",)
-                if k_endog_effective == 1
-                else (f"endog_{self.name}", f"shock_{self.name}"),
+                shape=((k_posdef,) if k_endog_effective == 1 else (k_endog_effective, k_posdef)),
+                dims=(
+                    (f"shock_{self.name}",)
+                    if k_endog_effective == 1
+                    else (f"endog_{self.name}", f"shock_{self.name}")
+                ),
                 constraints="Positive",
             )
             return initial_param, sigma_param
@@ -317,7 +317,8 @@ class LevelTrend(Component):
             )
         else:
             self.ssm["design", :, :] = pt.specify_shape(
-                pt.linalg.block_diag(*[Z for _ in range(k_endog)]), (self.k_endog, self.k_states)
+                pt.linalg.block_diag(*[Z for _ in range(k_endog)]),
+                (self.k_endog, self.k_states),
             )
 
         if k_posdef > 0:

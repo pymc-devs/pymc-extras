@@ -13,7 +13,6 @@
 #   limitations under the License.
 
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import pytest
@@ -34,7 +33,10 @@ import pymc_extras as pmx
             dict(name="a", transform=transforms.log, dims=None),
         ),
         (("a", dict(name="b")), dict(name="b", transform=None, dims=None)),
-        (("a", dict(name="b", dims="test")), dict(name="b", transform=None, dims="test")),
+        (
+            ("a", dict(name="b", dims="test")),
+            dict(name="b", transform=None, dims="test"),
+        ),
         (("a", ("test",)), dict(name="a", transform=None, dims=("test",))),
     ],
 )
@@ -98,13 +100,19 @@ def idata(transformed_data, param_cfg):
             var = orig
         assert not np.isnan(var).any()
         vars[k] = var
-    return az.convert_to_inference_data(vars)
+    # Create DataTree with posterior group for ArviZ 1.0 compatibility
+    import xarray as xr
+
+    from arviz import dict_to_dataset
+
+    posterior_ds = dict_to_dataset(vars)
+    return xr.DataTree.from_dict({"posterior": xr.DataTree(posterior_ds)})
 
 
 def test_idata_for_tests(idata, param_cfg):
-    assert set(idata.posterior.keys()) == set(param_cfg)
-    assert len(idata.posterior.coords["chain"]) == 4
-    assert len(idata.posterior.coords["draw"]) == 100
+    assert set(idata["posterior"].keys()) == set(param_cfg)
+    assert len(idata["posterior"].coords["chain"]) == 4
+    assert len(idata["posterior"].coords["draw"]) == 100
 
 
 def test_args_compose():

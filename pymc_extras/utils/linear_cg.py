@@ -26,7 +26,14 @@ def masked_fill(vector, mask, fill_value):
 
 
 def linear_cg_updates(
-    result, alpha, residual_inner_prod, eps, beta, residual, precond_residual, curr_conjugate_vec
+    result,
+    alpha,
+    residual_inner_prod,
+    eps,
+    beta,
+    residual,
+    precond_residual,
+    curr_conjugate_vec,
 ):
     # Everything inside _jit_linear_cg_updates
     result = result + alpha * curr_conjugate_vec

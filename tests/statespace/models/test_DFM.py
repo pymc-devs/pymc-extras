@@ -213,7 +213,13 @@ def unpack_symbolic_matrices_with_params(mod, param_dict, data_dict=None, mode="
 
 
 def simulate_from_numpy_model(
-    mod, rng, param_dict, data_dict=None, steps=100, state_shocks=None, measurement_shocks=None
+    mod,
+    rng,
+    param_dict,
+    data_dict=None,
+    steps=100,
+    state_shocks=None,
+    measurement_shocks=None,
 ):
     x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(mod, param_dict, data_dict)
     k_endog = mod.k_endog
@@ -472,9 +478,11 @@ class TestDFMConfiguration:
             ),
             FACTOR_DIM: ("factor_1", "factor_2"),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
+            ERROR_AR_PARAM_DIM: (
+                tuple(range(1, (error_order * k_endog) + 1))
+                if error_var
+                else tuple(range(1, error_order + 1))
+            ),
         }
 
         assert mod.param_names == expected_param_names
@@ -541,9 +549,11 @@ class TestDFMConfiguration:
             ),
             FACTOR_DIM: ("factor_1",),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
+            ERROR_AR_PARAM_DIM: (
+                tuple(range(1, (error_order * k_endog) + 1))
+                if error_var
+                else tuple(range(1, error_order + 1))
+            ),
         }
 
         assert mod.param_names == expected_param_names
@@ -619,12 +629,16 @@ class TestDFMConfiguration:
             ),
             FACTOR_DIM: ("factor_1", "factor_2"),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
-            EXOG_STATE_DIM: tuple(range(1, k_exog + 1))
-            if shared_exog_states
-            else tuple(range(1, k_exog * k_endog + 1)),
+            ERROR_AR_PARAM_DIM: (
+                tuple(range(1, (error_order * k_endog) + 1))
+                if error_var
+                else tuple(range(1, error_order + 1))
+            ),
+            EXOG_STATE_DIM: (
+                tuple(range(1, k_exog + 1))
+                if shared_exog_states
+                else tuple(range(1, k_exog * k_endog + 1))
+            ),
         }
 
         assert mod.param_names == expected_param_names
@@ -702,12 +716,16 @@ class TestDFMConfiguration:
             ),
             FACTOR_DIM: ("factor_1",),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
-            EXOG_STATE_DIM: tuple(range(1, k_exog + 1))
-            if shared_exog_states
-            else tuple(range(1, k_exog * k_endog + 1)),
+            ERROR_AR_PARAM_DIM: (
+                tuple(range(1, (error_order * k_endog) + 1))
+                if error_var
+                else tuple(range(1, error_order + 1))
+            ),
+            EXOG_STATE_DIM: (
+                tuple(range(1, k_exog + 1))
+                if shared_exog_states
+                else tuple(range(1, k_exog * k_endog + 1))
+            ),
         }
 
         assert mod.param_names == expected_param_names

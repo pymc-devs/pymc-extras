@@ -38,14 +38,14 @@ def test_fit_dadvi_basic(mode, gradient_backend):
             gradient_backend=gradient_backend,
         )
 
-    assert idata.posterior["mu"].shape == (1, draws)
-    assert idata.posterior["logsigma"].shape == (1, draws)
-    assert idata.observed_data["y"].shape == (n,)
+    assert idata["posterior"]["mu"].shape == (1, draws)
+    assert idata["posterior"]["logsigma"].shape == (1, draws)
+    assert idata["observed_data"]["y"].shape == (n,)
 
     bda_map = [y.mean(), np.log(y.std())]
 
-    np.testing.assert_allclose(idata.posterior["mu"].mean(), bda_map[0], atol=1, rtol=1e-1)
-    np.testing.assert_allclose(idata.posterior["logsigma"].mean(), bda_map[1], atol=1, rtol=1e-1)
+    np.testing.assert_allclose(idata["posterior"]["mu"].mean(), bda_map[0], atol=1, rtol=1e-1)
+    np.testing.assert_allclose(idata["posterior"]["logsigma"].mean(), bda_map[1], atol=1, rtol=1e-1)
 
 
 def test_fit_dadvi_outside_model_context():
@@ -91,16 +91,20 @@ def test_fit_dadvi_coords(include_transformed, rng):
         )
 
     np.testing.assert_allclose(
-        idata.posterior.mu.mean(dim=["chain", "draw"]).values, np.full((3,), 3), atol=0.5
+        idata["posterior"].mu.mean(dim=["chain", "draw"]).values,
+        np.full((3,), 3),
+        atol=0.5,
     )
     np.testing.assert_allclose(
-        idata.posterior.sigma.mean(dim=["chain", "draw"]).values, np.full((3,), 1.5), atol=0.3
+        idata["posterior"].sigma.mean(dim=["chain", "draw"]).values,
+        np.full((3,), 1.5),
+        atol=0.3,
     )
 
     if include_transformed:
         assert "unconstrained_posterior" in idata
-        assert "sigma_log__" in idata.unconstrained_posterior
-        assert "city" in idata.unconstrained_posterior.coords
+        assert "sigma_log__" in idata["unconstrained_posterior"]
+        assert "city" in idata["unconstrained_posterior"].coords
 
 
 def test_fit_dadvi_ragged_coords(rng):
@@ -108,7 +112,9 @@ def test_fit_dadvi_ragged_coords(rng):
     with pm.Model(coords=coords) as ragged_dim_model:
         X = pm.Data("X", np.ones((100, 2)), dims=["obs_idx", "feature"])
         beta = pm.Normal(
-            "beta", mu=[[-100.0, 100.0], [-100.0, 100.0], [-100.0, 100.0]], dims=["city", "feature"]
+            "beta",
+            mu=[[-100.0, 100.0], [-100.0, 100.0], [-100.0, 100.0]],
+            dims=["city", "feature"],
         )
         mu = pm.Deterministic(
             "mu", (X[:, None, :] * beta[None]).sum(axis=-1), dims=["obs_idx", "city"]
@@ -168,8 +174,8 @@ def test_dadvi_basinhopping(method, use_grad, use_hess, use_hessp, rng):
     assert hasattr(idata, "posterior")
     assert hasattr(idata, "unconstrained_posterior")
 
-    posterior = idata.posterior
-    unconstrained_posterior = idata.unconstrained_posterior
+    posterior = idata["posterior"]
+    unconstrained_posterior = idata["unconstrained_posterior"]
     assert "mu" in posterior
     assert posterior["mu"].shape == (1, 100)
 

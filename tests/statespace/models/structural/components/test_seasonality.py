@@ -86,7 +86,10 @@ def test_time_seasonality_multiple_observed(rng, d, remove_first_state):
     x0[0, 0] = 1
     x0[1, 0] = 2.0
 
-    params = {"params_season": x0, "sigma_season": np.array([0.0, 0.0], dtype=config.floatX)}
+    params = {
+        "params_season": x0,
+        "sigma_season": np.array([0.0, 0.0], dtype=config.floatX),
+    }
 
     x, y = simulate_from_numpy_model(mod, rng, params, steps=123 * d)
     assert_pattern_repeats(y[:, 0], s * d, atol=ATOL, rtol=RTOL)
@@ -116,7 +119,10 @@ def test_time_seasonality_multiple_observed(rng, d, remove_first_state):
     if remove_first_state:
         expected_x0 = np.repeat(np.array([1.0, 0.0, 2.0, 0.0]), d)
         expected_T = np.block(
-            [[T0, np.zeros((d * (s - 1), d * (s - 1)))], [np.zeros((d * (s - 1), d * (s - 1))), T0]]
+            [
+                [T0, np.zeros((d * (s - 1), d * (s - 1)))],
+                [np.zeros((d * (s - 1), d * (s - 1))), T0],
+            ]
         )
         expected_R = np.array(
             [[1.0, 1.0]] + [[0.0, 0.0]] * (2 * d - 1) + [[1.0, 1.0]] + [[0.0, 0.0]] * (2 * d - 1)
@@ -174,7 +180,9 @@ def test_time_seasonality_shared_states():
     assert mod.shock_names == ("season[shared]",)
 
     Z, T, R = pytensor.function(
-        [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
+        [],
+        [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]],
+        mode="FAST_COMPILE",
     )()
 
     np.testing.assert_allclose(np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), Z)
@@ -225,11 +233,14 @@ def test_add_mixed_shared_not_shared_time_seasonality():
     )
 
     Z, T, R = pytensor.function(
-        [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
+        [],
+        [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]],
+        mode="FAST_COMPILE",
     )()
 
     np.testing.assert_allclose(
-        np.array([[1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]]), Z
+        np.array([[1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]]),
+        Z,
     )
 
     np.testing.assert_allclose(
@@ -331,7 +342,10 @@ def test_add_two_time_seasonality_different_observed(rng, d1, d2):
     T2 = mod2.ssm["transition"].eval()
     np.testing.assert_allclose(
         np.block(
-            [[T1, np.zeros((T1.shape[0], T2.shape[1]))], [np.zeros((T2.shape[0], T1.shape[1])), T2]]
+            [
+                [T1, np.zeros((T1.shape[0], T2.shape[1]))],
+                [np.zeros((T2.shape[0], T1.shape[1])), T2],
+            ]
         ),
         T,
         atol=ATOL,
@@ -507,7 +521,9 @@ def test_frequency_seasonality_multivariate_shared_states():
     assert mod.coords["state_season"] == ("Cos_0_season", "Sin_0_season")
 
     Z, T, R = pytensor.function(
-        [], [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]], mode="FAST_COMPILE"
+        [],
+        [mod.ssm["design"], mod.ssm["transition"], mod.ssm["selection"]],
+        mode="FAST_COMPILE",
     )()
 
     np.testing.assert_allclose(np.array([[1.0, 0.0], [1.0, 0.0]]), Z)

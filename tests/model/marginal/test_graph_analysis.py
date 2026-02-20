@@ -127,7 +127,8 @@ class TestSubgraphBatchDimConnection:
 
         out = inp[None, :, None, :] + inp[:, None, :, None]
         with pytest.raises(
-            ValueError, match="Same known dimension used in different axis after broadcasting"
+            ValueError,
+            match="Same known dimension used in different axis after broadcasting",
         ):
             subgraph_batch_dim_connection(inp, [out])
 

@@ -73,7 +73,9 @@ def unstable_lbfgs_update_mask_model() -> pm.Model:
         mu = pm.Normal("intercept", sigma=3.5)[None]
 
         offset = pm.Normal(
-            "offset", dims=("inp"), transform=pm.distributions.transforms.ZeroSumTransform([0])
+            "offset",
+            dims=("inp"),
+            transform=pm.distributions.transforms.ZeroSumTransform([0]),
         )
 
         scale = 3.5 * pm.HalfStudentT("scale", nu=5)
@@ -158,7 +160,10 @@ def test_pathfinder(inference_backend, reference_idata):
 
 @pytest.mark.parametrize(
     "concurrent",
-    [pytest.param("thread", marks=pytest.mark.skip(reason="CI hangs on Windows")), "process"],
+    [
+        pytest.param("thread", marks=pytest.mark.skip(reason="CI hangs on Windows")),
+        "process",
+    ],
 )
 def test_concurrent_results(reference_idata, concurrent):
     model = eight_schools_model()

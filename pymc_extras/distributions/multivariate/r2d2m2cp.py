@@ -429,7 +429,9 @@ def R2D2M2CP(
             dims=dims,
         )
         mask, psi = _psi(
-            positive_probs=positive_probs, positive_probs_std=positive_probs_std, dims=dims
+            positive_probs=positive_probs,
+            positive_probs_std=positive_probs_std,
+            dims=dims,
         )
 
     beta = _R2D2M2CP_beta(
