@@ -22,7 +22,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum, auto
-from typing import Literal, Self, TypeAlias
+from typing import Any, Literal, Self, TypeAlias
 
 import arviz as az
 import filelock
@@ -69,6 +69,8 @@ from pymc_extras.inference.pathfinder.lbfgs import (
     LBFGSException,
     LBFGSInitFailed,
     LBFGSStatus,
+    _CachedValueGrad,
+    _check_lbfgs_curvature_condition,
 )
 
 logger = logging.getLogger(__name__)
@@ -292,22 +294,22 @@ def alpha_recover(
     return alpha, s, z
 
 
-def inverse_hessian_factors(
+def inverse_hessian_factors_from_SZ(
     alpha: TensorVariable,
-    s: TensorVariable,
-    z: TensorVariable,
+    S: TensorVariable,
+    Z: TensorVariable,
     J: TensorConstant,
 ) -> tuple[TensorVariable, TensorVariable]:
-    """compute the inverse hessian factors for the BFGS approximation.
+    """compute inverse Hessian factors from pre-built chi matrices.
 
     Parameters
     ----------
     alpha : TensorVariable
-        diagonal scaling matrix, shape (L, N)
-    s : TensorVariable
-        position differences, shape (L, N)
-    z : TensorVariable
-        gradient differences, shape (L, N)
+        diagonal scaling vector, shape (L, N)
+    S : TensorVariable
+        sliding window of s-diffs, shape (L, N, J)
+    Z : TensorVariable
+        sliding window of z-diffs, shape (L, N, J)
     J : TensorConstant
         history size for L-BFGS
 
@@ -323,52 +325,7 @@ def inverse_hessian_factors(
     shapes: L=batch_size, N=num_params, J=history_size
     """
 
-    # NOTE: get_chi_matrix_1 is a modified version of get_chi_matrix_2 to closely follow Zhang et al., (2022)
-    # NOTE: get_chi_matrix_2 is from blackjax which MAYBE incorrectly implemented
-
-    def get_chi_matrix_1(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
-        L, N = diff.shape
-        j_last = pt.as_tensor(J - 1)  # since indexing starts at 0
-
-        def chi_update(diff_l, chi_lm1) -> TensorVariable:
-            chi_l = pt.roll(chi_lm1, -1, axis=0)
-            return pt.set_subtensor(chi_l[j_last], diff_l)
-
-        chi_init = pt.zeros((J, N))
-        chi_mat = pytensor.scan(
-            fn=chi_update,
-            outputs_info=chi_init,
-            sequences=[diff],
-            allow_gc=False,
-            return_updates=False,
-        )
-
-        chi_mat = pt.matrix_transpose(chi_mat)
-
-        # (L, N, J)
-        return chi_mat
-
-    def get_chi_matrix_2(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
-        L, N = diff.shape
-
-        # diff_padded: (L+J, N)
-        pad_width = pt.zeros(shape=(2, 2), dtype="int32")
-        pad_width = pt.set_subtensor(pad_width[0, 0], J - 1)
-        diff_padded = pt.pad(diff, pad_width, mode="constant")
-
-        index = pt.arange(L)[..., None] + pt.arange(J)[None, ...]
-        index = index.reshape((L, J))
-
-        chi_mat = pt.matrix_transpose(diff_padded[index])
-
-        # (L, N, J)
-        return chi_mat
-
-    L, N = alpha.shape
-
-    # changed to get_chi_matrix_2 after removing update_mask
-    S = get_chi_matrix_2(s, J)
-    Z = get_chi_matrix_2(z, J)
+    L = alpha.shape[0]
 
     # E: (L, J, J)
     Ij = pt.eye(J)[None, ...]
@@ -408,6 +365,83 @@ def inverse_hessian_factors(
     gamma = pt.concatenate([gamma_top, gamma_bottom], axis=1)
 
     return beta, gamma
+
+
+def inverse_hessian_factors(
+    alpha: TensorVariable,
+    s: TensorVariable,
+    z: TensorVariable,
+    J: TensorConstant,
+) -> tuple[TensorVariable, TensorVariable]:
+    """compute the inverse hessian factors for the BFGS approximation.
+
+    Parameters
+    ----------
+    alpha : TensorVariable
+        diagonal scaling matrix, shape (L, N)
+    s : TensorVariable
+        position differences, shape (L, N)
+    z : TensorVariable
+        gradient differences, shape (L, N)
+    J : TensorConstant
+        history size for L-BFGS
+
+    Returns
+    -------
+    beta : TensorVariable
+        low-rank update matrix, shape (L, N, 2J)
+    gamma : TensorVariable
+        low-rank update matrix, shape (L, 2J, 2J)
+
+    Notes
+    -----
+    shapes: L=batch_size, N=num_params, J=history_size
+    """
+
+    # NOTE: get_chi_matrix_1 is a modified version of get_chi_matrix_2 to closely follow Zhang et al., (2022)
+    # NOTE: get_chi_matrix_2 is from blackjax which MAYBE incorrectly implemented
+    def get_chi_matrix_1(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
+        L, N = diff.shape
+        j_last = pt.as_tensor(J - 1)  # since indexing starts at 0
+
+        def chi_update(diff_l, chi_lm1) -> TensorVariable:
+            chi_l = pt.roll(chi_lm1, -1, axis=0)
+            return pt.set_subtensor(chi_l[j_last], diff_l)
+
+        chi_init = pt.zeros((J, N))
+        chi_mat = pytensor.scan(
+            fn=chi_update,
+            outputs_info=chi_init,
+            sequences=[diff],
+            allow_gc=False,
+            return_updates=False,
+        )
+
+        chi_mat = pt.matrix_transpose(chi_mat)
+
+        # (L, N, J)
+        return chi_mat
+
+    def get_chi_matrix_2(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
+        L = diff.shape[0]
+
+        # diff_padded: (L+J, N)
+        pad_width = pt.zeros(shape=(2, 2), dtype="int32")
+        pad_width = pt.set_subtensor(pad_width[0, 0], J - 1)
+        diff_padded = pt.pad(diff, pad_width, mode="constant")
+
+        index = pt.arange(L)[..., None] + pt.arange(J)[None, ...]
+        index = index.reshape((L, J))
+
+        chi_mat = pt.matrix_transpose(diff_padded[index])
+
+        # (L, N, J)
+        return chi_mat
+
+    S = get_chi_matrix_2(s, J)
+    Z = get_chi_matrix_2(z, J)
+
+    return inverse_hessian_factors_from_SZ(alpha, S, Z, J)
 
 
 def bfgs_sample_dense(
@@ -668,6 +702,34 @@ def bfgs_sample(
     return phi, logQ_phi
 
 
+def alpha_step_numpy(alpha_prev: NDArray, s: NDArray, z: NDArray) -> NDArray:
+    """Pure-numpy single-step alpha update. Stays in sync with compute_alpha_l in alpha_recover.
+
+    Parameters
+    ----------
+    alpha_prev : NDArray
+        previous alpha vector, shape (N,)
+    s : NDArray
+        position diff x[l] - x[l-1], shape (N,)
+    z : NDArray
+        gradient diff g[l] - g[l-1], shape (N,)
+
+    Returns
+    -------
+    NDArray
+        updated alpha, shape (N,)
+    """
+    a = np.sum(alpha_prev * z**2)
+    b = np.sum(z * s)
+    c = np.sum(s**2 / alpha_prev)
+    inv_alpha = (
+        a / (b * alpha_prev)
+        + z**2 / b
+        - (a * s**2) / (b * c * alpha_prev**2)
+    )  # fmt: off
+    return 1.0 / inv_alpha
+
+
 class LogLike(Op):
     """
     Op that computes the densities using vectorised operations.
@@ -755,7 +817,7 @@ def make_pathfinder_body(
     num_draws: int,
     maxcor: int,
     num_elbo_draws: int,
-    **compile_kwargs: dict,
+    **compile_kwargs: Any,
 ) -> Function:
     """
     computes the inner components of the Pathfinder algorithm (post-LBFGS) using PyTensor variables and returns a compiled pytensor.function.
@@ -841,7 +903,7 @@ def make_elbo_fn(
     logp_func: Callable,
     maxcor: int,
     num_elbo_draws: int,
-    **compile_kwargs: dict,
+    **compile_kwargs: Any,
 ) -> Function:
     """
     Compile a function returning per-step ELBO values from LBFGS history.
@@ -888,6 +950,202 @@ def make_elbo_fn(
     return elbo_fn
 
 
+def make_step_elbo_fn(
+    logp_func: Callable,
+    maxcor: int,
+    num_elbo_draws: int,
+    **compile_kwargs: Any,
+) -> Function:
+    """Compile a single-step ELBO function for use inside the streaming LBFGS callback.
+
+    Parameters
+    ----------
+    logp_func : Callable
+        The target log-density function.
+    maxcor : int
+        L-BFGS history size (J).
+    num_elbo_draws : int
+        Number of Monte Carlo draws for ELBO estimation.
+    compile_kwargs : dict
+        Additional keyword arguments for the PyTensor compiler.
+
+    Returns
+    -------
+    Function
+        Compiled function: inputs (alpha_l, s_win, z_win, x_l, g_l), output scalar ELBO.
+        alpha_l: (N,), s_win: (N, J), z_win: (N, J), x_l: (N,), g_l: (N,)
+    """
+    J = pt.constant(maxcor, "maxcor", dtype="int32")
+    M = pt.constant(num_elbo_draws, "num_elbo_draws", dtype="int32")
+
+    alpha_l = pt.vector("alpha_l", dtype="float64")  # (N,)
+    s_win = pt.matrix("s_win", dtype="float64")  # (N, J)
+    z_win = pt.matrix("z_win", dtype="float64")  # (N, J)
+    x_l = pt.vector("x_l", dtype="float64")  # (N,)
+    g_l = pt.vector("g_l", dtype="float64")  # (N,)
+
+    # Add batch dim: (1, N, J) — no transpose needed since s_win is already (N, J)
+    S_l = s_win[None, :, :]
+    Z_l = z_win[None, :, :]
+    beta_l, gamma_l = inverse_hessian_factors_from_SZ(alpha_l[None], S_l, Z_l, J)
+
+    phi, logQ = bfgs_sample(M, x_l[None], g_l[None], alpha_l[None], beta_l, gamma_l)
+    logP = LogLike(logp_func)(phi)
+    elbo = pt.mean(logP - logQ)
+
+    fn = compile([alpha_l, s_win, z_win, x_l, g_l], [elbo], **compile_kwargs)
+    fn.trust_input = True
+    return fn
+
+
+def make_step_sample_fn(
+    logp_func: Callable,
+    num_draws: int,
+    maxcor: int,
+    **compile_kwargs: Any,
+) -> Function:
+    """Compile a single-step sample function for drawing from the best local approximation.
+
+    Parameters
+    ----------
+    logp_func : Callable
+        The target log-density function.
+    num_draws : int
+        Number of samples to draw.
+    maxcor : int
+        L-BFGS history size (J).
+    compile_kwargs : dict
+        Additional keyword arguments for the PyTensor compiler.
+
+    Returns
+    -------
+    Function
+        Compiled function: inputs (alpha_l, s_win, z_win, x_l, g_l),
+        outputs (psi, logP_psi, logQ_psi) of shapes (1, M, N), (1, M), (1, M).
+    """
+    J = pt.constant(maxcor, "maxcor", dtype="int32")
+    M = pt.constant(num_draws, "num_draws", dtype="int32")
+
+    alpha_l = pt.vector("alpha_l", dtype="float64")
+    s_win = pt.matrix("s_win", dtype="float64")
+    z_win = pt.matrix("z_win", dtype="float64")
+    x_l = pt.vector("x_l", dtype="float64")
+    g_l = pt.vector("g_l", dtype="float64")
+
+    S_l = s_win[None, :, :]
+    Z_l = z_win[None, :, :]
+    beta_l, gamma_l = inverse_hessian_factors_from_SZ(alpha_l[None], S_l, Z_l, J)
+
+    psi, logQ_psi = bfgs_sample(M, x_l[None], g_l[None], alpha_l[None], beta_l, gamma_l)
+    logP_psi = LogLike(logp_func)(psi)
+
+    fn = compile([alpha_l, s_win, z_win, x_l, g_l], [psi, logP_psi, logQ_psi], **compile_kwargs)
+    fn.trust_input = True
+    return fn
+
+
+class LBFGSStreamingCallback:
+    """Streaming LBFGS callback: computes ELBO at each accepted step, O(J*N + M*N) peak memory.
+
+    Replaces LBFGSHistoryManager when streaming=True. Instead of collecting the full
+    (L+1, N) history, it processes each accepted step immediately and tracks only the
+    best state seen so far.
+
+    Parameters
+    ----------
+    value_grad_fn : Callable
+        Single-entry cached value/gradient function (wrap with _CachedValueGrad).
+    x0 : NDArray
+        Initial position, shape (N,).
+    step_elbo_fn : Callable
+        Compiled ELBO function from make_step_elbo_fn.
+    J : int
+        L-BFGS history size (maxcor).
+    epsilon : float
+        Tolerance for the LBFGS update condition (same as in LBFGSHistoryManager).
+    """
+
+    def __init__(
+        self,
+        value_grad_fn: Callable,
+        x0: NDArray,
+        step_elbo_fn: Callable,
+        J: int,
+        epsilon: float,
+    ) -> None:
+        self.value_grad_fn = value_grad_fn
+        self.step_elbo_fn = step_elbo_fn
+        self.J = J
+        self.epsilon = epsilon
+
+        N = x0.shape[0]
+        _, g0 = value_grad_fn(x0)
+
+        self.x_prev: NDArray = x0.copy()
+        self.g_prev: NDArray = np.array(g0, dtype=np.float64)
+        self.alpha_prev: NDArray = np.ones(N, dtype=np.float64)
+        self.s_win: NDArray = np.zeros((N, J), dtype=np.float64)  # (N, J) ring buffer
+        self.z_win: NDArray = np.zeros((N, J), dtype=np.float64)
+        self.win_idx: int = -1
+        self.best_elbo: float = -np.inf
+        self.best_state: dict = {}
+        self.best_step_idx: int = 0
+        self.step_count: int = 0
+        self.any_valid: bool = False
+
+    def __call__(self, x: NDArray) -> None:
+        # Step 1: get (value, grad) — free if _CachedValueGrad wrapper is used
+        value, g = self.value_grad_fn(x)
+
+        # Step 2: compute diffs before entry check (shared computation)
+        s = x - self.x_prev
+        z = g - self.g_prev
+
+        # Step 3: entry condition (same logic as LBFGSHistoryManager for non-initial steps)
+        if not (np.all(np.isfinite(g)) and np.isfinite(value)):
+            return
+        if not _check_lbfgs_curvature_condition(s, z, self.epsilon):
+            return
+
+        # Step 4: alpha update (pure numpy, O(N))
+        alpha = alpha_step_numpy(self.alpha_prev, s, z)
+
+        # Step 5: ring-buffer column write — O(N), no allocation
+        self.win_idx = (self.win_idx + 1) % self.J
+        self.s_win[:, self.win_idx] = s
+        self.z_win[:, self.win_idx] = z
+
+        # Step 6: ELBO computation — catch PathInvalidLogP (B9)
+        try:
+            (elbo,) = self.step_elbo_fn(alpha, self.s_win, self.z_win, x, g)
+            elbo = float(elbo)
+        except PathInvalidLogP:
+            elbo = -np.inf
+
+        # Step 7: validity tracking
+        if np.isfinite(elbo):
+            self.any_valid = True
+
+        # Step 8: update best state
+        if elbo > self.best_elbo:
+            self.best_elbo = elbo
+            self.best_state = {
+                "alpha": alpha.copy(),
+                "s_win": self.s_win.copy(),
+                "z_win": self.z_win.copy(),
+                "win_idx": self.win_idx,
+                "x": x.copy(),
+                "g": g.copy(),
+            }
+            self.best_step_idx = self.step_count
+
+        # Step 9: advance state
+        self.alpha_prev = alpha
+        self.x_prev = x.copy()
+        self.g_prev = g.copy()
+        self.step_count += 1
+
+
 def make_single_pathfinder_fn(
     model,
     num_draws: int,
@@ -899,8 +1157,9 @@ def make_single_pathfinder_fn(
     num_elbo_draws: int,
     jitter: float,
     epsilon: float,
-    pathfinder_kwargs: dict = {},
-    compile_kwargs: dict = {},
+    streaming: bool = True,
+    pathfinder_kwargs: dict[str, Any] = {},
+    compile_kwargs: dict[str, Any] = {},
 ) -> SinglePathfinderFn:
     """
     returns a seedable single-path pathfinder function, where it executes a compiled function that performs the local approximation and sampling part of the Pathfinder algorithm.
@@ -927,6 +1186,12 @@ def make_single_pathfinder_fn(
         Amount of jitter to apply to initial points. Note that Pathfinder may be highly sensitive to the jitter value. It is recommended to increase num_paths when increasing the jitter value.
     epsilon : float
         value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if delta_theta[l] * delta_grad[l] > epsilon * L2_norm(delta_grad[l]) for each l in L.
+    streaming : bool, optional
+        Whether to use streaming (per-step) LBFGS processing for O(J*N + M*N) peak memory,
+        by default True. Set to False to fall back to full-history batch processing.
+        Streaming processes each accepted LBFGS step immediately; for large maxiter this
+        incurs Python dispatch overhead (one compiled call per step) vs the non-streaming
+        vectorised graph over all L steps at once.
     pathfinder_kwargs : dict
         Additional keyword arguments for the Pathfinder algorithm.
     compile_kwargs : dict
@@ -960,45 +1225,88 @@ def make_single_pathfinder_fn(
     # lbfgs
     lbfgs = LBFGS(neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
 
-    # pathfinder body
-    pathfinder_body_fn = make_pathfinder_body(
-        logp_func, num_draws, maxcor, num_elbo_draws, **compile_kwargs
-    )
-    rngs = find_rng_nodes(pathfinder_body_fn.maker.fgraph.outputs)
+    if streaming:
+        # Compile streaming functions once (shared across all path calls via closure)
+        _step_elbo_fn = make_step_elbo_fn(logp_func, maxcor, num_elbo_draws, **compile_kwargs)
+        _step_sample_fn = make_step_sample_fn(logp_func, num_draws, maxcor, **compile_kwargs)
+        _step_elbo_rngs = find_rng_nodes(_step_elbo_fn.maker.fgraph.outputs)
+        _step_sample_rngs = find_rng_nodes(_step_sample_fn.maker.fgraph.outputs)
+    else:
+        # Compile non-streaming pathfinder body
+        pathfinder_body_fn = make_pathfinder_body(
+            logp_func, num_draws, maxcor, num_elbo_draws, **compile_kwargs
+        )
+        rngs = find_rng_nodes(pathfinder_body_fn.maker.fgraph.outputs)
+
+    def _check_lbfgs_status(status):
+        if status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
+            raise LBFGSInitFailed(status)
+        elif status == LBFGSStatus.LBFGS_FAILED:
+            raise LBFGSException()
+
+    def _make_result(psi, logP_psi, logQ_psi, lbfgs_niter, elbo_argmax, lbfgs_status):
+        if np.all(~np.isfinite(logQ_psi)):
+            raise PathInvalidLogQ()
+        path_status = PathStatus.ELBO_ARGMAX_AT_ZERO if elbo_argmax == 0 else PathStatus.SUCCESS
+        return PathfinderResult(
+            samples=psi,
+            logP=logP_psi,
+            logQ=logQ_psi,
+            lbfgs_niter=lbfgs_niter,
+            elbo_argmax=elbo_argmax,
+            lbfgs_status=lbfgs_status,
+            path_status=path_status,
+        )
 
     def single_pathfinder_fn(random_seed: int) -> PathfinderResult:
+        lbfgs_status = LBFGSStatus.LBFGS_FAILED  # default before LBFGS runs
         try:
-            init_seed, *bfgs_seeds = _get_seeds_per_chain(random_seed, 3)
+            init_seed, elbo_seed, final_seed = _get_seeds_per_chain(random_seed, 3)
             rng = np.random.default_rng(init_seed)
             jitter_value = rng.uniform(-jitter, jitter, size=x_base.shape)
             x0 = x_base + jitter_value
-            x, g, lbfgs_niter, lbfgs_status = lbfgs.minimize(x0)
 
-            if lbfgs_status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
-                raise LBFGSInitFailed(lbfgs_status)
-            elif lbfgs_status == LBFGSStatus.LBFGS_FAILED:
-                raise LBFGSException()
+            if streaming:
+                cached_fn = _CachedValueGrad(neg_logp_dlogp_func)
+                streaming_cb = LBFGSStreamingCallback(
+                    value_grad_fn=cached_fn,
+                    x0=x0,
+                    step_elbo_fn=_step_elbo_fn,
+                    J=maxcor,
+                    epsilon=epsilon,
+                )
 
-            reseed_rngs(rngs, bfgs_seeds)
-            psi, logP_psi, logQ_psi, elbo_argmax = pathfinder_body_fn(x, g)
+                # Reseed ELBO RNG once before the LBFGS run (reproducible per-step draws)
+                reseed_rngs(_step_elbo_rngs, [elbo_seed])
 
-            if np.all(~np.isfinite(logQ_psi)):
-                raise PathInvalidLogQ()
+                lbfgs_niter, lbfgs_status = lbfgs.minimize_streaming(streaming_cb, x0)
+                _check_lbfgs_status(lbfgs_status)
 
-            if elbo_argmax == 0:
-                path_status = PathStatus.ELBO_ARGMAX_AT_ZERO
+                if not streaming_cb.any_valid:
+                    raise PathInvalidLogP()
+
+                elbo_argmax = streaming_cb.best_step_idx
+                best_state = streaming_cb.best_state
+
+                # Reseed sample RNG once before final draw
+                reseed_rngs(_step_sample_rngs, [final_seed])
+                psi, logP_psi, logQ_psi = _step_sample_fn(
+                    best_state["alpha"],
+                    best_state["s_win"],
+                    best_state["z_win"],
+                    best_state["x"],
+                    best_state["g"],
+                )
+
             else:
-                path_status = PathStatus.SUCCESS
+                x, g, lbfgs_niter, lbfgs_status = lbfgs.minimize(x0)
+                _check_lbfgs_status(lbfgs_status)
 
-            return PathfinderResult(
-                samples=psi,
-                logP=logP_psi,
-                logQ=logQ_psi,
-                lbfgs_niter=lbfgs_niter,
-                elbo_argmax=elbo_argmax,
-                lbfgs_status=lbfgs_status,
-                path_status=path_status,
-            )
+                reseed_rngs(rngs, [elbo_seed, final_seed])
+                psi, logP_psi, logQ_psi, elbo_argmax = pathfinder_body_fn(x, g)
+
+            return _make_result(psi, logP_psi, logQ_psi, lbfgs_niter, elbo_argmax, lbfgs_status)
+
         except LBFGSException as e:
             return PathfinderResult(
                 lbfgs_status=e.status,
@@ -1453,8 +1761,9 @@ def multipath_pathfinder(
     progressbar: bool,
     concurrent: Literal["thread", "process"] | None,
     random_seed: RandomSeed,
-    pathfinder_kwargs: dict = {},
-    compile_kwargs: dict = {},
+    streaming: bool = True,
+    pathfinder_kwargs: dict[str, Any] = {},
+    compile_kwargs: dict[str, Any] = {},
     display_summary: bool = True,
 ) -> MultiPathfinderResult:
     """
@@ -1533,6 +1842,7 @@ def multipath_pathfinder(
     single_pathfinder_fn = make_single_pathfinder_fn(
         model,
         **asdict(pathfinder_config),
+        streaming=streaming,
         pathfinder_kwargs=pathfinder_kwargs,
         compile_kwargs=compile_kwargs,
     )
@@ -1653,12 +1963,13 @@ def fit_pathfinder(
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
     progressbar: bool = True,
     concurrent: Literal["thread", "process"] | None = None,
+    streaming: bool = True,
     random_seed: RandomSeed | None = None,
     postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
     inference_backend: Literal["pymc", "blackjax"] = "pymc",
-    pathfinder_kwargs: dict = {},
-    compile_kwargs: dict = {},
-    initvals: dict | None = None,
+    pathfinder_kwargs: dict[str, Any] = {},
+    compile_kwargs: dict[str, Any] = {},
+    initvals: dict[str, Any] | None = None,
     # New pathfinder result integration options
     add_pathfinder_groups: bool = True,
     display_summary: bool | Literal["auto"] = "auto",
@@ -1797,6 +2108,7 @@ def fit_pathfinder(
             importance_sampling=importance_sampling,
             progressbar=progressbar,
             concurrent=concurrent,
+            streaming=streaming,
             random_seed=random_seed,
             pathfinder_kwargs=pathfinder_kwargs,
             compile_kwargs=compile_kwargs,

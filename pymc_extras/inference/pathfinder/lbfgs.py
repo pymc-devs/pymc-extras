@@ -12,6 +12,40 @@ from scipy.optimize import minimize
 logger = logging.getLogger(__name__)
 
 
+class _CachedValueGrad:
+    """Single-entry cache for value/gradient evaluation.
+
+    SciPy L-BFGS-B evaluates the objective at ``x_k`` before invoking
+    ``callback(x_k)``.  Wrapping the objective in this cache means the
+    callback's ``value_grad_fn(x_k)`` call is a free hit rather than a
+    duplicate evaluation.
+    """
+
+    def __init__(self, fn: Callable) -> None:
+        self._fn = fn
+        self._last_x: NDArray | None = None
+        self._last_val: float | None = None
+        self._last_grad: NDArray | None = None
+
+    def __call__(self, x: NDArray) -> tuple[float, NDArray]:
+        if self._last_x is None or not np.array_equal(x, self._last_x):
+            val, grad = self._fn(x)
+            self._last_x = x.copy()
+            self._last_val = float(val)
+            self._last_grad = np.array(grad, dtype=np.float64)
+        return self._last_val, self._last_grad
+
+
+def _check_lbfgs_curvature_condition(s: NDArray, z: NDArray, epsilon: float) -> bool:
+    """Check the L-BFGS curvature condition: s·z > epsilon * ||z||.
+
+    Shared by LBFGSHistoryManager (batch path) and LBFGSStreamingCallback
+    (streaming path) to ensure the acceptance criterion stays identical.
+    """
+    sz = float((s * z).sum())
+    return sz > epsilon * float(np.sqrt(np.sum(z**2)))
+
+
 @dataclass(slots=True)
 class LBFGSHistory:
     """History of LBFGS iterations."""
@@ -87,13 +121,7 @@ class LBFGSHistoryManager:
             else:
                 s = x - self.x_history[self.count - 1]
                 z = grad - self.g_history[self.count - 1]
-                sz = (s * z).sum(axis=-1)
-                update = sz > self.epsilon * np.sqrt(np.sum(z**2, axis=-1))
-
-                if update:
-                    return True
-                else:
-                    return False
+                return _check_lbfgs_curvature_condition(s, z, self.epsilon)
         else:
             return False
 
@@ -161,8 +189,48 @@ class LBFGS:
         self.maxls = maxls
         self.epsilon = epsilon
 
+    @property
+    def _scipy_options(self) -> dict:
+        return {
+            "maxcor": self.maxcor,
+            "maxiter": self.maxiter,
+            "ftol": self.ftol,
+            "gtol": self.gtol,
+            "maxls": self.maxls,
+        }
+
+    def _classify_status(self, result, update_count: int) -> LBFGSStatus:
+        """Classify the LBFGS termination status.
+
+        Parameters
+        ----------
+        result : OptimizeResult
+            scipy result object.
+        update_count : int
+            Number of accepted history entries **including the initial point**.
+            For non-streaming this is ``history.count``; for streaming it is
+            ``step_count + 1``.
+        """
+        low_update_threshold = 3
+        if update_count <= 1:  # triggers LBFGSInitFailed
+            return (
+                LBFGSStatus.INIT_FAILED
+                if result.nit < low_update_threshold
+                else LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT
+            )
+        elif result.status == 1:
+            # (result.nit > maxiter) or (result.nit > maxls)
+            return LBFGSStatus.MAX_ITER_REACHED
+        elif result.status == 2:
+            # precision loss resulting to inf or nan
+            return LBFGSStatus.NON_FINITE
+        elif update_count * low_update_threshold < result.nit:
+            return LBFGSStatus.LOW_UPDATE_PCT
+        else:
+            return LBFGSStatus.CONVERGED
+
     def minimize(self, x0) -> tuple[NDArray, NDArray, int, LBFGSStatus]:
-        """minimizes objective function starting from initial position.
+        """Minimise objective, collecting the full position/gradient history.
 
         Parameters
         ----------
@@ -172,55 +240,65 @@ class LBFGS:
         Returns
         -------
         x : NDArray
-            history of positions
+            history of positions, shape (count, N)
         g : NDArray
-            history of gradients
+            history of gradients, shape (count, N)
         count : int
-            number of iterations
+            number of accepted history entries (including initial point)
         status : LBFGSStatus
             final status of optimisation
         """
-
         x0 = np.array(x0, dtype=np.float64)
-
         history_manager = LBFGSHistoryManager(
             value_grad_fn=self.value_grad_fn, x0=x0, maxiter=self.maxiter, epsilon=self.epsilon
         )
-
         result = minimize(
             self.value_grad_fn,
             x0,
             method="L-BFGS-B",
             jac=True,
             callback=history_manager,
-            options={
-                "maxcor": self.maxcor,
-                "maxiter": self.maxiter,
-                "ftol": self.ftol,
-                "gtol": self.gtol,
-                "maxls": self.maxls,
-            },
+            options=self._scipy_options,
         )
         history = history_manager.get_history()
+        return history.x, history.g, history.count, self._classify_status(result, history.count)
 
-        # warnings and suggestions for LBFGSStatus are displayed at the end
-        # threshold determining if the number of lbfgs updates is low compared to iterations
-        low_update_threshold = 3
+    def minimize_streaming(self, callback, x0) -> tuple[int, LBFGSStatus]:
+        """Minimise objective using a streaming callback that processes each step.
 
-        if history.count <= 1:  # triggers LBFGSInitFailed
-            if result.nit < low_update_threshold:
-                lbfgs_status = LBFGSStatus.INIT_FAILED
-            else:
-                lbfgs_status = LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT
-        elif result.status == 1:
-            # (result.nit > maxiter) or (result.nit > maxls)
-            lbfgs_status = LBFGSStatus.MAX_ITER_REACHED
-        elif result.status == 2:
-            # precision loss resulting to inf or nan
-            lbfgs_status = LBFGSStatus.NON_FINITE
-        elif history.count * low_update_threshold < result.nit:
-            lbfgs_status = LBFGSStatus.LOW_UPDATE_PCT
-        else:
-            lbfgs_status = LBFGSStatus.CONVERGED
+        Unlike :meth:`minimize`, no position/gradient history is accumulated.
+        The ``callback`` is responsible for maintaining whatever per-step state
+        it needs (e.g. ring buffers, best-ELBO tracking).
 
-        return history.x, history.g, history.count, lbfgs_status
+        ``callback.value_grad_fn`` is used as the scipy objective so that a
+        single-entry cache (e.g. :class:`_CachedValueGrad`) eliminates the
+        duplicate evaluation that would otherwise occur on each accepted step.
+
+        Parameters
+        ----------
+        callback : object
+            Must expose:
+            - ``value_grad_fn``: callable ``(x) -> (value, grad)`` passed to scipy
+              as the objective.  Wrap with :class:`_CachedValueGrad` before
+              constructing the callback to avoid duplicate evaluations.
+            - ``step_count``: int, updated by ``__call__`` for each accepted step.
+        x0 : array_like
+            Initial position.
+
+        Returns
+        -------
+        step_count : int
+            Number of accepted callback steps (does not count the initial point).
+        lbfgs_status : LBFGSStatus
+        """
+        x0 = np.array(x0, dtype=np.float64)
+        result = minimize(
+            callback.value_grad_fn,
+            x0,
+            method="L-BFGS-B",
+            jac=True,
+            callback=callback,
+            options=self._scipy_options,
+        )
+        step_count = callback.step_count
+        return step_count, self._classify_status(result, step_count + 1)
