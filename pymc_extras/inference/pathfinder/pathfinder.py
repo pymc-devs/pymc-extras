@@ -30,6 +30,7 @@ import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
+import scipy.linalg as sp_linalg
 
 from numpy.typing import NDArray
 from packaging import version
@@ -52,7 +53,7 @@ from pymc.util import (
 )
 from pytensor.compile.function.types import Function
 from pytensor.compile.mode import FAST_COMPILE, Mode
-from pytensor.graph import Apply, Op, vectorize_graph
+from pytensor.graph import Apply, Op, clone_replace, vectorize_graph
 from pytensor.tensor import TensorConstant, TensorVariable
 from rich.console import Console, Group
 from rich.padding import Padding
@@ -143,6 +144,44 @@ def get_logp_dlogp_of_ravel_inputs(
     logp_dlogp_fn.trust_input = True
 
     return logp_dlogp_fn
+
+
+def get_batched_logp_of_ravel_inputs(
+    model: Model, jacobian: bool = True, **compile_kwargs
+) -> Function:
+    """Get a batched logP function: (B, N) -> (B,) evaluated in one compiled call.
+
+    Parameters
+    ----------
+    model : Model
+        PyMC model.
+    jacobian : bool, optional
+        Whether to include the Jacobian, by default True.
+    **compile_kwargs : dict
+        Additional keyword arguments to pass to compile.
+
+    Returns
+    -------
+    Function
+        Compiled function taking a (B, N) array and returning (B,) log-probabilities.
+    """
+    (logP,), single_input = pm.pytensorf.join_nonshared_inputs(
+        model.initial_point(),
+        [model.logp(jacobian=jacobian)],
+        model.value_vars,
+    )
+    batch_input = pt.matrix("batch_input", dtype="float64")  # (B, N)
+    # pytensor.map loops over rows of batch_input one at a time; this avoids
+    # broadcasting large intermediate tensors (faster than vectorize_graph for
+    # models with many parameters) and handles ops like AdvancedSetSubtensor
+    # that vectorize_graph cannot process.
+    batched_logP, _ = pytensor.map(
+        fn=lambda x_i: clone_replace([logP], replace={single_input: x_i})[0],
+        sequences=[batch_input],
+    )
+    batched_fn = compile([batch_input], batched_logP, **compile_kwargs)
+    batched_fn.trust_input = True
+    return batched_fn
 
 
 def convert_flat_trace_to_idata(
@@ -575,9 +614,12 @@ def bfgs_sample_sparse(
 
     # qr_input: (L, N, 2J) — A3.2: broadcast instead of (L,N,N) matmul
     qr_input = beta * inv_sqrt_alpha[..., None]
-    Q, R = pytensor.scan(
-        fn=pt.linalg.qr, sequences=[qr_input], allow_gc=False, return_updates=False
-    )
+    # pt.linalg.qr is a Blockwise op: call directly on (L, N, 2J) to avoid
+    # pytensor.scan overhead (scan has ~100ms Python startup cost even for L=1).
+    # mode='reduced' gives Q:(L,N,2J), R:(L,2J,2J) instead of full Q:(L,N,N)
+    # which would allocate O(N^2) = 208MB for N=5101, causing ~900ms per call.
+    # Economy and full QR are mathematically equivalent for this computation.
+    Q, R = pt.linalg.qr(qr_input, mode="reduced")
 
     IdN = pt.eye(R.shape[1])[None, ...]
     IdN += IdN * REGULARISATION_TERM
@@ -730,9 +772,92 @@ def alpha_step_numpy(alpha_prev: NDArray, s: NDArray, z: NDArray) -> NDArray:
     return 1.0 / inv_alpha
 
 
+def _bfgs_sample_numpy(
+    x: NDArray,
+    g: NDArray,
+    alpha: NDArray,
+    s_win: NDArray,
+    z_win: NDArray,
+    M: int,
+    rng: np.random.Generator,
+) -> tuple[NDArray, NDArray]:
+    """Draw M samples from the L-BFGS inverse-Hessian approximation in pure NumPy.
+
+    Mirrors the PyTensor ``bfgs_sample`` logic (both dense and sparse paths) but
+    operates entirely outside of PyTensor's compiled graph, eliminating CVM loop,
+    scan, and Blockwise overhead.  The caller is responsible for passing an
+    independent ``rng`` per path for reproducibility.
+
+    Parameters
+    ----------
+    x : (N,) position at this LBFGS step
+    g : (N,) gradient at this LBFGS step
+    alpha : (N,) diagonal scaling vector
+    s_win : (N, J) sliding window of position diffs
+    z_win : (N, J) sliding window of gradient diffs
+    M : number of samples to draw
+    rng : NumPy random Generator (advanced in-place)
+
+    Returns
+    -------
+    phi : (M, N) samples
+    logQ : (M,) log-density under the approximation
+    """
+    N = x.shape[0]
+    J = s_win.shape[1]
+    S, Z = s_win, z_win
+
+    # ---- inverse_hessian_factors_from_SZ (NumPy port) ----
+    E = np.triu(S.T @ Z) + np.eye(J) * REGULARISATION_TERM  # (J, J)
+    eta = np.diag(E)  # (J,)
+    AZ = alpha[:, None] * Z  # (N, J)
+    beta = np.concatenate([AZ, S], axis=1)  # (N, 2J)
+    E_inv = sp_linalg.solve_triangular(E, np.eye(J), check_finite=False)  # (J, J)
+    block_dd = E_inv.T @ (np.diag(eta) + Z.T @ AZ) @ E_inv  # (J, J)
+    gamma = np.block([[np.zeros((J, J)), -E_inv], [-E_inv.T, block_dd]])  # (2J, 2J)
+
+    inv_sqrt_alpha = np.sqrt(1.0 / alpha)
+    sqrt_alpha = np.sqrt(alpha)
+    J2 = 2 * J
+
+    if J2 >= N:
+        # Dense path (small-N regime): form H_inv explicitly, O(N²) is fine here
+        isa_d = np.diag(inv_sqrt_alpha)  # (N, N)
+        sa_d = np.diag(sqrt_alpha)  # (N, N)
+        IdN = np.eye(N) * (1.0 + REGULARISATION_TERM)
+        H_inv = sa_d @ (IdN + isa_d @ beta @ gamma @ beta.T @ isa_d) @ sa_d
+        Lchol = sp_linalg.cholesky(H_inv, lower=False, check_finite=False)
+        logdet = 2.0 * np.sum(np.log(np.abs(np.diag(Lchol))))
+        mu = x - H_inv @ g
+        u = rng.standard_normal((M, N))
+        phi = (mu[:, None] + Lchol @ u.T).T  # (M, N)
+    else:
+        # Sparse path (large-N regime): economy QR avoids O(N²) matrices
+        # overwrite_a=True avoids an extra copy; check_finite=False skips NaN scan.
+        Q, R = sp_linalg.qr(
+            beta * inv_sqrt_alpha[:, None], mode="economic", overwrite_a=True, check_finite=False
+        )  # Q:(N,2J), R:(2J,2J)
+        I2J = np.eye(J2) * (1.0 + REGULARISATION_TERM)
+        Lchol = sp_linalg.cholesky(I2J + R @ gamma @ R.T, lower=False, check_finite=False)
+        logdet = 2.0 * np.sum(np.log(np.abs(np.diag(Lchol)))) + np.sum(np.log(alpha))
+        btg = beta.T @ g[:, None]  # (2J, 1)
+        mu = x - ((alpha * g)[:, None] + beta @ (gamma @ btg))[:, 0]  # (N,)
+        u = rng.standard_normal((M, N))
+        QtU = Q.T @ u.T  # (2J, M)
+        phi = (mu[:, None] + sqrt_alpha[:, None] * (Q @ ((Lchol - np.eye(J2)) @ QtU) + u.T)).T
+
+    logQ = -0.5 * (logdet + np.sum(u * u, axis=-1) + N * np.log(2.0 * np.pi))
+    return phi, logQ
+
+
 class LogLike(Op):
     """
-    Op that computes the densities using vectorised operations.
+    Op that computes log-densities using a batched logp function.
+
+    The stored ``logp_func`` must accept a 2-D array of shape ``(B, N)`` and
+    return a 1-D array of shape ``(B,)``.  A single compiled call is made for
+    the entire batch, replacing the previous per-sample ``np.apply_along_axis``
+    loop and its associated Python-dispatch overhead.
     """
 
     __props__ = ("logp_func",)
@@ -747,9 +872,10 @@ class LogLike(Op):
         return Apply(self, [inputs], [outputs])
 
     def perform(self, node: Apply, inputs, outputs) -> None:
-        phi = inputs[0]
-        logP = np.apply_along_axis(self.logp_func, axis=-1, arr=phi)
-        # replace nan with -inf since np.argmax will return the first index at nan
+        phi = inputs[0]  # (L, M, N)
+        batch = phi.reshape(-1, phi.shape[-1])  # (L*M, N)
+        logP_flat = np.asarray(self.logp_func(batch))  # (L*M,) — one compiled call
+        logP = logP_flat.reshape(phi.shape[:-1])  # (L, M)
         mask = np.isnan(logP) | np.isinf(logP)
         if np.all(mask):
             raise PathInvalidLogP()
@@ -1207,10 +1333,7 @@ def make_single_pathfinder_fn(
     logp_dlogp_kwargs = {"jacobian": pathfinder_kwargs.get("jacobian", True), **compile_kwargs}
 
     logp_dlogp_func = get_logp_dlogp_of_ravel_inputs(model, **logp_dlogp_kwargs)
-
-    def logp_func(x):
-        logp, _ = logp_dlogp_func(x)
-        return logp
+    batched_logp_func = get_batched_logp_of_ravel_inputs(model, **logp_dlogp_kwargs)
 
     def neg_logp_dlogp_func(x):
         logp, dlogp = logp_dlogp_func(x)
@@ -1223,20 +1346,19 @@ def make_single_pathfinder_fn(
     x_base = DictToArrayBijection.map(ip).data
 
     # lbfgs
-    lbfgs = LBFGS(neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
+    LBFGS(neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
 
     if streaming:
-        # Compile streaming functions once (shared across all path calls via closure)
-        _step_elbo_fn = make_step_elbo_fn(logp_func, maxcor, num_elbo_draws, **compile_kwargs)
-        _step_sample_fn = make_step_sample_fn(logp_func, num_draws, maxcor, **compile_kwargs)
-        _step_elbo_rngs = find_rng_nodes(_step_elbo_fn.maker.fgraph.outputs)
-        _step_sample_rngs = find_rng_nodes(_step_sample_fn.maker.fgraph.outputs)
+        # Streaming ELBO/sampling is done in pure NumPy — no PyTensor compilation
+        # needed.  _bfgs_sample_numpy handles both dense and sparse paths and
+        # delegates logP evaluation to the already-compiled batched_logp_func.
+        pass
     else:
         # Compile non-streaming pathfinder body
         pathfinder_body_fn = make_pathfinder_body(
-            logp_func, num_draws, maxcor, num_elbo_draws, **compile_kwargs
+            batched_logp_func, num_draws, maxcor, num_elbo_draws, **compile_kwargs
         )
-        rngs = find_rng_nodes(pathfinder_body_fn.maker.fgraph.outputs)
+        find_rng_nodes(pathfinder_body_fn.maker.fgraph.outputs)
 
     def _check_lbfgs_status(status):
         if status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
@@ -1259,6 +1381,25 @@ def make_single_pathfinder_fn(
         )
 
     def single_pathfinder_fn(random_seed: int) -> PathfinderResult:
+        # Per-path independent copies of compiled functions.
+        # PyTensor Function objects share input/output storage on the same
+        # instance: concurrent calls from different threads corrupt each other.
+        # fn.copy(share_memory=False) gives independent storage that reuses
+        # the already-compiled C shared library — no recompilation cost.
+        local_logp_dlogp = logp_dlogp_func.copy(share_memory=False)
+
+        def local_neg_logp_dlogp_func(x):
+            logp, dlogp = local_logp_dlogp(x)
+            return -logp, -dlogp
+
+        local_lbfgs = LBFGS(local_neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
+
+        if streaming:
+            local_batched_logp = batched_logp_func.copy(share_memory=False)
+        else:
+            local_body_fn = pathfinder_body_fn.copy(share_memory=False)
+            path_rngs = find_rng_nodes(local_body_fn.maker.fgraph.outputs)
+
         lbfgs_status = LBFGSStatus.LBFGS_FAILED  # default before LBFGS runs
         try:
             init_seed, elbo_seed, final_seed = _get_seeds_per_chain(random_seed, 3)
@@ -1267,19 +1408,32 @@ def make_single_pathfinder_fn(
             x0 = x_base + jitter_value
 
             if streaming:
-                cached_fn = _CachedValueGrad(neg_logp_dlogp_func)
+                elbo_rng = np.random.default_rng(elbo_seed)
+
+                def _numpy_step_elbo(alpha, s_win, z_win, x, g):
+                    try:
+                        phi, logQ = _bfgs_sample_numpy(
+                            x, g, alpha, s_win, z_win, num_elbo_draws, elbo_rng
+                        )
+                    except np.linalg.LinAlgError:
+                        raise PathInvalidLogP()
+                    logP = np.asarray(local_batched_logp(phi))
+                    finite = np.isfinite(logP)
+                    if not np.any(finite):
+                        raise PathInvalidLogP()
+                    logP = np.where(finite, logP, -np.inf)
+                    return (float(np.mean(logP - logQ)),)
+
+                cached_fn = _CachedValueGrad(local_neg_logp_dlogp_func)
                 streaming_cb = LBFGSStreamingCallback(
                     value_grad_fn=cached_fn,
                     x0=x0,
-                    step_elbo_fn=_step_elbo_fn,
+                    step_elbo_fn=_numpy_step_elbo,
                     J=maxcor,
                     epsilon=epsilon,
                 )
 
-                # Reseed ELBO RNG once before the LBFGS run (reproducible per-step draws)
-                reseed_rngs(_step_elbo_rngs, [elbo_seed])
-
-                lbfgs_niter, lbfgs_status = lbfgs.minimize_streaming(streaming_cb, x0)
+                lbfgs_niter, lbfgs_status = local_lbfgs.minimize_streaming(streaming_cb, x0)
                 _check_lbfgs_status(lbfgs_status)
 
                 if not streaming_cb.any_valid:
@@ -1288,22 +1442,30 @@ def make_single_pathfinder_fn(
                 elbo_argmax = streaming_cb.best_step_idx
                 best_state = streaming_cb.best_state
 
-                # Reseed sample RNG once before final draw
-                reseed_rngs(_step_sample_rngs, [final_seed])
-                psi, logP_psi, logQ_psi = _step_sample_fn(
-                    best_state["alpha"],
-                    best_state["s_win"],
-                    best_state["z_win"],
-                    best_state["x"],
-                    best_state["g"],
-                )
+                final_rng = np.random.default_rng(final_seed)
+                try:
+                    phi_final, logQ_psi_flat = _bfgs_sample_numpy(
+                        best_state["x"],
+                        best_state["g"],
+                        best_state["alpha"],
+                        best_state["s_win"],
+                        best_state["z_win"],
+                        num_draws,
+                        final_rng,
+                    )
+                except np.linalg.LinAlgError:
+                    raise PathInvalidLogP()
+                logP_psi_flat = np.asarray(local_batched_logp(phi_final))
+                psi = phi_final[None]  # (1, M, N)
+                logP_psi = logP_psi_flat[None]  # (1, M)
+                logQ_psi = logQ_psi_flat[None]  # (1, M)
 
             else:
-                x, g, lbfgs_niter, lbfgs_status = lbfgs.minimize(x0)
+                x, g, lbfgs_niter, lbfgs_status = local_lbfgs.minimize(x0)
                 _check_lbfgs_status(lbfgs_status)
 
-                reseed_rngs(rngs, [elbo_seed, final_seed])
-                psi, logP_psi, logQ_psi, elbo_argmax = pathfinder_body_fn(x, g)
+                reseed_rngs(path_rngs, [elbo_seed, final_seed])
+                psi, logP_psi, logQ_psi, elbo_argmax = local_body_fn(x, g)
 
             return _make_result(psi, logP_psi, logQ_psi, lbfgs_niter, elbo_argmax, lbfgs_status)
 

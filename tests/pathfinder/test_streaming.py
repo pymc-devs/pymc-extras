@@ -27,6 +27,7 @@ from pymc_extras.inference.pathfinder.pathfinder import (
     PathStatus,
     alpha_recover,
     alpha_step_numpy,
+    get_batched_logp_of_ravel_inputs,
     get_logp_dlogp_of_ravel_inputs,
     make_single_pathfinder_fn,
     make_step_elbo_fn,
@@ -182,9 +183,10 @@ def test_tb2_streaming_vs_nonstreaming_elbo_argmax(model_name):
 def test_tb3_elbo_call_count():
     """step_elbo_fn is called exactly once per accepted LBFGS step."""
     model = make_iso_gaussian()
-    logp_func, neg_logp_dlogp_func = _build_logp_and_neg(model)
+    _, neg_logp_dlogp_func = _build_logp_and_neg(model)
+    batched_logp = get_batched_logp_of_ravel_inputs(model, jacobian=True, **COMPILE_KWARGS)
 
-    step_elbo_fn = make_step_elbo_fn(logp_func, MAXCOR, NUM_ELBO_DRAWS, **COMPILE_KWARGS)
+    step_elbo_fn = make_step_elbo_fn(batched_logp, MAXCOR, NUM_ELBO_DRAWS, **COMPILE_KWARGS)
 
     call_count = [0]
     original_fn = step_elbo_fn
@@ -282,9 +284,10 @@ def test_tb6_short_history_fallback(model_name):
 def test_tb7_infinite_logp_step_tolerance():
     """A step where all M logP draws are -inf is silently skipped; path still succeeds."""
     model = make_iso_gaussian()
-    logp_func, neg_logp_dlogp_func = _build_logp_and_neg(model)
+    _, neg_logp_dlogp_func = _build_logp_and_neg(model)
+    batched_logp = get_batched_logp_of_ravel_inputs(model, jacobian=True, **COMPILE_KWARGS)
 
-    step_elbo_fn = make_step_elbo_fn(logp_func, MAXCOR, NUM_ELBO_DRAWS, **COMPILE_KWARGS)
+    step_elbo_fn = make_step_elbo_fn(batched_logp, MAXCOR, NUM_ELBO_DRAWS, **COMPILE_KWARGS)
 
     # Inject a failure at exactly one step (step index 1)
     fail_at_step = [1]

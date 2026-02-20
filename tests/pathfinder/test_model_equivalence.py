@@ -37,7 +37,7 @@ from pytensor.compile.mode import Mode
 
 from pymc_extras.inference.pathfinder.pathfinder import (
     DEFAULT_LINKER,
-    get_logp_dlogp_of_ravel_inputs,
+    get_batched_logp_of_ravel_inputs,
     make_elbo_fn,
 )
 from tests.pathfinder.equivalence_models import MODEL_FACTORIES
@@ -66,13 +66,8 @@ def _load_fixture(name: str):
 
 def _compute_elbo(model: pm.Model, x_full, g_full, seed: int = ELBO_SEED) -> np.ndarray:
     compile_kwargs = {"mode": Mode(linker=DEFAULT_LINKER)}
-    logp_dlogp_func = get_logp_dlogp_of_ravel_inputs(model, jacobian=True, **compile_kwargs)
-
-    def logp_func(x):
-        logp, _ = logp_dlogp_func(x)
-        return logp
-
-    elbo_fn = make_elbo_fn(logp_func, MAXCOR, NUM_ELBO_DRAWS, **compile_kwargs)
+    batched_logp_func = get_batched_logp_of_ravel_inputs(model, jacobian=True, **compile_kwargs)
+    elbo_fn = make_elbo_fn(batched_logp_func, MAXCOR, NUM_ELBO_DRAWS, **compile_kwargs)
     rngs = find_rng_nodes(elbo_fn.maker.fgraph.outputs)
     reseed_rngs(rngs, [seed])
     (elbo,) = elbo_fn(x_full, g_full)
