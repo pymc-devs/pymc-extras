@@ -41,11 +41,7 @@ from pymc.initial_point import make_initial_point_fn
 from pymc.model import modelcontext
 from pymc.model.core import Point
 from pymc.progress_bar import CustomProgress, default_progress_theme
-from pymc.pytensorf import (
-    compile,
-    find_rng_nodes,
-    reseed_rngs,
-)
+from pymc.pytensorf import compile
 from pymc.util import (
     RandomSeed,
     _get_seeds_per_chain,
@@ -53,8 +49,8 @@ from pymc.util import (
 )
 from pytensor.compile.function.types import Function
 from pytensor.compile.mode import FAST_COMPILE, Mode
-from pytensor.graph import Apply, Op, clone_replace
-from pytensor.tensor import TensorConstant, TensorVariable
+from pytensor.graph import clone_replace
+from pytensor.tensor import TensorVariable
 from rich.console import Console, Group
 from rich.padding import Padding
 from rich.progress import TextColumn, TimeElapsedColumn
@@ -252,7 +248,7 @@ def convert_flat_trace_to_idata(
         def _transform(*args):
             return clone_replace(vars_to_sample, replace=dict(zip(value_vars, args)))
 
-        mapped_outputs, _ = pytensor.map(fn=_transform, sequences=seq_syms)
+        mapped_outputs = pytensor.map(fn=_transform, sequences=seq_syms, return_updates=False)
 
         fn = pytensor.function(
             inputs=seq_syms,
@@ -343,414 +339,6 @@ def alpha_recover(
 
     # alpha: (L, N)
     return alpha, s, z
-
-
-def inverse_hessian_factors_from_SZ(
-    alpha: TensorVariable,
-    S: TensorVariable,
-    Z: TensorVariable,
-    J: TensorConstant,
-) -> tuple[TensorVariable, TensorVariable]:
-    """compute inverse Hessian factors from pre-built chi matrices.
-
-    Parameters
-    ----------
-    alpha : TensorVariable
-        diagonal scaling vector, shape (L, N)
-    S : TensorVariable
-        sliding window of s-diffs, shape (L, N, J)
-    Z : TensorVariable
-        sliding window of z-diffs, shape (L, N, J)
-    J : TensorConstant
-        history size for L-BFGS
-
-    Returns
-    -------
-    beta : TensorVariable
-        low-rank update matrix, shape (L, N, 2J)
-    gamma : TensorVariable
-        low-rank update matrix, shape (L, 2J, 2J)
-
-    Notes
-    -----
-    shapes: L=batch_size, N=num_params, J=history_size
-    """
-
-    L = alpha.shape[0]
-
-    # E: (L, J, J)
-    Ij = pt.eye(J)[None, ...]
-    E = pt.triu(pt.matrix_transpose(S) @ Z)
-    E += Ij * REGULARISATION_TERM
-
-    # eta: (L, J)
-    eta = pt.diagonal(E, axis1=-2, axis2=-1)
-
-    # AZ: (L, N, J) — replaces alpha_diag @ Z (avoids (L, N, N))
-    AZ = alpha[..., None] * Z
-
-    # beta: (L, N, 2J)
-    beta = pt.concatenate([AZ, S], axis=-1)
-
-    # more performant and numerically precise to use solve than inverse: https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.linalg.inv.html
-
-    # E_inv: (L, J, J)
-    E_inv = pt.linalg.solve_triangular(E, Ij, check_finite=False)
-
-    # eta_diag: (L, J, J) — broadcast diagonal, avoids scan(diag)
-    eta_diag = pt.eye(J)[None, :, :] * eta[:, None, :]
-
-    # Zt_AZ: (L, J, J) — replaces Z.T @ alpha_diag @ Z
-    Zt_AZ = pt.matrix_transpose(Z) @ AZ
-
-    # block_dd: (L, J, J)
-    block_dd = pt.matrix_transpose(E_inv) @ (eta_diag + Zt_AZ) @ E_inv
-
-    # (L, J, 2J)
-    gamma_top = pt.concatenate([pt.zeros((L, J, J)), -E_inv], axis=-1)
-
-    # (L, J, 2J)
-    gamma_bottom = pt.concatenate([-pt.matrix_transpose(E_inv), block_dd], axis=-1)
-
-    # (L, 2J, 2J)
-    gamma = pt.concatenate([gamma_top, gamma_bottom], axis=1)
-
-    return beta, gamma
-
-
-def inverse_hessian_factors(
-    alpha: TensorVariable,
-    s: TensorVariable,
-    z: TensorVariable,
-    J: TensorConstant,
-) -> tuple[TensorVariable, TensorVariable]:
-    """compute the inverse hessian factors for the BFGS approximation.
-
-    Parameters
-    ----------
-    alpha : TensorVariable
-        diagonal scaling matrix, shape (L, N)
-    s : TensorVariable
-        position differences, shape (L, N)
-    z : TensorVariable
-        gradient differences, shape (L, N)
-    J : TensorConstant
-        history size for L-BFGS
-
-    Returns
-    -------
-    beta : TensorVariable
-        low-rank update matrix, shape (L, N, 2J)
-    gamma : TensorVariable
-        low-rank update matrix, shape (L, 2J, 2J)
-
-    Notes
-    -----
-    shapes: L=batch_size, N=num_params, J=history_size
-    """
-
-    # NOTE: get_chi_matrix_1 is a modified version of get_chi_matrix_2 to closely follow Zhang et al., (2022)
-    # NOTE: get_chi_matrix_2 is from blackjax which MAYBE incorrectly implemented
-    def get_chi_matrix_1(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
-        L, N = diff.shape
-        j_last = pt.as_tensor(J - 1)  # since indexing starts at 0
-
-        def chi_update(diff_l, chi_lm1) -> TensorVariable:
-            chi_l = pt.roll(chi_lm1, -1, axis=0)
-            return pt.set_subtensor(chi_l[j_last], diff_l)
-
-        chi_init = pt.zeros((J, N))
-        chi_mat = pytensor.scan(
-            fn=chi_update,
-            outputs_info=chi_init,
-            sequences=[diff],
-            allow_gc=False,
-            return_updates=False,
-        )
-
-        chi_mat = pt.matrix_transpose(chi_mat)
-
-        # (L, N, J)
-        return chi_mat
-
-    def get_chi_matrix_2(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
-        L = diff.shape[0]
-
-        # diff_padded: (L+J, N)
-        pad_width = pt.zeros(shape=(2, 2), dtype="int32")
-        pad_width = pt.set_subtensor(pad_width[0, 0], J - 1)
-        diff_padded = pt.pad(diff, pad_width, mode="constant")
-
-        index = pt.arange(L)[..., None] + pt.arange(J)[None, ...]
-        index = index.reshape((L, J))
-
-        chi_mat = pt.matrix_transpose(diff_padded[index])
-
-        # (L, N, J)
-        return chi_mat
-
-    S = get_chi_matrix_2(s, J)
-    Z = get_chi_matrix_2(z, J)
-
-    return inverse_hessian_factors_from_SZ(alpha, S, Z, J)
-
-
-def bfgs_sample_dense(
-    x: TensorVariable,
-    g: TensorVariable,
-    alpha: TensorVariable,
-    beta: TensorVariable,
-    gamma: TensorVariable,
-    inv_sqrt_alpha: TensorVariable,
-    sqrt_alpha: TensorVariable,
-    u: TensorVariable,
-) -> tuple[TensorVariable, TensorVariable]:
-    """sample from the BFGS approximation using dense matrix operations.
-
-    Parameters
-    ----------
-    x : TensorVariable
-        position array, shape (L, N)
-    g : TensorVariable
-        gradient array, shape (L, N)
-    alpha : TensorVariable
-        diagonal scaling vector, shape (L, N)
-    beta : TensorVariable
-        low-rank update matrix, shape (L, N, 2J)
-    gamma : TensorVariable
-        low-rank update matrix, shape (L, 2J, 2J)
-    inv_sqrt_alpha : TensorVariable
-        1/sqrt(alpha) vector, shape (L, N)
-    sqrt_alpha : TensorVariable
-        sqrt(alpha) vector, shape (L, N)
-    u : TensorVariable
-        random normal samples, shape (L, M, N)
-
-    Returns
-    -------
-    phi : TensorVariable
-        samples from the approximation, shape (L, M, N)
-    logdet : TensorVariable
-        log determinant of covariance, shape (L,)
-
-    Notes
-    -----
-    shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
-    Dense path is used when 2J >= N (small-N regime); (N,N) diagonals are
-    acceptable here.
-    """
-
-    # Re-expand vectors to diagonal matrices (small-N regime: 2J >= N)
-    sqrt_alpha_diag = pytensor.scan(
-        lambda a: pt.diag(a), sequences=[sqrt_alpha], return_updates=False
-    )
-    inv_sqrt_alpha_diag = pytensor.scan(
-        lambda a: pt.diag(a), sequences=[inv_sqrt_alpha], return_updates=False
-    )
-
-    N = x.shape[-1]
-    IdN = pt.eye(N)[None, ...] * (1.0 + REGULARISATION_TERM)
-
-    # inverse Hessian
-    H_inv = (
-        sqrt_alpha_diag
-        @ (
-            IdN
-            + inv_sqrt_alpha_diag @ beta @ gamma @ pt.matrix_transpose(beta) @ inv_sqrt_alpha_diag
-        )
-        @ sqrt_alpha_diag
-    )
-
-    Lchol = pt.linalg.cholesky(H_inv, lower=False, check_finite=False, on_error="nan")
-
-    logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
-
-    # mu = x - pt.einsum("ijk,ik->ij", H_inv, g) # causes error: Multiple destroyers of g
-
-    batched_dot = pt.vectorize(pt.dot, signature="(ijk),(ilk)->(ij)")
-    mu = x - batched_dot(H_inv, pt.matrix_transpose(g[..., None]))
-
-    phi = pt.matrix_transpose(
-        # (L, N, 1)
-        mu[..., None]
-        # (L, N, M)
-        + Lchol @ pt.matrix_transpose(u)
-    )  # fmt: off
-
-    return phi, logdet
-
-
-def bfgs_sample_sparse(
-    x: TensorVariable,
-    g: TensorVariable,
-    alpha: TensorVariable,
-    beta: TensorVariable,
-    gamma: TensorVariable,
-    inv_sqrt_alpha: TensorVariable,
-    sqrt_alpha: TensorVariable,
-    u: TensorVariable,
-) -> tuple[TensorVariable, TensorVariable]:
-    """sample from the BFGS approximation using sparse matrix operations.
-
-    Parameters
-    ----------
-    x : TensorVariable
-        position array, shape (L, N)
-    g : TensorVariable
-        gradient array, shape (L, N)
-    alpha : TensorVariable
-        diagonal scaling vector, shape (L, N)
-    beta : TensorVariable
-        low-rank update matrix, shape (L, N, 2J)
-    gamma : TensorVariable
-        low-rank update matrix, shape (L, 2J, 2J)
-    inv_sqrt_alpha : TensorVariable
-        1/sqrt(alpha) vector, shape (L, N)
-    sqrt_alpha : TensorVariable
-        sqrt(alpha) vector, shape (L, N)
-    u : TensorVariable
-        random normal samples, shape (L, M, N)
-
-    Returns
-    -------
-    phi : TensorVariable
-        samples from the approximation, shape (L, M, N)
-    logdet : TensorVariable
-        log determinant of covariance, shape (L,)
-
-    Notes
-    -----
-    shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
-    """
-
-    # qr_input: (L, N, 2J) — A3.2: broadcast instead of (L,N,N) matmul
-    qr_input = beta * inv_sqrt_alpha[..., None]
-    # pt.linalg.qr is a Blockwise op: call directly on (L, N, 2J) to avoid
-    # pytensor.scan overhead (scan has ~100ms Python startup cost even for L=1).
-    # mode='reduced' gives Q:(L,N,2J), R:(L,2J,2J) instead of full Q:(L,N,N)
-    # which would allocate O(N^2) = 208MB for N=5101, causing ~900ms per call.
-    # Economy and full QR are mathematically equivalent for this computation.
-    Q, R = pt.linalg.qr(qr_input, mode="reduced")
-
-    IdN = pt.eye(R.shape[1])[None, ...] * (1.0 + REGULARISATION_TERM)
-
-    Lchol_input = IdN + R @ gamma @ pt.matrix_transpose(R)
-
-    # TODO: make robust Lchol calcs more robust, ie. try exceptions, increase REGULARISATION_TERM if non-finite exists
-    Lchol = pt.linalg.cholesky(Lchol_input, lower=False, check_finite=False, on_error="nan")
-
-    logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
-    logdet += pt.sum(pt.log(alpha), axis=-1)
-
-    # A3.3: compute H_inv @ g without forming (L, N, N) H_inv
-    g_col = g[..., None]  # (L, N, 1)
-    ag = (alpha * g)[..., None]  # (L, N, 1)
-    btg = pt.matrix_transpose(beta) @ g_col  # (L, 2J, 1)
-    corr = beta @ (gamma @ btg)  # (L, N, 1)
-    Hinv_g = ag + corr  # (L, N, 1)
-    mu = x - Hinv_g[..., 0]  # (L, N)
-
-    phi = pt.matrix_transpose(
-        # (L, N, 1)
-        mu[..., None]
-        # A3.4: (L, N, 1) * (L, N, M) — broadcast instead of (L, N, N) matmul
-        + sqrt_alpha[..., None]
-        * (
-            # (L, N, 2J), (L, 2J, 2J) -> (L, N, 2J)
-            (Q @ (Lchol - IdN))
-            # (L, 2J, N), (L, N, M) -> (L, 2J, M)
-            @ (pt.matrix_transpose(Q) @ pt.matrix_transpose(u))
-            # (L, N, M)
-            + pt.matrix_transpose(u)
-        )
-    )  # fmt: off
-
-    return phi, logdet
-
-
-def bfgs_sample(
-    num_samples: TensorConstant,
-    x: TensorVariable,  # position
-    g: TensorVariable,  # grad
-    alpha: TensorVariable,
-    beta: TensorVariable,
-    gamma: TensorVariable,
-    index: TensorVariable | None = None,
-) -> tuple[TensorVariable, TensorVariable]:
-    """sample from the BFGS approximation using the inverse hessian factors.
-
-    Parameters
-    ----------
-    num_samples : TensorConstant
-        number of samples to draw
-    x : TensorVariable
-        position array, shape (L, N)
-    g : TensorVariable
-        gradient array, shape (L, N)
-    alpha : TensorVariable
-        diagonal scaling matrix, shape (L, N)
-    beta : TensorVariable
-        low-rank update matrix, shape (L, N, 2J)
-    gamma : TensorVariable
-        low-rank update matrix, shape (L, 2J, 2J)
-    index : TensorVariable | None
-        optional index for selecting a single path
-
-    Returns
-    -------
-    if index is None:
-        phi: samples from local approximations over L (L, M, N)
-        logQ_phi: log density of samples of phi (L, M)
-    else:
-        psi: samples from local approximations where ELBO is maximized (1, M, N)
-        logQ_psi: log density of samples of psi (1, M)
-
-    Notes
-    -----
-    shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
-    """
-
-    if index is not None:
-        x = x[index][None, ...]
-        g = g[index][None, ...]
-        alpha = alpha[index][None, ...]
-        beta = beta[index][None, ...]
-        gamma = gamma[index][None, ...]
-
-    L, N, JJ = beta.shape
-
-    # A3.1: compute vectors instead of (L, N, N) diagonal matrices
-    inv_sqrt_alpha = pt.sqrt(1.0 / alpha)  # (L, N)
-    sqrt_alpha = pt.sqrt(alpha)  # (L, N)
-
-    u = pt.random.normal(size=(L, num_samples, N))
-
-    sample_inputs = (
-        x,
-        g,
-        alpha,
-        beta,
-        gamma,
-        inv_sqrt_alpha,
-        sqrt_alpha,
-        u,
-    )
-
-    phi, logdet = pytensor.ifelse(
-        JJ >= N,
-        bfgs_sample_dense(*sample_inputs),
-        bfgs_sample_sparse(*sample_inputs),
-    )
-
-    logQ_phi = -0.5 * (
-        logdet[..., None]
-        + pt.sum(u * u, axis=-1)
-        + N * pt.log(2.0 * pt.pi)
-    )  # fmt: off
-
-    mask = pt.isnan(logQ_phi) | pt.isinf(logQ_phi)
-    logQ_phi = pt.set_subtensor(logQ_phi[mask], pt.inf)
-    return phi, logQ_phi
 
 
 def alpha_step_numpy(alpha_prev: NDArray, s: NDArray, z: NDArray) -> NDArray:
@@ -859,38 +447,6 @@ def _bfgs_sample_numpy(
     return phi, logQ
 
 
-class LogLike(Op):
-    """
-    Op that computes log-densities using a batched logp function.
-
-    The stored ``logp_func`` must accept a 2-D array of shape ``(B, N)`` and
-    return a 1-D array of shape ``(B,)``.  A single compiled call is made for
-    the entire batch, replacing the previous per-sample ``np.apply_along_axis``
-    loop and its associated Python-dispatch overhead.
-    """
-
-    __props__ = ("logp_func",)
-
-    def __init__(self, logp_func: Callable):
-        self.logp_func = logp_func
-        super().__init__()
-
-    def make_node(self, inputs):
-        inputs = pt.as_tensor(inputs)
-        outputs = pt.tensor(dtype="float64", shape=(None, None))
-        return Apply(self, [inputs], [outputs])
-
-    def perform(self, node: Apply, inputs, outputs) -> None:
-        phi = inputs[0]  # (L, M, N)
-        batch = phi.reshape(-1, phi.shape[-1])  # (L*M, N)
-        logP_flat = np.asarray(self.logp_func(batch))  # (L*M,) — one compiled call
-        logP = logP_flat.reshape(phi.shape[:-1])  # (L, M)
-        mask = np.isnan(logP) | np.isinf(logP)
-        if np.all(mask):
-            raise PathInvalidLogP()
-        outputs[0][0] = np.where(mask, -np.inf, logP)
-
-
 class PathStatus(Enum):
     """
     Statuses of a single-path pathfinder.
@@ -947,97 +503,51 @@ class PathInvalidLogQ(PathException):
         super().__init__(message or self.DEFAULT_MESSAGE, PathStatus.INVALID_LOGQ)
 
 
-def make_pathfinder_body(
-    logp_func: Callable,
-    num_draws: int,
-    maxcor: int,
+def make_step_elbo_fn(
+    batched_logp: Callable,
     num_elbo_draws: int,
-    **compile_kwargs: Any,
-) -> Function:
-    """
-    computes the inner components of the Pathfinder algorithm (post-LBFGS) using PyTensor variables and returns a compiled pytensor.function.
+    rng: np.random.Generator | None = None,
+) -> Callable:
+    """Create a per-step ELBO function for use with LBFGSStreamingCallback.
 
     Parameters
     ----------
-    logp_func : Callable
-        The target density function.
-    num_draws : int
-        Number of samples to draw from the single-path approximation.
-    maxcor : int
-        The maximum number of iterations for the L-BFGS algorithm.
+    batched_logp : Callable
+        Function that takes (M, N) samples and returns (M,) log-densities.
     num_elbo_draws : int
-        The number of draws for the Evidence Lower Bound (ELBO) estimation.
-    compile_kwargs : dict
-        Additional keyword arguments for the PyTensor compiler.
+        Number of draws per step for ELBO estimation.
+    rng : np.random.Generator, optional
+        Random number generator. A fresh generator is used if not provided.
 
     Returns
     -------
-    pathfinder_body_fn : Function
-        A compiled pytensor.function that performs the inner components of the Pathfinder algorithm (post-LBFGS).
-
-        pathfinder_body_fn inputs:
-            x_full: (L+1, N),
-            g_full: (L+1, N)
-        pathfinder_body_fn outputs:
-            psi: (1, M, N),
-            logP_psi: (1, M),
-            logQ_psi: (1, M),
-            elbo_argmax: (1,)
+    step_elbo_fn : Callable
+        Callable with signature (alpha, s_win, z_win, x, g) -> (float,).
+        Raises PathInvalidLogP when all log-density evaluations are non-finite.
     """
+    if rng is None:
+        rng = np.random.default_rng()
 
-    # x_full, g_full: (L+1, N)
-    x_full = pt.matrix("x", dtype="float64")
-    g_full = pt.matrix("g", dtype="float64")
+    def step_elbo_fn(alpha, s_win, z_win, x, g):
+        try:
+            phi, logQ = _bfgs_sample_numpy(x, g, alpha, s_win, z_win, num_elbo_draws, rng)
+        except np.linalg.LinAlgError:
+            raise PathInvalidLogP()
+        logP = np.asarray(batched_logp(phi))
+        finite = np.isfinite(logP)
+        if not np.any(finite):
+            raise PathInvalidLogP()
+        logP = np.where(finite, logP, -np.inf)
+        return (float(np.mean(logP - logQ)),)
 
-    num_draws = pt.constant(num_draws, "num_draws", dtype="int32")
-    num_elbo_draws = pt.constant(num_elbo_draws, "num_elbo_draws", dtype="int32")
-    maxcor = pt.constant(maxcor, "maxcor", dtype="int32")
-
-    alpha, s, z = alpha_recover(x_full, g_full)
-    beta, gamma = inverse_hessian_factors(alpha, s, z, J=maxcor)
-
-    # ignore initial point - x, g: (L, N)
-    x = x_full[1:]
-    g = g_full[1:]
-
-    phi, logQ_phi = bfgs_sample(
-        num_samples=num_elbo_draws, x=x, g=g, alpha=alpha, beta=beta, gamma=gamma
-    )
-
-    loglike = LogLike(logp_func)
-    logP_phi = loglike(phi)
-    elbo = pt.mean(logP_phi - logQ_phi, axis=-1)
-    elbo_argmax = pt.argmax(elbo, axis=0)
-
-    # TODO: move the raise PathInvalidLogQ from single_pathfinder_fn to here to avoid computing logP_psi if logQ_psi is invalid. Possible setup: logQ_phi = PathCheck()(logQ_phi, ~pt.all(mask)), where PathCheck uses pytensor raise.
-
-    # sample from the single-path approximation
-    psi, logQ_psi = bfgs_sample(
-        num_samples=num_draws,
-        x=x,
-        g=g,
-        alpha=alpha,
-        beta=beta,
-        gamma=gamma,
-        index=elbo_argmax,
-    )
-    logP_psi = loglike(psi)
-
-    pathfinder_body_fn = compile(
-        [x_full, g_full],
-        [psi, logP_psi, logQ_psi, elbo_argmax],
-        **compile_kwargs,
-    )
-    pathfinder_body_fn.trust_input = True
-    return pathfinder_body_fn
+    return step_elbo_fn
 
 
 class LBFGSStreamingCallback:
     """Streaming LBFGS callback: computes ELBO at each accepted step, O(J*N + M*N) peak memory.
 
-    Replaces LBFGSHistoryManager when streaming=True. Instead of collecting the full
-    (L+1, N) history, it processes each accepted step immediately and tracks only the
-    best state seen so far.
+    Instead of collecting the full (L+1, N) history, it processes each accepted step
+    immediately and tracks only the best state seen so far.
 
     Parameters
     ----------
@@ -1046,11 +556,13 @@ class LBFGSStreamingCallback:
     x0 : NDArray
         Initial position, shape (N,).
     step_elbo_fn : Callable
-        Compiled ELBO function from make_step_elbo_fn.
+        Per-step ELBO function, e.g. built by make_step_elbo_fn.
+        Signature: (alpha, s_win, z_win, x, g) -> (float,).
+        Should raise PathInvalidLogP on non-finite log-density.
     J : int
         L-BFGS history size (maxcor).
     epsilon : float
-        Tolerance for the LBFGS update condition (same as in LBFGSHistoryManager).
+        Tolerance for the LBFGS update condition.
     """
 
     def __init__(
@@ -1092,7 +604,7 @@ class LBFGSStreamingCallback:
         s = x - self.x_prev
         z = g - self.g_prev
 
-        # Step 3: entry condition (same logic as LBFGSHistoryManager for non-initial steps)
+        # Step 3: entry condition (finite grad/value + curvature check)
         if not (np.all(np.isfinite(g)) and np.isfinite(value)):
             return
         if not _check_lbfgs_curvature_condition(s, z, self.epsilon):
@@ -1164,7 +676,6 @@ def make_single_pathfinder_fn(
     num_elbo_draws: int,
     jitter: float,
     epsilon: float,
-    streaming: bool = True,
     max_init_retries: int = 10,
     pathfinder_kwargs: dict[str, Any] = {},
     compile_kwargs: dict[str, Any] = {},
@@ -1194,12 +705,6 @@ def make_single_pathfinder_fn(
         Amount of jitter to apply to initial points. Note that Pathfinder may be highly sensitive to the jitter value. It is recommended to increase num_paths when increasing the jitter value.
     epsilon : float
         value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if s·z >= epsilon * ||z||² for each l in L. Matches Zhang et al. (2022) Algorithm 3 with default epsilon=1e-12.
-    streaming : bool, optional
-        Whether to use streaming (per-step) LBFGS processing for O(J*N + M*N) peak memory,
-        by default True. Set to False to fall back to full-history batch processing.
-        Streaming processes each accepted LBFGS step immediately; for large maxiter this
-        incurs Python dispatch overhead (one compiled call per step) vs the non-streaming
-        vectorised graph over all L steps at once.
     max_init_retries : int, optional
         Maximum number of re-jitter retries when LBFGSInitFailed is raised (i.e. the initial
         point yields non-finite value/gradient or the first step is rejected). Each retry uses
@@ -1231,11 +736,6 @@ def make_single_pathfinder_fn(
     ip = Point(ipfn(None), model=model)
     x_base = DictToArrayBijection.map(ip).data
 
-    if not streaming:
-        pathfinder_body_fn = make_pathfinder_body(
-            batched_logp_func, num_draws, maxcor, num_elbo_draws, **compile_kwargs
-        )
-
     def _check_lbfgs_status(status):
         if status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
             raise LBFGSInitFailed(status)
@@ -1262,11 +762,7 @@ def make_single_pathfinder_fn(
         if progress_callback is not None:
             progress_callback({"status": "running"})
 
-        # Per-path independent copies of compiled functions.
-        # PyTensor Function objects share input/output storage on the same
-        # instance: concurrent calls from different threads corrupt each other.
-        # fn.copy(share_memory=False) gives independent storage that reuses
-        # the already-compiled C shared library — no recompilation cost.
+        # Per-path independent copies of compiled functions for process safety.
         local_logp_dlogp = logp_dlogp_func.copy(share_memory=False)
 
         def local_neg_logp_dlogp_func(x):
@@ -1275,11 +771,7 @@ def make_single_pathfinder_fn(
 
         local_lbfgs = LBFGS(local_neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
 
-        if streaming:
-            local_batched_logp = batched_logp_func.copy(share_memory=False)
-        else:
-            local_body_fn = pathfinder_body_fn.copy(share_memory=False)
-            path_rngs = find_rng_nodes(local_body_fn.maker.fgraph.outputs)
+        local_batched_logp = batched_logp_func.copy(share_memory=False)
 
         lbfgs_status = LBFGSStatus.LBFGS_FAILED  # default before LBFGS runs
         try:
@@ -1294,69 +786,61 @@ def make_single_pathfinder_fn(
                     jitter_value = rng.uniform(-jitter, jitter, size=x_base.shape)
                     x0 = x_base + jitter_value
 
-                    if streaming:
-                        # Fresh NumPy RNG each attempt → reproducible regardless
-                        # of how many ELBO steps the previous attempt took.
-                        elbo_rng = np.random.default_rng(elbo_seed + attempt)
+                    # Fresh NumPy RNG each attempt → reproducible regardless
+                    # of how many ELBO steps the previous attempt took.
+                    elbo_rng = np.random.default_rng(elbo_seed + attempt)
 
-                        def _numpy_step_elbo(alpha, s_win, z_win, x, g):
-                            try:
-                                phi, logQ = _bfgs_sample_numpy(
-                                    x, g, alpha, s_win, z_win, num_elbo_draws, elbo_rng
-                                )
-                            except np.linalg.LinAlgError:
-                                raise PathInvalidLogP()
-                            logP = np.asarray(local_batched_logp(phi))
-                            finite = np.isfinite(logP)
-                            if not np.any(finite):
-                                raise PathInvalidLogP()
-                            logP = np.where(finite, logP, -np.inf)
-                            return (float(np.mean(logP - logQ)),)
-
-                        cached_fn = _CachedValueGrad(local_neg_logp_dlogp_func)
-                        streaming_cb = LBFGSStreamingCallback(
-                            value_grad_fn=cached_fn,
-                            x0=x0,
-                            step_elbo_fn=_numpy_step_elbo,
-                            J=maxcor,
-                            epsilon=epsilon,
-                            progress_callback=progress_callback,
-                        )
-
-                        lbfgs_niter, lbfgs_status = local_lbfgs.minimize_streaming(streaming_cb, x0)
-                        _check_lbfgs_status(lbfgs_status)
-
-                        if not streaming_cb.any_valid:
-                            raise PathInvalidLogP()
-
-                        elbo_argmax = streaming_cb.best_step_idx
-                        best_state = streaming_cb.best_state
-
-                        final_rng = np.random.default_rng(final_seed)
+                    def _numpy_step_elbo(alpha, s_win, z_win, x, g):
                         try:
-                            phi_final, logQ_psi_flat = _bfgs_sample_numpy(
-                                best_state["x"],
-                                best_state["g"],
-                                best_state["alpha"],
-                                best_state["s_win"],
-                                best_state["z_win"],
-                                num_draws,
-                                final_rng,
+                            phi, logQ = _bfgs_sample_numpy(
+                                x, g, alpha, s_win, z_win, num_elbo_draws, elbo_rng
                             )
                         except np.linalg.LinAlgError:
                             raise PathInvalidLogP()
-                        logP_psi_flat = np.asarray(local_batched_logp(phi_final))
-                        # Add batch dim L=1 to match downstream expectations
-                        psi = phi_final[None]  # (1, M, N)
-                        logP_psi = logP_psi_flat[None]  # (1, M)
-                        logQ_psi = logQ_psi_flat[None]  # (1, M)
+                        logP = np.asarray(local_batched_logp(phi))
+                        finite = np.isfinite(logP)
+                        if not np.any(finite):
+                            raise PathInvalidLogP()
+                        logP = np.where(finite, logP, -np.inf)
+                        return (float(np.mean(logP - logQ)),)
 
-                    else:
-                        x, g, lbfgs_niter, lbfgs_status = local_lbfgs.minimize(x0)
-                        _check_lbfgs_status(lbfgs_status)
+                    cached_fn = _CachedValueGrad(local_neg_logp_dlogp_func)
+                    streaming_cb = LBFGSStreamingCallback(
+                        value_grad_fn=cached_fn,
+                        x0=x0,
+                        step_elbo_fn=_numpy_step_elbo,
+                        J=maxcor,
+                        epsilon=epsilon,
+                        progress_callback=progress_callback,
+                    )
 
-                        reseed_rngs(path_rngs, [elbo_seed, final_seed])
-                        psi, logP_psi, logQ_psi, elbo_argmax = local_body_fn(x, g)
+                    lbfgs_niter, lbfgs_status = local_lbfgs.minimize_streaming(streaming_cb, x0)
+                    _check_lbfgs_status(lbfgs_status)
+
+                    if not streaming_cb.any_valid:
+                        raise PathInvalidLogP()
+
+                    elbo_argmax = streaming_cb.best_step_idx
+                    best_state = streaming_cb.best_state
+
+                    final_rng = np.random.default_rng(final_seed)
+                    try:
+                        phi_final, logQ_psi_flat = _bfgs_sample_numpy(
+                            best_state["x"],
+                            best_state["g"],
+                            best_state["alpha"],
+                            best_state["s_win"],
+                            best_state["z_win"],
+                            num_draws,
+                            final_rng,
+                        )
+                    except np.linalg.LinAlgError:
+                        raise PathInvalidLogP()
+                    logP_psi_flat = np.asarray(local_batched_logp(phi_final))
+                    # Add batch dim L=1 to match downstream expectations
+                    psi = phi_final[None]  # (1, M, N)
+                    logP_psi = logP_psi_flat[None]  # (1, M)
+                    logQ_psi = logQ_psi_flat[None]  # (1, M)
 
                     break  # success — exit retry loop
 
@@ -1498,14 +982,14 @@ def _get_mp_context(mp_ctx: str | None = None) -> str | None:
 def _execute_concurrently(
     fn: SinglePathfinderFn,
     seeds: list[int],
-    concurrent: Literal["thread", "process"] | None,
+    concurrent: Literal["process"] | None,
     max_workers: int | None = None,
     progress_callbacks: list[Callable | None] | None = None,
 ) -> Iterator["PathfinderResult | bytes"]:
     """
     execute pathfinder runs concurrently.
     """
-    if concurrent == "thread":
+    if concurrent == "thread":  # pragma: no cover — thread mode is not exposed in the public API
         from concurrent.futures import ThreadPoolExecutor, as_completed
     elif concurrent == "process":
         from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -1596,7 +1080,7 @@ def _execute_serially(
 
 
 def make_generator(
-    concurrent: Literal["thread", "process"] | None,
+    concurrent: Literal["process"] | None,
     fn: SinglePathfinderFn,
     seeds: list[int],
     max_workers: int | None = None,
@@ -1921,9 +1405,8 @@ def multipath_pathfinder(
     epsilon: float,
     importance_sampling: Literal["psis", "psir", "identity"] | None,
     progressbar: bool,
-    concurrent: Literal["thread", "process"] | None = "process",
+    concurrent: Literal["process"] | None = "process",
     random_seed: RandomSeed = None,
-    streaming: bool = True,
     max_init_retries: int = 10,
     pathfinder_kwargs: dict[str, Any] = {},
     compile_kwargs: dict[str, Any] = {},
@@ -1975,10 +1458,12 @@ def multipath_pathfinder(
     inference_backend : str, optional
         Backend for inference, either "pymc" or "blackjax" (default is "pymc").
     concurrent : str, optional
-        Whether to run paths concurrently, either "thread" or "process" or None (default is "process").
-        "process" spawns separate worker processes for true parallelism (matching PyMC's approach for
-        parallel chains). "thread" uses threads, which may not give true parallelism due to Python's GIL.
-        Set to None for serial execution (useful for debugging).
+        How to run paths: ``"process"`` (default) spawns separate worker processes for true
+        parallelism, matching PyMC's approach for parallel chains.  Set to ``None`` for serial
+        execution (useful for debugging).
+        ``"thread"`` is intentionally not offered: pytensor compiled functions share intermediate
+        op storage across ``Function.copy()`` instances, so concurrent thread calls corrupt each
+        other's in-flight state.  Processes have fully independent memory and are always safe.
     max_init_retries : int, optional
         Maximum number of re-jitter retries per path when LBFGSInitFailed is raised (default is 10).
     pathfinder_kwargs
@@ -2010,7 +1495,6 @@ def multipath_pathfinder(
     single_pathfinder_fn = make_single_pathfinder_fn(
         model,
         **asdict(pathfinder_config),
-        streaming=streaming,
         max_init_retries=max_init_retries,
         pathfinder_kwargs=pathfinder_kwargs,
         compile_kwargs=compile_kwargs,
@@ -2199,8 +1683,7 @@ def fit_pathfinder(
     epsilon: float = 1e-12,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
     progressbar: bool = True,
-    concurrent: Literal["thread", "process"] | None = "process",
-    streaming: bool = False,
+    concurrent: Literal["process"] | None = None,
     max_init_retries: int = 10,
     random_seed: RandomSeed | None = None,
     postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
@@ -2266,10 +1749,12 @@ def fit_pathfinder(
     inference_backend : str, optional
         Backend for inference, either "pymc" or "blackjax" (default is "pymc").
     concurrent : str, optional
-        Whether to run paths concurrently, either "thread" or "process" or None (default is "process").
-        "process" spawns separate worker processes for true parallelism (matching PyMC's approach for
-        parallel chains). "thread" uses threads, which may not give true parallelism due to Python's GIL.
-        Set to None for serial execution (useful for debugging).
+        How to run paths: ``"process"`` (default) spawns separate worker processes for true
+        parallelism, matching PyMC's approach for parallel chains.  Set to ``None`` for serial
+        execution (useful for debugging).
+        ``"thread"`` is intentionally not offered: pytensor compiled functions share intermediate
+        op storage across ``Function.copy()`` instances, so concurrent thread calls corrupt each
+        other's in-flight state.  Processes have fully independent memory and are always safe.
     max_init_retries : int, optional
         Maximum number of re-jitter retries per path when the initial point fails (default is 10).
     pathfinder_kwargs
@@ -2351,7 +1836,6 @@ def fit_pathfinder(
             importance_sampling=importance_sampling,
             progressbar=progressbar,
             concurrent=concurrent,
-            streaming=streaming,
             max_init_retries=max_init_retries,
             random_seed=random_seed,
             pathfinder_kwargs=pathfinder_kwargs,

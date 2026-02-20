@@ -1,9 +1,8 @@
 """
-T-B1 through T-B7: acceptance tests for the streaming LBFGS pathfinder (Section B).
+T-B3 through T-B9: acceptance tests for the streaming LBFGS pathfinder (Section B).
 
 Pre-refactor fixtures in tests/pathfinder/fixtures/ are NOT regenerated here.
-Streaming results are compared against those fixtures and against the non-streaming
-(streaming=False) path to verify correctness.
+Streaming results are compared against those fixtures to verify correctness.
 """
 
 from unittest.mock import MagicMock, patch
@@ -54,7 +53,7 @@ COMPILE_KWARGS = {"mode": Mode(linker=DEFAULT_LINKER)}
 # ---------------------------------------------------------------------------
 
 
-def _make_single_fn(model, streaming: bool, maxiter: int = MAXITER, maxcor: int = MAXCOR):
+def _make_single_fn(model, maxiter: int = MAXITER, maxcor: int = MAXCOR):
     return make_single_pathfinder_fn(
         model=model,
         num_draws=NUM_DRAWS,
@@ -66,7 +65,6 @@ def _make_single_fn(model, streaming: bool, maxiter: int = MAXITER, maxcor: int 
         num_elbo_draws=NUM_ELBO_DRAWS,
         jitter=JITTER,
         epsilon=EPSILON,
-        streaming=streaming,
         compile_kwargs=COMPILE_KWARGS,
     )
 
@@ -81,8 +79,8 @@ def _load_fixture(name: str):
     path = os.path.join(FIXTURES_DIR, f"{name}.npz")
     if not os.path.exists(path):
         pytest.skip(f"Fixture not found: {path}. Run tests/pathfinder/generate_fixtures.py.")
-    data = np.load(path)
-    return data["x_full"], data["g_full"], data["elbo_ref"]
+    with np.load(path) as data:
+        return data["x_full"], data["g_full"], data["elbo_ref"]
 
 
 def _build_logp_and_neg(model, compile_kwargs=COMPILE_KWARGS):
@@ -100,82 +98,6 @@ def _build_logp_and_neg(model, compile_kwargs=COMPILE_KWARGS):
 
 
 # ---------------------------------------------------------------------------
-# T-B1: Non-streaming parity (behavior guard)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("model_name", ["iso_gaussian", "hd_gaussian", "logistic_regression"])
-def test_tb1_nonstreaming_parity(model_name):
-    """streaming=False path runs successfully with existing benchmark models."""
-    model = MODEL_FACTORIES[model_name]()
-    fn = _make_single_fn(model, streaming=False)
-    result = _run_path(fn, seed=42)
-
-    assert (
-        result.path_status not in FAILED_PATH_STATUS
-    ), f"[{model_name}] path failed with status {result.path_status}"
-    assert result.samples is not None
-    N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
-    assert result.samples.shape == (
-        1,
-        NUM_DRAWS,
-        N,
-    ), f"[{model_name}] unexpected samples shape {result.samples.shape}"
-    assert result.logP.shape == (1, NUM_DRAWS)
-    assert result.logQ.shape == (1, NUM_DRAWS)
-    assert np.any(np.isfinite(result.logP))
-    assert np.any(np.isfinite(result.logQ))
-
-
-# ---------------------------------------------------------------------------
-# T-B2: Streaming vs non-streaming ELBO argmax parity
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("model_name", ["iso_gaussian", "hd_gaussian"])
-def test_tb2_streaming_vs_nonstreaming_elbo_argmax(model_name):
-    """Streaming and non-streaming paths select ELBO argmax within a reasonable range."""
-    model = MODEL_FACTORIES[model_name]()
-    seed = 7
-
-    fn_ns = _make_single_fn(model, streaming=False)
-    fn_s = _make_single_fn(model, streaming=True)
-
-    result_ns = _run_path(fn_ns, seed=seed)
-    result_s = _run_path(fn_s, seed=seed)
-
-    assert (
-        result_ns.path_status not in FAILED_PATH_STATUS
-    ), f"[{model_name}] non-streaming failed: {result_ns.path_status}"
-    assert (
-        result_s.path_status not in FAILED_PATH_STATUS
-    ), f"[{model_name}] streaming failed: {result_s.path_status}"
-
-    # Both should have valid samples
-    assert result_ns.samples is not None
-    assert result_s.samples is not None
-
-    # ELBO argmax indices should be in the same ballpark (not required to be identical
-    # due to different RNG streams, but both should be > 0 for well-behaved models
-    # or at most a small step difference from each other)
-    best_ns = int(result_ns.elbo_argmax)
-    best_s = int(result_s.elbo_argmax)
-    lbfgs_steps_ns = int(result_ns.lbfgs_niter)
-    lbfgs_steps_s = int(result_s.lbfgs_niter)
-
-    # Both must have run at least one step
-    assert lbfgs_steps_ns > 0
-    assert lbfgs_steps_s > 0
-
-    # The mean logP of the selected step should be reasonably close
-    mean_logP_ns = float(np.mean(result_ns.logP[np.isfinite(result_ns.logP)]))
-    mean_logP_s = float(np.mean(result_s.logP[np.isfinite(result_s.logP)]))
-    # Not requiring exact match, but both should be finite
-    assert np.isfinite(mean_logP_ns), f"[{model_name}] non-streaming logP not finite"
-    assert np.isfinite(mean_logP_s), f"[{model_name}] streaming logP not finite"
-
-
-# ---------------------------------------------------------------------------
 # T-B3: ELBO evaluated exactly once per accepted step
 # ---------------------------------------------------------------------------
 
@@ -186,7 +108,7 @@ def test_tb3_elbo_call_count():
     _, neg_logp_dlogp_func = _build_logp_and_neg(model)
     batched_logp = get_batched_logp_of_ravel_inputs(model, jacobian=True, **COMPILE_KWARGS)
 
-    step_elbo_fn = make_step_elbo_fn(batched_logp, MAXCOR, NUM_ELBO_DRAWS, **COMPILE_KWARGS)
+    step_elbo_fn = make_step_elbo_fn(batched_logp, NUM_ELBO_DRAWS)
 
     call_count = [0]
     original_fn = step_elbo_fn
@@ -239,7 +161,7 @@ def test_tb3_elbo_call_count():
 def test_tb5_rng_reproducibility(model_name):
     """Two streaming runs with the same seed produce bit-identical results."""
     model = MODEL_FACTORIES[model_name]()
-    fn = _make_single_fn(model, streaming=True)
+    fn = _make_single_fn(model)
 
     r1 = _run_path(fn, seed=123)
     r2 = _run_path(fn, seed=123)
@@ -264,7 +186,7 @@ def test_tb6_short_history_fallback(model_name):
     model = MODEL_FACTORIES[model_name]()
 
     for maxiter in (1, 2, 3):
-        fn = _make_single_fn(model, streaming=True, maxiter=maxiter)
+        fn = _make_single_fn(model, maxiter=maxiter)
         result = _run_path(fn, seed=99)
         # Should either succeed or fail gracefully (not crash)
         assert result.path_status in list(
@@ -287,7 +209,7 @@ def test_tb7_infinite_logp_step_tolerance():
     _, neg_logp_dlogp_func = _build_logp_and_neg(model)
     batched_logp = get_batched_logp_of_ravel_inputs(model, jacobian=True, **COMPILE_KWARGS)
 
-    step_elbo_fn = make_step_elbo_fn(batched_logp, MAXCOR, NUM_ELBO_DRAWS, **COMPILE_KWARGS)
+    step_elbo_fn = make_step_elbo_fn(batched_logp, NUM_ELBO_DRAWS)
 
     # Inject a failure at exactly one step (step index 1)
     fail_at_step = [1]
@@ -350,48 +272,40 @@ def test_tb7_infinite_logp_step_tolerance():
 # ---------------------------------------------------------------------------
 
 
-def _make_lbfgs_mock(x_full, g_full, streaming: bool):
+def _make_lbfgs_mock(x_full, g_full):
     """Return a context-manager that patches LBFGS in pathfinder.py.
 
-    Non-streaming: minimize() returns the fixture history directly.
-    Streaming: minimize_streaming() replays x_full[1:] through the callback,
-    re-anchoring the callback's prev state to the fixture initial point so
-    that all s/z diffs are computed consistently against x_full/g_full.
+    Replays x_full[1:] through the streaming callback, re-anchoring the
+    callback's prev state to the fixture initial point so that all s/z diffs
+    are computed consistently against x_full/g_full.
     """
-
     mock_inst = MagicMock()
     count = x_full.shape[0]
 
-    if not streaming:
-        mock_inst.minimize.return_value = (x_full, g_full, count, LBFGSStatus.CONVERGED)
-    else:
+    def replay_streaming(callback, x0):
+        _, g_init = callback.value_grad_fn(x_full[0])
+        callback.x_prev = x_full[0].copy()
+        callback.g_prev = np.array(g_init, dtype=np.float64)
 
-        def replay_streaming(callback, x0):
-            # Re-anchor prev state to fixture initial point for correct s/z diffs
-            _, g_init = callback.value_grad_fn(x_full[0])
-            callback.x_prev = x_full[0].copy()
-            callback.g_prev = np.array(g_init, dtype=np.float64)
+        for x_k in x_full[1:]:
+            callback.value_grad_fn(x_k)  # warm _CachedValueGrad cache
+            callback(x_k)
 
-            for x_k in x_full[1:]:
-                callback.value_grad_fn(x_k)  # warm _CachedValueGrad cache
-                callback(x_k)
+        return count - 1, LBFGSStatus.CONVERGED
 
-            return count - 1, LBFGSStatus.CONVERGED
-
-        mock_inst.minimize_streaming.side_effect = replay_streaming
+    mock_inst.minimize_streaming.side_effect = replay_streaming
 
     patcher = patch("pymc_extras.inference.pathfinder.pathfinder.LBFGS", return_value=mock_inst)
     return patcher
 
 
-@pytest.mark.parametrize("streaming", [False, True], ids=["nonstreaming", "streaming"])
 @pytest.mark.parametrize("model_name", list(MODEL_FACTORIES.keys()))
-def test_tb8_fixture_match(model_name, streaming):
-    """Both paths select an ELBO argmax consistent with the pre-refactor fixture.
+def test_tb8_fixture_match(model_name):
+    """Streaming path selects an ELBO argmax consistent with the pre-refactor fixture.
 
-    LBFGS is mocked so both streaming and non-streaming process the exact same
-    trajectory stored in the fixture.  ELBO computations use fresh RNG draws so
-    exact argmax match is not required; we check that it falls within a generous
+    LBFGS is mocked so the streaming path processes the exact same trajectory
+    stored in the fixture.  ELBO computations use fresh RNG draws so exact
+    argmax match is not required; we check that it falls within a generous
     window of the fixture reference argmax and that outputs are finite.
     """
     x_full, g_full, elbo_ref = _load_fixture(model_name)
@@ -401,11 +315,11 @@ def test_tb8_fixture_match(model_name, streaming):
     model = MODEL_FACTORIES[model_name]()
     N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
 
-    with _make_lbfgs_mock(x_full, g_full, streaming):
-        fn = _make_single_fn(model, streaming=streaming)
+    with _make_lbfgs_mock(x_full, g_full):
+        fn = _make_single_fn(model)
         result = _run_path(fn, seed=42)
 
-    tag = f"[{model_name}, streaming={streaming}]"
+    tag = f"[{model_name}]"
 
     assert result.path_status not in FAILED_PATH_STATUS, f"{tag} path failed: {result.path_status}"
     assert result.samples is not None
@@ -417,8 +331,6 @@ def test_tb8_fixture_match(model_name, streaming):
     assert np.any(np.isfinite(result.logP)), f"{tag} all logP are non-finite"
     assert np.any(np.isfinite(result.logQ)), f"{tag} all logQ are non-finite"
 
-    # elbo_argmax should land within a generous window of the fixture reference
-    # (ELBO draws are stochastic, so exact match is not expected)
     argmax = int(result.elbo_argmax)
     tolerance = max(3, L // 4)
     assert abs(argmax - ref_argmax) <= tolerance, (

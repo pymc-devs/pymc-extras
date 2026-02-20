@@ -1,7 +1,6 @@
 import logging
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from enum import Enum, auto
 
 import numpy as np
@@ -40,97 +39,10 @@ def _check_lbfgs_curvature_condition(s: NDArray, z: NDArray, epsilon: float) -> 
     """Check the L-BFGS curvature condition: s·z >= epsilon * ||z||².
 
     Matches Zhang et al. (2022) Algorithm 3 line 5 with epsilon = 1e-12.
-
-    Shared by LBFGSHistoryManager (batch path) and LBFGSStreamingCallback
-    (streaming path) to ensure the acceptance criterion stays identical.
+    Used by LBFGSStreamingCallback to gate accepted steps.
     """
     sz = float((s * z).sum())
     return sz >= epsilon * float(np.sum(z**2))
-
-
-@dataclass(slots=True)
-class LBFGSHistory:
-    """History of LBFGS iterations."""
-
-    x: NDArray[np.float64]
-    g: NDArray[np.float64]
-    count: int
-
-    def __post_init__(self):
-        self.x = np.ascontiguousarray(self.x, dtype=np.float64)
-        self.g = np.ascontiguousarray(self.g, dtype=np.float64)
-
-
-@dataclass(slots=True)
-class LBFGSHistoryManager:
-    """manages and stores the history of lbfgs optimisation iterations.
-
-    Parameters
-    ----------
-    value_grad_fn : Callable
-        function that returns tuple of (value, gradient) given input x
-    x0 : NDArray
-        initial position
-    maxiter : int
-        maximum number of iterations to store
-    epsilon : float
-        tolerance for lbfgs update
-    """
-
-    value_grad_fn: Callable[[NDArray[np.float64]], tuple[np.float64, NDArray[np.float64]]]
-    x0: NDArray[np.float64]
-    maxiter: int
-    epsilon: float
-    x_history: NDArray[np.float64] = field(init=False)
-    g_history: NDArray[np.float64] = field(init=False)
-    count: int = field(init=False)
-
-    def __post_init__(self) -> None:
-        self.x_history = np.empty((self.maxiter + 1, self.x0.shape[0]), dtype=np.float64)
-        self.g_history = np.empty((self.maxiter + 1, self.x0.shape[0]), dtype=np.float64)
-        self.count = 0
-
-        value, grad = self.value_grad_fn(self.x0)
-        if self.entry_condition_met(self.x0, value, grad):
-            self.add_entry(self.x0, grad)
-
-    def add_entry(self, x: NDArray[np.float64], g: NDArray[np.float64]) -> None:
-        """adds new position and gradient to history.
-
-        Parameters
-        ----------
-        x : NDArray
-            position vector
-        g : NDArray
-            gradient vector
-        """
-        self.x_history[self.count] = x
-        self.g_history[self.count] = g
-        self.count += 1
-
-    def get_history(self) -> LBFGSHistory:
-        """returns history of optimisation iterations."""
-        return LBFGSHistory(
-            x=self.x_history[: self.count], g=self.g_history[: self.count], count=self.count
-        )
-
-    def entry_condition_met(self, x, value, grad) -> bool:
-        """Checks if the LBFGS iteration should continue."""
-
-        if np.all(np.isfinite(grad)) and np.isfinite(value) and (self.count < self.maxiter + 1):
-            if self.count == 0:
-                return True
-            else:
-                s = x - self.x_history[self.count - 1]
-                z = grad - self.g_history[self.count - 1]
-                return _check_lbfgs_curvature_condition(s, z, self.epsilon)
-        else:
-            return False
-
-    def __call__(self, x: NDArray[np.float64]) -> None:
-        value, grad = self.value_grad_fn(x)
-        if self.entry_condition_met(x, value, grad):
-            self.add_entry(x, grad)
 
 
 class LBFGSStatus(Enum):
@@ -230,40 +142,6 @@ class LBFGS:
             return LBFGSStatus.LOW_UPDATE_PCT
         else:
             return LBFGSStatus.CONVERGED
-
-    def minimize(self, x0) -> tuple[NDArray, NDArray, int, LBFGSStatus]:
-        """Minimise objective, collecting the full position/gradient history.
-
-        Parameters
-        ----------
-        x0 : array_like
-            initial position
-
-        Returns
-        -------
-        x : NDArray
-            history of positions, shape (count, N)
-        g : NDArray
-            history of gradients, shape (count, N)
-        count : int
-            number of accepted history entries (including initial point)
-        status : LBFGSStatus
-            final status of optimisation
-        """
-        x0 = np.array(x0, dtype=np.float64)
-        history_manager = LBFGSHistoryManager(
-            value_grad_fn=self.value_grad_fn, x0=x0, maxiter=self.maxiter, epsilon=self.epsilon
-        )
-        result = minimize(
-            self.value_grad_fn,
-            x0,
-            method="L-BFGS-B",
-            jac=True,
-            callback=history_manager,
-            options=self._scipy_options,
-        )
-        history = history_manager.get_history()
-        return history.x, history.g, history.count, self._classify_status(result, history.count)
 
     def minimize_streaming(self, callback, x0) -> tuple[int, LBFGSStatus]:
         """Minimise objective using a streaming callback that processes each step.
