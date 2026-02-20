@@ -37,13 +37,15 @@ class _CachedValueGrad:
 
 
 def _check_lbfgs_curvature_condition(s: NDArray, z: NDArray, epsilon: float) -> bool:
-    """Check the L-BFGS curvature condition: s·z > epsilon * ||z||.
+    """Check the L-BFGS curvature condition: s·z >= epsilon * ||z||².
+
+    Matches Zhang et al. (2022) Algorithm 3 line 5 with epsilon = 1e-12.
 
     Shared by LBFGSHistoryManager (batch path) and LBFGSStreamingCallback
     (streaming path) to ensure the acceptance criterion stays identical.
     """
     sz = float((s * z).sum())
-    return sz > epsilon * float(np.sqrt(np.sum(z**2)))
+    return sz >= epsilon * float(np.sum(z**2))
 
 
 @dataclass(slots=True)
@@ -179,7 +181,7 @@ class LBFGS:
     """
 
     def __init__(
-        self, value_grad_fn, maxcor, maxiter=1000, ftol=1e-5, gtol=1e-8, maxls=1000, epsilon=1e-8
+        self, value_grad_fn, maxcor, maxiter=1000, ftol=1e-5, gtol=1e-8, maxls=1000, epsilon=1e-12
     ) -> None:
         self.value_grad_fn = value_grad_fn
         self.maxcor = maxcor
