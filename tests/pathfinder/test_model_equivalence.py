@@ -39,8 +39,7 @@ from pytensor.compile.mode import Mode
 
 from pymc_extras.inference.pathfinder.pathfinder import (
     DEFAULT_LINKER,
-    _bfgs_sample_numpy,
-    get_batched_logp_of_ravel_inputs,
+    make_elbo_from_state_fn,
 )
 from tests.pathfinder.equivalence_models import MODEL_FACTORIES
 
@@ -90,7 +89,10 @@ def _compute_elbo(
 ) -> np.ndarray:
     """Recompute per-step ELBO using the exact saved per-step state."""
     compile_kwargs = {"mode": Mode(linker=DEFAULT_LINKER)}
-    batched_logp_func = get_batched_logp_of_ravel_inputs(model, jacobian=True, **compile_kwargs)
+    N = x_full.shape[1]
+    elbo_fn = make_elbo_from_state_fn(
+        model, N, MAXCOR, jacobian=True, compile_kwargs=compile_kwargs
+    )
     rng = np.random.default_rng(seed)
 
     # x_full/g_full have initial point at row 0; accepted steps start at row 1
@@ -98,16 +100,17 @@ def _compute_elbo(
     elbo = np.full(L, np.nan)
     for step in range(L):
         try:
-            phi, logQ = _bfgs_sample_numpy(
+            u = rng.standard_normal((NUM_ELBO_DRAWS, N))
+            _, logQ, logP = elbo_fn(
                 x_full[step + 1],
                 g_full[step + 1],
                 alpha_full[step],
                 s_win_full[step],
                 z_win_full[step],
-                NUM_ELBO_DRAWS,
-                rng,
+                u,
             )
-            logP = np.asarray(batched_logp_func(phi))
+            logP = np.asarray(logP)
+            logQ = np.asarray(logQ)
             finite = np.isfinite(logP) & np.isfinite(logQ)
             if np.any(finite):
                 elbo[step] = float(np.mean(logP[finite] - logQ[finite]))

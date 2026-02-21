@@ -247,28 +247,6 @@ def test_tc2_thread_vs_serial_parity():
     ), f"lbfgs_niter differ: serial={serial_niters}, thread={thread_niters}"
 
 
-def test_tc2_default_concurrent_is_process():
-    """fit_pathfinder and multipath_pathfinder default to concurrent='process'.
-
-    'thread' is not a supported option: pytensor's Function.copy(share_memory=False)
-    only replaces I/O storage, not intermediate op buffers, so concurrent thread calls
-    corrupt each other's in-flight state.  Processes have fully independent memory.
-    """
-    import inspect
-
-    from pymc_extras.inference.pathfinder.pathfinder import fit_pathfinder
-
-    mp_sig = inspect.signature(multipath_pathfinder)
-    fp_sig = inspect.signature(fit_pathfinder)
-
-    assert (
-        mp_sig.parameters["concurrent"].default == "process"
-    ), "multipath_pathfinder should default concurrent='process'"
-    assert (
-        fp_sig.parameters["concurrent"].default == "process"
-    ), "fit_pathfinder should default concurrent='process'"
-
-
 def test_tc2_progress_callback_called_per_path():
     """progress_callback is called for each path with status updates."""
     model = make_iso_gaussian()

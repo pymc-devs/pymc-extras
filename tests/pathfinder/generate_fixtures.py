@@ -37,10 +37,9 @@ from pymc_extras.inference.pathfinder.lbfgs import LBFGS, LBFGSStatus
 from pymc_extras.inference.pathfinder.pathfinder import (
     DEFAULT_LINKER,
     LBFGSStreamingCallback,
-    _bfgs_sample_numpy,
     _CachedValueGrad,
-    get_batched_logp_of_ravel_inputs,
     get_logp_dlogp_of_ravel_inputs,
+    make_pathfinder_sample_fn,
 )
 from tests.pathfinder.equivalence_models import MODEL_FACTORIES
 
@@ -62,7 +61,6 @@ def generate_fixture(name: str, model_fn) -> None:
 
     compile_kwargs = {"mode": Mode(linker=DEFAULT_LINKER)}
     logp_dlogp_func = get_logp_dlogp_of_ravel_inputs(model, jacobian=True, **compile_kwargs)
-    batched_logp_func = get_batched_logp_of_ravel_inputs(model, jacobian=True, **compile_kwargs)
 
     def neg_logp_dlogp_func(x):
         logp, dlogp = logp_dlogp_func(x)
@@ -71,6 +69,7 @@ def generate_fixture(name: str, model_fn) -> None:
     ipfn = make_initial_point_fn(model=model)
     ip = Point(ipfn(None), model=model)
     x_base = DictToArrayBijection.map(ip).data
+    N = x_base.shape[0]
 
     rng = np.random.default_rng(LBFGS_JITTER_SEED)
     x0 = x_base + rng.uniform(-JITTER, JITTER, size=x_base.shape)
@@ -80,30 +79,31 @@ def generate_fixture(name: str, model_fn) -> None:
     g0 = -neg_g0
 
     # Run LBFGS, recording full per-step state and ELBO.
-    rng_elbo = np.random.default_rng(ELBO_SEED)
     step_records = []  # (x, g, alpha, s_win, z_win, elbo_val)
 
-    def _record_elbo(alpha, s_win, z_win, x, g):
-        try:
-            phi, logQ = _bfgs_sample_numpy(x, g, alpha, s_win, z_win, NUM_ELBO_DRAWS, rng_elbo)
-            logP = np.asarray(batched_logp_func(phi))
-            finite = np.isfinite(logP) & np.isfinite(logQ)
-            elbo_val = float(np.mean(logP[finite] - logQ[finite])) if np.any(finite) else np.nan
-        except Exception:
-            elbo_val = np.nan
+    def _on_step(x, g, alpha, s_win, z_win, elbo):
+        elbo_val = elbo if np.isfinite(elbo) else np.nan
         step_records.append(
             (x.copy(), g.copy(), alpha.copy(), s_win.copy(), z_win.copy(), elbo_val)
         )
-        return (elbo_val if np.isfinite(elbo_val) else 0.0,)
 
+    sample_logp_fn, s_win_shared, z_win_shared = make_pathfinder_sample_fn(
+        model, N, MAXCOR, jacobian=True, compile_kwargs=compile_kwargs
+    )
     cached_fn = _CachedValueGrad(neg_logp_dlogp_func)
+    rng_elbo = np.random.default_rng(ELBO_SEED)
     lbfgs = LBFGS(neg_logp_dlogp_func, MAXCOR, MAXITER)
     cb = LBFGSStreamingCallback(
         value_grad_fn=cached_fn,
         x0=x0,
-        step_elbo_fn=_record_elbo,
+        sample_logp_fn=sample_logp_fn,
+        s_win_shared=s_win_shared,
+        z_win_shared=z_win_shared,
+        num_elbo_draws=NUM_ELBO_DRAWS,
+        rng=rng_elbo,
         J=MAXCOR,
         epsilon=1e-12,
+        on_step_callback=_on_step,
     )
     niter, status = lbfgs.minimize_streaming(cb, x0)
 
