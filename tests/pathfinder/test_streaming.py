@@ -26,10 +26,9 @@ from pymc_extras.inference.pathfinder.pathfinder import (
     PathStatus,
     alpha_recover,
     alpha_step_numpy,
-    get_batched_logp_of_ravel_inputs,
     get_logp_dlogp_of_ravel_inputs,
+    make_pathfinder_sample_fn,
     make_single_pathfinder_fn,
-    make_step_elbo_fn,
 )
 from tests.pathfinder.equivalence_models import MODEL_FACTORIES, make_iso_gaussian
 
@@ -103,22 +102,20 @@ def _build_logp_and_neg(model, compile_kwargs=COMPILE_KWARGS):
 
 
 def test_tb3_elbo_call_count():
-    """step_elbo_fn is called exactly once per accepted LBFGS step."""
+    """sample_logp_fn is called exactly once per accepted LBFGS step."""
     model = make_iso_gaussian()
     _, neg_logp_dlogp_func = _build_logp_and_neg(model)
-    batched_logp = get_batched_logp_of_ravel_inputs(model, jacobian=True, **COMPILE_KWARGS)
+    N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
 
-    step_elbo_fn = make_step_elbo_fn(batched_logp, NUM_ELBO_DRAWS)
+    sample_logp_fn, s_win_shared, z_win_shared = make_pathfinder_sample_fn(
+        model, N, MAXCOR, jacobian=True, compile_kwargs=COMPILE_KWARGS
+    )
 
     call_count = [0]
-    original_fn = step_elbo_fn
 
-    class CountingWrapper:
-        def __call__(self, *args, **kwargs):
-            call_count[0] += 1
-            return original_fn(*args, **kwargs)
-
-    counting_fn = CountingWrapper()
+    def counting_fn(x, g, alpha, u):
+        call_count[0] += 1
+        return sample_logp_fn(x, g, alpha, u)
 
     ipfn = make_initial_point_fn(model=model)
     ip = Point(ipfn(None), model=model)
@@ -130,7 +127,11 @@ def test_tb3_elbo_call_count():
     cb = LBFGSStreamingCallback(
         value_grad_fn=cached_fn,
         x0=x0,
-        step_elbo_fn=counting_fn,
+        sample_logp_fn=counting_fn,
+        s_win_shared=s_win_shared,
+        z_win_shared=z_win_shared,
+        num_elbo_draws=NUM_ELBO_DRAWS,
+        rng=rng,
         J=MAXCOR,
         epsilon=EPSILON,
     )
@@ -148,7 +149,7 @@ def test_tb3_elbo_call_count():
 
     assert (
         call_count[0] == cb.step_count
-    ), f"step_elbo_fn called {call_count[0]} times but step_count={cb.step_count}"
+    ), f"sample_logp_fn called {call_count[0]} times but step_count={cb.step_count}"
     assert cb.step_count > 0, "No accepted steps — model may be degenerate"
 
 
@@ -204,27 +205,25 @@ def test_tb6_short_history_fallback(model_name):
 
 
 def test_tb7_infinite_logp_step_tolerance():
-    """A step where all M logP draws are -inf is silently skipped; path still succeeds."""
+    """A step where sample_logp_fn raises is silently skipped; path still succeeds."""
     model = make_iso_gaussian()
     _, neg_logp_dlogp_func = _build_logp_and_neg(model)
-    batched_logp = get_batched_logp_of_ravel_inputs(model, jacobian=True, **COMPILE_KWARGS)
+    N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
 
-    step_elbo_fn = make_step_elbo_fn(batched_logp, NUM_ELBO_DRAWS)
+    sample_logp_fn, s_win_shared, z_win_shared = make_pathfinder_sample_fn(
+        model, N, MAXCOR, jacobian=True, compile_kwargs=COMPILE_KWARGS
+    )
 
     # Inject a failure at exactly one step (step index 1)
     fail_at_step = [1]
     call_count = [0]
-    original_fn = step_elbo_fn
 
-    class FailAtStep:
-        def __call__(self, *args, **kwargs):
-            idx = call_count[0]
-            call_count[0] += 1
-            if idx == fail_at_step[0]:
-                raise PathInvalidLogP("synthetic failure for test")
-            return original_fn(*args, **kwargs)
-
-    failing_fn = FailAtStep()
+    def failing_fn(x, g, alpha, u):
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx == fail_at_step[0]:
+            raise PathInvalidLogP("synthetic failure for test")
+        return sample_logp_fn(x, g, alpha, u)
 
     ipfn = make_initial_point_fn(model=model)
     ip = Point(ipfn(None), model=model)
@@ -236,7 +235,11 @@ def test_tb7_infinite_logp_step_tolerance():
     cb = LBFGSStreamingCallback(
         value_grad_fn=cached_fn,
         x0=x0,
-        step_elbo_fn=failing_fn,
+        sample_logp_fn=failing_fn,
+        s_win_shared=s_win_shared,
+        z_win_shared=z_win_shared,
+        num_elbo_draws=NUM_ELBO_DRAWS,
+        rng=rng,
         J=MAXCOR,
         epsilon=EPSILON,
     )

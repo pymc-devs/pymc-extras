@@ -30,7 +30,6 @@ import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
-import scipy.linalg as sp_linalg
 
 from numpy.typing import NDArray
 from packaging import version
@@ -49,13 +48,14 @@ from pymc.util import (
 )
 from pytensor.compile.function.types import Function
 from pytensor.compile.mode import FAST_COMPILE, Mode
-from pytensor.graph import clone_replace
+from pytensor.graph import clone_replace, vectorize_graph
 from pytensor.tensor import TensorVariable
 from rich.console import Console, Group
 from rich.padding import Padding
 from rich.progress import TextColumn, TimeElapsedColumn
 from rich.table import Column, Table
 from rich.text import Text
+from threadpoolctl import threadpool_limits
 
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 from pymc_extras.inference.pathfinder.importance_sampling import (
@@ -233,38 +233,28 @@ def convert_flat_trace_to_idata(
     logger.info("Transforming variables...")
 
     if inference_backend == "pymc":
-        # Squeeze leading path dim: (1, S, *shape) → (S, *shape)
-        seqs = [v[0] for v in trace.values()]
+        # vectorize_graph batches over trace dims; output size matches input, no extra intermediates.
+        new_shapes = [v.ndim * (None,) for v in trace.values()]
+        replace = {
+            var: pt.tensor(dtype="float64", shape=new_shapes[i])
+            for i, var in enumerate(model.value_vars)
+        }
 
-        # Symbolic sequence inputs (one per value_var): unknown S, known per-sample shape
-        seq_syms = [pt.tensor(dtype="float64", shape=(None, *a.shape[1:])) for a in seqs]
-
-        # Map single-sample transform over S: O(1) memory, no (S, N, N) intermediates.
-        # pytensor.map compiles to a C-level loop — faster than a Python loop and
-        # avoids broadcasting large intermediate tensors (unlike vectorize_graph).
-        # Also handles ops like AdvancedSetSubtensor that vectorize_graph cannot process.
-        value_vars = model.value_vars
-
-        def _transform(*args):
-            return clone_replace(vars_to_sample, replace=dict(zip(value_vars, args)))
-
-        mapped_outputs = pytensor.map(fn=_transform, sequences=seq_syms, return_updates=False)
+        outputs = vectorize_graph(vars_to_sample, replace=replace)
 
         fn = pytensor.function(
-            inputs=seq_syms,
-            outputs=mapped_outputs,
+            inputs=[*list(replace.values())],
+            outputs=outputs,
             mode=FAST_COMPILE,
             on_unused_input="ignore",
         )
         fn.trust_input = True
-        result = fn(*seqs)
+        result = fn(*list(trace.values()))
         if not isinstance(result, list):
             result = [result]
 
         if importance_sampling is None:
-            result = [res.reshape(num_paths, num_pdraws, *res.shape[1:]) for res in result]
-        else:
-            result = [res[None] for res in result]  # (S, *shape) → (1, S, *shape) for arviz
+            result = [res.reshape(num_paths, num_pdraws, *res.shape[2:]) for res in result]
 
     elif inference_backend == "blackjax":
         import jax
@@ -369,82 +359,192 @@ def alpha_step_numpy(alpha_prev: NDArray, s: NDArray, z: NDArray) -> NDArray:
     return 1.0 / inv_alpha
 
 
-def _bfgs_sample_numpy(
-    x: NDArray,
-    g: NDArray,
-    alpha: NDArray,
-    s_win: NDArray,
-    z_win: NDArray,
-    M: int,
-    rng: np.random.Generator,
-) -> tuple[NDArray, NDArray]:
-    """Draw M samples from the L-BFGS inverse-Hessian approximation in pure NumPy.
+def _bfgs_sample_pt(
+    x: TensorVariable,
+    g: TensorVariable,
+    alpha: TensorVariable,
+    S: TensorVariable,
+    Z: TensorVariable,
+    u: TensorVariable,
+    J: int,
+    N: int,
+) -> tuple[TensorVariable, TensorVariable]:
+    """Symbolic L-BFGS inverse-Hessian sample.
 
-    Mirrors the PyTensor ``bfgs_sample`` logic (both dense and sparse paths) but
-    operates entirely outside of PyTensor's compiled graph, eliminating CVM loop,
-    scan, and Blockwise overhead.  The caller is responsible for passing an
-    independent ``rng`` per path for reproducibility.
+    The dense vs sparse path is selected at graph-construction time from
+    the compile-time constants N and J, so only one branch is ever compiled.
 
     Parameters
     ----------
-    x : (N,) position at this LBFGS step
-    g : (N,) gradient at this LBFGS step
-    alpha : (N,) diagonal scaling vector
-    s_win : (N, J) sliding window of position diffs
-    z_win : (N, J) sliding window of gradient diffs
-    M : number of samples to draw
-    rng : NumPy random Generator (advanced in-place)
+    x : (N,) position
+    g : (N,) gradient
+    alpha : (N,) diagonal scaling
+    S : (N, J) position-diff ring buffer
+    Z : (N, J) gradient-diff ring buffer
+    u : (M, N) standard-normal draws — M is a dynamic runtime dimension
+    J : int, L-BFGS history size (compile-time constant)
+    N : int, number of parameters (compile-time constant)
 
     Returns
     -------
     phi : (M, N) samples
     logQ : (M,) log-density under the approximation
     """
-    N = x.shape[0]
-    J = s_win.shape[1]
-    S, Z = s_win, z_win
-
-    # ---- inverse_hessian_factors_from_SZ (NumPy port) ----
-    E = np.triu(S.T @ Z) + np.eye(J) * REGULARISATION_TERM  # (J, J)
-    eta = np.diag(E)  # (J,)
-    AZ = alpha[:, None] * Z  # (N, J)
-    beta = np.concatenate([AZ, S], axis=1)  # (N, 2J)
-    E_inv = sp_linalg.solve_triangular(E, np.eye(J), check_finite=False)  # (J, J)
-    block_dd = E_inv.T @ (np.diag(eta) + Z.T @ AZ) @ E_inv  # (J, J)
-    gamma = np.block([[np.zeros((J, J)), -E_inv], [-E_inv.T, block_dd]])  # (2J, 2J)
-
-    inv_sqrt_alpha = np.sqrt(1.0 / alpha)
-    sqrt_alpha = np.sqrt(alpha)
     J2 = 2 * J
 
+    # Inverse Hessian factors
+    E = pt.triu(S.T @ Z) + pt.eye(J) * REGULARISATION_TERM  # (J, J)
+    eta = pt.diag(E)  # (J,)
+    AZ = alpha[:, None] * Z  # (N, J)
+    beta = pt.concatenate([AZ, S], axis=1)  # (N, 2J)
+    E_inv = pt.linalg.solve_triangular(E, pt.eye(J), lower=False)  # (J, J)
+    block_dd = E_inv.T @ (pt.diag(eta) + Z.T @ AZ) @ E_inv  # (J, J)
+    top = pt.concatenate([pt.zeros((J, J)), -E_inv], axis=1)  # (J, 2J)
+    bot = pt.concatenate([-E_inv.T, block_dd], axis=1)  # (J, 2J)
+    gamma = pt.concatenate([top, bot], axis=0)  # (2J, 2J)
+
+    inv_sqrt_alpha = 1.0 / pt.sqrt(alpha)
+    sqrt_alpha = pt.sqrt(alpha)
+
     if J2 >= N:
-        # Dense path (small-N regime): form H_inv explicitly, O(N²) is fine here
-        isa_d = np.diag(inv_sqrt_alpha)  # (N, N)
-        sa_d = np.diag(sqrt_alpha)  # (N, N)
-        IdN = np.eye(N) * (1.0 + REGULARISATION_TERM)
+        # Dense path: form H_inv explicitly (small-N regime, O(N²) is fine)
+        isa_d = pt.diag(inv_sqrt_alpha)  # (N, N)
+        sa_d = pt.diag(sqrt_alpha)  # (N, N)
+        IdN = pt.eye(N) * (1.0 + REGULARISATION_TERM)
         H_inv = sa_d @ (IdN + isa_d @ beta @ gamma @ beta.T @ isa_d) @ sa_d
-        Lchol = sp_linalg.cholesky(H_inv, lower=False, check_finite=False)
-        logdet = 2.0 * np.sum(np.log(np.abs(np.diag(Lchol))))
+        Lchol = pt.linalg.cholesky(H_inv, lower=False)  # (N, N)
+        logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diag(Lchol))))
         mu = x - H_inv @ g
-        u = rng.standard_normal((M, N))
         phi = (mu[:, None] + Lchol @ u.T).T  # (M, N)
     else:
-        # Sparse path (large-N regime): economy QR avoids O(N²) matrices
-        # overwrite_a=True avoids an extra copy; check_finite=False skips NaN scan.
-        Q, R = sp_linalg.qr(
-            beta * inv_sqrt_alpha[:, None], mode="economic", overwrite_a=True, check_finite=False
-        )  # Q:(N,2J), R:(2J,2J)
-        I2J = np.eye(J2) * (1.0 + REGULARISATION_TERM)
-        Lchol = sp_linalg.cholesky(I2J + R @ gamma @ R.T, lower=False, check_finite=False)
-        logdet = 2.0 * np.sum(np.log(np.abs(np.diag(Lchol)))) + np.sum(np.log(alpha))
+        # Sparse path: economy QR avoids O(N²) matrices (large-N regime)
+        Q, R = pt.linalg.qr(beta * inv_sqrt_alpha[:, None], mode="reduced")  # Q:(N,2J), R:(2J,2J)
+        I2J = pt.eye(J2) * (1.0 + REGULARISATION_TERM)
+        Lchol = pt.linalg.cholesky(I2J + R @ gamma @ R.T, lower=False)  # (2J, 2J)
+        logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diag(Lchol)))) + pt.sum(pt.log(alpha))
         btg = beta.T @ g[:, None]  # (2J, 1)
         mu = x - ((alpha * g)[:, None] + beta @ (gamma @ btg))[:, 0]  # (N,)
-        u = rng.standard_normal((M, N))
         QtU = Q.T @ u.T  # (2J, M)
-        phi = (mu[:, None] + sqrt_alpha[:, None] * (Q @ ((Lchol - np.eye(J2)) @ QtU) + u.T)).T
+        phi = (mu[:, None] + sqrt_alpha[:, None] * (Q @ ((Lchol - pt.eye(J2)) @ QtU) + u.T)).T
 
-    logQ = -0.5 * (logdet + np.sum(u * u, axis=-1) + N * np.log(2.0 * np.pi))
+    logQ = -0.5 * (logdet + pt.sum(u * u, axis=-1) + N * np.log(2.0 * np.pi))
     return phi, logQ
+
+
+def make_pathfinder_sample_fn(
+    model: Model,
+    N: int,
+    J: int,
+    jacobian: bool,
+    compile_kwargs: dict,
+) -> tuple[Function, Any, Any]:
+    """Compile a single PyTensor function covering bfgs sample + batched logP evaluation.
+
+    The ring buffers S and Z are pytensor shared variables — the caller holds the
+    backing numpy arrays and writes to them in-place; pytensor reads from that same
+    memory without any per-step copy (borrow semantics via set_value).
+
+    The number of draws M is a dynamic runtime dimension — the same compiled
+    function handles both ELBO estimation (small M) and final sampling (large M).
+
+    Parameters
+    ----------
+    model : Model
+    N : int, number of unconstrained parameters
+    J : int, L-BFGS history size (maxcor)
+    jacobian : bool
+    compile_kwargs : dict
+
+    Returns
+    -------
+    fn : Function
+        Compiled: (x, g, alpha, u) → (phi, logQ, logP)
+        where u is (M, N) and M is a dynamic dimension.
+    s_win_shared : SharedVariable  shape (N, J)
+    z_win_shared : SharedVariable  shape (N, J)
+    """
+    (logP_single,), single_input = pm.pytensorf.join_nonshared_inputs(
+        model.initial_point(),
+        [model.logp(jacobian=jacobian)],
+        model.value_vars,
+    )
+
+    x_sym = pt.vector("x", dtype="float64")
+    g_sym = pt.vector("g", dtype="float64")
+    alpha_sym = pt.vector("alpha", dtype="float64")
+    u_sym = pt.matrix("u", dtype="float64")  # (M, N) — M is dynamic
+
+    # Shared ring-buffer state: the caller owns backing numpy arrays and writes
+    # them in-place; pytensor reads from the same memory with no per-step copy.
+    s_win_shared = pytensor.shared(np.zeros((N, J), dtype="float64"), name="s_win")
+    z_win_shared = pytensor.shared(np.zeros((N, J), dtype="float64"), name="z_win")
+
+    phi_sym, logQ_sym = _bfgs_sample_pt(
+        x_sym, g_sym, alpha_sym, s_win_shared, z_win_shared, u_sym, J, N
+    )
+
+    batched_logP_sym = pytensor.map(
+        fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
+        sequences=[phi_sym],
+        return_updates=False,
+    )
+
+    fn = pytensor.function(
+        [
+            pytensor.In(x_sym, borrow=True),
+            pytensor.In(g_sym, borrow=True),
+            pytensor.In(alpha_sym, borrow=True),
+            pytensor.In(u_sym, borrow=True),
+        ],
+        [phi_sym, logQ_sym, batched_logP_sym],
+        **compile_kwargs,
+    )
+    fn.trust_input = True
+    return fn, s_win_shared, z_win_shared
+
+
+def make_elbo_from_state_fn(
+    model: Model,
+    N: int,
+    J: int,
+    jacobian: bool,
+    compile_kwargs: dict,
+) -> Function:
+    """Compiled (x, g, alpha, S, Z, u) → (phi, logQ, logP) for fixture/tests.
+
+    S, Z are explicit inputs (not shared), for recomputing ELBO from saved state.
+    """
+    (logP_single,), single_input = pm.pytensorf.join_nonshared_inputs(
+        model.initial_point(),
+        [model.logp(jacobian=jacobian)],
+        model.value_vars,
+    )
+    x_sym = pt.vector("x", dtype="float64")
+    g_sym = pt.vector("g", dtype="float64")
+    alpha_sym = pt.vector("alpha", dtype="float64")
+    S_sym = pt.matrix("S", dtype="float64")
+    Z_sym = pt.matrix("Z", dtype="float64")
+    u_sym = pt.matrix("u", dtype="float64")
+    phi_sym, logQ_sym = _bfgs_sample_pt(x_sym, g_sym, alpha_sym, S_sym, Z_sym, u_sym, J, N)
+    batched_logP_sym = pytensor.map(
+        fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
+        sequences=[phi_sym],
+        return_updates=False,
+    )
+    fn = pytensor.function(
+        [
+            pytensor.In(x_sym, borrow=True),
+            pytensor.In(g_sym, borrow=True),
+            pytensor.In(alpha_sym, borrow=True),
+            pytensor.In(S_sym, borrow=True),
+            pytensor.In(Z_sym, borrow=True),
+            pytensor.In(u_sym, borrow=True),
+        ],
+        [phi_sym, logQ_sym, batched_logP_sym],
+        **compile_kwargs,
+    )
+    fn.trust_input = True
+    return fn
 
 
 class PathStatus(Enum):
@@ -503,46 +603,6 @@ class PathInvalidLogQ(PathException):
         super().__init__(message or self.DEFAULT_MESSAGE, PathStatus.INVALID_LOGQ)
 
 
-def make_step_elbo_fn(
-    batched_logp: Callable,
-    num_elbo_draws: int,
-    rng: np.random.Generator | None = None,
-) -> Callable:
-    """Create a per-step ELBO function for use with LBFGSStreamingCallback.
-
-    Parameters
-    ----------
-    batched_logp : Callable
-        Function that takes (M, N) samples and returns (M,) log-densities.
-    num_elbo_draws : int
-        Number of draws per step for ELBO estimation.
-    rng : np.random.Generator, optional
-        Random number generator. A fresh generator is used if not provided.
-
-    Returns
-    -------
-    step_elbo_fn : Callable
-        Callable with signature (alpha, s_win, z_win, x, g) -> (float,).
-        Raises PathInvalidLogP when all log-density evaluations are non-finite.
-    """
-    if rng is None:
-        rng = np.random.default_rng()
-
-    def step_elbo_fn(alpha, s_win, z_win, x, g):
-        try:
-            phi, logQ = _bfgs_sample_numpy(x, g, alpha, s_win, z_win, num_elbo_draws, rng)
-        except np.linalg.LinAlgError:
-            raise PathInvalidLogP()
-        logP = np.asarray(batched_logp(phi))
-        finite = np.isfinite(logP)
-        if not np.any(finite):
-            raise PathInvalidLogP()
-        logP = np.where(finite, logP, -np.inf)
-        return (float(np.mean(logP - logQ)),)
-
-    return step_elbo_fn
-
-
 class LBFGSStreamingCallback:
     """Streaming LBFGS callback: computes ELBO at each accepted step, O(J*N + M*N) peak memory.
 
@@ -555,39 +615,66 @@ class LBFGSStreamingCallback:
         Single-entry cached value/gradient function (wrap with _CachedValueGrad).
     x0 : NDArray
         Initial position, shape (N,).
-    step_elbo_fn : Callable
-        Per-step ELBO function, e.g. built by make_step_elbo_fn.
-        Signature: (alpha, s_win, z_win, x, g) -> (float,).
-        Should raise PathInvalidLogP on non-finite log-density.
+    sample_logp_fn : Callable
+        Compiled PyTensor function (x, g, alpha, u) → (phi, logQ, logP).
+        Built by make_pathfinder_sample_fn.
+    s_win_shared : SharedVariable
+        PyTensor shared variable for the position-diff ring buffer, shape (N, J).
+    z_win_shared : SharedVariable
+        PyTensor shared variable for the gradient-diff ring buffer, shape (N, J).
+    num_elbo_draws : int
+        Number of draws per step for ELBO estimation.
+    rng : np.random.Generator
+        Random number generator for draw generation.
     J : int
         L-BFGS history size (maxcor).
     epsilon : float
         Tolerance for the LBFGS update condition.
+    progress_callback : Callable | None
+        Optional progress reporting.
+    on_step_callback : Callable | None
+        If set, called after each accepted step with (x, g, alpha, s_win, z_win, elbo).
+        Used by fixture generation to record per-step state.
     """
 
     def __init__(
         self,
         value_grad_fn: Callable,
         x0: NDArray,
-        step_elbo_fn: Callable,
+        sample_logp_fn: Callable,
+        s_win_shared: Any,
+        z_win_shared: Any,
+        num_elbo_draws: int,
+        rng: np.random.Generator,
         J: int,
         epsilon: float,
         progress_callback: Callable | None = None,
+        on_step_callback: Callable | None = None,
     ) -> None:
         self.value_grad_fn = value_grad_fn
-        self.step_elbo_fn = step_elbo_fn
+        self.sample_logp_fn = sample_logp_fn
+        self.num_elbo_draws = num_elbo_draws
+        self._rng = rng
         self.J = J
         self.epsilon = epsilon
         self.progress_callback = progress_callback
+        self.on_step_callback = on_step_callback
 
         N = x0.shape[0]
+        self._N = N
         _, g0 = value_grad_fn(x0)
 
         self.x_prev: NDArray = x0.copy()
         self.g_prev: NDArray = np.array(g0, dtype=np.float64)
         self.alpha_prev: NDArray = np.ones(N, dtype=np.float64)
-        self.s_win: NDArray = np.zeros((N, J), dtype=np.float64)  # (N, J) ring buffer
+
+        # Ring buffer: backed by numpy, shared with pytensor via borrow=True.
+        # In-place numpy writes (s_win[:, idx] = s) are visible to the compiled
+        # function with no per-step copy.
+        self.s_win: NDArray = np.zeros((N, J), dtype=np.float64)
         self.z_win: NDArray = np.zeros((N, J), dtype=np.float64)
+        s_win_shared.set_value(self.s_win, borrow=True)
+        z_win_shared.set_value(self.z_win, borrow=True)
         self.win_idx: int = -1
         self.best_elbo: float = -np.inf
         self.best_state: dict = {}
@@ -597,39 +684,47 @@ class LBFGSStreamingCallback:
         self._start_time: float = time.time()
 
     def __call__(self, x: NDArray) -> None:
-        # Step 1: get (value, grad) — free if _CachedValueGrad wrapper is used
         value, g = self.value_grad_fn(x)
 
-        # Step 2: compute diffs before entry check (shared computation)
         s = x - self.x_prev
         z = g - self.g_prev
 
-        # Step 3: entry condition (finite grad/value + curvature check)
         if not (np.all(np.isfinite(g)) and np.isfinite(value)):
             return
         if not _check_lbfgs_curvature_condition(s, z, self.epsilon):
             return
 
-        # Step 4: alpha update (pure numpy, O(N))
         alpha = alpha_step_numpy(self.alpha_prev, s, z)
 
-        # Step 5: ring-buffer column write — O(N), no allocation
+        # Ring-buffer update (numpy, O(N))
         self.win_idx = (self.win_idx + 1) % self.J
         self.s_win[:, self.win_idx] = s
         self.z_win[:, self.win_idx] = z
 
-        # Step 6: ELBO computation — catch PathInvalidLogP (B9)
+        # Sample + logP in a single compiled call.
+        # s_win/z_win are shared variables already pointing to self.s_win/z_win —
+        # the ring-buffer writes above are visible to pytensor with no copy.
+        u = self._rng.standard_normal((self.num_elbo_draws, self._N))
         try:
-            (elbo,) = self.step_elbo_fn(alpha, self.s_win, self.z_win, x, g)
-            elbo = float(elbo)
-        except PathInvalidLogP:
+            _, logQ, logP = self.sample_logp_fn(x, g, alpha, u)
+            logP = np.asarray(logP)
+            finite = np.isfinite(logP)
+            if not np.any(finite):
+                elbo = -np.inf
+            else:
+                logP_safe = np.where(finite, logP, -np.inf)
+                elbo = float(np.mean(logP_safe - logQ))
+                if not np.isfinite(elbo):
+                    elbo = -np.inf
+        except Exception:
             elbo = -np.inf
 
-        # Step 7: validity tracking
         if np.isfinite(elbo):
             self.any_valid = True
 
-        # Step 8: update best state
+        if self.on_step_callback is not None:
+            self.on_step_callback(x, g, alpha, self.s_win.copy(), self.z_win.copy(), elbo)
+
         if elbo > self.best_elbo:
             self.best_elbo = elbo
             self.best_state = {
@@ -642,7 +737,6 @@ class LBFGSStreamingCallback:
             }
             self.best_step_idx = self.step_count
 
-        # Step 9: advance state
         self.alpha_prev = alpha
         self.x_prev = x.copy()
         self.g_prev = g.copy()
@@ -712,7 +806,8 @@ def make_single_pathfinder_fn(
     pathfinder_kwargs : dict
         Additional keyword arguments for the Pathfinder algorithm.
     compile_kwargs : dict
-        Additional keyword arguments for the PyTensor compiler. If not provided, the default linker is "cvm_nogc".
+        Additional keyword arguments for the PyTensor compiler. If not provided, a
+        performant default is used.
 
     Returns
     -------
@@ -721,10 +816,10 @@ def make_single_pathfinder_fn(
     """
 
     compile_kwargs = {"mode": Mode(linker=DEFAULT_LINKER), **compile_kwargs}
-    logp_dlogp_kwargs = {"jacobian": pathfinder_kwargs.get("jacobian", True), **compile_kwargs}
+    jacobian = pathfinder_kwargs.get("jacobian", True)
+    logp_dlogp_kwargs = {"jacobian": jacobian, **compile_kwargs}
 
     logp_dlogp_func = get_logp_dlogp_of_ravel_inputs(model, **logp_dlogp_kwargs)
-    batched_logp_func = get_batched_logp_of_ravel_inputs(model, **logp_dlogp_kwargs)
 
     def neg_logp_dlogp_func(x):
         logp, dlogp = logp_dlogp_func(x)
@@ -735,6 +830,11 @@ def make_single_pathfinder_fn(
     ipfn = make_initial_point_fn(model=model)
     ip = Point(ipfn(None), model=model)
     x_base = DictToArrayBijection.map(ip).data
+    N = x_base.shape[0]
+
+    sample_logp_func, s_win_shared, z_win_shared = make_pathfinder_sample_fn(
+        model, N, maxcor, jacobian=jacobian, compile_kwargs=compile_kwargs
+    )
 
     def _check_lbfgs_status(status):
         if status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
@@ -771,7 +871,7 @@ def make_single_pathfinder_fn(
 
         local_lbfgs = LBFGS(local_neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
 
-        local_batched_logp = batched_logp_func.copy(share_memory=False)
+        local_sample_logp = sample_logp_func.copy(share_memory=False)
 
         lbfgs_status = LBFGSStatus.LBFGS_FAILED  # default before LBFGS runs
         try:
@@ -790,31 +890,22 @@ def make_single_pathfinder_fn(
                     # of how many ELBO steps the previous attempt took.
                     elbo_rng = np.random.default_rng(elbo_seed + attempt)
 
-                    def _numpy_step_elbo(alpha, s_win, z_win, x, g):
-                        try:
-                            phi, logQ = _bfgs_sample_numpy(
-                                x, g, alpha, s_win, z_win, num_elbo_draws, elbo_rng
-                            )
-                        except np.linalg.LinAlgError:
-                            raise PathInvalidLogP()
-                        logP = np.asarray(local_batched_logp(phi))
-                        finite = np.isfinite(logP)
-                        if not np.any(finite):
-                            raise PathInvalidLogP()
-                        logP = np.where(finite, logP, -np.inf)
-                        return (float(np.mean(logP - logQ)),)
-
                     cached_fn = _CachedValueGrad(local_neg_logp_dlogp_func)
                     streaming_cb = LBFGSStreamingCallback(
                         value_grad_fn=cached_fn,
                         x0=x0,
-                        step_elbo_fn=_numpy_step_elbo,
+                        sample_logp_fn=local_sample_logp,
+                        s_win_shared=s_win_shared,
+                        z_win_shared=z_win_shared,
+                        num_elbo_draws=num_elbo_draws,
+                        rng=elbo_rng,
                         J=maxcor,
                         epsilon=epsilon,
                         progress_callback=progress_callback,
                     )
 
-                    lbfgs_niter, lbfgs_status = local_lbfgs.minimize_streaming(streaming_cb, x0)
+                    with threadpool_limits(limits=1):
+                        lbfgs_niter, lbfgs_status = local_lbfgs.minimize_streaming(streaming_cb, x0)
                     _check_lbfgs_status(lbfgs_status)
 
                     if not streaming_cb.any_valid:
@@ -824,19 +915,20 @@ def make_single_pathfinder_fn(
                     best_state = streaming_cb.best_state
 
                     final_rng = np.random.default_rng(final_seed)
-                    try:
-                        phi_final, logQ_psi_flat = _bfgs_sample_numpy(
+                    u_final = final_rng.standard_normal((num_draws, N))
+                    # Point shared ring buffers at best-state arrays before final draw.
+                    s_win_shared.set_value(best_state["s_win"], borrow=True)
+                    z_win_shared.set_value(best_state["z_win"], borrow=True)
+                    with threadpool_limits(limits=1):
+                        phi_final, logQ_psi_flat, logP_psi_flat = local_sample_logp(
                             best_state["x"],
                             best_state["g"],
                             best_state["alpha"],
-                            best_state["s_win"],
-                            best_state["z_win"],
-                            num_draws,
-                            final_rng,
+                            u_final,
                         )
-                    except np.linalg.LinAlgError:
-                        raise PathInvalidLogP()
-                    logP_psi_flat = np.asarray(local_batched_logp(phi_final))
+                    phi_final = np.asarray(phi_final)
+                    logQ_psi_flat = np.asarray(logQ_psi_flat)
+                    logP_psi_flat = np.asarray(logP_psi_flat)
                     # Add batch dim L=1 to match downstream expectations
                     psi = phi_final[None]  # (1, M, N)
                     logP_psi = logP_psi_flat[None]  # (1, M)
@@ -1469,7 +1561,8 @@ def multipath_pathfinder(
     pathfinder_kwargs
         Additional keyword arguments for the Pathfinder algorithm.
     compile_kwargs
-        Additional keyword arguments for the PyTensor compiler. If not provided, the default linker is "cvm_nogc".
+        Additional keyword arguments for the PyTensor compiler. If not provided, a
+        performant default is used.
 
     Returns
     -------
@@ -1760,7 +1853,8 @@ def fit_pathfinder(
     pathfinder_kwargs
         Additional keyword arguments for the Pathfinder algorithm.
     compile_kwargs
-        Additional keyword arguments for the PyTensor compiler. If not provided, the default linker is "cvm_nogc".
+        Additional keyword arguments for the PyTensor compiler. If not provided, a
+        performant default is used.
     initvals: dict | None = None
         Initial values for the model parameters, as str:ndarray key-value pairs. Paritial initialization is permitted.
         If None, the model's default initial values are used.
