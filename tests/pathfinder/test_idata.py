@@ -151,11 +151,11 @@ class TestPathfinderResultToXarray:
         assert "path" in ds.dims
         assert ds.sizes["path"] == 4  # Should be 4 paths, not 1000 samples
 
-        # Check that per-path data has correct shape with paths/ prefix
-        assert "paths/lbfgs_niter" in ds.data_vars
-        assert ds["paths/lbfgs_niter"].shape == (4,)
-        assert "paths/elbo_argmax" in ds.data_vars
-        assert ds["paths/elbo_argmax"].shape == (4,)
+        # Check that per-path data has correct shape with paths_ prefix
+        assert "paths_lbfgs_niter" in ds.data_vars
+        assert ds["paths_lbfgs_niter"].shape == (4,)
+        assert "paths_elbo_argmax" in ds.data_vars
+        assert ds["paths_elbo_argmax"].shape == (4,)
 
     def test_determine_num_paths_helper(self):
         """Test the _determine_num_paths helper function."""
@@ -258,40 +258,40 @@ class TestMultiPathfinderResultToXarray:
         assert "lbfgs_status_counts" in ds.data_vars
         assert "path_status_counts" in ds.data_vars
 
-        # Check per-path data (paths/ prefix)
-        assert "paths/lbfgs_niter" in ds.data_vars
-        assert "paths/elbo_argmax" in ds.data_vars
-        assert "paths/logP_mean" in ds.data_vars
-        assert "paths/logQ_mean" in ds.data_vars
-        assert "paths/final_sample" in ds.data_vars
+        # Check per-path data (paths_ prefix)
+        assert "paths_lbfgs_niter" in ds.data_vars
+        assert "paths_elbo_argmax" in ds.data_vars
+        assert "paths_logP_mean" in ds.data_vars
+        assert "paths_logQ_mean" in ds.data_vars
+        assert "paths_final_sample" in ds.data_vars
 
         # Verify path dimension
         assert "path" in ds.dims
         assert ds.sizes["path"] == 3
-        assert ds["paths/lbfgs_niter"].shape == (3,)
+        assert ds["paths_lbfgs_niter"].shape == (3,)
 
-        # Check config data (config/ prefix)
-        assert "config/num_draws" in ds.data_vars
-        assert "config/maxcor" in ds.data_vars
-        assert "config/maxiter" in ds.data_vars
-        assert ds["config/num_draws"].values == 100
-        assert ds["config/maxcor"].values == 5
+        # Check config data (config_ prefix)
+        assert "config_num_draws" in ds.data_vars
+        assert "config_maxcor" in ds.data_vars
+        assert "config_maxiter" in ds.data_vars
+        assert ds["config_num_draws"].values == 100
+        assert ds["config_maxcor"].values == 5
 
         # Check no diagnostics data when store_diagnostics=False
-        diagnostics_vars = [k for k in ds.data_vars.keys() if k.startswith("diagnostics/")]
+        diagnostics_vars = [k for k in ds.data_vars.keys() if k.startswith("diagnostics_")]
         assert len(diagnostics_vars) == 0
 
         # Test with diagnostics
         ds_with_diag = multipathfinder_result_to_xarray(result, model=None, store_diagnostics=True)
 
-        # Check diagnostics data (diagnostics/ prefix)
-        assert "diagnostics/logP_full" in ds_with_diag.data_vars
-        assert "diagnostics/logQ_full" in ds_with_diag.data_vars
-        assert "diagnostics/samples_full" in ds_with_diag.data_vars
+        # Check diagnostics data (diagnostics_ prefix)
+        assert "diagnostics_logP_full" in ds_with_diag.data_vars
+        assert "diagnostics_logQ_full" in ds_with_diag.data_vars
+        assert "diagnostics_samples_full" in ds_with_diag.data_vars
 
         # Verify diagnostics shapes
-        assert ds_with_diag["diagnostics/logP_full"].shape == (3, 100)
-        assert ds_with_diag["diagnostics/samples_full"].shape == (3, 100, 2)
+        assert ds_with_diag["diagnostics_logP_full"].shape == (3, 100)
+        assert ds_with_diag["diagnostics_samples_full"].shape == (3, 100, 2)
 
 
 class TestAddPathfinderToInferenceData:
@@ -325,10 +325,10 @@ class TestAddPathfinderToInferenceData:
 
         # Check groups were added
         # Note: Since MockMultiPathfinderResult is not a real MultiPathfinderResult,
-        # it gets treated as a single-path result, so only 'pathfinder' group is added
+        # it gets treated as a single-path result, so only 'sample_stats' group is added
         groups = list(idata_updated.groups())
         assert "posterior" in groups
-        assert "pathfinder" in groups
+        assert "sample_stats" in groups
         # pathfinder_paths is only created for true MultiPathfinderResult instances
 
 
@@ -375,15 +375,15 @@ class TestDiagnosticsAndConfigGroups:
 
         # Check that we only have one pathfinder group
         groups = list(idata_updated.groups())
-        assert "pathfinder" in groups
+        assert "sample_stats" in groups
         assert "pathfinder_config" not in groups  # No separate config group
 
-        # Check config data is nested within pathfinder group with config/ prefix
-        assert "config/num_draws" in idata_updated.pathfinder.data_vars
-        assert "config/maxcor" in idata_updated.pathfinder.data_vars
-        assert "config/maxiter" in idata_updated.pathfinder.data_vars
-        assert idata_updated.pathfinder["config/num_draws"].values == 1000
-        assert idata_updated.pathfinder["config/maxcor"].values == 5
+        # Check config data is nested within sample_stats group with config_ prefix
+        assert "config_num_draws" in idata_updated.sample_stats.data_vars
+        assert "config_maxcor" in idata_updated.sample_stats.data_vars
+        assert "config_maxiter" in idata_updated.sample_stats.data_vars
+        assert idata_updated.sample_stats["config_num_draws"].values == 1000
+        assert idata_updated.sample_stats["config_maxcor"].values == 5
 
     def test_diagnostics_data_integration(self):
         """Test that diagnostics data is integrated into consolidated pathfinder group."""
@@ -416,17 +416,17 @@ class TestDiagnosticsAndConfigGroups:
 
         # Check that we only have one pathfinder group
         groups = list(idata_updated.groups())
-        assert "pathfinder" in groups
+        assert "sample_stats" in groups
         assert "pathfinder_diagnostics" not in groups  # No separate diagnostics group
 
-        # Check diagnostics data is nested within pathfinder group with diagnostics/ prefix
-        assert "diagnostics/logP_full" in idata_updated.pathfinder.data_vars
-        assert "diagnostics/logQ_full" in idata_updated.pathfinder.data_vars
-        assert "diagnostics/samples_full" in idata_updated.pathfinder.data_vars
+        # Check diagnostics data is nested within sample_stats group with diagnostics_ prefix
+        assert "diagnostics_logP_full" in idata_updated.sample_stats.data_vars
+        assert "diagnostics_logQ_full" in idata_updated.sample_stats.data_vars
+        assert "diagnostics_samples_full" in idata_updated.sample_stats.data_vars
 
         # Verify shapes
-        assert idata_updated.pathfinder["diagnostics/logP_full"].shape == (2, 50)
-        assert idata_updated.pathfinder["diagnostics/samples_full"].shape == (2, 50, 3)
+        assert idata_updated.sample_stats["diagnostics_logP_full"].shape == (2, 50)
+        assert idata_updated.sample_stats["diagnostics_samples_full"].shape == (2, 50, 3)
 
     def test_no_diagnostics_when_store_false(self):
         """Test that diagnostics group is NOT created when store_diagnostics=False."""

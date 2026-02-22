@@ -22,7 +22,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum, auto
-from typing import Literal, Self, TypeAlias
+from typing import Any, Literal, Self, TypeAlias
 
 import arviz as az
 import filelock
@@ -40,11 +40,7 @@ from pymc.initial_point import make_initial_point_fn
 from pymc.model import modelcontext
 from pymc.model.core import Point
 from pymc.progress_bar import CustomProgress, default_progress_theme
-from pymc.pytensorf import (
-    compile,
-    find_rng_nodes,
-    reseed_rngs,
-)
+from pymc.pytensorf import compile
 from pymc.util import (
     RandomSeed,
     _get_seeds_per_chain,
@@ -52,13 +48,14 @@ from pymc.util import (
 )
 from pytensor.compile.function.types import Function
 from pytensor.compile.mode import FAST_COMPILE, Mode
-from pytensor.graph import Apply, Op, vectorize_graph
-from pytensor.tensor import TensorConstant, TensorVariable
+from pytensor.graph import clone_replace, vectorize_graph
+from pytensor.tensor import TensorVariable
 from rich.console import Console, Group
 from rich.padding import Padding
-from rich.progress import BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
-from rich.table import Table
+from rich.progress import TextColumn, TimeElapsedColumn
+from rich.table import Column, Table
 from rich.text import Text
+from threadpoolctl import threadpool_limits
 
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 from pymc_extras.inference.pathfinder.importance_sampling import (
@@ -69,6 +66,8 @@ from pymc_extras.inference.pathfinder.lbfgs import (
     LBFGSException,
     LBFGSInitFailed,
     LBFGSStatus,
+    _CachedValueGrad,
+    _check_lbfgs_curvature_condition,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,6 +142,44 @@ def get_logp_dlogp_of_ravel_inputs(
     return logp_dlogp_fn
 
 
+def get_batched_logp_of_ravel_inputs(
+    model: Model, jacobian: bool = True, **compile_kwargs
+) -> Function:
+    """Get a batched logP function: (B, N) -> (B,) evaluated in one compiled call.
+
+    Parameters
+    ----------
+    model : Model
+        PyMC model.
+    jacobian : bool, optional
+        Whether to include the Jacobian, by default True.
+    **compile_kwargs : dict
+        Additional keyword arguments to pass to compile.
+
+    Returns
+    -------
+    Function
+        Compiled function taking a (B, N) array and returning (B,) log-probabilities.
+    """
+    (logP,), single_input = pm.pytensorf.join_nonshared_inputs(
+        model.initial_point(),
+        [model.logp(jacobian=jacobian)],
+        model.value_vars,
+    )
+    batch_input = pt.matrix("batch_input", dtype="float64")  # (B, N)
+    # pytensor.map loops over rows of batch_input one at a time; this avoids
+    # broadcasting large intermediate tensors (faster than vectorize_graph for
+    # models with many parameters) and handles ops like AdvancedSetSubtensor
+    # that vectorize_graph cannot process.
+    batched_logP, _ = pytensor.map(
+        fn=lambda x_i: clone_replace([logP], replace={single_input: x_i})[0],
+        sequences=[batch_input],
+    )
+    batched_fn = compile([batch_input], batched_logP, **compile_kwargs)
+    batched_fn.trust_input = True
+    return batched_fn
+
+
 def convert_flat_trace_to_idata(
     samples: NDArray,
     include_transformed: bool = False,
@@ -196,6 +233,7 @@ def convert_flat_trace_to_idata(
     logger.info("Transforming variables...")
 
     if inference_backend == "pymc":
+        # vectorize_graph batches over trace dims; output size matches input, no extra intermediates.
         new_shapes = [v.ndim * (None,) for v in trace.values()]
         replace = {
             var: pt.tensor(dtype="float64", shape=new_shapes[i])
@@ -212,6 +250,8 @@ def convert_flat_trace_to_idata(
         )
         fn.trust_input = True
         result = fn(*list(trace.values()))
+        if not isinstance(result, list):
+            result = [result]
 
         if importance_sampling is None:
             result = [res.reshape(num_paths, num_pdraws, *res.shape[2:]) for res in result]
@@ -263,9 +303,9 @@ def alpha_recover(
         # alpha_lm1: (N,)
         # s_l: (N,)
         # z_l: (N,)
-        a = z_l.T @ pt.diag(alpha_lm1) @ z_l
-        b = z_l.T @ s_l
-        c = s_l.T @ pt.diag(1.0 / alpha_lm1) @ s_l
+        a = pt.sum(alpha_lm1 * z_l**2)
+        b = pt.sum(z_l * s_l)
+        c = pt.sum(s_l**2 / alpha_lm1)
         inv_alpha_l = (
             a / (b * alpha_lm1)
             + z_l ** 2 / b
@@ -287,408 +327,225 @@ def alpha_recover(
         return_updates=False,
     )
 
-    # assert np.all(alpha.eval() > 0), "alpha cannot be negative"
     # alpha: (L, N)
     return alpha, s, z
 
 
-def inverse_hessian_factors(
-    alpha: TensorVariable,
-    s: TensorVariable,
-    z: TensorVariable,
-    J: TensorConstant,
-) -> tuple[TensorVariable, TensorVariable]:
-    """compute the inverse hessian factors for the BFGS approximation.
+def alpha_step_numpy(alpha_prev: NDArray, s: NDArray, z: NDArray) -> NDArray:
+    """Pure-numpy single-step alpha update. Stays in sync with compute_alpha_l in alpha_recover.
 
     Parameters
     ----------
-    alpha : TensorVariable
-        diagonal scaling matrix, shape (L, N)
-    s : TensorVariable
-        position differences, shape (L, N)
-    z : TensorVariable
-        gradient differences, shape (L, N)
-    J : TensorConstant
-        history size for L-BFGS
+    alpha_prev : NDArray
+        previous alpha vector, shape (N,)
+    s : NDArray
+        position diff x[l] - x[l-1], shape (N,)
+    z : NDArray
+        gradient diff g[l] - g[l-1], shape (N,)
 
     Returns
     -------
-    beta : TensorVariable
-        low-rank update matrix, shape (L, N, 2J)
-    gamma : TensorVariable
-        low-rank update matrix, shape (L, 2J, 2J)
-
-    Notes
-    -----
-    shapes: L=batch_size, N=num_params, J=history_size
+    NDArray
+        updated alpha, shape (N,)
     """
-
-    # NOTE: get_chi_matrix_1 is a modified version of get_chi_matrix_2 to closely follow Zhang et al., (2022)
-    # NOTE: get_chi_matrix_2 is from blackjax which MAYBE incorrectly implemented
-
-    def get_chi_matrix_1(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
-        L, N = diff.shape
-        j_last = pt.as_tensor(J - 1)  # since indexing starts at 0
-
-        def chi_update(diff_l, chi_lm1) -> TensorVariable:
-            chi_l = pt.roll(chi_lm1, -1, axis=0)
-            return pt.set_subtensor(chi_l[j_last], diff_l)
-
-        chi_init = pt.zeros((J, N))
-        chi_mat = pytensor.scan(
-            fn=chi_update,
-            outputs_info=chi_init,
-            sequences=[diff],
-            allow_gc=False,
-            return_updates=False,
-        )
-
-        chi_mat = pt.matrix_transpose(chi_mat)
-
-        # (L, N, J)
-        return chi_mat
-
-    def get_chi_matrix_2(diff: TensorVariable, J: TensorConstant) -> TensorVariable:
-        L, N = diff.shape
-
-        # diff_padded: (L+J, N)
-        pad_width = pt.zeros(shape=(2, 2), dtype="int32")
-        pad_width = pt.set_subtensor(pad_width[0, 0], J - 1)
-        diff_padded = pt.pad(diff, pad_width, mode="constant")
-
-        index = pt.arange(L)[..., None] + pt.arange(J)[None, ...]
-        index = index.reshape((L, J))
-
-        chi_mat = pt.matrix_transpose(diff_padded[index])
-
-        # (L, N, J)
-        return chi_mat
-
-    L, N = alpha.shape
-
-    # changed to get_chi_matrix_2 after removing update_mask
-    S = get_chi_matrix_2(s, J)
-    Z = get_chi_matrix_2(z, J)
-
-    # E: (L, J, J)
-    Ij = pt.eye(J)[None, ...]
-    E = pt.triu(pt.matrix_transpose(S) @ Z)
-    E += Ij * REGULARISATION_TERM
-
-    # eta: (L, J)
-    eta = pt.diagonal(E, axis1=-2, axis2=-1)
-
-    # beta: (L, N, 2J)
-    alpha_diag = pytensor.scan(lambda a: pt.diag(a), sequences=[alpha], return_updates=False)
-    beta = pt.concatenate([alpha_diag @ Z, S], axis=-1)
-
-    # more performant and numerically precise to use solve than inverse: https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.linalg.inv.html
-
-    # E_inv: (L, J, J)
-    E_inv = pt.linalg.solve_triangular(E, Ij, check_finite=False)
-    eta_diag = pytensor.scan(pt.diag, sequences=[eta], return_updates=False)
-
-    # block_dd: (L, J, J)
-    block_dd = (
-        pt.matrix_transpose(E_inv) @ (eta_diag + pt.matrix_transpose(Z) @ alpha_diag @ Z) @ E_inv
-    )
-
-    # (L, J, 2J)
-    gamma_top = pt.concatenate([pt.zeros((L, J, J)), -E_inv], axis=-1)
-
-    # (L, J, 2J)
-    gamma_bottom = pt.concatenate([-pt.matrix_transpose(E_inv), block_dd], axis=-1)
-
-    # (L, 2J, 2J)
-    gamma = pt.concatenate([gamma_top, gamma_bottom], axis=1)
-
-    return beta, gamma
+    a = np.sum(alpha_prev * z**2)
+    b = np.sum(z * s)
+    c = np.sum(s**2 / alpha_prev)
+    # Guard: when b≈0 or c≈0 the formula divides by zero; keep alpha_prev to avoid NaN propagation
+    z_sq = float(np.sum(z**2)) + 1e-30
+    if abs(b) < 1e-14 * z_sq or c <= 0 or not np.isfinite(c):
+        return alpha_prev.copy()
+    inv_alpha = (
+        a / (b * alpha_prev)
+        + z**2 / b
+        - (a * s**2) / (b * c * alpha_prev**2)
+    )  # fmt: off
+    alpha_out = 1.0 / inv_alpha
+    if not np.all(np.isfinite(alpha_out)) or np.any(alpha_out <= 0):
+        return alpha_prev.copy()
+    return alpha_out
 
 
-def bfgs_sample_dense(
+def _bfgs_sample_pt(
     x: TensorVariable,
     g: TensorVariable,
     alpha: TensorVariable,
-    beta: TensorVariable,
-    gamma: TensorVariable,
-    alpha_diag: TensorVariable,
-    inv_sqrt_alpha_diag: TensorVariable,
-    sqrt_alpha_diag: TensorVariable,
+    S: TensorVariable,
+    Z: TensorVariable,
     u: TensorVariable,
+    J: int,
+    N: int,
 ) -> tuple[TensorVariable, TensorVariable]:
-    """sample from the BFGS approximation using dense matrix operations.
+    """Symbolic L-BFGS inverse-Hessian sample.
+
+    The dense vs sparse path is selected at graph-construction time from
+    the compile-time constants N and J, so only one branch is ever compiled.
 
     Parameters
     ----------
-    x : TensorVariable
-        position array, shape (L, N)
-    g : TensorVariable
-        gradient array, shape (L, N)
-    alpha : TensorVariable
-        diagonal scaling matrix, shape (L, N)
-    beta : TensorVariable
-        low-rank update matrix, shape (L, N, 2J)
-    gamma : TensorVariable
-        low-rank update matrix, shape (L, 2J, 2J)
-    alpha_diag : TensorVariable
-        diagonal matrix of alpha, shape (L, N, N)
-    inv_sqrt_alpha_diag : TensorVariable
-        inverse sqrt of alpha diagonal, shape (L, N, N)
-    sqrt_alpha_diag : TensorVariable
-        sqrt of alpha diagonal, shape (L, N, N)
-    u : TensorVariable
-        random normal samples, shape (L, M, N)
+    x : (N,) position
+    g : (N,) gradient
+    alpha : (N,) diagonal scaling
+    S : (N, J) position-diff ring buffer
+    Z : (N, J) gradient-diff ring buffer
+    u : (M, N) standard-normal draws — M is a dynamic runtime dimension
+    J : int, L-BFGS history size (compile-time constant)
+    N : int, number of parameters (compile-time constant)
 
     Returns
     -------
-    phi : TensorVariable
-        samples from the approximation, shape (L, M, N)
-    logdet : TensorVariable
-        log determinant of covariance, shape (L,)
-
-    Notes
-    -----
-    shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
+    phi : (M, N) samples
+    logQ : (M,) log-density under the approximation
     """
+    J2 = 2 * J
 
-    N = x.shape[-1]
-    IdN = pt.eye(N)[None, ...]
-    IdN += IdN * REGULARISATION_TERM
+    # Inverse Hessian factors
+    E = pt.triu(S.T @ Z) + pt.eye(J) * REGULARISATION_TERM  # (J, J)
+    eta = pt.diag(E)  # (J,)
+    AZ = alpha[:, None] * Z  # (N, J)
+    beta = pt.concatenate([AZ, S], axis=1)  # (N, 2J)
+    E_inv = pt.linalg.solve_triangular(E, pt.eye(J), lower=False)  # (J, J)
+    block_dd = E_inv.T @ (pt.diag(eta) + Z.T @ AZ) @ E_inv  # (J, J)
+    top = pt.concatenate([pt.zeros((J, J)), -E_inv], axis=1)  # (J, 2J)
+    bot = pt.concatenate([-E_inv.T, block_dd], axis=1)  # (J, 2J)
+    gamma = pt.concatenate([top, bot], axis=0)  # (2J, 2J)
 
-    # inverse Hessian
-    H_inv = (
-        sqrt_alpha_diag
-        @ (
-            IdN
-            + inv_sqrt_alpha_diag @ beta @ gamma @ pt.matrix_transpose(beta) @ inv_sqrt_alpha_diag
-        )
-        @ sqrt_alpha_diag
-    )
+    inv_sqrt_alpha = 1.0 / pt.sqrt(alpha)
+    sqrt_alpha = pt.sqrt(alpha)
 
-    Lchol = pt.linalg.cholesky(H_inv, lower=False, check_finite=False, on_error="nan")
-
-    logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
-
-    # mu = x - pt.einsum("ijk,ik->ij", H_inv, g) # causes error: Multiple destroyers of g
-
-    batched_dot = pt.vectorize(pt.dot, signature="(ijk),(ilk)->(ij)")
-    mu = x - batched_dot(H_inv, pt.matrix_transpose(g[..., None]))
-
-    phi = pt.matrix_transpose(
-        # (L, N, 1)
-        mu[..., None]
-        # (L, N, M)
-        + Lchol @ pt.matrix_transpose(u)
-    )  # fmt: off
-
-    return phi, logdet
-
-
-def bfgs_sample_sparse(
-    x: TensorVariable,
-    g: TensorVariable,
-    alpha: TensorVariable,
-    beta: TensorVariable,
-    gamma: TensorVariable,
-    alpha_diag: TensorVariable,
-    inv_sqrt_alpha_diag: TensorVariable,
-    sqrt_alpha_diag: TensorVariable,
-    u: TensorVariable,
-) -> tuple[TensorVariable, TensorVariable]:
-    """sample from the BFGS approximation using sparse matrix operations.
-
-    Parameters
-    ----------
-    x : TensorVariable
-        position array, shape (L, N)
-    g : TensorVariable
-        gradient array, shape (L, N)
-    alpha : TensorVariable
-        diagonal scaling matrix, shape (L, N)
-    beta : TensorVariable
-        low-rank update matrix, shape (L, N, 2J)
-    gamma : TensorVariable
-        low-rank update matrix, shape (L, 2J, 2J)
-    alpha_diag : TensorVariable
-        diagonal matrix of alpha, shape (L, N, N)
-    inv_sqrt_alpha_diag : TensorVariable
-        inverse sqrt of alpha diagonal, shape (L, N, N)
-    sqrt_alpha_diag : TensorVariable
-        sqrt of alpha diagonal, shape (L, N, N)
-    u : TensorVariable
-        random normal samples, shape (L, M, N)
-
-    Returns
-    -------
-    phi : TensorVariable
-        samples from the approximation, shape (L, M, N)
-    logdet : TensorVariable
-        log determinant of covariance, shape (L,)
-
-    Notes
-    -----
-    shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
-    """
-
-    # qr_input: (L, N, 2J)
-    qr_input = inv_sqrt_alpha_diag @ beta
-    Q, R = pytensor.scan(
-        fn=pt.linalg.qr, sequences=[qr_input], allow_gc=False, return_updates=False
-    )
-
-    IdN = pt.eye(R.shape[1])[None, ...]
-    IdN += IdN * REGULARISATION_TERM
-
-    Lchol_input = IdN + R @ gamma @ pt.matrix_transpose(R)
-
-    # TODO: make robust Lchol calcs more robust, ie. try exceptions, increase REGULARISATION_TERM if non-finite exists
-    Lchol = pt.linalg.cholesky(Lchol_input, lower=False, check_finite=False, on_error="nan")
-
-    logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diagonal(Lchol, axis1=-2, axis2=-1))), axis=-1)
-    logdet += pt.sum(pt.log(alpha), axis=-1)
-
-    # inverse Hessian
-    # (L, N, N) + (L, N, 2J), (L, 2J, 2J), (L, 2J, N) -> (L, N, N)
-    H_inv = alpha_diag + (beta @ gamma @ pt.matrix_transpose(beta))
-
-    # NOTE: changed the sign from "x + " to "x -" of the expression to match Stan which differs from Zhang et al., (2022). same for dense version.
-
-    # mu = x - pt.einsum("ijk,ik->ij", H_inv, g) # causes error: Multiple destroyers of g
-
-    batched_dot = pt.vectorize(pt.dot, signature="(ijk),(ilk)->(ij)")
-    mu = x - batched_dot(H_inv, pt.matrix_transpose(g[..., None]))
-
-    phi = pt.matrix_transpose(
-        # (L, N, 1)
-        mu[..., None]
-        # (L, N, N), (L, N, M) -> (L, N, M)
-        + sqrt_alpha_diag
-        @ (
-            # (L, N, 2J), (L, 2J, 2J) -> (L, N, 2J)
-            (Q @ (Lchol - IdN))
-            # (L, 2J, N), (L, N, M) -> (L, 2J, M)
-            @ (pt.matrix_transpose(Q) @ pt.matrix_transpose(u))
-            # (L, N, M)
-            + pt.matrix_transpose(u)
-        )
-    )  # fmt: off
-
-    return phi, logdet
-
-
-def bfgs_sample(
-    num_samples: TensorConstant,
-    x: TensorVariable,  # position
-    g: TensorVariable,  # grad
-    alpha: TensorVariable,
-    beta: TensorVariable,
-    gamma: TensorVariable,
-    index: TensorVariable | None = None,
-) -> tuple[TensorVariable, TensorVariable]:
-    """sample from the BFGS approximation using the inverse hessian factors.
-
-    Parameters
-    ----------
-    num_samples : TensorConstant
-        number of samples to draw
-    x : TensorVariable
-        position array, shape (L, N)
-    g : TensorVariable
-        gradient array, shape (L, N)
-    alpha : TensorVariable
-        diagonal scaling matrix, shape (L, N)
-    beta : TensorVariable
-        low-rank update matrix, shape (L, N, 2J)
-    gamma : TensorVariable
-        low-rank update matrix, shape (L, 2J, 2J)
-    index : TensorVariable | None
-        optional index for selecting a single path
-
-    Returns
-    -------
-    if index is None:
-        phi: samples from local approximations over L (L, M, N)
-        logQ_phi: log density of samples of phi (L, M)
+    if J2 >= N:
+        # Dense path: form H_inv explicitly (small-N regime, O(N²) is fine)
+        isa_d = pt.diag(inv_sqrt_alpha)  # (N, N)
+        sa_d = pt.diag(sqrt_alpha)  # (N, N)
+        IdN = pt.eye(N) * (1.0 + REGULARISATION_TERM)
+        H_inv = sa_d @ (IdN + isa_d @ beta @ gamma @ beta.T @ isa_d) @ sa_d
+        Lchol = pt.linalg.cholesky(H_inv, lower=False)  # (N, N)
+        logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diag(Lchol))))
+        mu = x - H_inv @ g
+        phi = (mu[:, None] + Lchol @ u.T).T  # (M, N)
     else:
-        psi: samples from local approximations where ELBO is maximized (1, M, N)
-        logQ_psi: log density of samples of psi (1, M)
+        # Sparse path: economy QR avoids O(N²) matrices (large-N regime)
+        Q, R = pt.linalg.qr(beta * inv_sqrt_alpha[:, None], mode="reduced")  # Q:(N,2J), R:(2J,2J)
+        I2J = pt.eye(J2) * (1.0 + REGULARISATION_TERM)
+        Lchol = pt.linalg.cholesky(I2J + R @ gamma @ R.T, lower=False)  # (2J, 2J)
+        logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diag(Lchol)))) + pt.sum(pt.log(alpha))
+        btg = beta.T @ g[:, None]  # (2J, 1)
+        mu = x - ((alpha * g)[:, None] + beta @ (gamma @ btg))[:, 0]  # (N,)
+        QtU = Q.T @ u.T  # (2J, M)
+        phi = (mu[:, None] + sqrt_alpha[:, None] * (Q @ ((Lchol - pt.eye(J2)) @ QtU) + u.T)).T
 
-    Notes
-    -----
-    shapes: L=batch_size, N=num_params, J=history_size, M=num_samples
+    logQ = -0.5 * (logdet + pt.sum(u * u, axis=-1) + N * np.log(2.0 * np.pi))
+    return phi, logQ
+
+
+def make_pathfinder_sample_fn(
+    model: Model,
+    N: int,
+    J: int,
+    jacobian: bool,
+    compile_kwargs: dict,
+) -> Function:
+    """Compile a single PyTensor function covering bfgs sample + batched logP evaluation.
+
+    S and Z are passed as explicit inputs (not shared variables) so each caller
+    can pass its own arrays, avoiding shared mutable state.
+
+    The number of draws M is a dynamic runtime dimension — the same compiled
+    function handles both ELBO estimation (small M) and final sampling (large M).
+
+    Parameters
+    ----------
+    model : Model
+    N : int, number of unconstrained parameters
+    J : int, L-BFGS history size (maxcor)
+    jacobian : bool
+    compile_kwargs : dict
+
+    Returns
+    -------
+    fn : Function
+        Compiled: (x, g, alpha, s_win, z_win, u) → (phi, logQ, logP)
+        where s_win, z_win are (N, J), u is (M, N), and M is a dynamic dimension.
     """
+    (logP_single,), single_input = pm.pytensorf.join_nonshared_inputs(
+        model.initial_point(),
+        [model.logp(jacobian=jacobian)],
+        model.value_vars,
+    )
 
-    if index is not None:
-        x = x[index][None, ...]
-        g = g[index][None, ...]
-        alpha = alpha[index][None, ...]
-        beta = beta[index][None, ...]
-        gamma = gamma[index][None, ...]
+    x_sym = pt.vector("x", dtype="float64")
+    g_sym = pt.vector("g", dtype="float64")
+    alpha_sym = pt.vector("alpha", dtype="float64")
+    s_win_sym = pt.matrix("s_win", dtype="float64")  # (N, J)
+    z_win_sym = pt.matrix("z_win", dtype="float64")  # (N, J)
+    u_sym = pt.matrix("u", dtype="float64")  # (M, N) — M is dynamic
 
-    L, N, JJ = beta.shape
+    phi_sym, logQ_sym = _bfgs_sample_pt(x_sym, g_sym, alpha_sym, s_win_sym, z_win_sym, u_sym, J, N)
 
-    alpha_diag, inv_sqrt_alpha_diag, sqrt_alpha_diag = pytensor.scan(
-        lambda a: [pt.diag(a), pt.diag(pt.sqrt(1.0 / a)), pt.diag(pt.sqrt(a))],
-        sequences=[alpha],
-        allow_gc=False,
+    batched_logP_sym = pytensor.map(
+        fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
+        sequences=[phi_sym],
         return_updates=False,
     )
 
-    u = pt.random.normal(size=(L, num_samples, N))
-
-    sample_inputs = (
-        x,
-        g,
-        alpha,
-        beta,
-        gamma,
-        alpha_diag,
-        inv_sqrt_alpha_diag,
-        sqrt_alpha_diag,
-        u,
+    fn = pytensor.function(
+        [
+            pytensor.In(x_sym, borrow=True),
+            pytensor.In(g_sym, borrow=True),
+            pytensor.In(alpha_sym, borrow=True),
+            pytensor.In(s_win_sym, borrow=True),
+            pytensor.In(z_win_sym, borrow=True),
+            pytensor.In(u_sym, borrow=True),
+        ],
+        [phi_sym, logQ_sym, batched_logP_sym],
+        **compile_kwargs,
     )
+    fn.trust_input = True
+    return fn
 
-    phi, logdet = pytensor.ifelse(
-        JJ >= N,
-        bfgs_sample_dense(*sample_inputs),
-        bfgs_sample_sparse(*sample_inputs),
+
+def make_elbo_from_state_fn(
+    model: Model,
+    N: int,
+    J: int,
+    jacobian: bool,
+    compile_kwargs: dict,
+) -> Function:
+    """Compiled (x, g, alpha, S, Z, u) → (phi, logQ, logP) for fixture/tests.
+
+    S, Z are explicit inputs (not shared), for recomputing ELBO from saved state.
+    """
+    (logP_single,), single_input = pm.pytensorf.join_nonshared_inputs(
+        model.initial_point(),
+        [model.logp(jacobian=jacobian)],
+        model.value_vars,
     )
-
-    logQ_phi = -0.5 * (
-        logdet[..., None]
-        + pt.sum(u * u, axis=-1)
-        + N * pt.log(2.0 * pt.pi)
-    )  # fmt: off
-
-    mask = pt.isnan(logQ_phi) | pt.isinf(logQ_phi)
-    logQ_phi = pt.set_subtensor(logQ_phi[mask], pt.inf)
-    return phi, logQ_phi
-
-
-class LogLike(Op):
-    """
-    Op that computes the densities using vectorised operations.
-    """
-
-    __props__ = ("logp_func",)
-
-    def __init__(self, logp_func: Callable):
-        self.logp_func = logp_func
-        super().__init__()
-
-    def make_node(self, inputs):
-        inputs = pt.as_tensor(inputs)
-        outputs = pt.tensor(dtype="float64", shape=(None, None))
-        return Apply(self, [inputs], [outputs])
-
-    def perform(self, node: Apply, inputs, outputs) -> None:
-        phi = inputs[0]
-        logP = np.apply_along_axis(self.logp_func, axis=-1, arr=phi)
-        # replace nan with -inf since np.argmax will return the first index at nan
-        mask = np.isnan(logP) | np.isinf(logP)
-        if np.all(mask):
-            raise PathInvalidLogP()
-        outputs[0][0] = np.where(mask, -np.inf, logP)
+    x_sym = pt.vector("x", dtype="float64")
+    g_sym = pt.vector("g", dtype="float64")
+    alpha_sym = pt.vector("alpha", dtype="float64")
+    S_sym = pt.matrix("S", dtype="float64")
+    Z_sym = pt.matrix("Z", dtype="float64")
+    u_sym = pt.matrix("u", dtype="float64")
+    phi_sym, logQ_sym = _bfgs_sample_pt(x_sym, g_sym, alpha_sym, S_sym, Z_sym, u_sym, J, N)
+    batched_logP_sym = pytensor.map(
+        fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
+        sequences=[phi_sym],
+        return_updates=False,
+    )
+    fn = pytensor.function(
+        [
+            pytensor.In(x_sym, borrow=True),
+            pytensor.In(g_sym, borrow=True),
+            pytensor.In(alpha_sym, borrow=True),
+            pytensor.In(S_sym, borrow=True),
+            pytensor.In(Z_sym, borrow=True),
+            pytensor.In(u_sym, borrow=True),
+        ],
+        [phi_sym, logQ_sym, batched_logP_sym],
+        **compile_kwargs,
+    )
+    fn.trust_input = True
+    return fn
 
 
 class PathStatus(Enum):
@@ -703,6 +560,7 @@ class PathStatus(Enum):
     INVALID_LOGQ = auto()
     LBFGS_FAILED = auto()
     PATH_FAILED = auto()
+    SINGLE_STEP = auto()
 
 
 FAILED_PATH_STATUS = [
@@ -710,6 +568,7 @@ FAILED_PATH_STATUS = [
     PathStatus.INVALID_LOGQ,
     PathStatus.LBFGS_FAILED,
     PathStatus.PATH_FAILED,
+    PathStatus.SINGLE_STEP,
 ]
 
 
@@ -747,91 +606,170 @@ class PathInvalidLogQ(PathException):
         super().__init__(message or self.DEFAULT_MESSAGE, PathStatus.INVALID_LOGQ)
 
 
-def make_pathfinder_body(
-    logp_func: Callable,
-    num_draws: int,
-    maxcor: int,
-    num_elbo_draws: int,
-    **compile_kwargs: dict,
-) -> Function:
+class SingleStepPathException(PathException):
     """
-    computes the inner components of the Pathfinder algorithm (post-LBFGS) using PyTensor variables and returns a compiled pytensor.function.
+    raises when the path has only one LBFGS step (insufficient for valid approximation).
+    """
+
+    DEFAULT_MESSAGE = "Path failed because only a single step was performed."
+
+    def __init__(self, message=None) -> None:
+        super().__init__(message or self.DEFAULT_MESSAGE, PathStatus.SINGLE_STEP)
+
+
+class LBFGSStreamingCallback:
+    """Streaming LBFGS callback: computes ELBO at each accepted step, O(J*N + M*N) peak memory.
+
+    Instead of collecting the full (L+1, N) history, it processes each accepted step
+    immediately and tracks only the best state seen so far.
 
     Parameters
     ----------
-    logp_func : Callable
-        The target density function.
-    num_draws : int
-        Number of samples to draw from the single-path approximation.
-    maxcor : int
-        The maximum number of iterations for the L-BFGS algorithm.
+    value_grad_fn : Callable
+        Single-entry cached value/gradient function (wrap with _CachedValueGrad).
+    x0 : NDArray
+        Initial position, shape (N,).
+    sample_logp_fn : Callable
+        Compiled PyTensor function (x, g, alpha, s_win, z_win, u) → (phi, logQ, logP).
+        Built by make_pathfinder_sample_fn.
     num_elbo_draws : int
-        The number of draws for the Evidence Lower Bound (ELBO) estimation.
-    compile_kwargs : dict
-        Additional keyword arguments for the PyTensor compiler.
-
-    Returns
-    -------
-    pathfinder_body_fn : Function
-        A compiled pytensor.function that performs the inner components of the Pathfinder algorithm (post-LBFGS).
-
-        pathfinder_body_fn inputs:
-            x_full: (L+1, N),
-            g_full: (L+1, N)
-        pathfinder_body_fn outputs:
-            psi: (1, M, N),
-            logP_psi: (1, M),
-            logQ_psi: (1, M),
-            elbo_argmax: (1,)
+        Number of draws per step for ELBO estimation.
+    rng : np.random.Generator
+        Random number generator for draw generation.
+    J : int
+        L-BFGS history size (maxcor).
+    epsilon : float
+        Tolerance for the LBFGS update condition.
+    progress_callback : Callable | None
+        Optional progress reporting.
+    on_step_callback : Callable | None
+        If set, called after each accepted step with (x, g, alpha, s_win, z_win, elbo).
+        Used by fixture generation to record per-step state.
     """
 
-    # x_full, g_full: (L+1, N)
-    x_full = pt.matrix("x", dtype="float64")
-    g_full = pt.matrix("g", dtype="float64")
+    def __init__(
+        self,
+        value_grad_fn: Callable,
+        x0: NDArray,
+        sample_logp_fn: Callable,
+        num_elbo_draws: int,
+        rng: np.random.Generator,
+        J: int,
+        epsilon: float,
+        progress_callback: Callable | None = None,
+        on_step_callback: Callable | None = None,
+    ) -> None:
+        self.value_grad_fn = value_grad_fn
+        self.sample_logp_fn = sample_logp_fn
+        self.num_elbo_draws = num_elbo_draws
+        self._rng = rng
+        self.J = J
+        self.epsilon = epsilon
+        self.progress_callback = progress_callback
+        self.on_step_callback = on_step_callback
 
-    num_draws = pt.constant(num_draws, "num_draws", dtype="int32")
-    num_elbo_draws = pt.constant(num_elbo_draws, "num_elbo_draws", dtype="int32")
-    maxcor = pt.constant(maxcor, "maxcor", dtype="int32")
+        N = x0.shape[0]
+        self._N = N
+        _, g0 = value_grad_fn(x0)
 
-    alpha, s, z = alpha_recover(x_full, g_full)
-    beta, gamma = inverse_hessian_factors(alpha, s, z, J=maxcor)
+        self.x_prev: NDArray = x0.copy()
+        self.g_prev: NDArray = np.array(g0, dtype=np.float64)
+        self.alpha_prev: NDArray = np.ones(N, dtype=np.float64)
 
-    # ignore initial point - x, g: (L, N)
-    x = x_full[1:]
-    g = g_full[1:]
+        # Ring buffer: numpy arrays passed as inputs to sample_logp_fn each call.
+        # Thread-safe: no shared mutable state across concurrent invocations.
+        self.s_win: NDArray = np.zeros((N, J), dtype=np.float64)
+        self.z_win: NDArray = np.zeros((N, J), dtype=np.float64)
+        self.win_idx: int = -1
+        self.best_elbo: float = -np.inf
+        self.best_state: dict = {}
+        self.best_step_idx: int = 0
+        self.step_count: int = 0
+        self.any_valid: bool = False
+        self.current_elbo: float | None = None
+        self._start_time: float = time.time()
 
-    phi, logQ_phi = bfgs_sample(
-        num_samples=num_elbo_draws, x=x, g=g, alpha=alpha, beta=beta, gamma=gamma
-    )
+    def __call__(self, x: NDArray) -> float | None:
+        """Process one accepted LBFGS step. Returns current_elbo for testability."""
+        value, g = self.value_grad_fn(x)
 
-    loglike = LogLike(logp_func)
-    logP_phi = loglike(phi)
-    elbo = pt.mean(logP_phi - logQ_phi, axis=-1)
-    elbo_argmax = pt.argmax(elbo, axis=0)
+        s = x - self.x_prev
+        z = g - self.g_prev
 
-    # TODO: move the raise PathInvalidLogQ from single_pathfinder_fn to here to avoid computing logP_psi if logQ_psi is invalid. Possible setup: logQ_phi = PathCheck()(logQ_phi, ~pt.all(mask)), where PathCheck uses pytensor raise.
+        if not (np.all(np.isfinite(g)) and np.isfinite(value)):
+            self.current_elbo = None
+            return None
+        if not _check_lbfgs_curvature_condition(s, z, self.epsilon):
+            self.current_elbo = None
+            return None
 
-    # sample from the single-path approximation
-    psi, logQ_psi = bfgs_sample(
-        num_samples=num_draws,
-        x=x,
-        g=g,
-        alpha=alpha,
-        beta=beta,
-        gamma=gamma,
-        index=elbo_argmax,
-    )
-    logP_psi = loglike(psi)
+        alpha = alpha_step_numpy(self.alpha_prev, s, z)
 
-    # return psi, logP_psi, logQ_psi, elbo_argmax
+        # Ring-buffer update (numpy, O(N))
+        self.win_idx = (self.win_idx + 1) % self.J
+        self.s_win[:, self.win_idx] = s
+        self.z_win[:, self.win_idx] = z
 
-    pathfinder_body_fn = compile(
-        [x_full, g_full],
-        [psi, logP_psi, logQ_psi, elbo_argmax],
-        **compile_kwargs,
-    )
-    pathfinder_body_fn.trust_input = True
-    return pathfinder_body_fn
+        # Sample + logP in a single compiled call. Pass s_win/z_win as inputs.
+        u = self._rng.standard_normal((self.num_elbo_draws, self._N))
+        try:
+            _, logQ, logP = self.sample_logp_fn(x, g, alpha, self.s_win, self.z_win, u)
+            logP = np.asarray(logP)
+            logQ = np.asarray(logQ)
+            finite = np.isfinite(logP)
+            if not np.any(finite):
+                elbo = -np.inf
+            else:
+                logP_safe = np.where(finite, logP, -np.inf)
+                elbo = float(np.mean(logP_safe - logQ))
+                if not np.isfinite(elbo):
+                    elbo = -np.inf
+        except Exception:
+            elbo = -np.inf
+
+        if np.isfinite(elbo):
+            self.any_valid = True
+
+        if self.on_step_callback is not None:
+            self.on_step_callback(x, g, alpha, self.s_win.copy(), self.z_win.copy(), elbo)
+
+        if elbo > self.best_elbo:
+            self.best_elbo = elbo
+            self.best_state = {
+                "alpha": alpha.copy(),
+                "s_win": self.s_win.copy(),
+                "z_win": self.z_win.copy(),
+                "win_idx": self.win_idx,
+                "x": x.copy(),
+                "g": g.copy(),
+            }
+            self.best_step_idx = self.step_count
+
+        self.alpha_prev = alpha
+        self.x_prev = x.copy()
+        self.g_prev = g.copy()
+        self.step_count += 1
+
+        self.current_elbo = elbo if np.isfinite(elbo) else None
+
+        if self.progress_callback is not None:
+            best_elbo = self.best_elbo if np.isfinite(self.best_elbo) else None
+            current_elbo = self.current_elbo
+            elapsed = time.time() - self._start_time
+            steps_per_sec = self.step_count / elapsed if elapsed > 0 else None
+            step_size = float(np.linalg.norm(s))
+            self.progress_callback(
+                {
+                    "lbfgs_steps": self.step_count,
+                    "best_elbo": best_elbo,
+                    "best_ind": self.best_step_idx,
+                    "current_elbo": current_elbo,
+                    "step_size": step_size,
+                    "steps_per_sec": steps_per_sec,
+                }
+            )
+
+        return elbo
 
 
 def make_single_pathfinder_fn(
@@ -845,8 +783,9 @@ def make_single_pathfinder_fn(
     num_elbo_draws: int,
     jitter: float,
     epsilon: float,
-    pathfinder_kwargs: dict = {},
-    compile_kwargs: dict = {},
+    max_init_retries: int = 10,
+    pathfinder_kwargs: dict[str, Any] = {},
+    compile_kwargs: dict[str, Any] = {},
 ) -> SinglePathfinderFn:
     """
     returns a seedable single-path pathfinder function, where it executes a compiled function that performs the local approximation and sampling part of the Pathfinder algorithm.
@@ -872,26 +811,28 @@ def make_single_pathfinder_fn(
     jitter : float
         Amount of jitter to apply to initial points. Note that Pathfinder may be highly sensitive to the jitter value. It is recommended to increase num_paths when increasing the jitter value.
     epsilon : float
-        value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if delta_theta[l] * delta_grad[l] > epsilon * L2_norm(delta_grad[l]) for each l in L.
+        value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if s·z >= epsilon * ||z||² for each l in L. Matches Zhang et al. (2022) Algorithm 3 with default epsilon=1e-12.
+    max_init_retries : int, optional
+        Maximum number of re-jitter retries when LBFGSInitFailed is raised (i.e. the initial
+        point yields non-finite value/gradient or the first step is rejected). Each retry uses
+        a different jitter seed. Defaults to 10.
     pathfinder_kwargs : dict
         Additional keyword arguments for the Pathfinder algorithm.
     compile_kwargs : dict
-        Additional keyword arguments for the PyTensor compiler. If not provided, the default linker is "cvm_nogc".
+        Additional keyword arguments for the PyTensor compiler. If not provided, a
+        performant default is used.
 
     Returns
     -------
     single_pathfinder_fn : Callable
-        A seedable single-path pathfinder function.
+        A seedable single-path pathfinder function that accepts ``(random_seed, progress_callback=None)``.
     """
 
     compile_kwargs = {"mode": Mode(linker=DEFAULT_LINKER), **compile_kwargs}
-    logp_dlogp_kwargs = {"jacobian": pathfinder_kwargs.get("jacobian", True), **compile_kwargs}
+    jacobian = pathfinder_kwargs.get("jacobian", True)
+    logp_dlogp_kwargs = {"jacobian": jacobian, **compile_kwargs}
 
     logp_dlogp_func = get_logp_dlogp_of_ravel_inputs(model, **logp_dlogp_kwargs)
-
-    def logp_func(x):
-        logp, _ = logp_dlogp_func(x)
-        return logp
 
     def neg_logp_dlogp_func(x):
         logp, dlogp = logp_dlogp_func(x)
@@ -902,55 +843,165 @@ def make_single_pathfinder_fn(
     ipfn = make_initial_point_fn(model=model)
     ip = Point(ipfn(None), model=model)
     x_base = DictToArrayBijection.map(ip).data
+    N = x_base.shape[0]
 
-    # lbfgs
-    lbfgs = LBFGS(neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
-
-    # pathfinder body
-    pathfinder_body_fn = make_pathfinder_body(
-        logp_func, num_draws, maxcor, num_elbo_draws, **compile_kwargs
+    sample_logp_func = make_pathfinder_sample_fn(
+        model, N, maxcor, jacobian=jacobian, compile_kwargs=compile_kwargs
     )
-    rngs = find_rng_nodes(pathfinder_body_fn.maker.fgraph.outputs)
 
-    def single_pathfinder_fn(random_seed: int) -> PathfinderResult:
+    def _check_lbfgs_status(status):
+        if status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
+            raise LBFGSInitFailed(status)
+        elif status == LBFGSStatus.LBFGS_FAILED:
+            raise LBFGSException()
+
+    def _make_result(psi, logP_psi, logQ_psi, lbfgs_niter, elbo_argmax, lbfgs_status):
+        if np.all(~np.isfinite(logQ_psi)):
+            raise PathInvalidLogQ()
+        path_status = PathStatus.ELBO_ARGMAX_AT_ZERO if elbo_argmax == 0 else PathStatus.SUCCESS
+        return PathfinderResult(
+            samples=psi,
+            logP=logP_psi,
+            logQ=logQ_psi,
+            lbfgs_niter=lbfgs_niter,
+            elbo_argmax=elbo_argmax,
+            lbfgs_status=lbfgs_status,
+            path_status=path_status,
+        )
+
+    def single_pathfinder_fn(
+        random_seed: int, progress_callback: Callable | None = None
+    ) -> PathfinderResult:
+        if progress_callback is not None:
+            progress_callback({"status": "running"})
+
+        # Per-path independent copies of compiled functions for process safety.
+        local_logp_dlogp = logp_dlogp_func.copy(share_memory=False)
+
+        def local_neg_logp_dlogp_func(x):
+            logp, dlogp = local_logp_dlogp(x)
+            return -logp, -dlogp
+
+        local_lbfgs = LBFGS(local_neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
+
+        local_sample_logp = sample_logp_func.copy(share_memory=False)
+
+        lbfgs_status = LBFGSStatus.LBFGS_FAILED  # default before LBFGS runs
         try:
-            init_seed, *bfgs_seeds = _get_seeds_per_chain(random_seed, 3)
-            rng = np.random.default_rng(init_seed)
-            jitter_value = rng.uniform(-jitter, jitter, size=x_base.shape)
-            x0 = x_base + jitter_value
-            x, g, lbfgs_niter, lbfgs_status = lbfgs.minimize(x0)
+            # Derive base seeds once from random_seed. init_seed is an int so we can
+            # safely offset it per retry attempt (avoids Generator arithmetic issues).
+            _base_init, elbo_seed, final_seed = _get_seeds_per_chain(random_seed, 3)
 
-            if lbfgs_status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
-                raise LBFGSInitFailed(lbfgs_status)
-            elif lbfgs_status == LBFGSStatus.LBFGS_FAILED:
-                raise LBFGSException()
+            for attempt in range(max_init_retries + 1):
+                try:
+                    init_seed = _base_init + attempt  # different jitter per retry
+                    rng = np.random.default_rng(init_seed)
+                    jitter_value = rng.uniform(-jitter, jitter, size=x_base.shape)
+                    x0 = x_base + jitter_value
 
-            reseed_rngs(rngs, bfgs_seeds)
-            psi, logP_psi, logQ_psi, elbo_argmax = pathfinder_body_fn(x, g)
+                    # Fresh NumPy RNG each attempt → reproducible regardless
+                    # of how many ELBO steps the previous attempt took.
+                    elbo_rng = np.random.default_rng(elbo_seed + attempt)
 
-            if np.all(~np.isfinite(logQ_psi)):
-                raise PathInvalidLogQ()
+                    cached_fn = _CachedValueGrad(local_neg_logp_dlogp_func)
+                    streaming_cb = LBFGSStreamingCallback(
+                        value_grad_fn=cached_fn,
+                        x0=x0,
+                        sample_logp_fn=local_sample_logp,
+                        num_elbo_draws=num_elbo_draws,
+                        rng=elbo_rng,
+                        J=maxcor,
+                        epsilon=epsilon,
+                        progress_callback=progress_callback,
+                    )
 
-            if elbo_argmax == 0:
-                path_status = PathStatus.ELBO_ARGMAX_AT_ZERO
-            else:
-                path_status = PathStatus.SUCCESS
+                    with threadpool_limits(limits=1):
+                        lbfgs_niter, lbfgs_status = local_lbfgs.minimize_streaming(streaming_cb, x0)
+                    _check_lbfgs_status(lbfgs_status)
 
-            return PathfinderResult(
-                samples=psi,
-                logP=logP_psi,
-                logQ=logQ_psi,
-                lbfgs_niter=lbfgs_niter,
-                elbo_argmax=elbo_argmax,
-                lbfgs_status=lbfgs_status,
-                path_status=path_status,
-            )
+                    if lbfgs_niter < 2:
+                        raise SingleStepPathException()
+
+                    if not streaming_cb.any_valid:
+                        raise PathInvalidLogP()
+
+                    elbo_argmax = streaming_cb.best_step_idx
+                    best_state = streaming_cb.best_state
+
+                    final_rng = np.random.default_rng(final_seed)
+                    u_final = final_rng.standard_normal((num_draws, N))
+                    if progress_callback is not None:
+                        progress_callback(
+                            {"status": "sampling", "current_elbo": None, "step_size": None}
+                        )
+                    with threadpool_limits(limits=1):
+                        phi_final, logQ_psi_flat, logP_psi_flat = local_sample_logp(
+                            best_state["x"],
+                            best_state["g"],
+                            best_state["alpha"],
+                            best_state["s_win"],
+                            best_state["z_win"],
+                            u_final,
+                        )
+                    phi_final = np.asarray(phi_final)
+                    logQ_psi_flat = np.asarray(logQ_psi_flat)
+                    logP_psi_flat = np.asarray(logP_psi_flat)
+                    # Add batch dim L=1 to match downstream expectations
+                    psi = phi_final[None]  # (1, M, N)
+                    logP_psi = logP_psi_flat[None]  # (1, M)
+                    logQ_psi = logQ_psi_flat[None]  # (1, M)
+
+                    break  # success — exit retry loop
+
+                except (LBFGSInitFailed, SingleStepPathException) as e:
+                    if attempt < max_init_retries:
+                        logger.debug(
+                            "%s on attempt %d/%d, retrying with different jitter...",
+                            type(e).__name__,
+                            attempt + 1,
+                            max_init_retries,
+                        )
+                        if progress_callback is not None:
+                            progress_callback({"status": f"retry {attempt + 1}"})
+                    else:
+                        if progress_callback is not None:
+                            progress_callback(
+                                {
+                                    "status": "lbfgs_fail"
+                                    if isinstance(e, LBFGSInitFailed)
+                                    else "failed"
+                                }
+                            )
+                        if isinstance(e, LBFGSInitFailed):
+                            return PathfinderResult(
+                                lbfgs_status=e.status,
+                                path_status=PathStatus.LBFGS_FAILED,
+                            )
+                        return PathfinderResult(
+                            lbfgs_status=lbfgs_status,
+                            path_status=PathStatus.SINGLE_STEP,
+                        )
+
+            result = _make_result(psi, logP_psi, logQ_psi, lbfgs_niter, elbo_argmax, lbfgs_status)
+            if progress_callback is not None:
+                status_str = (
+                    "elbo@0" if result.path_status == PathStatus.ELBO_ARGMAX_AT_ZERO else "ok"
+                )
+                progress_callback(
+                    {"status": status_str, "lbfgs_steps": int(lbfgs_niter), "best_ind": elbo_argmax}
+                )
+            return result
+
         except LBFGSException as e:
+            if progress_callback is not None:
+                progress_callback({"status": "lbfgs_fail"})
             return PathfinderResult(
                 lbfgs_status=e.status,
                 path_status=PathStatus.LBFGS_FAILED,
             )
         except PathException as e:
+            if progress_callback is not None:
+                progress_callback({"status": "failed"})
             return PathfinderResult(
                 lbfgs_status=lbfgs_status,
                 path_status=e.status,
@@ -959,36 +1010,45 @@ def make_single_pathfinder_fn(
     return single_pathfinder_fn
 
 
-def _calculate_max_workers() -> int:
+def _calculate_max_workers(num_paths: int | None = None) -> int:
     """
     calculate the default number of workers to use for concurrent pathfinder runs.
     """
+    import os
 
-    # from limited testing, setting values higher than 0.3 makes multiprocessing a lot slower.
-    import multiprocessing
-
-    total_cpus = multiprocessing.cpu_count() or 1
+    total_cpus = os.cpu_count() or 1
+    if num_paths is not None:
+        return min(num_paths, total_cpus)
+    # Legacy process-pool heuristic: 30% of CPUs, minimum 2, rounded to even
     processes = max(2, int(total_cpus * 0.3))
     if processes % 2 != 0:
         processes += 1
     return processes
 
 
-def _thread(fn: SinglePathfinderFn, seed: int) -> "PathfinderResult":
+class _QueueCallback:
+    """Picklable progress callback that relays updates through a multiprocessing.Queue.
+
+    Worker processes cannot call Rich progress functions directly (they live in the
+    main process). This class is picklable and sends ``(idx, info)`` tuples to a
+    shared queue; a listener thread in the main process forwards them to the real
+    per-path callbacks.
     """
-    execute pathfinder runs concurrently using threading.
-    """
 
-    # kernel crashes without lock_ctx
-    from pytensor.compile.compilelock import lock_ctx
+    def __init__(self, queue: Any, idx: int) -> None:
+        self.queue = queue
+        self.idx = idx
 
-    with lock_ctx():
-        rng = np.random.default_rng(seed)
-        result = fn(rng)
-    return result
+    def __call__(self, info: dict) -> None:
+        try:
+            self.queue.put_nowait((self.idx, info))
+        except Exception:
+            pass
 
 
-def _process(fn: SinglePathfinderFn, seed: int) -> "PathfinderResult | bytes":
+def _process(
+    fn: SinglePathfinderFn, seed: int, progress_callback: Callable | None = None
+) -> "PathfinderResult | bytes":
     """
     execute pathfinder runs concurrently using multiprocessing.
     """
@@ -996,12 +1056,16 @@ def _process(fn: SinglePathfinderFn, seed: int) -> "PathfinderResult | bytes":
 
     from pytensor.compile.compilelock import lock_ctx
 
-    with lock_ctx():
-        in_out_pickled = isinstance(fn, bytes)
-        fn = cloudpickle.loads(fn)
-        rng = np.random.default_rng(seed)
-        result = fn(rng) if not in_out_pickled else cloudpickle.dumps(fn(rng))
-    return result
+    in_out_pickled = isinstance(fn, bytes)
+    # lock_ctx only guards cache access during unpickling, not computation.
+    # Use timeout=-1 (wait indefinitely) so workers don't race to timeout when
+    # many paths start simultaneously and each unpickling takes a moment.
+    with lock_ctx(timeout=-1):
+        actual_fn = cloudpickle.loads(fn) if in_out_pickled else fn
+
+    rng = np.random.default_rng(seed)
+    result = actual_fn(rng, progress_callback)
+    return cloudpickle.dumps(result) if in_out_pickled else result
 
 
 def _get_mp_context(mp_ctx: str | None = None) -> str | None:
@@ -1027,59 +1091,92 @@ def _get_mp_context(mp_ctx: str | None = None) -> str | None:
 def _execute_concurrently(
     fn: SinglePathfinderFn,
     seeds: list[int],
-    concurrent: Literal["thread", "process"] | None,
+    concurrent: Literal["process"],
     max_workers: int | None = None,
+    progress_callbacks: list[Callable | None] | None = None,
 ) -> Iterator["PathfinderResult | bytes"]:
     """
-    execute pathfinder runs concurrently.
+    execute pathfinder runs concurrently via multiprocessing.
     """
-    if concurrent == "thread":
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-    elif concurrent == "process":
-        from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import ProcessPoolExecutor, as_completed
 
-        import cloudpickle
-    else:
-        raise ValueError(f"Invalid concurrent value: {concurrent}")
+    import cloudpickle
 
-    executor_cls = ThreadPoolExecutor if concurrent == "thread" else ProcessPoolExecutor
+    fn = cloudpickle.dumps(fn)
+    if max_workers is None:
+        max_workers = _calculate_max_workers(num_paths=len(seeds))
 
-    concurrent_fn = _thread if concurrent == "thread" else _process
+    # Use a Manager Queue (proxy-based, always picklable regardless of start method)
+    # to relay (idx, info) messages from workers back to the main process, where a
+    # listener thread forwards them to the real per-path callbacks.
+    import multiprocessing
+    import threading
 
-    executor_kwargs = {} if concurrent == "thread" else {"mp_context": _get_mp_context()}
+    mp_manager = multiprocessing.Manager()
+    try:
+        mp_queue = mp_manager.Queue()
+        process_callbacks = [_QueueCallback(mp_queue, i) for i in range(len(seeds))]
 
-    max_workers = max_workers or (None if concurrent == "thread" else _calculate_max_workers())
+        def _listener() -> None:
+            while True:
+                item = mp_queue.get()
+                if item is None:  # sentinel
+                    break
+                idx, info = item
+                if (
+                    progress_callbacks
+                    and idx < len(progress_callbacks)
+                    and progress_callbacks[idx] is not None
+                ):
+                    progress_callbacks[idx](info)
 
-    fn = fn if concurrent == "thread" else cloudpickle.dumps(fn)
+        listener = threading.Thread(target=_listener, daemon=True)
+        listener.start()
+        try:
+            with ProcessPoolExecutor(
+                max_workers=max_workers, mp_context=_get_mp_context()
+            ) as executor:
+                futures = [
+                    executor.submit(_process, fn, seed, cb)
+                    for seed, cb in zip(seeds, process_callbacks)
+                ]
+                for f in as_completed(futures):
+                    yield cloudpickle.loads(f.result())
+        finally:
+            mp_queue.put(None)  # stop listener
+            listener.join(timeout=5)
+    finally:
+        mp_manager.shutdown()
 
-    with executor_cls(max_workers=max_workers, **executor_kwargs) as executor:
-        futures = [executor.submit(concurrent_fn, fn, seed) for seed in seeds]
-        for f in as_completed(futures):
-            yield (f.result() if concurrent == "thread" else cloudpickle.loads(f.result()))
 
-
-def _execute_serially(fn: SinglePathfinderFn, seeds: list[int]) -> Iterator["PathfinderResult"]:
+def _execute_serially(
+    fn: SinglePathfinderFn,
+    seeds: list[int],
+    progress_callbacks: list[Callable | None] | None = None,
+) -> Iterator["PathfinderResult"]:
     """
     execute pathfinder runs serially.
     """
-    for seed in seeds:
+    callbacks = progress_callbacks or [None] * len(seeds)
+    for seed, cb in zip(seeds, callbacks):
         rng = np.random.default_rng(seed)
-        yield fn(rng)
+        yield fn(rng, cb)
 
 
 def make_generator(
-    concurrent: Literal["thread", "process"] | None,
+    concurrent: Literal["process"] | None,
     fn: SinglePathfinderFn,
     seeds: list[int],
     max_workers: int | None = None,
+    progress_callbacks: list[Callable | None] | None = None,
 ) -> Iterator["PathfinderResult | bytes"]:
     """
     generator for executing pathfinder runs concurrently or serially.
     """
     if concurrent is not None:
-        yield from _execute_concurrently(fn, seeds, concurrent, max_workers)
+        yield from _execute_concurrently(fn, seeds, concurrent, max_workers, progress_callbacks)
     else:
-        yield from _execute_serially(fn, seeds)
+        yield from _execute_serially(fn, seeds, progress_callbacks)
 
 
 @dataclass(slots=True, frozen=True)
@@ -1189,11 +1286,6 @@ class MultiPathfinderResult:
 
             mpr.lbfgs_status[pr.lbfgs_status] += 1
             mpr.path_status[pr.path_status] += 1
-
-        # if not success_results:
-        #     raise ValueError(
-        #         "All paths failed. Consider decreasing the jitter or reparameterizing the model."
-        #     )
 
         warnings = _get_status_warning(mpr)
 
@@ -1369,6 +1461,7 @@ def _get_status_warning(mpr: MultiPathfinderResult) -> list[str]:
     path_status_message = {
         PathStatus.ELBO_ARGMAX_AT_ZERO: "ELBO_ARGMAX_AT_ZERO: ELBO argmax at zero refers to the first iteration during LBFGS. A high occurrence suggests the model's default initial point + jitter values are concentrated in high-density regions in the target distribution and may result in poor exploration of the parameter space. Consider increasing jitter if this occurrence is high relative to the number of paths.",
         PathStatus.INVALID_LOGQ: "INVALID_LOGQ: Invalid logQ values occur when a path's logQ values are not finite. The failed path is not included in samples when importance sampling is used. Consider reparameterizing the model or adjusting the pathfinder arguments if this occurence is high relative to the number of paths.",
+        PathStatus.SINGLE_STEP: "SINGLE_STEP: Pathfinder requires at least two LBFGS steps on a path. A path with only one step produces an invalid result. Consider adjusting initvals/jitter if this occurs.",
     }
 
     for lbfgs_status in mpr.lbfgs_status:
@@ -1397,10 +1490,11 @@ def multipath_pathfinder(
     epsilon: float,
     importance_sampling: Literal["psis", "psir", "identity"] | None,
     progressbar: bool,
-    concurrent: Literal["thread", "process"] | None,
-    random_seed: RandomSeed,
-    pathfinder_kwargs: dict = {},
-    compile_kwargs: dict = {},
+    concurrent: Literal["process"] | None = "process",
+    random_seed: RandomSeed = None,
+    max_init_retries: int = 10,
+    pathfinder_kwargs: dict[str, Any] = {},
+    compile_kwargs: dict[str, Any] = {},
     display_summary: bool = True,
 ) -> MultiPathfinderResult:
     """
@@ -1431,7 +1525,7 @@ def multipath_pathfinder(
     jitter : float, optional
         Amount of jitter to apply to initial points (default is 2.0). Note that Pathfinder may be highly sensitive to the jitter value. It is recommended to increase num_paths when increasing the jitter value.
     epsilon: float
-        value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if delta_theta[l] * delta_grad[l] > epsilon * L2_norm(delta_grad[l]) for each l in L. (default is 1e-8).
+        value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if s·z >= epsilon * ||z||² for each l in L. Matches Zhang et al. (2022) Algorithm 3 with default epsilon=1e-12.
     importance_sampling : str, None, optional
         Method to apply sampling based on log importance weights (logP - logQ).
         "psis" : Pareto Smoothed Importance Sampling (default)
@@ -1449,11 +1543,16 @@ def multipath_pathfinder(
     inference_backend : str, optional
         Backend for inference, either "pymc" or "blackjax" (default is "pymc").
     concurrent : str, optional
-        Whether to run paths concurrently, either "thread" or "process" or None (default is None). Setting concurrent to None runs paths serially and is generally faster with smaller models because of the overhead that comes with concurrency.
+        How to run paths: ``"process"`` (default) spawns separate worker processes for true
+        parallelism, matching PyMC's approach for parallel chains.  Set to ``None`` for serial
+        execution (useful for debugging).
+    max_init_retries : int, optional
+        Maximum number of re-jitter retries per path when LBFGSInitFailed is raised (default is 10).
     pathfinder_kwargs
         Additional keyword arguments for the Pathfinder algorithm.
     compile_kwargs
-        Additional keyword arguments for the PyTensor compiler. If not provided, the default linker is "cvm_nogc".
+        Additional keyword arguments for the PyTensor compiler. If not provided, a
+        performant default is used.
 
     Returns
     -------
@@ -1479,35 +1578,126 @@ def multipath_pathfinder(
     single_pathfinder_fn = make_single_pathfinder_fn(
         model,
         **asdict(pathfinder_config),
+        max_init_retries=max_init_retries,
         pathfinder_kwargs=pathfinder_kwargs,
         compile_kwargs=compile_kwargs,
     )
     compile_end = time.time()
 
-    # NOTE: from limited tests, no concurrency is faster than thread, and thread is faster than process. But I suspect this also depends on the model size and maxcor setting.
-    generator = make_generator(
-        concurrent=concurrent,
-        fn=single_pathfinder_fn,
-        seeds=path_seeds,
-    )
-
     results = []
     compute_start = time.time()
     try:
-        desc = f"Paths Complete: {{path_idx}}/{num_paths}"
+        # Per-path progress bar (one row per path, updated in real time)
         progress = CustomProgress(
-            "[progress.description]{task.description}",
-            BarColumn(),
-            "[progress.percentage]{task.percentage:>3.0f}%",
-            TimeRemainingColumn(),
-            TextColumn("/"),
-            TimeElapsedColumn(),
+            TextColumn(
+                "{task.description}", table_column=Column("Path", min_width=7, no_wrap=True)
+            ),
+            TextColumn(
+                "{task.fields[status]}", table_column=Column("Status", min_width=10, no_wrap=True)
+            ),
+            TextColumn(
+                "{task.fields[lbfgs_steps]}",
+                table_column=Column("Steps", min_width=6, no_wrap=True),
+            ),
+            TextColumn(
+                "{task.fields[steps_per_sec]}",
+                table_column=Column("Steps/s", min_width=8, no_wrap=True),
+            ),
+            TextColumn(
+                "{task.fields[best_ind]}",
+                table_column=Column("Best step", min_width=9, no_wrap=True),
+            ),
+            TextColumn(
+                "{task.fields[best_elbo]}",
+                table_column=Column("Best ELBO", min_width=12, no_wrap=True),
+            ),
+            TextColumn(
+                "{task.fields[current_elbo]}",
+                table_column=Column("Cur ELBO", min_width=12, no_wrap=True),
+            ),
+            TextColumn(
+                "{task.fields[step_size]}",
+                table_column=Column("Step size", min_width=10, no_wrap=True),
+            ),
+            TimeElapsedColumn(table_column=Column("Elapsed", min_width=8, no_wrap=True)),
+            include_headers=True,
             console=Console(theme=default_progress_theme),
             disable=not progressbar,
         )
+
+        # Create one task per path and build per-path progress callbacks
+        task_ids = []
+        path_callbacks: list[Callable | None] = []
         with progress:
-            task = progress.add_task(desc.format(path_idx=0), completed=0, total=num_paths)
-            for path_idx, result in enumerate(generator, start=1):
+            for i in range(num_paths):
+                tid = progress.add_task(
+                    f"Path {i + 1}",
+                    status="queued",
+                    lbfgs_steps=0,
+                    steps_per_sec="—",
+                    best_elbo="—",
+                    best_ind="—",
+                    current_elbo="—",
+                    step_size="—",
+                    total=None,
+                )
+                task_ids.append(tid)
+
+                def _make_cb(task_id: int) -> Callable:
+                    def cb(info: dict) -> None:
+                        fields: dict[str, Any] = {}
+                        if "status" in info and info["status"] is not None:
+                            fields["status"] = info["status"]
+                        if "lbfgs_steps" in info:
+                            fields["lbfgs_steps"] = info["lbfgs_steps"]
+                        if "best_elbo" in info:
+                            val = info["best_elbo"]
+                            fields["best_elbo"] = (
+                                f"{val:.3f}" if val is not None and np.isfinite(float(val)) else "—"
+                            )
+                        if "best_ind" in info:
+                            val = info["best_ind"]
+                            fields["best_ind"] = (
+                                str(int(val))
+                                if val is not None and np.isfinite(float(val))
+                                else "—"
+                            )
+                        if "current_elbo" in info:
+                            val = info["current_elbo"]
+                            fields["current_elbo"] = (
+                                f"{val:.3f}" if val is not None and np.isfinite(float(val)) else "—"
+                            )
+                        if "step_size" in info:
+                            val = info["step_size"]
+                            fields["step_size"] = (
+                                f"{val:.2e}" if val is not None and np.isfinite(float(val)) else "—"
+                            )
+                        if "steps_per_sec" in info:
+                            val = info["steps_per_sec"]
+                            fields["steps_per_sec"] = (
+                                f"{val:.1f}/s"
+                                if val is not None and np.isfinite(float(val))
+                                else "—"
+                            )
+                        if fields:
+                            progress.update(task_id, **fields)
+                        if info.get("status") in ("ok", "elbo@0"):
+                            progress.stop_task(task_id)
+
+                    return cb
+
+                path_callbacks.append(_make_cb(tid))
+
+            # concurrent="process" gives true parallelism via separate worker processes
+            # (matching PyMC's approach). concurrent=None is serial (useful for debugging).
+            generator = make_generator(
+                concurrent=concurrent,
+                fn=single_pathfinder_fn,
+                seeds=path_seeds,
+                progress_callbacks=path_callbacks,
+            )
+
+            for result in generator:
                 try:
                     if isinstance(result, Exception):
                         raise result
@@ -1533,17 +1723,8 @@ def multipath_pathfinder(
                             lbfgs_status=LBFGSStatus.LBFGS_FAILED,
                         )
                     )
-                finally:
-                    # TODO: display LBFGS and Path Status in real time
-                    progress.update(
-                        task,
-                        description=desc.format(path_idx=path_idx),
-                        completed=path_idx,
-                    )
-            # Ensure the progress bar visually reaches 100% and shows 'Completed'
-            progress.update(task, completed=num_paths, description="Completed")
     except (KeyboardInterrupt, StopIteration) as e:
-        # if exception is raised here, MultiPathfinderResult will collect all the successful results and report the results. User is free to abort the process earlier and the results will still be collected and return az.InferenceData.
+        # User is free to abort early — MultiPathfinderResult collects all successful results so far.
         if isinstance(e, StopIteration):
             logger.info(str(e))
     finally:
@@ -1595,24 +1776,21 @@ def fit_pathfinder(
     maxls: int = 1000,
     num_elbo_draws: int = 10,  # K
     jitter: float = 2.0,
-    epsilon: float = 1e-8,
+    epsilon: float = 1e-12,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
     progressbar: bool = True,
-    concurrent: Literal["thread", "process"] | None = None,
+    concurrent: Literal["process"] | None = "process",
+    max_init_retries: int = 10,
     random_seed: RandomSeed | None = None,
     postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
     inference_backend: Literal["pymc", "blackjax"] = "pymc",
-    pathfinder_kwargs: dict = {},
-    compile_kwargs: dict = {},
-    initvals: dict | None = None,
+    pathfinder_kwargs: dict[str, Any] = {},
+    compile_kwargs: dict[str, Any] = {},
+    initvals: dict[str, Any] | None = None,
     # New pathfinder result integration options
     add_pathfinder_groups: bool = True,
     display_summary: bool | Literal["auto"] = "auto",
     store_diagnostics: bool = False,
-    pathfinder_group: str = "pathfinder",
-    paths_group: str = "pathfinder_paths",
-    diagnostics_group: str = "pathfinder_diagnostics",
-    config_group: str = "pathfinder_config",
 ) -> az.InferenceData:
     """
     Fit the Pathfinder Variational Inference algorithm.
@@ -1644,7 +1822,7 @@ def fit_pathfinder(
     jitter : float, optional
         Amount of jitter to apply to initial points (default is 2.0). Note that Pathfinder may be highly sensitive to the jitter value. It is recommended to increase num_paths when increasing the jitter value.
     epsilon: float
-        value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if delta_theta[l] * delta_grad[l] > epsilon * L2_norm(delta_grad[l]) for each l in L. (default is 1e-8).
+        value used to filter out large changes in the direction of the update gradient at each iteration l in L. Iteration l is only accepted if s·z >= epsilon * ||z||² for each l in L. Matches Zhang et al. (2022) Algorithm 3 with default epsilon=1e-12.
     importance_sampling : str, None, optional
         Method to apply sampling based on log importance weights (logP - logQ).
         Options are:
@@ -1663,11 +1841,16 @@ def fit_pathfinder(
     inference_backend : str, optional
         Backend for inference, either "pymc" or "blackjax" (default is "pymc").
     concurrent : str, optional
-        Whether to run paths concurrently, either "thread" or "process" or None (default is None). Setting concurrent to None runs paths serially and is generally faster with smaller models because of the overhead that comes with concurrency.
+        How to run paths: ``"process"`` (default) spawns separate worker processes for true
+        parallelism, matching PyMC's approach for parallel chains.  Set to ``None`` for serial
+        execution (useful for debugging).
+    max_init_retries : int, optional
+        Maximum number of re-jitter retries per path when the initial point fails (default is 10).
     pathfinder_kwargs
         Additional keyword arguments for the Pathfinder algorithm.
     compile_kwargs
-        Additional keyword arguments for the PyTensor compiler. If not provided, the default linker is "cvm_nogc".
+        Additional keyword arguments for the PyTensor compiler. If not provided, a
+        performant default is used.
     initvals: dict | None = None
         Initial values for the model parameters, as str:ndarray key-value pairs. Paritial initialization is permitted.
         If None, the model's default initial values are used.
@@ -1680,13 +1863,7 @@ def fit_pathfinder(
     store_diagnostics : bool, optional
         Whether to include potentially large diagnostic arrays in the pathfinder groups (default is False).
     pathfinder_group : str, optional
-        Name for the main pathfinder results group (default is "pathfinder").
-    paths_group : str, optional
-        Name for the per-path results group (default is "pathfinder_paths").
-    diagnostics_group : str, optional
-        Name for the diagnostics group (default is "pathfinder_diagnostics").
-    config_group : str, optional
-        Name for the configuration group (default is "pathfinder_config").
+        Name for the main pathfinder results group (default is "sample_stats").
 
     Returns
     -------
@@ -1699,6 +1876,12 @@ def fit_pathfinder(
     """
 
     model = modelcontext(model)
+    if concurrent is not None and concurrent != "process":
+        raise ValueError(
+            f"concurrent must be 'process' or None, got {concurrent!r}. "
+            "Thread-based parallelism is not supported: PyTensor compiled functions "
+            "share internal storage and would corrupt each other's state."
+        )
 
     if initvals is not None:
         model = pm.model.fgraph.clone_model(model)  # Create a clone of the model
@@ -1743,6 +1926,7 @@ def fit_pathfinder(
             importance_sampling=importance_sampling,
             progressbar=progressbar,
             concurrent=concurrent,
+            max_init_retries=max_init_retries,
             random_seed=random_seed,
             pathfinder_kwargs=pathfinder_kwargs,
             compile_kwargs=compile_kwargs,
@@ -1802,10 +1986,6 @@ def fit_pathfinder(
                 idata=idata,
                 result=mp_result,
                 model=model,
-                group=pathfinder_group,
-                paths_group=paths_group,
-                diagnostics_group=diagnostics_group,
-                config_group=config_group,
                 store_diagnostics=store_diagnostics,
             )
         else:
