@@ -218,11 +218,11 @@ def multipathfinder_result_to_xarray(
     ...     [
     ...         k
     ...         for k in ds.data_vars.keys()
-    ...         if not k.startswith(("paths/", "config/", "diagnostics/"))
+    ...         if not k.startswith(("paths_", "config_", "diagnostics_"))
     ...     ],
     ... )
-    >>> print("Per-path:", [k for k in ds.data_vars.keys() if k.startswith("paths/")])
-    >>> print("Config:", [k for k in ds.data_vars.keys() if k.startswith("config/")])
+    >>> print("Per-path:", [k for k in ds.data_vars.keys() if k.startswith("paths_")])
+    >>> print("Config:", [k for k in ds.data_vars.keys() if k.startswith("config_")])
     """
     n_params = result.samples.shape[-1] if result.samples is not None else None
     param_coords = get_param_coords(model, n_params) if n_params is not None else None
@@ -238,15 +238,15 @@ def multipathfinder_result_to_xarray(
     # Build summary-level data (top level)
     _add_summary_data(result, data_vars, coords, attrs)
 
-    # Build per-path data (with paths/ prefix)
+    # Build per-path data (with paths_ prefix)
     if not result.all_paths_failed and result.samples is not None:
         _add_paths_data(result, data_vars, coords, param_coords, n_params)
 
-    # Build configuration data (with config/ prefix)
+    # Build configuration data (with config_ prefix)
     if result.pathfinder_config is not None:
         _add_config_data(result.pathfinder_config, data_vars)
 
-    # Build diagnostics data (with diagnostics/ prefix) if requested
+    # Build diagnostics data (with diagnostics_ prefix) if requested
     if store_diagnostics:
         _add_diagnostics_data(result, data_vars, coords, param_coords)
 
@@ -316,16 +316,16 @@ def _add_paths_data(
     param_coords: list[str] | None,
     n_params: int | None,
 ) -> None:
-    """Add per-path diagnostics to the pathfinder dataset with 'paths/' prefix."""
+    """Add per-path diagnostics to the pathfinder dataset with 'paths_' prefix."""
     n_paths = _determine_num_paths(result)
 
     # Add path coordinate
     coords["path"] = list(range(n_paths))
 
     def _add_path_scalar(name: str, data):
-        """Add a per-path scalar array to data_vars with paths/ prefix."""
+        """Add a per-path scalar array to data_vars with paths_ prefix."""
         if data is not None:
-            data_vars[f"paths/{name}"] = xr.DataArray(
+            data_vars[f"paths_{name}"] = xr.DataArray(
                 data, dims=["path"], coords={"path": coords["path"]}
             )
 
@@ -342,7 +342,7 @@ def _add_paths_data(
 
     if n_params is not None and result.samples is not None and result.samples.ndim >= 3:
         final_samples = result.samples[:, -1, :]  # (S, N)
-        data_vars["paths/final_sample"] = xr.DataArray(
+        data_vars["paths_final_sample"] = xr.DataArray(
             final_samples,
             dims=["path", "param"],
             coords={"path": coords["path"], "param": coords["param"]},
@@ -350,23 +350,23 @@ def _add_paths_data(
 
 
 def _add_config_data(config: PathfinderConfig, data_vars: dict) -> None:
-    """Add configuration parameters to the pathfinder dataset with 'config/' prefix."""
+    """Add configuration parameters to the pathfinder dataset with 'config_' prefix."""
     config_dict = asdict(config)
     for key, value in config_dict.items():
-        data_vars[f"config/{key}"] = xr.DataArray(value)
+        data_vars[f"config_{key}"] = xr.DataArray(value)
 
 
 def _add_diagnostics_data(
     result: MultiPathfinderResult, data_vars: dict, coords: dict, param_coords: list[str] | None
 ) -> None:
-    """Add detailed diagnostics to the pathfinder dataset with 'diagnostics/' prefix."""
+    """Add detailed diagnostics to the pathfinder dataset with 'diagnostics_' prefix."""
     if result.logP is not None:
         n_paths, n_draws_per_path = result.logP.shape
         if "path" not in coords:
             coords["path"] = list(range(n_paths))
         coords["draw_per_path"] = list(range(n_draws_per_path))
 
-        data_vars["diagnostics/logP_full"] = xr.DataArray(
+        data_vars["diagnostics_logP_full"] = xr.DataArray(
             result.logP,
             dims=["path", "draw_per_path"],
             coords={"path": coords["path"], "draw_per_path": coords["draw_per_path"]},
@@ -379,7 +379,7 @@ def _add_diagnostics_data(
                 coords["path"] = list(range(n_paths))
             coords["draw_per_path"] = list(range(n_draws_per_path))
 
-        data_vars["diagnostics/logQ_full"] = xr.DataArray(
+        data_vars["diagnostics_logQ_full"] = xr.DataArray(
             result.logQ,
             dims=["path", "draw_per_path"],
             coords={"path": coords["path"], "draw_per_path": coords["draw_per_path"]},
@@ -393,7 +393,7 @@ def _add_diagnostics_data(
         if "draw_per_path" not in coords:
             coords["draw_per_path"] = list(range(n_draws_per_path))
 
-        data_vars["diagnostics/samples_full"] = xr.DataArray(
+        data_vars["diagnostics_samples_full"] = xr.DataArray(
             result.samples,
             dims=["path", "draw_per_path", "param"],
             coords={
@@ -436,10 +436,7 @@ def add_pathfinder_to_inference_data(
     result: PathfinderResult | MultiPathfinderResult,
     model: pm.Model | None = None,
     *,
-    group: str = "pathfinder",
-    paths_group: str = "pathfinder_paths",  # Deprecated, kept for API compatibility
-    diagnostics_group: str = "pathfinder_diagnostics",  # Deprecated, kept for API compatibility
-    config_group: str = "pathfinder_config",  # Deprecated, kept for API compatibility
+    group: str = "sample_stats",
     store_diagnostics: bool = False,
 ) -> az.InferenceData:
     """
@@ -447,9 +444,9 @@ def add_pathfinder_to_inference_data(
 
     All pathfinder output is now consolidated under a single group with nested structure:
     - Summary statistics at the top level
-    - Per-path data with 'paths/' prefix
-    - Configuration with 'config/' prefix
-    - Diagnostics with 'diagnostics/' prefix (if store_diagnostics=True)
+    - Per-path data with 'paths_' prefix
+    - Configuration with 'config_' prefix
+    - Diagnostics with 'diagnostics_' prefix (if store_diagnostics=True)
 
     Parameters
     ----------
@@ -460,13 +457,7 @@ def add_pathfinder_to_inference_data(
     model : pm.Model | None
         PyMC model for parameter name extraction
     group : str
-        Name for the pathfinder group (default: "pathfinder")
-    paths_group : str
-        Deprecated: no longer used, kept for API compatibility
-    diagnostics_group : str
-        Deprecated: no longer used, kept for API compatibility
-    config_group : str
-        Deprecated: no longer used, kept for API compatibility
+        Name for the pathfinder group (default: "sample_stats")
     store_diagnostics : bool
         Whether to include potentially large diagnostic arrays
 
@@ -485,13 +476,13 @@ def add_pathfinder_to_inference_data(
     ...     idata = pmx.fit(method="pathfinder", model=model, add_pathfinder_groups=False)
     >>> # Assuming we have pathfinder results
     >>> idata = add_pathfinder_to_inference_data(idata, results, model=model)
-    >>> print(list(idata.groups()))  # Will show ['posterior', 'pathfinder']
+    >>> print(list(idata.groups()))  # Will show ['posterior', 'sample_stats']
     >>> # Access nested data:
     >>> print(
-    ...     [k for k in idata.pathfinder.data_vars.keys() if k.startswith("paths/")]
+    ...     [k for k in idata.sample_stats.data_vars.keys() if k.startswith("paths_")]
     ... )  # Per-path data
     >>> print(
-    ...     [k for k in idata.pathfinder.data_vars.keys() if k.startswith("config/")]
+    ...     [k for k in idata.sample_stats.data_vars.keys() if k.startswith("config_")]
     ... )  # Config data
     """
     # Detect if this is a multi-path result

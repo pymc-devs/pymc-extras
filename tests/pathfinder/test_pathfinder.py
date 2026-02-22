@@ -104,6 +104,7 @@ def test_unstable_lbfgs_update_mask(capsys, jitter):
                 method="pathfinder",
                 jitter=jitter,
                 random_seed=4,
+                max_init_retries=0,
                 concurrent="process",
             )
         out, err = capsys.readouterr()
@@ -125,6 +126,7 @@ def test_unstable_lbfgs_update_mask(capsys, jitter):
                     jitter=jitter,
                     random_seed=4,
                     num_paths=4,
+                    max_init_retries=0,
                     concurrent="process",
                 )
 
@@ -157,11 +159,7 @@ def test_pathfinder(inference_backend, reference_idata):
     assert idata.posterior["theta"].shape == (1, 1000, 8)
 
 
-@pytest.mark.parametrize(
-    "concurrent",
-    [pytest.param("thread", marks=pytest.mark.skip(reason="CI hangs on Windows")), "process"],
-)
-def test_concurrent_results(reference_idata, concurrent):
+def test_concurrent_results(reference_idata):
     model = eight_schools_model()
     with model:
         idata_conc = pmx.fit(
@@ -170,7 +168,7 @@ def test_concurrent_results(reference_idata, concurrent):
             jitter=12.0,
             random_seed=41,
             inference_backend="pymc",
-            concurrent=concurrent,
+            concurrent="process",
         )
 
     np.testing.assert_allclose(
