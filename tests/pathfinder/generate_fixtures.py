@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Generate LBFGS-history fixtures for T7 model-equivalence tests.
+Generate LBFGS-history fixtures for model-equivalence tests.
 
 Run once (from the repo root or any directory):
 
@@ -10,13 +10,11 @@ Each fixture is saved as  tests/pathfinder/fixtures/<model_name>.npz  and
 contains:
     x_full     – initial point + accepted step positions, shape (L+1, N)
     g_full     – gradients at each row of x_full, shape (L+1, N)
-    alpha_full – diagonal scale at each of the L accepted steps, shape (L, N)
-    s_win_full – s sliding window at each accepted step, shape (L, N, J)
-    z_win_full – z sliding window at each accepted step, shape (L, N, J)
-    elbo_ref   – per-step ELBO values, shape (L,), computed with ELBO_SEED
+    elbo_ref   – per-step ELBO values, shape (L,), from LBFGSStreamingCallback
 
 x_full[0] / g_full[0] is the starting point (x0); x_full[1:] / g_full[1:]
-are the L accepted LBFGS steps.
+are the L accepted LBFGS steps. Alpha, s, z are computed internally by the
+callback (full stack); tests replay the trajectory through the same callback.
 """
 
 import os
@@ -78,16 +76,14 @@ def generate_fixture(name: str, model_fn) -> None:
     _, neg_g0 = neg_logp_dlogp_func(x0)
     g0 = -neg_g0
 
-    # Run LBFGS, recording full per-step state and ELBO.
-    step_records = []  # (x, g, alpha, s_win, z_win, elbo_val)
+    # Run LBFGS with full-stack callback (alpha, s, z computed internally).
+    step_records = []  # (x, g, elbo_val)
 
     def _on_step(x, g, alpha, s_win, z_win, elbo):
         elbo_val = elbo if np.isfinite(elbo) else np.nan
-        step_records.append(
-            (x.copy(), g.copy(), alpha.copy(), s_win.copy(), z_win.copy(), elbo_val)
-        )
+        step_records.append((x.copy(), g.copy(), elbo_val))
 
-    sample_logp_fn, s_win_shared, z_win_shared = make_pathfinder_sample_fn(
+    sample_logp_fn = make_pathfinder_sample_fn(
         model, N, MAXCOR, jacobian=True, compile_kwargs=compile_kwargs
     )
     cached_fn = _CachedValueGrad(neg_logp_dlogp_func)
@@ -97,8 +93,6 @@ def generate_fixture(name: str, model_fn) -> None:
         value_grad_fn=cached_fn,
         x0=x0,
         sample_logp_fn=sample_logp_fn,
-        s_win_shared=s_win_shared,
-        z_win_shared=z_win_shared,
         num_elbo_draws=NUM_ELBO_DRAWS,
         rng=rng_elbo,
         J=MAXCOR,
@@ -116,11 +110,7 @@ def generate_fixture(name: str, model_fn) -> None:
     # x_full/g_full: initial point prepended → shape (L+1, N)
     x_full = np.concatenate([[x0], [r[0] for r in step_records]], axis=0)
     g_full = np.concatenate([[g0], [r[1] for r in step_records]], axis=0)
-    # Per-step state for exact ELBO reproduction → shape (L, N) / (L, N, J)
-    alpha_full = np.array([r[2] for r in step_records])
-    s_win_full = np.array([r[3] for r in step_records])
-    z_win_full = np.array([r[4] for r in step_records])
-    elbo_ref = np.array([r[5] for r in step_records])
+    elbo_ref = np.array([r[2] for r in step_records])
 
     finite_pct = np.mean(np.isfinite(elbo_ref)) * 100
     print(f"[{name}] L={L}, N={x0.shape[0]}, status={status.name}")
@@ -128,15 +118,7 @@ def generate_fixture(name: str, model_fn) -> None:
 
     os.makedirs(FIXTURES_DIR, exist_ok=True)
     out_path = os.path.join(FIXTURES_DIR, f"{name}.npz")
-    np.savez(
-        out_path,
-        x_full=x_full,
-        g_full=g_full,
-        alpha_full=alpha_full,
-        s_win_full=s_win_full,
-        z_win_full=z_win_full,
-        elbo_ref=elbo_ref,
-    )
+    np.savez(out_path, x_full=x_full, g_full=g_full, elbo_ref=elbo_ref)
     print(f"[{name}] saved → {out_path}\n")
 
 

@@ -351,12 +351,19 @@ def alpha_step_numpy(alpha_prev: NDArray, s: NDArray, z: NDArray) -> NDArray:
     a = np.sum(alpha_prev * z**2)
     b = np.sum(z * s)
     c = np.sum(s**2 / alpha_prev)
+    # Guard: when b≈0 or c≈0 the formula divides by zero; keep alpha_prev to avoid NaN propagation
+    z_sq = float(np.sum(z**2)) + 1e-30
+    if abs(b) < 1e-14 * z_sq or c <= 0 or not np.isfinite(c):
+        return alpha_prev.copy()
     inv_alpha = (
         a / (b * alpha_prev)
         + z**2 / b
         - (a * s**2) / (b * c * alpha_prev**2)
     )  # fmt: off
-    return 1.0 / inv_alpha
+    alpha_out = 1.0 / inv_alpha
+    if not np.all(np.isfinite(alpha_out)) or np.any(alpha_out <= 0):
+        return alpha_prev.copy()
+    return alpha_out
 
 
 def _bfgs_sample_pt(
@@ -437,12 +444,11 @@ def make_pathfinder_sample_fn(
     J: int,
     jacobian: bool,
     compile_kwargs: dict,
-) -> tuple[Function, Any, Any]:
+) -> Function:
     """Compile a single PyTensor function covering bfgs sample + batched logP evaluation.
 
-    The ring buffers S and Z are pytensor shared variables — the caller holds the
-    backing numpy arrays and writes to them in-place; pytensor reads from that same
-    memory without any per-step copy (borrow semantics via set_value).
+    S and Z are passed as explicit inputs (not shared variables) so each caller
+    can pass its own arrays, avoiding shared mutable state.
 
     The number of draws M is a dynamic runtime dimension — the same compiled
     function handles both ELBO estimation (small M) and final sampling (large M).
@@ -458,10 +464,8 @@ def make_pathfinder_sample_fn(
     Returns
     -------
     fn : Function
-        Compiled: (x, g, alpha, u) → (phi, logQ, logP)
-        where u is (M, N) and M is a dynamic dimension.
-    s_win_shared : SharedVariable  shape (N, J)
-    z_win_shared : SharedVariable  shape (N, J)
+        Compiled: (x, g, alpha, s_win, z_win, u) → (phi, logQ, logP)
+        where s_win, z_win are (N, J), u is (M, N), and M is a dynamic dimension.
     """
     (logP_single,), single_input = pm.pytensorf.join_nonshared_inputs(
         model.initial_point(),
@@ -472,16 +476,11 @@ def make_pathfinder_sample_fn(
     x_sym = pt.vector("x", dtype="float64")
     g_sym = pt.vector("g", dtype="float64")
     alpha_sym = pt.vector("alpha", dtype="float64")
+    s_win_sym = pt.matrix("s_win", dtype="float64")  # (N, J)
+    z_win_sym = pt.matrix("z_win", dtype="float64")  # (N, J)
     u_sym = pt.matrix("u", dtype="float64")  # (M, N) — M is dynamic
 
-    # Shared ring-buffer state: the caller owns backing numpy arrays and writes
-    # them in-place; pytensor reads from the same memory with no per-step copy.
-    s_win_shared = pytensor.shared(np.zeros((N, J), dtype="float64"), name="s_win")
-    z_win_shared = pytensor.shared(np.zeros((N, J), dtype="float64"), name="z_win")
-
-    phi_sym, logQ_sym = _bfgs_sample_pt(
-        x_sym, g_sym, alpha_sym, s_win_shared, z_win_shared, u_sym, J, N
-    )
+    phi_sym, logQ_sym = _bfgs_sample_pt(x_sym, g_sym, alpha_sym, s_win_sym, z_win_sym, u_sym, J, N)
 
     batched_logP_sym = pytensor.map(
         fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
@@ -494,13 +493,15 @@ def make_pathfinder_sample_fn(
             pytensor.In(x_sym, borrow=True),
             pytensor.In(g_sym, borrow=True),
             pytensor.In(alpha_sym, borrow=True),
+            pytensor.In(s_win_sym, borrow=True),
+            pytensor.In(z_win_sym, borrow=True),
             pytensor.In(u_sym, borrow=True),
         ],
         [phi_sym, logQ_sym, batched_logP_sym],
         **compile_kwargs,
     )
     fn.trust_input = True
-    return fn, s_win_shared, z_win_shared
+    return fn
 
 
 def make_elbo_from_state_fn(
@@ -559,6 +560,7 @@ class PathStatus(Enum):
     INVALID_LOGQ = auto()
     LBFGS_FAILED = auto()
     PATH_FAILED = auto()
+    SINGLE_STEP = auto()
 
 
 FAILED_PATH_STATUS = [
@@ -566,6 +568,7 @@ FAILED_PATH_STATUS = [
     PathStatus.INVALID_LOGQ,
     PathStatus.LBFGS_FAILED,
     PathStatus.PATH_FAILED,
+    PathStatus.SINGLE_STEP,
 ]
 
 
@@ -603,6 +606,17 @@ class PathInvalidLogQ(PathException):
         super().__init__(message or self.DEFAULT_MESSAGE, PathStatus.INVALID_LOGQ)
 
 
+class SingleStepPathException(PathException):
+    """
+    raises when the path has only one LBFGS step (insufficient for valid approximation).
+    """
+
+    DEFAULT_MESSAGE = "Path failed because only a single step was performed."
+
+    def __init__(self, message=None) -> None:
+        super().__init__(message or self.DEFAULT_MESSAGE, PathStatus.SINGLE_STEP)
+
+
 class LBFGSStreamingCallback:
     """Streaming LBFGS callback: computes ELBO at each accepted step, O(J*N + M*N) peak memory.
 
@@ -616,12 +630,8 @@ class LBFGSStreamingCallback:
     x0 : NDArray
         Initial position, shape (N,).
     sample_logp_fn : Callable
-        Compiled PyTensor function (x, g, alpha, u) → (phi, logQ, logP).
+        Compiled PyTensor function (x, g, alpha, s_win, z_win, u) → (phi, logQ, logP).
         Built by make_pathfinder_sample_fn.
-    s_win_shared : SharedVariable
-        PyTensor shared variable for the position-diff ring buffer, shape (N, J).
-    z_win_shared : SharedVariable
-        PyTensor shared variable for the gradient-diff ring buffer, shape (N, J).
     num_elbo_draws : int
         Number of draws per step for ELBO estimation.
     rng : np.random.Generator
@@ -642,8 +652,6 @@ class LBFGSStreamingCallback:
         value_grad_fn: Callable,
         x0: NDArray,
         sample_logp_fn: Callable,
-        s_win_shared: Any,
-        z_win_shared: Any,
         num_elbo_draws: int,
         rng: np.random.Generator,
         J: int,
@@ -668,31 +676,32 @@ class LBFGSStreamingCallback:
         self.g_prev: NDArray = np.array(g0, dtype=np.float64)
         self.alpha_prev: NDArray = np.ones(N, dtype=np.float64)
 
-        # Ring buffer: backed by numpy, shared with pytensor via borrow=True.
-        # In-place numpy writes (s_win[:, idx] = s) are visible to the compiled
-        # function with no per-step copy.
+        # Ring buffer: numpy arrays passed as inputs to sample_logp_fn each call.
+        # Thread-safe: no shared mutable state across concurrent invocations.
         self.s_win: NDArray = np.zeros((N, J), dtype=np.float64)
         self.z_win: NDArray = np.zeros((N, J), dtype=np.float64)
-        s_win_shared.set_value(self.s_win, borrow=True)
-        z_win_shared.set_value(self.z_win, borrow=True)
         self.win_idx: int = -1
         self.best_elbo: float = -np.inf
         self.best_state: dict = {}
         self.best_step_idx: int = 0
         self.step_count: int = 0
         self.any_valid: bool = False
+        self.current_elbo: float | None = None
         self._start_time: float = time.time()
 
-    def __call__(self, x: NDArray) -> None:
+    def __call__(self, x: NDArray) -> float | None:
+        """Process one accepted LBFGS step. Returns current_elbo for testability."""
         value, g = self.value_grad_fn(x)
 
         s = x - self.x_prev
         z = g - self.g_prev
 
         if not (np.all(np.isfinite(g)) and np.isfinite(value)):
-            return
+            self.current_elbo = None
+            return None
         if not _check_lbfgs_curvature_condition(s, z, self.epsilon):
-            return
+            self.current_elbo = None
+            return None
 
         alpha = alpha_step_numpy(self.alpha_prev, s, z)
 
@@ -701,13 +710,12 @@ class LBFGSStreamingCallback:
         self.s_win[:, self.win_idx] = s
         self.z_win[:, self.win_idx] = z
 
-        # Sample + logP in a single compiled call.
-        # s_win/z_win are shared variables already pointing to self.s_win/z_win —
-        # the ring-buffer writes above are visible to pytensor with no copy.
+        # Sample + logP in a single compiled call. Pass s_win/z_win as inputs.
         u = self._rng.standard_normal((self.num_elbo_draws, self._N))
         try:
-            _, logQ, logP = self.sample_logp_fn(x, g, alpha, u)
+            _, logQ, logP = self.sample_logp_fn(x, g, alpha, self.s_win, self.z_win, u)
             logP = np.asarray(logP)
+            logQ = np.asarray(logQ)
             finite = np.isfinite(logP)
             if not np.any(finite):
                 elbo = -np.inf
@@ -742,9 +750,11 @@ class LBFGSStreamingCallback:
         self.g_prev = g.copy()
         self.step_count += 1
 
+        self.current_elbo = elbo if np.isfinite(elbo) else None
+
         if self.progress_callback is not None:
             best_elbo = self.best_elbo if np.isfinite(self.best_elbo) else None
-            current_elbo = elbo if np.isfinite(elbo) else None
+            current_elbo = self.current_elbo
             elapsed = time.time() - self._start_time
             steps_per_sec = self.step_count / elapsed if elapsed > 0 else None
             step_size = float(np.linalg.norm(s))
@@ -752,11 +762,14 @@ class LBFGSStreamingCallback:
                 {
                     "lbfgs_steps": self.step_count,
                     "best_elbo": best_elbo,
+                    "best_ind": self.best_step_idx,
                     "current_elbo": current_elbo,
                     "step_size": step_size,
                     "steps_per_sec": steps_per_sec,
                 }
             )
+
+        return elbo
 
 
 def make_single_pathfinder_fn(
@@ -832,7 +845,7 @@ def make_single_pathfinder_fn(
     x_base = DictToArrayBijection.map(ip).data
     N = x_base.shape[0]
 
-    sample_logp_func, s_win_shared, z_win_shared = make_pathfinder_sample_fn(
+    sample_logp_func = make_pathfinder_sample_fn(
         model, N, maxcor, jacobian=jacobian, compile_kwargs=compile_kwargs
     )
 
@@ -895,8 +908,6 @@ def make_single_pathfinder_fn(
                         value_grad_fn=cached_fn,
                         x0=x0,
                         sample_logp_fn=local_sample_logp,
-                        s_win_shared=s_win_shared,
-                        z_win_shared=z_win_shared,
                         num_elbo_draws=num_elbo_draws,
                         rng=elbo_rng,
                         J=maxcor,
@@ -908,6 +919,9 @@ def make_single_pathfinder_fn(
                         lbfgs_niter, lbfgs_status = local_lbfgs.minimize_streaming(streaming_cb, x0)
                     _check_lbfgs_status(lbfgs_status)
 
+                    if lbfgs_niter < 2:
+                        raise SingleStepPathException()
+
                     if not streaming_cb.any_valid:
                         raise PathInvalidLogP()
 
@@ -916,14 +930,17 @@ def make_single_pathfinder_fn(
 
                     final_rng = np.random.default_rng(final_seed)
                     u_final = final_rng.standard_normal((num_draws, N))
-                    # Point shared ring buffers at best-state arrays before final draw.
-                    s_win_shared.set_value(best_state["s_win"], borrow=True)
-                    z_win_shared.set_value(best_state["z_win"], borrow=True)
+                    if progress_callback is not None:
+                        progress_callback(
+                            {"status": "sampling", "current_elbo": None, "step_size": None}
+                        )
                     with threadpool_limits(limits=1):
                         phi_final, logQ_psi_flat, logP_psi_flat = local_sample_logp(
                             best_state["x"],
                             best_state["g"],
                             best_state["alpha"],
+                            best_state["s_win"],
+                            best_state["z_win"],
                             u_final,
                         )
                     phi_final = np.asarray(phi_final)
@@ -936,10 +953,11 @@ def make_single_pathfinder_fn(
 
                     break  # success — exit retry loop
 
-                except LBFGSInitFailed:
+                except (LBFGSInitFailed, SingleStepPathException) as e:
                     if attempt < max_init_retries:
                         logger.debug(
-                            "LBFGSInitFailed on attempt %d/%d, retrying with different jitter...",
+                            "%s on attempt %d/%d, retrying with different jitter...",
+                            type(e).__name__,
                             attempt + 1,
                             max_init_retries,
                         )
@@ -947,10 +965,21 @@ def make_single_pathfinder_fn(
                             progress_callback({"status": f"retry {attempt + 1}"})
                     else:
                         if progress_callback is not None:
-                            progress_callback({"status": "lbfgs_fail"})
+                            progress_callback(
+                                {
+                                    "status": "lbfgs_fail"
+                                    if isinstance(e, LBFGSInitFailed)
+                                    else "failed"
+                                }
+                            )
+                        if isinstance(e, LBFGSInitFailed):
+                            return PathfinderResult(
+                                lbfgs_status=e.status,
+                                path_status=PathStatus.LBFGS_FAILED,
+                            )
                         return PathfinderResult(
-                            lbfgs_status=LBFGSStatus.INIT_FAILED,
-                            path_status=PathStatus.LBFGS_FAILED,
+                            lbfgs_status=lbfgs_status,
+                            path_status=PathStatus.SINGLE_STEP,
                         )
 
             result = _make_result(psi, logP_psi, logQ_psi, lbfgs_niter, elbo_argmax, lbfgs_status)
@@ -958,7 +987,9 @@ def make_single_pathfinder_fn(
                 status_str = (
                     "elbo@0" if result.path_status == PathStatus.ELBO_ARGMAX_AT_ZERO else "ok"
                 )
-                progress_callback({"status": status_str, "lbfgs_steps": int(lbfgs_niter)})
+                progress_callback(
+                    {"status": status_str, "lbfgs_steps": int(lbfgs_niter), "best_ind": elbo_argmax}
+                )
             return result
 
         except LBFGSException as e:
@@ -993,20 +1024,6 @@ def _calculate_max_workers(num_paths: int | None = None) -> int:
     if processes % 2 != 0:
         processes += 1
     return processes
-
-
-def _thread(
-    fn: SinglePathfinderFn, seed: int, progress_callback: Callable | None = None
-) -> "PathfinderResult":
-    """
-    execute pathfinder runs concurrently using threading.
-
-    No compilation lock is needed here: compiled functions are deepcopied per
-    path call inside ``single_pathfinder_fn``, so each thread operates on its
-    own independent storage with no shared mutable state.
-    """
-    rng = np.random.default_rng(seed)
-    return fn(rng, progress_callback)
 
 
 class _QueueCallback:
@@ -1074,87 +1091,62 @@ def _get_mp_context(mp_ctx: str | None = None) -> str | None:
 def _execute_concurrently(
     fn: SinglePathfinderFn,
     seeds: list[int],
-    concurrent: Literal["process"] | None,
+    concurrent: Literal["process"],
     max_workers: int | None = None,
     progress_callbacks: list[Callable | None] | None = None,
 ) -> Iterator["PathfinderResult | bytes"]:
     """
-    execute pathfinder runs concurrently.
+    execute pathfinder runs concurrently via multiprocessing.
     """
-    if concurrent == "thread":  # pragma: no cover — thread mode is not exposed in the public API
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-    elif concurrent == "process":
-        from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import ProcessPoolExecutor, as_completed
 
-        import cloudpickle
-    else:
-        raise ValueError(f"Invalid concurrent value: {concurrent}")
+    import cloudpickle
 
-    executor_cls = ThreadPoolExecutor if concurrent == "thread" else ProcessPoolExecutor
-
-    concurrent_fn = _thread if concurrent == "thread" else _process
-
-    executor_kwargs = {} if concurrent == "thread" else {"mp_context": _get_mp_context()}
-
+    fn = cloudpickle.dumps(fn)
     if max_workers is None:
         max_workers = _calculate_max_workers(num_paths=len(seeds))
 
-    fn = fn if concurrent == "thread" else cloudpickle.dumps(fn)
+    # Use a Manager Queue (proxy-based, always picklable regardless of start method)
+    # to relay (idx, info) messages from workers back to the main process, where a
+    # listener thread forwards them to the real per-path callbacks.
+    import multiprocessing
+    import threading
 
-    if concurrent == "thread":
-        callbacks: list[Callable | None] = (
-            list(progress_callbacks) if progress_callbacks is not None else [None] * len(seeds)
-        )
-        if len(callbacks) < len(seeds):
-            callbacks.extend([None] * (len(seeds) - len(callbacks)))
+    mp_manager = multiprocessing.Manager()
+    try:
+        mp_queue = mp_manager.Queue()
+        process_callbacks = [_QueueCallback(mp_queue, i) for i in range(len(seeds))]
 
-        with executor_cls(max_workers=max_workers, **executor_kwargs) as executor:
-            futures = [
-                executor.submit(concurrent_fn, fn, seed, cb) for seed, cb in zip(seeds, callbacks)
-            ]
-            for f in as_completed(futures):
-                yield f.result()
-    else:
-        # Process mode: Rich callbacks live in the main process and can't be pickled.
-        # Use a Manager Queue (proxy-based, always picklable regardless of start method)
-        # to relay (idx, info) messages from workers back to the main process, where a
-        # listener thread forwards them to the real per-path callbacks.
-        import multiprocessing
-        import threading
+        def _listener() -> None:
+            while True:
+                item = mp_queue.get()
+                if item is None:  # sentinel
+                    break
+                idx, info = item
+                if (
+                    progress_callbacks
+                    and idx < len(progress_callbacks)
+                    and progress_callbacks[idx] is not None
+                ):
+                    progress_callbacks[idx](info)
 
-        mp_manager = multiprocessing.Manager()
+        listener = threading.Thread(target=_listener, daemon=True)
+        listener.start()
         try:
-            mp_queue = mp_manager.Queue()
-            process_callbacks = [_QueueCallback(mp_queue, i) for i in range(len(seeds))]
-
-            def _listener() -> None:
-                while True:
-                    item = mp_queue.get()
-                    if item is None:  # sentinel
-                        break
-                    idx, info = item
-                    if (
-                        progress_callbacks
-                        and idx < len(progress_callbacks)
-                        and progress_callbacks[idx] is not None
-                    ):
-                        progress_callbacks[idx](info)
-
-            listener = threading.Thread(target=_listener, daemon=True)
-            listener.start()
-            try:
-                with executor_cls(max_workers=max_workers, **executor_kwargs) as executor:
-                    futures = [
-                        executor.submit(concurrent_fn, fn, seed, cb)
-                        for seed, cb in zip(seeds, process_callbacks)
-                    ]
-                    for f in as_completed(futures):
-                        yield cloudpickle.loads(f.result())
-            finally:
-                mp_queue.put(None)  # stop listener
-                listener.join(timeout=5)
+            with ProcessPoolExecutor(
+                max_workers=max_workers, mp_context=_get_mp_context()
+            ) as executor:
+                futures = [
+                    executor.submit(_process, fn, seed, cb)
+                    for seed, cb in zip(seeds, process_callbacks)
+                ]
+                for f in as_completed(futures):
+                    yield cloudpickle.loads(f.result())
         finally:
-            mp_manager.shutdown()
+            mp_queue.put(None)  # stop listener
+            listener.join(timeout=5)
+    finally:
+        mp_manager.shutdown()
 
 
 def _execute_serially(
@@ -1469,6 +1461,7 @@ def _get_status_warning(mpr: MultiPathfinderResult) -> list[str]:
     path_status_message = {
         PathStatus.ELBO_ARGMAX_AT_ZERO: "ELBO_ARGMAX_AT_ZERO: ELBO argmax at zero refers to the first iteration during LBFGS. A high occurrence suggests the model's default initial point + jitter values are concentrated in high-density regions in the target distribution and may result in poor exploration of the parameter space. Consider increasing jitter if this occurrence is high relative to the number of paths.",
         PathStatus.INVALID_LOGQ: "INVALID_LOGQ: Invalid logQ values occur when a path's logQ values are not finite. The failed path is not included in samples when importance sampling is used. Consider reparameterizing the model or adjusting the pathfinder arguments if this occurence is high relative to the number of paths.",
+        PathStatus.SINGLE_STEP: "SINGLE_STEP: Pathfinder requires at least two LBFGS steps on a path. A path with only one step produces an invalid result. Consider adjusting initvals/jitter if this occurs.",
     }
 
     for lbfgs_status in mpr.lbfgs_status:
@@ -1553,9 +1546,6 @@ def multipath_pathfinder(
         How to run paths: ``"process"`` (default) spawns separate worker processes for true
         parallelism, matching PyMC's approach for parallel chains.  Set to ``None`` for serial
         execution (useful for debugging).
-        ``"thread"`` is intentionally not offered: pytensor compiled functions share intermediate
-        op storage across ``Function.copy()`` instances, so concurrent thread calls corrupt each
-        other's in-flight state.  Processes have fully independent memory and are always safe.
     max_init_retries : int, optional
         Maximum number of re-jitter retries per path when LBFGSInitFailed is raised (default is 10).
     pathfinder_kwargs
@@ -1614,6 +1604,10 @@ def multipath_pathfinder(
                 table_column=Column("Steps/s", min_width=8, no_wrap=True),
             ),
             TextColumn(
+                "{task.fields[best_ind]}",
+                table_column=Column("Best step", min_width=9, no_wrap=True),
+            ),
+            TextColumn(
                 "{task.fields[best_elbo]}",
                 table_column=Column("Best ELBO", min_width=12, no_wrap=True),
             ),
@@ -1642,6 +1636,7 @@ def multipath_pathfinder(
                     lbfgs_steps=0,
                     steps_per_sec="—",
                     best_elbo="—",
+                    best_ind="—",
                     current_elbo="—",
                     step_size="—",
                     total=None,
@@ -1659,6 +1654,13 @@ def multipath_pathfinder(
                             val = info["best_elbo"]
                             fields["best_elbo"] = (
                                 f"{val:.3f}" if val is not None and np.isfinite(float(val)) else "—"
+                            )
+                        if "best_ind" in info:
+                            val = info["best_ind"]
+                            fields["best_ind"] = (
+                                str(int(val))
+                                if val is not None and np.isfinite(float(val))
+                                else "—"
                             )
                         if "current_elbo" in info:
                             val = info["current_elbo"]
@@ -1679,14 +1681,15 @@ def multipath_pathfinder(
                             )
                         if fields:
                             progress.update(task_id, **fields)
+                        if info.get("status") in ("ok", "elbo@0"):
+                            progress.stop_task(task_id)
 
                     return cb
 
                 path_callbacks.append(_make_cb(tid))
 
             # concurrent="process" gives true parallelism via separate worker processes
-            # (matching PyMC's approach). concurrent="thread" uses threads but may serialize
-            # due to the Python GIL. concurrent=None is serial (useful for debugging).
+            # (matching PyMC's approach). concurrent=None is serial (useful for debugging).
             generator = make_generator(
                 concurrent=concurrent,
                 fn=single_pathfinder_fn,
@@ -1776,7 +1779,7 @@ def fit_pathfinder(
     epsilon: float = 1e-12,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
     progressbar: bool = True,
-    concurrent: Literal["process"] | None = None,
+    concurrent: Literal["process"] | None = "process",
     max_init_retries: int = 10,
     random_seed: RandomSeed | None = None,
     postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
@@ -1788,10 +1791,6 @@ def fit_pathfinder(
     add_pathfinder_groups: bool = True,
     display_summary: bool | Literal["auto"] = "auto",
     store_diagnostics: bool = False,
-    pathfinder_group: str = "pathfinder",
-    paths_group: str = "pathfinder_paths",
-    diagnostics_group: str = "pathfinder_diagnostics",
-    config_group: str = "pathfinder_config",
 ) -> az.InferenceData:
     """
     Fit the Pathfinder Variational Inference algorithm.
@@ -1845,9 +1844,6 @@ def fit_pathfinder(
         How to run paths: ``"process"`` (default) spawns separate worker processes for true
         parallelism, matching PyMC's approach for parallel chains.  Set to ``None`` for serial
         execution (useful for debugging).
-        ``"thread"`` is intentionally not offered: pytensor compiled functions share intermediate
-        op storage across ``Function.copy()`` instances, so concurrent thread calls corrupt each
-        other's in-flight state.  Processes have fully independent memory and are always safe.
     max_init_retries : int, optional
         Maximum number of re-jitter retries per path when the initial point fails (default is 10).
     pathfinder_kwargs
@@ -1867,13 +1863,7 @@ def fit_pathfinder(
     store_diagnostics : bool, optional
         Whether to include potentially large diagnostic arrays in the pathfinder groups (default is False).
     pathfinder_group : str, optional
-        Name for the main pathfinder results group (default is "pathfinder").
-    paths_group : str, optional
-        Name for the per-path results group (default is "pathfinder_paths").
-    diagnostics_group : str, optional
-        Name for the diagnostics group (default is "pathfinder_diagnostics").
-    config_group : str, optional
-        Name for the configuration group (default is "pathfinder_config").
+        Name for the main pathfinder results group (default is "sample_stats").
 
     Returns
     -------
@@ -1886,6 +1876,12 @@ def fit_pathfinder(
     """
 
     model = modelcontext(model)
+    if concurrent is not None and concurrent != "process":
+        raise ValueError(
+            f"concurrent must be 'process' or None, got {concurrent!r}. "
+            "Thread-based parallelism is not supported: PyTensor compiled functions "
+            "share internal storage and would corrupt each other's state."
+        )
 
     if initvals is not None:
         model = pm.model.fgraph.clone_model(model)  # Create a clone of the model
@@ -1990,10 +1986,6 @@ def fit_pathfinder(
                 idata=idata,
                 result=mp_result,
                 model=model,
-                group=pathfinder_group,
-                paths_group=paths_group,
-                diagnostics_group=diagnostics_group,
-                config_group=config_group,
                 store_diagnostics=store_diagnostics,
             )
         else:
