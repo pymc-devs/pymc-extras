@@ -1068,30 +1068,9 @@ def _process(
     return cloudpickle.dumps(result) if in_out_pickled else result
 
 
-def _get_mp_context(mp_ctx: str | None = None) -> str | None:
-    """code snippet taken from ParallelSampler in pymc/pymc/sampling/parallel.py"""
-    import multiprocessing
-    import platform
-
-    if mp_ctx is None or isinstance(mp_ctx, str):
-        if mp_ctx is None and platform.system() == "Darwin":
-            if platform.processor() == "arm":
-                mp_ctx = "fork"
-                logger.debug(
-                    "mp_ctx is set to 'fork' for MacOS with ARM architecture. "
-                    + "This might cause unexpected behavior with JAX, which is inherently multithreaded."
-                )
-            else:
-                mp_ctx = "forkserver"
-
-        mp_ctx = multiprocessing.get_context(mp_ctx)
-    return mp_ctx
-
-
 def _execute_concurrently(
     fn: SinglePathfinderFn,
     seeds: list[int],
-    concurrent: Literal["process"],
     max_workers: int | None = None,
     progress_callbacks: list[Callable | None] | None = None,
 ) -> Iterator["PathfinderResult | bytes"]:
@@ -1109,10 +1088,14 @@ def _execute_concurrently(
     # Use a Manager Queue (proxy-based, always picklable regardless of start method)
     # to relay (idx, info) messages from workers back to the main process, where a
     # listener thread forwards them to the real per-path callbacks.
-    import multiprocessing
+    # Use PyMC's context (fork/forkserver on Darwin) for both Manager and Executor
+    # to avoid spawn bootstrap issues when running scripts directly.
     import threading
 
-    mp_manager = multiprocessing.Manager()
+    from pymc.sampling.parallel import _initialize_multiprocessing_context
+
+    mp_ctx = _initialize_multiprocessing_context(None, quiet=True)
+    mp_manager = mp_ctx.Manager()
     try:
         mp_queue = mp_manager.Queue()
         process_callbacks = [_QueueCallback(mp_queue, i) for i in range(len(seeds))]
@@ -1133,9 +1116,7 @@ def _execute_concurrently(
         listener = threading.Thread(target=_listener, daemon=True)
         listener.start()
         try:
-            with ProcessPoolExecutor(
-                max_workers=max_workers, mp_context=_get_mp_context()
-            ) as executor:
+            with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp_ctx) as executor:
                 futures = [
                     executor.submit(_process, fn, seed, cb)
                     for seed, cb in zip(seeds, process_callbacks)
@@ -1174,7 +1155,7 @@ def make_generator(
     generator for executing pathfinder runs concurrently or serially.
     """
     if concurrent is not None:
-        yield from _execute_concurrently(fn, seeds, concurrent, max_workers, progress_callbacks)
+        yield from _execute_concurrently(fn, seeds, max_workers, progress_callbacks)
     else:
         yield from _execute_serially(fn, seeds, progress_callbacks)
 
