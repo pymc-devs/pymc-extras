@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import copy
 import typing
+import warnings
 
 from collections.abc import Callable
 from functools import partial
@@ -493,6 +494,39 @@ def sample_prior(
     ).prior
 
 
+def _param_value_with_dims(param, value, dims: Dims | None):
+    """Infer parameter dims positionally.
+
+    This is a transition helper to guide users into defining DataArray parameters explicitly.
+    """
+    if hasattr(value, "dims"):
+        return value
+
+    if isinstance(value, list | tuple | Number):
+        value = np.asarray(value)
+
+    if value.ndim > 0:
+        if dims is None:
+            raise ValueError(
+                f"Cannot infer dims of array-like parameter {param}. Use DataArray with explicit dims"
+            )
+        else:
+            parameter_dims = dims[::-1][: value.ndim]
+            warnings.warn(
+                f"Implicit conversion of array-like parameter {param} to DataArray with dims {parameter_dims}. "
+                "Use DataArray with explicit dims to avoid this warning",
+                stacklevel=2,
+            )
+            if isinstance(value, Variable):
+                from pytensor.xtensor import as_xtensor
+
+                value = as_xtensor(value, dims=parameter_dims)
+            else:
+                value = DataArray(value, dims=parameter_dims)
+
+    return value
+
+
 class Prior:
     """A class to represent a prior distribution.
 
@@ -777,7 +811,10 @@ class Prior:
 
     def _create_parameter(self, param, value, name, xdist: bool = False):
         if not hasattr(value, "create_variable"):
-            return value
+            if xdist:
+                return _param_value_with_dims(param, value, dims=self.dims)
+            else:
+                return value
 
         child_name = f"{name}_{param}"
         if xdist:
@@ -803,7 +840,10 @@ class Prior:
         def handle_variable(var_name: str):
             parameter = self.parameters[var_name]
             if not hasattr(parameter, "create_variable"):
-                return parameter
+                if xdist:
+                    return _param_value_with_dims(var_name, parameter, dims=self.dims)
+                else:
+                    return parameter
 
             if xdist:
                 return parameter.create_variable(f"{name}_{var_name}", xdist=True)
