@@ -89,18 +89,19 @@ import typing
 from collections.abc import Callable
 from functools import partial
 from inspect import signature
+from numbers import Number
 from typing import Any, Protocol, TypeAlias, runtime_checkable
 
 import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
-import xarray as xr
 
 from pydantic import InstanceOf, validate_call
 from pydantic.dataclasses import dataclass
 from pymc.distributions.shape_utils import Dims
 from pytensor.graph import Variable
 from pytensor.tensor import TensorVariable
+from xarray import DataArray, Dataset
 
 from pymc_extras.deserialize import deserialize, register_deserialization
 
@@ -109,7 +110,6 @@ if typing.TYPE_CHECKING:
     from pymc.dims import DimDistribution
     from pytensor.tensor import TensorLike
     from pytensor.xtensor.type import XTensorVariable
-    from xarray import DataArray
 
     XTensorLike: TypeAlias = TensorLike | DataArray
 
@@ -404,7 +404,7 @@ def sample_prior(
     wrap: bool = False,
     xdist: bool = False,
     **sample_prior_predictive_kwargs,
-) -> xr.Dataset:
+) -> Dataset:
     """Sample the prior for an arbitrary VariableFactory.
 
     Parameters
@@ -425,7 +425,7 @@ def sample_prior(
 
     Returns
     -------
-    xr.Dataset
+    Dataset
         The dataset of the prior samples.
 
     Example
@@ -709,7 +709,7 @@ class Prior:
             int,
             float,
             np.ndarray,
-            xr.DataArray,
+            DataArray,
             VariableFactory,
         )
 
@@ -999,7 +999,7 @@ class Prior:
 
                     # Avoid XTensor import warnings, remove this when the warnings are gone
                     elif value.type.__class__.__name__.startswith("XTensor"):
-                        value = xr.DataArray(value.eval(), dims=value.type.dims)
+                        value = DataArray(value.eval(), dims=value.type.dims)
 
                     else:
                         raise ValueError(
@@ -1009,7 +1009,7 @@ class Prior:
                 if isinstance(value, np.ndarray):
                     return value.tolist()
 
-                if isinstance(value, xr.DataArray):
+                if isinstance(value, DataArray):
                     return {
                         "class": "DataArray",
                         "data": value.data.tolist(),
@@ -1165,10 +1165,19 @@ class Prior:
         if not isinstance(other, Prior):
             return False
 
-        try:
-            np.testing.assert_equal(self.parameters, other.parameters)
-        except AssertionError:
+        if set(self.parameters) != set(other.parameters):
             return False
+
+        for key, value in self.parameters.items():
+            other_value = other.parameters[key]
+            if isinstance(value, np.ndarray | tuple | list | Number):
+                if not np.array_equal(value, other_value):
+                    return False
+            elif isinstance(value, DataArray):
+                if not value.equals(other_value):
+                    return False
+            elif not value == other_value:
+                return False
 
         return (
             self.distribution == other.distribution
@@ -1183,7 +1192,7 @@ class Prior:
         name: str = "variable",
         xdist: bool = False,
         **sample_prior_predictive_kwargs,
-    ) -> xr.Dataset:
+    ) -> Dataset:
         """Sample the prior distribution for the variable.
 
         Parameters
@@ -1198,7 +1207,7 @@ class Prior:
 
         Returns
         -------
-        xr.Dataset
+        Dataset
             The dataset of the prior samples.
 
         Example
@@ -1460,7 +1469,7 @@ class Censored:
         name: str = "variable",
         xdist: bool = False,
         **sample_prior_predictive_kwargs,
-    ) -> xr.Dataset:
+    ) -> Dataset:
         """Sample the prior distribution for the variable.
 
         Parameters
@@ -1475,7 +1484,7 @@ class Censored:
 
         Returns
         -------
-        xr.Dataset
+        Dataset
             The dataset of the prior samples.
 
         Example
@@ -1665,7 +1674,7 @@ def _is_data_array_type(data: dict) -> bool:
 
 register_deserialization(is_type=_is_prior_type, deserialize=Prior.from_dict)
 register_deserialization(is_type=_is_censored_type, deserialize=Censored.from_dict)
-register_deserialization(is_type=_is_data_array_type, deserialize=xr.DataArray.from_dict)
+register_deserialization(is_type=_is_data_array_type, deserialize=DataArray.from_dict)
 
 
 def __getattr__(name: str):
