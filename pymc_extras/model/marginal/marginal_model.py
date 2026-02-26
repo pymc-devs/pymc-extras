@@ -296,7 +296,9 @@ def unmarginalize(model: Model, rvs_to_unmarginalize: str | Sequence[str] | None
     # Re-marginalize the variables we want to keep marginalized
     if not isinstance(rvs_to_unmarginalize, list | tuple):
         rvs_to_unmarginalize = (rvs_to_unmarginalize,)
-    rvs_to_unmarginalize = set(rvs_to_unmarginalize)
+    rvs_to_unmarginalize = set(
+        rv if isinstance(rv, str) else rv.name for rv in rvs_to_unmarginalize
+    )
 
     old_free_rv_names = set(rv.name for rv in model.free_RVs)
     new_free_rv_names = set(
