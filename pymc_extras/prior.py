@@ -87,7 +87,7 @@ import copy
 import typing
 import warnings
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from inspect import signature
 from numbers import Number
@@ -494,7 +494,7 @@ def sample_prior(
     ).prior
 
 
-def _param_value_with_dims(param, value, dims: Dims | None):
+def _param_value_with_dims(param: str, value, dims: Dims | None):
     """Infer parameter dims positionally.
 
     This is a transition helper to guide users into defining DataArray parameters explicitly.
@@ -650,6 +650,7 @@ class Prior:
         dims: Dims | None = None,
         centered: bool = True,
         transform: str | None = None,
+        core_dims: Sequence[str] | str | None = (),
         **parameters,
     ) -> None:
         self.distribution = distribution
@@ -657,6 +658,13 @@ class Prior:
         self.dims = dims
         self.centered = centered
         self.transform = transform
+        if core_dims is None:
+            core_dims = ()
+        elif isinstance(core_dims, str):
+            core_dims = (core_dims,)
+        else:
+            core_dims = tuple(core_dims)
+        self.core_dims = core_dims
 
         self._checks()
 
@@ -799,11 +807,11 @@ class Prior:
         """Return a string representation of the prior."""
         param_str = ", ".join([f"{param}={value}" for param, value in self.parameters.items()])
         param_str = "" if not param_str else f", {param_str}"
-
+        core_dims = f", core_dims={self.core_dims}" if self.core_dims else ""
         dim_str = f", dims={_dims_to_str(self.dims)}" if self.dims is not None else ""
         centered_str = f", centered={self.centered}" if not self.centered else ""
         transform_str = f', transform="{self.transform}"' if self.transform else ""
-        return f'Prior("{self.distribution}"{param_str}{dim_str}{centered_str}{transform_str})'
+        return f'Prior("{self.distribution}"{param_str}{core_dims}{dim_str}{centered_str}{transform_str})'
 
     def __repr__(self) -> str:
         """Return a string representation of the prior."""
@@ -829,10 +837,12 @@ class Prior:
         }
         if xdist:
             pymc_distribution = _get_pymc_dim_distribution(self.distribution)
+            core_dims_kwargs = {"core_dims": self.core_dims}
         else:
             pymc_distribution = self.pymc_distribution
+            core_dims_kwargs = {}
 
-        return pymc_distribution(name, **parameters, dims=self.dims)
+        return pymc_distribution(name, **parameters, **core_dims_kwargs, dims=self.dims)
 
     def _create_non_centered_variable(
         self, name: str, xdist: bool = False
@@ -861,14 +871,17 @@ class Prior:
         }
         if xdist:
             pymc_distribution = _get_pymc_dim_distribution(self.distribution)
+            core_dims_kwargs = {"core_dims": self.core_dims}
         else:
             pymc_distribution = self.pymc_distribution
+            core_dims_kwargs = {}
 
         offset = pymc_distribution(
             f"{name}_offset",
             **defaults,
             **other_parameters,
             dims=self.dims,
+            **core_dims_kwargs,
         )
 
         if "mu" in self.parameters:
@@ -1224,6 +1237,7 @@ class Prior:
             and self.dims == other.dims
             and self.centered == other.centered
             and self.transform == other.transform
+            and self.core_dims == other.core_dims
         )
 
     def sample_prior(
