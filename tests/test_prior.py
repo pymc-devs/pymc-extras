@@ -2,6 +2,7 @@ from copy import deepcopy
 
 import numpy as np
 import pymc as pm
+import pytensor
 import pytensor.tensor as pt
 import pytest
 import xarray as xr
@@ -1349,3 +1350,21 @@ class TestXDist:
 
             with pytest.raises(ValueError, match="Cannot infer dims"):
                 p_wo_dims.create_variable("v", xdist=True)
+
+    def test_core_dims(self):
+        from pymc.dims import ZeroSumNormal
+
+        coords = {"country": range(3), "city": range(4)}
+
+        prior = Prior("ZeroSumNormal", sigma=np.pi, core_dims=("city",), dims=("country", "city"))
+        with pm.Model(coords=coords) as m:
+            prior.create_variable("x", xdist=True)
+
+        with pm.Model(coords=coords) as ref_m:
+            ZeroSumNormal("x", sigma=np.pi, core_dims=("city",), dims=("country", "city"))
+
+        # This fails because SymbolicRandomVariable (which ZeroSumNormal is), doesn't have `__eq__` implemented
+        # assert equivalent_models(m, ref_m)
+        ip = m.initial_point()
+        with pytensor.config.change_flags(mode="FAST_COMPILE"):
+            assert m.compile_logp()(ip) == ref_m.compile_logp()(ip)
