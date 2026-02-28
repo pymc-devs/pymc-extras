@@ -34,13 +34,14 @@ from pymc.blocking import DictToArrayBijection
 from pymc.initial_point import make_initial_point_fn
 from pymc.model.core import Point
 from pytensor.compile.mode import Mode
+from pytensor.tensor.optimize import LRUCache1
 
-from pymc_extras.inference.pathfinder.lbfgs import LBFGSStatus, _CachedValueGrad
+from pymc_extras.inference.pathfinder.lbfgs import LBFGSStatus
 from pymc_extras.inference.pathfinder.pathfinder import (
     DEFAULT_LINKER,
     FAILED_PATH_STATUS,
     LBFGSStreamingCallback,
-    get_logp_dlogp_of_ravel_inputs,
+    get_neg_logp_dlogp_of_ravel_inputs,
     make_pathfinder_sample_fn,
     make_single_pathfinder_fn,
 )
@@ -84,19 +85,16 @@ def _run_callback_replay(
     model: pm.Model,
     x_full: np.ndarray,
     seed: int = ELBO_SEED,
+    vectorize: bool = False,
 ) -> np.ndarray:
     """Replay x_full through LBFGSStreamingCallback (full stack: alpha, s, z computed internally)."""
-    logp_dlogp = get_logp_dlogp_of_ravel_inputs(model, jacobian=True, **COMPILE_KWARGS)
-
-    def neg_logp_dlogp_func(x):
-        logp, dlogp = logp_dlogp(x)
-        return -logp, -dlogp
+    neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True, **COMPILE_KWARGS)
 
     N = x_full.shape[1]
     sample_logp_fn = make_pathfinder_sample_fn(
-        model, N, MAXCOR, jacobian=True, compile_kwargs=COMPILE_KWARGS
+        model, N, MAXCOR, jacobian=True, compile_kwargs=COMPILE_KWARGS, vectorize=vectorize
     )
-    cached_fn = _CachedValueGrad(neg_logp_dlogp_func)
+    cached_fn = LRUCache1(neg_logp_dlogp, copy_x=True)
     rng = np.random.default_rng(seed)
 
     elbo_history = []
@@ -127,7 +125,7 @@ def _run_callback_replay(
     return np.array(elbo_history)
 
 
-def _make_single_fn(model, maxiter: int = MAXITER, maxcor: int = MAXCOR):
+def _make_single_fn(model, maxiter: int = MAXITER, maxcor: int = MAXCOR, vectorize: bool = False):
     return make_single_pathfinder_fn(
         model=model,
         num_draws=NUM_DRAWS,
@@ -140,21 +138,8 @@ def _make_single_fn(model, maxiter: int = MAXITER, maxcor: int = MAXCOR):
         jitter=JITTER,
         epsilon=1e-8,
         compile_kwargs=COMPILE_KWARGS,
+        pathfinder_kwargs={"vectorize": vectorize},
     )
-
-
-def _run_path(fn, seed: int = 42):
-    return fn(seed)
-
-
-def _build_logp_and_neg(model, compile_kwargs=COMPILE_KWARGS):
-    logp_dlogp = get_logp_dlogp_of_ravel_inputs(model, jacobian=True, **compile_kwargs)
-
-    def neg_logp_dlogp_func(x):
-        v, dv = logp_dlogp(x)
-        return -v, -dv
-
-    return None, neg_logp_dlogp_func
 
 
 def _make_lbfgs_mock(x_full):
@@ -182,14 +167,15 @@ def _make_lbfgs_mock(x_full):
 # ---------------------------------------------------------------------------
 
 
-def test_elbo_call_count():
+@pytest.mark.parametrize("vectorize", [False, True])
+def test_elbo_call_count(vectorize):
     """sample_logp_fn is called exactly once per accepted LBFGS step."""
     model = make_ard_regression()
-    _, neg_logp_dlogp_func = _build_logp_and_neg(model)
+    neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True, **COMPILE_KWARGS)
     N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
 
     sample_logp_fn = make_pathfinder_sample_fn(
-        model, N, MAXCOR, jacobian=True, compile_kwargs=COMPILE_KWARGS
+        model, N, MAXCOR, jacobian=True, compile_kwargs=COMPILE_KWARGS, vectorize=vectorize
     )
 
     call_count = [0]
@@ -204,7 +190,7 @@ def test_elbo_call_count():
     rng = np.random.default_rng(0)
     x0 = x_base + rng.uniform(-JITTER, JITTER, size=x_base.shape)
 
-    cached_fn = _CachedValueGrad(neg_logp_dlogp_func)
+    cached_fn = LRUCache1(neg_logp_dlogp, copy_x=True)
     cb = LBFGSStreamingCallback(
         value_grad_fn=cached_fn,
         x0=x0,
@@ -231,13 +217,14 @@ def test_elbo_call_count():
 
 
 @pytest.mark.parametrize("model_name", ["ard_regression", "hd_gaussian"])
-def test_rng_reproducibility(model_name):
+@pytest.mark.parametrize("vectorize", [False, True])
+def test_rng_reproducibility(model_name, vectorize):
     """Two streaming runs with the same seed produce bit-identical results."""
     model = MODEL_FACTORIES[model_name]()
-    fn = _make_single_fn(model)
+    fn = _make_single_fn(model, vectorize=vectorize)
 
-    r1 = _run_path(fn, seed=123)
-    r2 = _run_path(fn, seed=123)
+    r1 = fn(123)
+    r2 = fn(123)
 
     assert r1.path_status not in FAILED_PATH_STATUS
     assert r2.path_status not in FAILED_PATH_STATUS
@@ -249,7 +236,8 @@ def test_rng_reproducibility(model_name):
 
 
 @pytest.mark.parametrize("model_name", list(MODEL_FACTORIES.keys()))
-def test_fixture_match(model_name):
+@pytest.mark.parametrize("vectorize", [False, True])
+def test_fixture_match(model_name, vectorize):
     """Streaming path selects an ELBO argmax consistent with the fixture.
 
     LBFGS is mocked so the streaming path processes the exact same trajectory
@@ -263,8 +251,8 @@ def test_fixture_match(model_name):
     N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
 
     with _make_lbfgs_mock(x_full):
-        fn = _make_single_fn(model)
-        result = _run_path(fn, seed=42)
+        fn = _make_single_fn(model, vectorize=vectorize)
+        result = fn(42)
 
     tag = f"[{model_name}]"
 
@@ -343,11 +331,12 @@ def _check_statistical_equivalence(
 
 
 @pytest.mark.parametrize("model_name", list(MODEL_FACTORIES.keys()))
-def test_elbo_statistical_equivalence(model_name):
+@pytest.mark.parametrize("vectorize", [False, True])
+def test_elbo_statistical_equivalence(model_name, vectorize):
     """Full-stack: LBFGSStreamingCallback computes alpha/s/z internally; ELBO matches reference."""
     x_full, g_full, elbo_ref = _load_fixture(model_name)
     model = MODEL_FACTORIES[model_name]()
-    elbo = _run_callback_replay(model, x_full)
+    elbo = _run_callback_replay(model, x_full, vectorize=vectorize)
     assert (
         elbo.shape == elbo_ref.shape
     ), f"[{model_name}] shape mismatch: {elbo.shape} vs {elbo_ref.shape}"
@@ -355,10 +344,11 @@ def test_elbo_statistical_equivalence(model_name):
 
 
 @pytest.mark.parametrize("model_name", list(MODEL_FACTORIES.keys()))
-def test_elbo_statistical_equivalence_different_seed(model_name):
+@pytest.mark.parametrize("vectorize", [False, True])
+def test_elbo_statistical_equivalence_different_seed(model_name, vectorize):
     """Verify tolerances are meaningful by using a different ELBO seed."""
     x_full, _, elbo_ref = _load_fixture(model_name)
     model = MODEL_FACTORIES[model_name]()
-    elbo = _run_callback_replay(model, x_full, seed=ELBO_SEED + 9999)
+    elbo = _run_callback_replay(model, x_full, seed=ELBO_SEED + 9999, vectorize=vectorize)
     assert elbo.shape == elbo_ref.shape
     _check_statistical_equivalence(model_name, elbo, elbo_ref)

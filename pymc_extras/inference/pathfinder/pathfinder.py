@@ -15,6 +15,7 @@
 
 import collections
 import logging
+import multiprocessing as mp
 import time
 import warnings
 
@@ -50,12 +51,12 @@ from pytensor.compile.function.types import Function
 from pytensor.compile.mode import FAST_COMPILE, Mode
 from pytensor.graph import clone_replace, vectorize_graph
 from pytensor.tensor import TensorVariable
+from pytensor.tensor.optimize import LRUCache1
 from rich.console import Console, Group
 from rich.padding import Padding
 from rich.progress import TextColumn, TimeElapsedColumn
 from rich.table import Column, Table
 from rich.text import Text
-from threadpoolctl import threadpool_limits
 
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 from pymc_extras.inference.pathfinder.importance_sampling import (
@@ -66,7 +67,6 @@ from pymc_extras.inference.pathfinder.lbfgs import (
     LBFGSException,
     LBFGSInitFailed,
     LBFGSStatus,
-    _CachedValueGrad,
     _check_lbfgs_curvature_condition,
 )
 
@@ -142,8 +142,22 @@ def get_logp_dlogp_of_ravel_inputs(
     return logp_dlogp_fn
 
 
-def get_batched_logp_of_ravel_inputs(
+def get_neg_logp_dlogp_of_ravel_inputs(
     model: Model, jacobian: bool = True, **compile_kwargs
+) -> Function:
+    """Compiled function (x,) -> (-logP, -dlogP) for L-BFGS minimization."""
+    (logP, dlogP), inputs = pm.pytensorf.join_nonshared_inputs(
+        model.initial_point(),
+        [model.logp(jacobian=jacobian), model.dlogp(jacobian=jacobian)],
+        model.value_vars,
+    )
+    neg_logp_dlogp_fn = compile([inputs], (-logP, -dlogP), **compile_kwargs)
+    neg_logp_dlogp_fn.trust_input = True
+    return neg_logp_dlogp_fn
+
+
+def get_batched_logp_of_ravel_inputs(
+    model: Model, jacobian: bool = True, vectorize: bool = False, **compile_kwargs
 ) -> Function:
     """Get a batched logP function: (B, N) -> (B,) evaluated in one compiled call.
 
@@ -153,6 +167,10 @@ def get_batched_logp_of_ravel_inputs(
         PyMC model.
     jacobian : bool, optional
         Whether to include the Jacobian, by default True.
+    vectorize : bool, optional
+        If True, use vectorize_graph instead of pytensor.map. Default False.
+        vectorize_graph may be faster for small models but may use more memory
+        for large parameter counts.
     **compile_kwargs : dict
         Additional keyword arguments to pass to compile.
 
@@ -167,14 +185,16 @@ def get_batched_logp_of_ravel_inputs(
         model.value_vars,
     )
     batch_input = pt.matrix("batch_input", dtype="float64")  # (B, N)
-    # pytensor.map loops over rows of batch_input one at a time; this avoids
-    # broadcasting large intermediate tensors (faster than vectorize_graph for
-    # models with many parameters) and handles ops like AdvancedSetSubtensor
-    # that vectorize_graph cannot process.
-    batched_logP, _ = pytensor.map(
-        fn=lambda x_i: clone_replace([logP], replace={single_input: x_i})[0],
-        sequences=[batch_input],
-    )
+    if vectorize:
+        batched_logP = vectorize_graph(logP, replace={single_input: batch_input})
+    else:
+        # pytensor.map loops over rows of batch_input one at a time; this avoids
+        # broadcasting large intermediate tensors (faster than vectorize_graph for
+        # models with many parameters).
+        batched_logP, _ = pytensor.map(
+            fn=lambda x_i: clone_replace([logP], replace={single_input: x_i})[0],
+            sequences=[batch_input],
+        )
     batched_fn = compile([batch_input], batched_logP, **compile_kwargs)
     batched_fn.trust_input = True
     return batched_fn
@@ -444,6 +464,7 @@ def make_pathfinder_sample_fn(
     J: int,
     jacobian: bool,
     compile_kwargs: dict,
+    vectorize: bool = False,
 ) -> Function:
     """Compile a single PyTensor function covering bfgs sample + batched logP evaluation.
 
@@ -460,6 +481,8 @@ def make_pathfinder_sample_fn(
     J : int, L-BFGS history size (maxcor)
     jacobian : bool
     compile_kwargs : dict
+    vectorize : bool, optional
+        If True, use vectorize_graph instead of pytensor.map. Default False.
 
     Returns
     -------
@@ -482,11 +505,14 @@ def make_pathfinder_sample_fn(
 
     phi_sym, logQ_sym = _bfgs_sample_pt(x_sym, g_sym, alpha_sym, s_win_sym, z_win_sym, u_sym, J, N)
 
-    batched_logP_sym = pytensor.map(
-        fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
-        sequences=[phi_sym],
-        return_updates=False,
-    )
+    if vectorize:
+        batched_logP_sym = vectorize_graph(logP_single, replace={single_input: phi_sym})
+    else:
+        batched_logP_sym = pytensor.map(
+            fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
+            sequences=[phi_sym],
+            return_updates=False,
+        )
 
     fn = pytensor.function(
         [
@@ -510,6 +536,7 @@ def make_elbo_from_state_fn(
     J: int,
     jacobian: bool,
     compile_kwargs: dict,
+    vectorize: bool = False,
 ) -> Function:
     """Compiled (x, g, alpha, S, Z, u) → (phi, logQ, logP) for fixture/tests.
 
@@ -527,11 +554,14 @@ def make_elbo_from_state_fn(
     Z_sym = pt.matrix("Z", dtype="float64")
     u_sym = pt.matrix("u", dtype="float64")
     phi_sym, logQ_sym = _bfgs_sample_pt(x_sym, g_sym, alpha_sym, S_sym, Z_sym, u_sym, J, N)
-    batched_logP_sym = pytensor.map(
-        fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
-        sequences=[phi_sym],
-        return_updates=False,
-    )
+    if vectorize:
+        batched_logP_sym = vectorize_graph(logP_single, replace={single_input: phi_sym})
+    else:
+        batched_logP_sym = pytensor.map(
+            fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
+            sequences=[phi_sym],
+            return_updates=False,
+        )
     fn = pytensor.function(
         [
             pytensor.In(x_sym, borrow=True),
@@ -626,7 +656,7 @@ class LBFGSStreamingCallback:
     Parameters
     ----------
     value_grad_fn : Callable
-        Single-entry cached value/gradient function (wrap with _CachedValueGrad).
+        Single-entry cached value/gradient function (e.g. LRUCache1 from pytensor.tensor.optimize).
     x0 : NDArray
         Initial position, shape (N,).
     sample_logp_fn : Callable
@@ -817,7 +847,10 @@ def make_single_pathfinder_fn(
         point yields non-finite value/gradient or the first step is rejected). Each retry uses
         a different jitter seed. Defaults to 10.
     pathfinder_kwargs : dict
-        Additional keyword arguments for the Pathfinder algorithm.
+        Additional keyword arguments for the Pathfinder algorithm. Supported keys:
+        ``jacobian`` (bool, default True), ``vectorize`` (bool, default False).
+        If ``vectorize`` is True, use vectorize_graph instead of pytensor.map for
+        batched logP evaluation; may be faster for small models.
     compile_kwargs : dict
         Additional keyword arguments for the PyTensor compiler. If not provided, a
         performant default is used.
@@ -830,13 +863,10 @@ def make_single_pathfinder_fn(
 
     compile_kwargs = {"mode": Mode(linker=DEFAULT_LINKER), **compile_kwargs}
     jacobian = pathfinder_kwargs.get("jacobian", True)
+    vectorize = pathfinder_kwargs.get("vectorize", False)
     logp_dlogp_kwargs = {"jacobian": jacobian, **compile_kwargs}
 
-    logp_dlogp_func = get_logp_dlogp_of_ravel_inputs(model, **logp_dlogp_kwargs)
-
-    def neg_logp_dlogp_func(x):
-        logp, dlogp = logp_dlogp_func(x)
-        return -logp, -dlogp
+    neg_logp_dlogp_func = get_neg_logp_dlogp_of_ravel_inputs(model, **logp_dlogp_kwargs)
 
     # initial point
     # TODO: remove make_initial_points function when feature request is implemented: https://github.com/pymc-devs/pymc/issues/7555
@@ -846,7 +876,7 @@ def make_single_pathfinder_fn(
     N = x_base.shape[0]
 
     sample_logp_func = make_pathfinder_sample_fn(
-        model, N, maxcor, jacobian=jacobian, compile_kwargs=compile_kwargs
+        model, N, maxcor, jacobian=jacobian, compile_kwargs=compile_kwargs, vectorize=vectorize
     )
 
     def _check_lbfgs_status(status):
@@ -876,13 +906,10 @@ def make_single_pathfinder_fn(
             progress_callback({"status": "running"})
 
         # Per-path independent copies of compiled functions for process safety.
-        local_logp_dlogp = logp_dlogp_func.copy(share_memory=False)
+        local_neg_logp_dlogp = neg_logp_dlogp_func.copy(share_memory=False)
+        cached_fn = LRUCache1(local_neg_logp_dlogp, copy_x=True)
 
-        def local_neg_logp_dlogp_func(x):
-            logp, dlogp = local_logp_dlogp(x)
-            return -logp, -dlogp
-
-        local_lbfgs = LBFGS(local_neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
+        local_lbfgs = LBFGS(cached_fn, maxcor, maxiter, ftol, gtol, maxls, epsilon)
 
         local_sample_logp = sample_logp_func.copy(share_memory=False)
 
@@ -902,8 +929,8 @@ def make_single_pathfinder_fn(
                     # Fresh NumPy RNG each attempt → reproducible regardless
                     # of how many ELBO steps the previous attempt took.
                     elbo_rng = np.random.default_rng(elbo_seed + attempt)
+                    cached_fn.clear_cache()
 
-                    cached_fn = _CachedValueGrad(local_neg_logp_dlogp_func)
                     streaming_cb = LBFGSStreamingCallback(
                         value_grad_fn=cached_fn,
                         x0=x0,
@@ -915,8 +942,7 @@ def make_single_pathfinder_fn(
                         progress_callback=progress_callback,
                     )
 
-                    with threadpool_limits(limits=1):
-                        lbfgs_niter, lbfgs_status = local_lbfgs.minimize_streaming(streaming_cb, x0)
+                    lbfgs_niter, lbfgs_status = local_lbfgs.minimize_streaming(streaming_cb, x0)
                     _check_lbfgs_status(lbfgs_status)
 
                     if lbfgs_niter < 2:
@@ -934,15 +960,15 @@ def make_single_pathfinder_fn(
                         progress_callback(
                             {"status": "sampling", "current_elbo": None, "step_size": None}
                         )
-                    with threadpool_limits(limits=1):
-                        phi_final, logQ_psi_flat, logP_psi_flat = local_sample_logp(
-                            best_state["x"],
-                            best_state["g"],
-                            best_state["alpha"],
-                            best_state["s_win"],
-                            best_state["z_win"],
-                            u_final,
-                        )
+
+                    phi_final, logQ_psi_flat, logP_psi_flat = local_sample_logp(
+                        best_state["x"],
+                        best_state["g"],
+                        best_state["alpha"],
+                        best_state["s_win"],
+                        best_state["z_win"],
+                        u_final,
+                    )
                     phi_final = np.asarray(phi_final)
                     logQ_psi_flat = np.asarray(logQ_psi_flat)
                     logP_psi_flat = np.asarray(logP_psi_flat)
@@ -1073,6 +1099,7 @@ def _execute_concurrently(
     seeds: list[int],
     max_workers: int | None = None,
     progress_callbacks: list[Callable | None] | None = None,
+    mp_ctx: mp.context.BaseContext | str | None = None,
 ) -> Iterator["PathfinderResult | bytes"]:
     """
     execute pathfinder runs concurrently via multiprocessing.
@@ -1094,7 +1121,7 @@ def _execute_concurrently(
 
     from pymc.sampling.parallel import _initialize_multiprocessing_context
 
-    mp_ctx = _initialize_multiprocessing_context(None, quiet=True)
+    mp_ctx = _initialize_multiprocessing_context(mp_ctx, quiet=True)
     mp_manager = mp_ctx.Manager()
     try:
         mp_queue = mp_manager.Queue()
@@ -1150,12 +1177,13 @@ def make_generator(
     seeds: list[int],
     max_workers: int | None = None,
     progress_callbacks: list[Callable | None] | None = None,
+    mp_ctx: mp.context.BaseContext | str | None = None,
 ) -> Iterator["PathfinderResult | bytes"]:
     """
     generator for executing pathfinder runs concurrently or serially.
     """
     if concurrent is not None:
-        yield from _execute_concurrently(fn, seeds, max_workers, progress_callbacks)
+        yield from _execute_concurrently(fn, seeds, max_workers, progress_callbacks, mp_ctx)
     else:
         yield from _execute_serially(fn, seeds, progress_callbacks)
 
@@ -1472,6 +1500,7 @@ def multipath_pathfinder(
     importance_sampling: Literal["psis", "psir", "identity"] | None,
     progressbar: bool,
     concurrent: Literal["process"] | None = "process",
+    mp_ctx: mp.context.BaseContext | str | None = None,
     random_seed: RandomSeed = None,
     max_init_retries: int = 10,
     pathfinder_kwargs: dict[str, Any] = {},
@@ -1530,7 +1559,8 @@ def multipath_pathfinder(
     max_init_retries : int, optional
         Maximum number of re-jitter retries per path when LBFGSInitFailed is raised (default is 10).
     pathfinder_kwargs
-        Additional keyword arguments for the Pathfinder algorithm.
+        Additional keyword arguments for the Pathfinder algorithm. Supported keys:
+        ``jacobian`` (bool, default True), ``vectorize`` (bool, default False).
     compile_kwargs
         Additional keyword arguments for the PyTensor compiler. If not provided, a
         performant default is used.
@@ -1676,6 +1706,7 @@ def multipath_pathfinder(
                 fn=single_pathfinder_fn,
                 seeds=path_seeds,
                 progress_callbacks=path_callbacks,
+                mp_ctx=mp_ctx,
             )
 
             for result in generator:
@@ -1761,6 +1792,7 @@ def fit_pathfinder(
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
     progressbar: bool = True,
     concurrent: Literal["process"] | None = "process",
+    mp_ctx: mp.context.BaseContext | str | None = None,
     max_init_retries: int = 10,
     random_seed: RandomSeed | None = None,
     postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
@@ -1825,10 +1857,21 @@ def fit_pathfinder(
         How to run paths: ``"process"`` (default) spawns separate worker processes for true
         parallelism, matching PyMC's approach for parallel chains.  Set to ``None`` for serial
         execution (useful for debugging).
+    mp_ctx : str or multiprocessing.Context, optional
+        Multiprocessing context for parallel path execution (e.g. ``"spawn"``, ``"fork"``).
+        Passed to ProcessPoolExecutor when concurrent is ``"process"``.
     max_init_retries : int, optional
         Maximum number of re-jitter retries per path when the initial point fails (default is 10).
-    pathfinder_kwargs
-        Additional keyword arguments for the Pathfinder algorithm.
+    pathfinder_kwargs : dict, optional
+        Additional keyword arguments for the Pathfinder algorithm. Supported keys:
+
+        - ``jacobian`` (bool, default True): Whether to include the Jacobian
+          determinant in the log-probability computation. Setting to False is not
+          recommended and may result in very high Pareto k values.
+        - ``vectorize`` (bool, default False): If True, use ``vectorize_graph``
+          instead of ``pytensor.map`` for batched log-probability evaluation.
+          May be faster for small models but may use more memory for large
+          parameter counts.
     compile_kwargs
         Additional keyword arguments for the PyTensor compiler. If not provided, a
         performant default is used.
@@ -1907,6 +1950,7 @@ def fit_pathfinder(
             importance_sampling=importance_sampling,
             progressbar=progressbar,
             concurrent=concurrent,
+            mp_ctx=mp_ctx,
             max_init_retries=max_init_retries,
             random_seed=random_seed,
             pathfinder_kwargs=pathfinder_kwargs,

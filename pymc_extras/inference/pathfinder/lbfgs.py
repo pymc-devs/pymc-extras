@@ -1,6 +1,5 @@
 import logging
 
-from collections.abc import Callable
 from enum import Enum, auto
 
 import numpy as np
@@ -9,30 +8,6 @@ from numpy.typing import NDArray
 from scipy.optimize import minimize
 
 logger = logging.getLogger(__name__)
-
-
-class _CachedValueGrad:
-    """Single-entry cache for value/gradient evaluation.
-
-    SciPy L-BFGS-B evaluates the objective at ``x_k`` before invoking
-    ``callback(x_k)``.  Wrapping the objective in this cache means the
-    callback's ``value_grad_fn(x_k)`` call is a free hit rather than a
-    duplicate evaluation.
-    """
-
-    def __init__(self, fn: Callable) -> None:
-        self._fn = fn
-        self._last_x: NDArray | None = None
-        self._last_val: float | None = None
-        self._last_grad: NDArray | None = None
-
-    def __call__(self, x: NDArray) -> tuple[float, NDArray]:
-        if self._last_x is None or not np.array_equal(x, self._last_x):
-            val, grad = self._fn(x)
-            self._last_x = x.copy()
-            self._last_val = float(val)
-            self._last_grad = np.array(grad, dtype=np.float64)
-        return self._last_val, self._last_grad
 
 
 def _check_lbfgs_curvature_condition(s: NDArray, z: NDArray, epsilon: float) -> bool:
@@ -151,7 +126,7 @@ class LBFGS:
         it needs (e.g. ring buffers, best-ELBO tracking).
 
         ``callback.value_grad_fn`` is used as the scipy objective so that a
-        single-entry cache (e.g. :class:`_CachedValueGrad`) eliminates the
+        single-entry cache (e.g. :class:`pytensor.tensor.optimize.LRUCache1`) eliminates the
         duplicate evaluation that would otherwise occur on each accepted step.
 
         Parameters
@@ -159,8 +134,8 @@ class LBFGS:
         callback : object
             Must expose:
             - ``value_grad_fn``: callable ``(x) -> (value, grad)`` passed to scipy
-              as the objective.  Wrap with :class:`_CachedValueGrad` before
-              constructing the callback to avoid duplicate evaluations.
+              as the objective.  Wrap with :class:`pytensor.tensor.optimize.LRUCache1`
+              before constructing the callback to avoid duplicate evaluations.
             - ``step_count``: int, updated by ``__call__`` for each accepted step.
         x0 : array_like
             Initial position.

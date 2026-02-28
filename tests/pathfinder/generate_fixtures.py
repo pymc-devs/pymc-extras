@@ -31,12 +31,13 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from pytensor.tensor.optimize import LRUCache1
+
 from pymc_extras.inference.pathfinder.lbfgs import LBFGS, LBFGSStatus
 from pymc_extras.inference.pathfinder.pathfinder import (
     DEFAULT_LINKER,
     LBFGSStreamingCallback,
-    _CachedValueGrad,
-    get_logp_dlogp_of_ravel_inputs,
+    get_neg_logp_dlogp_of_ravel_inputs,
     make_pathfinder_sample_fn,
 )
 from tests.pathfinder.equivalence_models import MODEL_FACTORIES
@@ -58,11 +59,7 @@ def generate_fixture(name: str, model_fn) -> None:
     model = model_fn()
 
     compile_kwargs = {"mode": Mode(linker=DEFAULT_LINKER)}
-    logp_dlogp_func = get_logp_dlogp_of_ravel_inputs(model, jacobian=True, **compile_kwargs)
-
-    def neg_logp_dlogp_func(x):
-        logp, dlogp = logp_dlogp_func(x)
-        return -logp, -dlogp
+    neg_logp_dlogp_func = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True, **compile_kwargs)
 
     ipfn = make_initial_point_fn(model=model)
     ip = Point(ipfn(None), model=model)
@@ -86,9 +83,9 @@ def generate_fixture(name: str, model_fn) -> None:
     sample_logp_fn = make_pathfinder_sample_fn(
         model, N, MAXCOR, jacobian=True, compile_kwargs=compile_kwargs
     )
-    cached_fn = _CachedValueGrad(neg_logp_dlogp_func)
+    cached_fn = LRUCache1(neg_logp_dlogp_func, copy_x=True)
     rng_elbo = np.random.default_rng(ELBO_SEED)
-    lbfgs = LBFGS(neg_logp_dlogp_func, MAXCOR, MAXITER)
+    lbfgs = LBFGS(cached_fn, MAXCOR, MAXITER)
     cb = LBFGSStreamingCallback(
         value_grad_fn=cached_fn,
         x0=x0,

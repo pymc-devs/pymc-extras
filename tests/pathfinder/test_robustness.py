@@ -11,11 +11,11 @@ from pymc.blocking import DictToArrayBijection
 from pymc.initial_point import make_initial_point_fn
 from pymc.model.core import Point
 from pytensor.compile.mode import Mode
+from pytensor.tensor.optimize import LRUCache1
 
 from pymc_extras.inference.pathfinder.lbfgs import (
     LBFGSInitFailed,
     LBFGSStatus,
-    _CachedValueGrad,
 )
 from pymc_extras.inference.pathfinder.pathfinder import (
     DEFAULT_LINKER,
@@ -23,7 +23,7 @@ from pymc_extras.inference.pathfinder.pathfinder import (
     LBFGSStreamingCallback,
     PathInvalidLogP,
     PathStatus,
-    get_logp_dlogp_of_ravel_inputs,
+    get_neg_logp_dlogp_of_ravel_inputs,
     make_pathfinder_sample_fn,
     make_single_pathfinder_fn,
 )
@@ -59,20 +59,6 @@ def _make_single_fn(
         max_init_retries=max_init_retries,
         compile_kwargs=COMPILE_KWARGS,
     )
-
-
-def _run_path(fn, seed: int = 42):
-    return fn(seed)
-
-
-def _build_logp_and_neg(model, compile_kwargs=COMPILE_KWARGS):
-    logp_dlogp = get_logp_dlogp_of_ravel_inputs(model, jacobian=True, **compile_kwargs)
-
-    def neg_logp_dlogp_func(x):
-        v, dv = logp_dlogp(x)
-        return -v, -dv
-
-    return None, neg_logp_dlogp_func
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +177,7 @@ def test_short_history_fallback(model_name):
 
     for maxiter in (1, 2, 3):
         fn = _make_single_fn(model, maxiter=maxiter)
-        result = _run_path(fn, seed=99)
+        result = fn(99)
         assert result.path_status in list(PathStatus)
         if result.path_status not in FAILED_PATH_STATUS and result.samples is not None:
             N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
@@ -206,7 +192,7 @@ def test_short_history_fallback(model_name):
 def test_infinite_logp_step_tolerance():
     """A step where sample_logp_fn raises is silently skipped; path still succeeds."""
     model = make_ard_regression()
-    _, neg_logp_dlogp_func = _build_logp_and_neg(model)
+    neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True, **COMPILE_KWARGS)
     N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
 
     sample_logp_fn = make_pathfinder_sample_fn(
@@ -229,7 +215,7 @@ def test_infinite_logp_step_tolerance():
     rng = np.random.default_rng(77)
     x0 = x_base + rng.uniform(-JITTER, JITTER, size=x_base.shape)
 
-    cached_fn = _CachedValueGrad(neg_logp_dlogp_func)
+    cached_fn = LRUCache1(neg_logp_dlogp, copy_x=True)
     cb = LBFGSStreamingCallback(
         value_grad_fn=cached_fn,
         x0=x0,
