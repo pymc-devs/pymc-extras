@@ -14,6 +14,7 @@
 
 
 import collections
+import contextlib
 import logging
 import multiprocessing as mp
 import time
@@ -42,6 +43,8 @@ from pymc.model import modelcontext
 from pymc.model.core import Point
 from pymc.progress_bar import CustomProgress, default_progress_theme
 from pymc.pytensorf import compile
+from pymc.sampling.mcmc import setup_cores_blas_cores
+from pymc.sampling.parallel import _cpu_count, _initialize_multiprocessing_context
 from pymc.util import (
     RandomSeed,
     _get_seeds_per_chain,
@@ -57,6 +60,7 @@ from rich.padding import Padding
 from rich.progress import TextColumn, TimeElapsedColumn
 from rich.table import Column, Table
 from rich.text import Text
+from threadpoolctl import threadpool_limits
 
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 from pymc_extras.inference.pathfinder.importance_sampling import (
@@ -1036,103 +1040,110 @@ def make_single_pathfinder_fn(
     return single_pathfinder_fn
 
 
-def _calculate_max_workers(num_paths: int | None = None) -> int:
-    """
-    calculate the default number of workers to use for concurrent pathfinder runs.
-    """
-    import os
-
-    total_cpus = os.cpu_count() or 1
-    if num_paths is not None:
-        return min(num_paths, total_cpus)
-    # Legacy process-pool heuristic: 30% of CPUs, minimum 2, rounded to even
-    processes = max(2, int(total_cpus * 0.3))
-    if processes % 2 != 0:
-        processes += 1
-    return processes
+def _default_cores(num_paths: int, cores: int | None) -> int:
+    """Default cores for parallel pathfinder, mirroring pm.sample."""
+    if cores is not None:
+        return min(cores, num_paths)
+    return min(4, _cpu_count(), num_paths)
 
 
-class _QueueCallback:
-    """Picklable progress callback that relays updates through a multiprocessing.Queue.
+class _PipeCallback:
+    """Picklable progress callback that relays updates through a multiprocessing Pipe."""
 
-    Worker processes cannot call Rich progress functions directly (they live in the
-    main process). This class is picklable and sends ``(idx, info)`` tuples to a
-    shared queue; a listener thread in the main process forwards them to the real
-    per-path callbacks.
-    """
-
-    def __init__(self, queue: Any, idx: int) -> None:
-        self.queue = queue
+    def __init__(self, conn: Any, idx: int) -> None:
+        self.conn = conn
         self.idx = idx
 
     def __call__(self, info: dict) -> None:
         try:
-            self.queue.put_nowait((self.idx, info))
+            self.conn.send((self.idx, info))
         except Exception:
             pass
 
 
-def _process(
-    fn: SinglePathfinderFn, seed: int, progress_callback: Callable | None = None
-) -> "PathfinderResult | bytes":
-    """
-    execute pathfinder runs concurrently using multiprocessing.
-    """
+def _run_path(
+    fn_pickled: bytes,
+    seed: int,
+    path_id: int,
+    progress_conn: Any,
+    blas_cores: int | None,
+    mp_start_method: str,
+) -> "PathfinderResult":
+    """Worker: unpickle fn, run with threadpool_limits when blas_cores set (non-fork)."""
     import cloudpickle
 
     from pytensor.compile.compilelock import lock_ctx
 
-    in_out_pickled = isinstance(fn, bytes)
-    # lock_ctx only guards cache access during unpickling, not computation.
-    # Use timeout=-1 (wait indefinitely) so workers don't race to timeout when
-    # many paths start simultaneously and each unpickling takes a moment.
-    with lock_ctx(timeout=-1):
-        actual_fn = cloudpickle.loads(fn) if in_out_pickled else fn
-
-    rng = np.random.default_rng(seed)
-    result = actual_fn(rng, progress_callback)
-    return cloudpickle.dumps(result) if in_out_pickled else result
+    ctx = (
+        threadpool_limits(limits=blas_cores)
+        if mp_start_method != "fork" and blas_cores is not None
+        else contextlib.nullcontext()
+    )
+    with ctx:
+        with lock_ctx(timeout=-1):
+            fn = cloudpickle.loads(fn_pickled)
+        cb = _PipeCallback(progress_conn, path_id)
+        try:
+            return fn(seed, cb)
+        finally:
+            try:
+                progress_conn.send((path_id, None))  # sentinel
+            except Exception:
+                pass
 
 
 def _execute_concurrently(
     fn: SinglePathfinderFn,
     seeds: list[int],
-    max_workers: int | None = None,
+    cores: int,
+    blas_cores: int | None,
     progress_callbacks: list[Callable | None] | None = None,
     mp_ctx: mp.context.BaseContext | str | None = None,
-) -> Iterator["PathfinderResult | bytes"]:
+) -> Iterator["PathfinderResult"]:
+    """Execute pathfinder runs concurrently via ProcessPoolExecutor.
+
+    Uses Pipe instead of Manager().Queue() to avoid spawn bootstrapping issues
+    when mp_ctx is 'spawn' and the main module is still loading.
     """
-    execute pathfinder runs concurrently via multiprocessing.
-    """
+    import threading
+
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
     import cloudpickle
 
-    fn = cloudpickle.dumps(fn)
-    if max_workers is None:
-        max_workers = _calculate_max_workers(num_paths=len(seeds))
-
-    # Use a Manager Queue (proxy-based, always picklable regardless of start method)
-    # to relay (idx, info) messages from workers back to the main process, where a
-    # listener thread forwards them to the real per-path callbacks.
-    # Use PyMC's context (fork/forkserver on Darwin) for both Manager and Executor
-    # to avoid spawn bootstrap issues when running scripts directly.
-    import threading
-
-    from pymc.sampling.parallel import _initialize_multiprocessing_context
-
     mp_ctx = _initialize_multiprocessing_context(mp_ctx, quiet=True)
-    mp_manager = mp_ctx.Manager()
-    try:
-        mp_queue = mp_manager.Queue()
-        process_callbacks = [_QueueCallback(mp_queue, i) for i in range(len(seeds))]
+    fn_pickled = cloudpickle.dumps(fn, protocol=-1)
 
-        def _listener() -> None:
-            while True:
-                item = mp_queue.get()
-                if item is None:  # sentinel
-                    break
-                idx, info = item
+    # One pipe per worker; avoids Manager() which spawns a process and triggers
+    # "An attempt has been made to start a new process before bootstrapping" when
+    # the main module is still loading (e.g. script run without if __name__ guard).
+    n_workers = len(seeds)
+    parent_conns = []
+    child_conns = []
+    for _ in range(n_workers):
+        parent, child = mp_ctx.Pipe(duplex=False)
+        parent_conns.append(parent)
+        child_conns.append(child)
+
+    sentinel_count: list[int] = [0]
+    sentinel_lock = threading.Lock()
+
+    def _listener() -> None:
+        from multiprocessing.connection import wait
+
+        while True:
+            ready = wait(parent_conns, timeout=0.1)
+            for conn in ready:
+                try:
+                    idx, info = conn.recv()
+                except EOFError:
+                    continue
+                if info is None:
+                    with sentinel_lock:
+                        sentinel_count[0] += 1
+                    if sentinel_count[0] >= n_workers:
+                        return
+                    continue
                 if (
                     progress_callbacks
                     and idx < len(progress_callbacks)
@@ -1140,21 +1151,46 @@ def _execute_concurrently(
                 ):
                     progress_callbacks[idx](info)
 
-        listener = threading.Thread(target=_listener, daemon=True)
-        listener.start()
-        try:
-            with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp_ctx) as executor:
-                futures = [
-                    executor.submit(_process, fn, seed, cb)
-                    for seed, cb in zip(seeds, process_callbacks)
-                ]
-                for f in as_completed(futures):
-                    yield cloudpickle.loads(f.result())
-        finally:
-            mp_queue.put(None)  # stop listener
-            listener.join(timeout=5)
+    listener = threading.Thread(target=_listener, daemon=True)
+    listener.start()
+
+    def _run_executor():
+        with ProcessPoolExecutor(max_workers=cores, mp_context=mp_ctx) as executor:
+            futures = {
+                executor.submit(
+                    _run_path,
+                    fn_pickled,
+                    seed,
+                    i,
+                    child_conns[i],
+                    blas_cores,
+                    mp_ctx.get_start_method(),
+                ): i
+                for i, seed in enumerate(seeds)
+            }
+            for f in as_completed(futures):
+                yield f.result()
+
+    try:
+        yield from _run_executor()
+    except RuntimeError as e:
+        if "bootstrapping" in str(e) and mp_ctx.get_start_method() == "spawn":
+            raise RuntimeError(
+                "Pathfinder with mp_ctx='spawn' requires the entry point to be "
+                "guarded with `if __name__ == '__main__':`. When using spawn, "
+                "wrap your fit_pathfinder call (or the function that contains it) "
+                "in that block. See: "
+                "https://docs.python.org/3/library/multiprocessing.html"
+                "#the-spawn-and-forkserver-start-methods"
+            ) from e
+        raise
     finally:
-        mp_manager.shutdown()
+        for c in child_conns:
+            try:
+                c.close()
+            except Exception:
+                pass
+        listener.join(timeout=5)
 
 
 def _execute_serially(
@@ -1162,28 +1198,39 @@ def _execute_serially(
     seeds: list[int],
     progress_callbacks: list[Callable | None] | None = None,
 ) -> Iterator["PathfinderResult"]:
-    """
-    execute pathfinder runs serially.
-    """
+    """Execute pathfinder runs serially."""
     callbacks = progress_callbacks or [None] * len(seeds)
     for seed, cb in zip(seeds, callbacks):
-        rng = np.random.default_rng(seed)
-        yield fn(rng, cb)
+        yield fn(seed, cb)
 
 
 def make_generator(
     concurrent: Literal["process"] | None,
     fn: SinglePathfinderFn,
     seeds: list[int],
-    max_workers: int | None = None,
+    cores: int | None = None,
+    blas_cores: int | None | Literal["auto"] = "auto",
     progress_callbacks: list[Callable | None] | None = None,
     mp_ctx: mp.context.BaseContext | str | None = None,
-) -> Iterator["PathfinderResult | bytes"]:
-    """
-    generator for executing pathfinder runs concurrently or serially.
-    """
+) -> Iterator["PathfinderResult"]:
+    """Generator for executing pathfinder runs concurrently or serially."""
     if concurrent is not None:
-        yield from _execute_concurrently(fn, seeds, max_workers, progress_callbacks, mp_ctx)
+        num_paths = len(seeds)
+        effective_cores = _default_cores(num_paths, cores)
+        _, _, num_blas_per_worker = setup_cores_blas_cores(
+            blas_cores,
+            num_paths,
+            effective_cores,
+            _initialize_multiprocessing_context(mp_ctx, quiet=True),
+        )
+        yield from _execute_concurrently(
+            fn,
+            seeds,
+            cores=effective_cores,
+            blas_cores=num_blas_per_worker,
+            progress_callbacks=progress_callbacks,
+            mp_ctx=mp_ctx,
+        )
     else:
         yield from _execute_serially(fn, seeds, progress_callbacks)
 
@@ -1500,6 +1547,8 @@ def multipath_pathfinder(
     importance_sampling: Literal["psis", "psir", "identity"] | None,
     progressbar: bool,
     concurrent: Literal["process"] | None = "process",
+    cores: int | None = None,
+    blas_cores: int | None | Literal["auto"] = "auto",
     mp_ctx: mp.context.BaseContext | str | None = None,
     random_seed: RandomSeed = None,
     max_init_retries: int = 10,
@@ -1556,6 +1605,12 @@ def multipath_pathfinder(
         How to run paths: ``"process"`` (default) spawns separate worker processes for true
         parallelism, matching PyMC's approach for parallel chains.  Set to ``None`` for serial
         execution (useful for debugging).
+    cores : int, optional
+        Number of paths to run in parallel. If ``None``, set to min(4, cpu_count, num_paths),
+        mirroring pm.sample.
+    blas_cores : int or "auto" or None, optional
+        Total number of threads BLAS/OpenMP should use per worker. ``"auto"`` (default)
+        matches total to ``cores``. ``None`` keeps default BLAS behavior.
     max_init_retries : int, optional
         Maximum number of re-jitter retries per path when LBFGSInitFailed is raised (default is 10).
     pathfinder_kwargs
@@ -1705,6 +1760,8 @@ def multipath_pathfinder(
                 concurrent=concurrent,
                 fn=single_pathfinder_fn,
                 seeds=path_seeds,
+                cores=cores,
+                blas_cores=blas_cores,
                 progress_callbacks=path_callbacks,
                 mp_ctx=mp_ctx,
             )
@@ -1787,13 +1844,15 @@ def fit_pathfinder(
     gtol: float = 1e-8,
     maxls: int = 1000,
     num_elbo_draws: int = 10,  # K
+    max_init_retries: int = 10,
     jitter: float = 2.0,
     epsilon: float = 1e-12,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
     progressbar: bool = True,
     concurrent: Literal["process"] | None = "process",
+    cores: int | None = None,
+    blas_cores: int | None | Literal["auto"] = "auto",
     mp_ctx: mp.context.BaseContext | str | None = None,
-    max_init_retries: int = 10,
     random_seed: RandomSeed | None = None,
     postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
     inference_backend: Literal["pymc", "blackjax"] = "pymc",
@@ -1857,21 +1916,26 @@ def fit_pathfinder(
         How to run paths: ``"process"`` (default) spawns separate worker processes for true
         parallelism, matching PyMC's approach for parallel chains.  Set to ``None`` for serial
         execution (useful for debugging).
+    cores : int, optional
+        Number of paths to run in parallel. If ``None``, set to min(4, cpu_count, num_paths),
+        mirroring pm.sample.
+    blas_cores : int or "auto" or None, optional
+        Total number of threads BLAS/OpenMP should use per worker. ``"auto"`` (default)
+        matches total to ``cores``. ``None`` keeps default BLAS behavior.
     mp_ctx : str or multiprocessing.Context, optional
         Multiprocessing context for parallel path execution (e.g. ``"spawn"``, ``"fork"``).
-        Passed to ProcessPoolExecutor when concurrent is ``"process"``.
     max_init_retries : int, optional
         Maximum number of re-jitter retries per path when the initial point fails (default is 10).
     pathfinder_kwargs : dict, optional
         Additional keyword arguments for the Pathfinder algorithm. Supported keys:
-
-        - ``jacobian`` (bool, default True): Whether to include the Jacobian
-          determinant in the log-probability computation. Setting to False is not
-          recommended and may result in very high Pareto k values.
         - ``vectorize`` (bool, default False): If True, use ``vectorize_graph``
           instead of ``pytensor.map`` for batched log-probability evaluation.
           May be faster for small models but may use more memory for large
           parameter counts.
+        - ``jacobian`` (bool, default True): Whether to include the Jacobian
+          determinant in the log-probability computation. Setting to False is not
+          recommended and may result in very high Pareto k values.
+
     compile_kwargs
         Additional keyword arguments for the PyTensor compiler. If not provided, a
         performant default is used.
@@ -1950,6 +2014,8 @@ def fit_pathfinder(
             importance_sampling=importance_sampling,
             progressbar=progressbar,
             concurrent=concurrent,
+            cores=cores,
+            blas_cores=blas_cores,
             mp_ctx=mp_ctx,
             max_init_retries=max_init_retries,
             random_seed=random_seed,
