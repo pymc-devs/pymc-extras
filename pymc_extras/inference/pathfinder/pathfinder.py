@@ -27,7 +27,6 @@ from enum import Enum, auto
 from typing import Any, Literal, Self, TypeAlias
 
 import arviz as az
-import filelock
 import numpy as np
 import pymc as pm
 import pytensor
@@ -542,54 +541,6 @@ def make_pathfinder_sample_fn(
             pytensor.In(u_sym, borrow=True),
         ],
         outputs,
-        **compile_kwargs,
-    )
-    fn.trust_input = True
-    return fn
-
-
-def make_elbo_from_state_fn(
-    model: Model,
-    N: int,
-    J: int,
-    jacobian: bool,
-    compile_kwargs: dict,
-    vectorize: bool = False,
-) -> Function:
-    """Compiled (x, g, alpha, S, Z, u) → (phi, logQ, logP) for fixture/tests.
-
-    S, Z are explicit inputs (not shared), for recomputing ELBO from saved state.
-    """
-    (logP_single,), single_input = pm.pytensorf.join_nonshared_inputs(
-        model.initial_point(),
-        [model.logp(jacobian=jacobian)],
-        model.value_vars,
-    )
-    x_sym = pt.vector("x", dtype="float64")
-    g_sym = pt.vector("g", dtype="float64")
-    alpha_sym = pt.vector("alpha", dtype="float64")
-    S_sym = pt.matrix("S", dtype="float64")
-    Z_sym = pt.matrix("Z", dtype="float64")
-    u_sym = pt.matrix("u", dtype="float64")
-    phi_sym, logQ_sym, _ = _bfgs_sample_pt(x_sym, g_sym, alpha_sym, S_sym, Z_sym, u_sym, J, N)
-    if vectorize:
-        batched_logP_sym = vectorize_graph(logP_single, replace={single_input: phi_sym})
-    else:
-        batched_logP_sym = pytensor.map(
-            fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
-            sequences=[phi_sym],
-            return_updates=False,
-        )
-    fn = pytensor.function(
-        [
-            pytensor.In(x_sym, borrow=True),
-            pytensor.In(g_sym, borrow=True),
-            pytensor.In(alpha_sym, borrow=True),
-            pytensor.In(S_sym, borrow=True),
-            pytensor.In(Z_sym, borrow=True),
-            pytensor.In(u_sym, borrow=True),
-        ],
-        [phi_sym, logQ_sym, batched_logP_sym],
         **compile_kwargs,
     )
     fn.trust_input = True
@@ -1583,6 +1534,80 @@ def _get_status_warning(mpr: MultiPathfinderResult) -> list[str]:
     return warnings
 
 
+def _make_multipath_progress(progressbar: bool) -> CustomProgress:
+    return CustomProgress(
+        TextColumn("{task.description}", table_column=Column("Path", min_width=7, no_wrap=True)),
+        TextColumn(
+            "{task.fields[status]}", table_column=Column("Status", min_width=10, no_wrap=True)
+        ),
+        TextColumn(
+            "{task.fields[lbfgs_steps]}", table_column=Column("Steps", min_width=6, no_wrap=True)
+        ),
+        TextColumn(
+            "{task.fields[steps_per_sec]}",
+            table_column=Column("Steps/s", min_width=8, no_wrap=True),
+        ),
+        TextColumn(
+            "{task.fields[best_ind]}", table_column=Column("Best step", min_width=9, no_wrap=True)
+        ),
+        TextColumn(
+            "{task.fields[best_elbo]}", table_column=Column("Best ELBO", min_width=12, no_wrap=True)
+        ),
+        TextColumn(
+            "{task.fields[current_elbo]}",
+            table_column=Column("Cur ELBO", min_width=12, no_wrap=True),
+        ),
+        TextColumn(
+            "{task.fields[step_size]}",
+            table_column=Column("Step size", min_width=10, no_wrap=True),
+        ),
+        TimeElapsedColumn(table_column=Column("Elapsed", min_width=8, no_wrap=True)),
+        include_headers=True,
+        console=Console(theme=default_progress_theme),
+        disable=not progressbar,
+    )
+
+
+def _make_progress_callback(progress: CustomProgress, task_id: int) -> Callable[[dict], None]:
+    def cb(info: dict) -> None:
+        fields: dict[str, Any] = {}
+        if "status" in info and info["status"] is not None:
+            fields["status"] = info["status"]
+        if "lbfgs_steps" in info:
+            fields["lbfgs_steps"] = info["lbfgs_steps"]
+        if "best_elbo" in info:
+            val = info["best_elbo"]
+            fields["best_elbo"] = (
+                f"{val:.3f}" if val is not None and np.isfinite(float(val)) else "—"
+            )
+        if "best_ind" in info:
+            val = info["best_ind"]
+            fields["best_ind"] = (
+                str(int(val)) if val is not None and np.isfinite(float(val)) else "—"
+            )
+        if "current_elbo" in info:
+            val = info["current_elbo"]
+            fields["current_elbo"] = (
+                f"{val:.3f}" if val is not None and np.isfinite(float(val)) else "—"
+            )
+        if "step_size" in info:
+            val = info["step_size"]
+            fields["step_size"] = (
+                f"{val:.2e}" if val is not None and np.isfinite(float(val)) else "—"
+            )
+        if "steps_per_sec" in info:
+            val = info["steps_per_sec"]
+            fields["steps_per_sec"] = (
+                f"{val:.1f}/s" if val is not None and np.isfinite(float(val)) else "—"
+            )
+        if fields:
+            progress.update(task_id, **fields)
+        if info.get("status") in ("ok", "elbo@0"):
+            progress.stop_task(task_id)
+
+    return cb
+
+
 def multipath_pathfinder(
     model: Model,
     num_paths: int,
@@ -1706,42 +1731,7 @@ def multipath_pathfinder(
     compute_start = time.time()
     try:
         # Per-path progress bar (one row per path, updated in real time)
-        progress = CustomProgress(
-            TextColumn(
-                "{task.description}", table_column=Column("Path", min_width=7, no_wrap=True)
-            ),
-            TextColumn(
-                "{task.fields[status]}", table_column=Column("Status", min_width=10, no_wrap=True)
-            ),
-            TextColumn(
-                "{task.fields[lbfgs_steps]}",
-                table_column=Column("Steps", min_width=6, no_wrap=True),
-            ),
-            TextColumn(
-                "{task.fields[steps_per_sec]}",
-                table_column=Column("Steps/s", min_width=8, no_wrap=True),
-            ),
-            TextColumn(
-                "{task.fields[best_ind]}",
-                table_column=Column("Best step", min_width=9, no_wrap=True),
-            ),
-            TextColumn(
-                "{task.fields[best_elbo]}",
-                table_column=Column("Best ELBO", min_width=12, no_wrap=True),
-            ),
-            TextColumn(
-                "{task.fields[current_elbo]}",
-                table_column=Column("Cur ELBO", min_width=12, no_wrap=True),
-            ),
-            TextColumn(
-                "{task.fields[step_size]}",
-                table_column=Column("Step size", min_width=10, no_wrap=True),
-            ),
-            TimeElapsedColumn(table_column=Column("Elapsed", min_width=8, no_wrap=True)),
-            include_headers=True,
-            console=Console(theme=default_progress_theme),
-            disable=not progressbar,
-        )
+        progress = _make_multipath_progress(progressbar)
 
         # Create one task per path and build per-path progress callbacks
         task_ids = []
@@ -1760,51 +1750,7 @@ def multipath_pathfinder(
                     total=None,
                 )
                 task_ids.append(tid)
-
-                def _make_cb(task_id: int) -> Callable:
-                    def cb(info: dict) -> None:
-                        fields: dict[str, Any] = {}
-                        if "status" in info and info["status"] is not None:
-                            fields["status"] = info["status"]
-                        if "lbfgs_steps" in info:
-                            fields["lbfgs_steps"] = info["lbfgs_steps"]
-                        if "best_elbo" in info:
-                            val = info["best_elbo"]
-                            fields["best_elbo"] = (
-                                f"{val:.3f}" if val is not None and np.isfinite(float(val)) else "—"
-                            )
-                        if "best_ind" in info:
-                            val = info["best_ind"]
-                            fields["best_ind"] = (
-                                str(int(val))
-                                if val is not None and np.isfinite(float(val))
-                                else "—"
-                            )
-                        if "current_elbo" in info:
-                            val = info["current_elbo"]
-                            fields["current_elbo"] = (
-                                f"{val:.3f}" if val is not None and np.isfinite(float(val)) else "—"
-                            )
-                        if "step_size" in info:
-                            val = info["step_size"]
-                            fields["step_size"] = (
-                                f"{val:.2e}" if val is not None and np.isfinite(float(val)) else "—"
-                            )
-                        if "steps_per_sec" in info:
-                            val = info["steps_per_sec"]
-                            fields["steps_per_sec"] = (
-                                f"{val:.1f}/s"
-                                if val is not None and np.isfinite(float(val))
-                                else "—"
-                            )
-                        if fields:
-                            progress.update(task_id, **fields)
-                        if info.get("status") in ("ok", "elbo@0"):
-                            progress.stop_task(task_id)
-
-                    return cb
-
-                path_callbacks.append(_make_cb(tid))
+                path_callbacks.append(_make_progress_callback(progress, tid))
 
             # concurrent="process" gives true parallelism via separate worker processes
             # (matching PyMC's approach). concurrent=None is serial (useful for debugging).
@@ -1824,18 +1770,6 @@ def multipath_pathfinder(
                         raise result
                     else:
                         results.append(result)
-                except filelock.Timeout:
-                    logger.warning("Lock timeout. Retrying...")
-                    num_attempts = 0
-                    while num_attempts < 10:
-                        try:
-                            results.append(result)
-                            logger.info("Lock acquired. Continuing...")
-                            break
-                        except filelock.Timeout:
-                            num_attempts += 1
-                            time.sleep(0.5)
-                            logger.warning(f"Lock timeout. Retrying... ({num_attempts}/10)")
                 except Exception as e:
                     logger.warning("Unexpected error in a path: %s", str(e))
                     results.append(
@@ -2083,12 +2017,12 @@ def fit_pathfinder(
         if version.parse(blackjax.__version__).major < 1:
             raise ImportError("fit_pathfinder requires blackjax 1.0 or above")
 
-        jitter_seed, pathfinder_seed, sample_seed = _get_seeds_per_chain(random_seed, 3)
+        _, pathfinder_seed, sample_seed = _get_seeds_per_chain(random_seed, 3)
         # TODO: extend initial points with jitter_scale to blackjax
         # TODO: extend blackjax pathfinder to multiple paths
         x0, _ = DictToArrayBijection.map(model.initial_point())
         logp_func = get_jaxified_logp_of_ravel_inputs(model)
-        pathfinder_state, pathfinder_info = blackjax.vi.pathfinder.approximate(
+        pathfinder_state, _ = blackjax.vi.pathfinder.approximate(
             rng_key=jax.random.key(pathfinder_seed),
             logdensity_fn=logp_func,
             initial_position=x0,

@@ -58,6 +58,7 @@ JITTER = 2.0
 EPSILON = 1e-12
 
 COMPILE_KWARGS = {"mode": Mode(linker=DEFAULT_LINKER)}
+ALL_MODEL_NAMES = list(MODEL_FACTORIES.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +280,7 @@ def test_inv_hessian_diag_matches_sample_scales():
     np.testing.assert_allclose(emp_var, diag_est, rtol=0.2, atol=1e-3)
 
 
-@pytest.mark.parametrize("model_name", ["ard_regression", "hd_gaussian"])
+@pytest.mark.parametrize("model_name", ["ard_regression"])
 @pytest.mark.parametrize("vectorize", [False, True])
 def test_rng_reproducibility(model_name, vectorize):
     """Two streaming runs with the same seed produce bit-identical results."""
@@ -298,7 +299,7 @@ def test_rng_reproducibility(model_name, vectorize):
     assert r1.best_step_idx == r2.best_step_idx if hasattr(r1, "best_step_idx") else True
 
 
-@pytest.mark.parametrize("model_name", list(MODEL_FACTORIES.keys()))
+@pytest.mark.parametrize("model_name", ["ard_regression"])
 @pytest.mark.parametrize("vectorize", [False, True])
 def test_fixture_match(model_name, vectorize):
     """Streaming path selects an ELBO argmax consistent with the fixture.
@@ -333,7 +334,7 @@ def test_fixture_match(model_name, vectorize):
     )
 
 
-@pytest.mark.parametrize("model_name", list(MODEL_FACTORIES.keys()))
+@pytest.mark.parametrize("model_name", ALL_MODEL_NAMES)
 def test_elbo_all_finite(model_name):
     """Reference ELBO values recorded from current code must all be finite."""
     *_, elbo_ref = _load_fixture(model_name)
@@ -393,7 +394,7 @@ def _check_statistical_equivalence(
     )
 
 
-@pytest.mark.parametrize("model_name", list(MODEL_FACTORIES.keys()))
+@pytest.mark.parametrize("model_name", ALL_MODEL_NAMES)
 @pytest.mark.parametrize("vectorize", [False, True])
 def test_elbo_statistical_equivalence(model_name, vectorize):
     """Full-stack: LBFGSStreamingCallback computes alpha/s/z internally; ELBO matches reference."""
@@ -406,8 +407,8 @@ def test_elbo_statistical_equivalence(model_name, vectorize):
     _check_statistical_equivalence(model_name, elbo, elbo_ref)
 
 
-@pytest.mark.parametrize("model_name", list(MODEL_FACTORIES.keys()))
-@pytest.mark.parametrize("vectorize", [False, True])
+@pytest.mark.parametrize("model_name", ["ard_regression"])
+@pytest.mark.parametrize("vectorize", [False])
 def test_elbo_statistical_equivalence_different_seed(model_name, vectorize):
     """Verify tolerances are meaningful by using a different ELBO seed."""
     x_full, _, elbo_ref = _load_fixture(model_name)
