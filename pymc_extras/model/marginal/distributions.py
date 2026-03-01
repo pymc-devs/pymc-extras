@@ -338,19 +338,21 @@ def marginal_hmm_logp(op, values, *inputs, **kwargs):
     # under the initial distribution. This is robust to everything the user can throw at it.
     init_dist_value = init_dist_.type()
     logp_init_dist = logp(init_dist_, init_dist_value)
-    # There is a degerate batch dim for lags=1 (the only supported case),
-    # that we have to work around, by expanding the batch value and then squeezing it out of the logp
+    # Squeeze core dimension for n_lags=1 (only supported case)
     batch_logp_init_dist = vectorize_graph(
-        logp_init_dist, {init_dist_value: batch_chain_value[:, None, ..., 0]}
-    ).squeeze(1)
+        logp_init_dist, {init_dist_value: batch_chain_value[..., :1]}
+    ).squeeze(-1)
     log_alpha_init = batch_logp_init_dist + batch_logp_emissions[..., 0]
 
     def step_alpha(logp_emission, log_alpha, log_P):
-        step_log_prob = pt.logsumexp(log_alpha[:, None] + log_P, axis=0)
+        step_log_prob = pt.logsumexp(log_alpha[:, None, ...] + log_P, axis=0)
         return logp_emission + step_log_prob
 
-    P_bcast_dims = (len(chain_shape) - 1) - (P.type.ndim - 2)
-    log_P = pt.shape_padright(pt.log(P), P_bcast_dims)
+    # Add implicit dimensions of P, and place core dimensions at the front
+    P = pt.atleast_Nd(P, n=len(chain_shape) + 1)
+    P = pt.moveaxis(P, (-2, -1), (0, 1))
+    log_P = pt.log(P)
+
     log_alpha_seq = scan(
         step_alpha,
         non_sequences=[log_P],
