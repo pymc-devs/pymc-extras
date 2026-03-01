@@ -21,6 +21,7 @@ class MockPathfinderResult:
     logQ: np.ndarray = None
     lbfgs_niter: np.ndarray = None
     elbo_argmax: np.ndarray = None
+    inv_hessian_diag: np.ndarray = None
     lbfgs_status: LBFGSStatus = LBFGSStatus.CONVERGED
     path_status: PathStatus = PathStatus.SUCCESS
 
@@ -34,6 +35,7 @@ class MockMultiPathfinderResult:
     logQ: np.ndarray = None
     lbfgs_niter: np.ndarray = None
     elbo_argmax: np.ndarray = None
+    inv_hessian_diag: np.ndarray = None
     lbfgs_status: Counter = None
     path_status: Counter = None
     importance_sampling: str = "psis"
@@ -232,6 +234,7 @@ class TestMultiPathfinderResultToXarray:
             logQ=np.random.normal(-11, 1, (3, 100)),
             lbfgs_niter=np.array([50, 45, 55]),
             elbo_argmax=np.array([25, 30, 20]),
+            inv_hessian_diag=np.abs(np.random.normal(1.0, 0.1, (3, 2))),
             lbfgs_status=Counter({LBFGSStatus.CONVERGED: 3}),
             path_status=Counter({PathStatus.SUCCESS: 3}),
             num_paths=3,
@@ -261,6 +264,7 @@ class TestMultiPathfinderResultToXarray:
         # Check per-path data (paths_ prefix)
         assert "paths_lbfgs_niter" in ds.data_vars
         assert "paths_elbo_argmax" in ds.data_vars
+        assert "paths_inv_hessian_diag" in ds.data_vars
         assert "paths_logP_mean" in ds.data_vars
         assert "paths_logQ_mean" in ds.data_vars
         assert "paths_final_sample" in ds.data_vars
@@ -269,6 +273,7 @@ class TestMultiPathfinderResultToXarray:
         assert "path" in ds.dims
         assert ds.sizes["path"] == 3
         assert ds["paths_lbfgs_niter"].shape == (3,)
+        assert ds["paths_inv_hessian_diag"].shape == (3, 2)
 
         # Check config data (config_ prefix)
         assert "config_num_draws" in ds.data_vars

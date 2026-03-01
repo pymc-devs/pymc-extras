@@ -145,6 +145,13 @@ def pathfinder_result_to_xarray(
     if result.elbo_argmax is not None:
         data_vars["elbo_argmax"] = xr.DataArray(_extract_scalar(result.elbo_argmax))
 
+    if n_params is not None and result.inv_hessian_diag is not None:
+        data_vars["inv_hessian_diag"] = xr.DataArray(
+            result.inv_hessian_diag[0],
+            dims=["param"],
+            coords={"param": coords["param"]},
+        )
+
     data_vars["lbfgs_status_code"] = xr.DataArray(result.lbfgs_status.value)
     data_vars["lbfgs_status_name"] = xr.DataArray(result.lbfgs_status.name)
     data_vars["path_status_code"] = xr.DataArray(result.path_status.value)
@@ -339,6 +346,13 @@ def _add_paths_data(
     if result.logQ is not None:
         _add_path_scalar("logQ_mean", np.mean(result.logQ, axis=1))
         _add_path_scalar("logQ_max", np.max(result.logQ, axis=1))
+
+    if n_params is not None and result.inv_hessian_diag is not None:
+        data_vars["paths_inv_hessian_diag"] = xr.DataArray(
+            result.inv_hessian_diag,
+            dims=["path", "param"],
+            coords={"path": coords["path"], "param": coords["param"]},
+        )
 
     if n_params is not None and result.samples is not None and result.samples.ndim >= 3:
         final_samples = result.samples[:, -1, :]  # (S, N)

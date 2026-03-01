@@ -399,7 +399,7 @@ def _bfgs_sample_pt(
     u: TensorVariable,
     J: int,
     N: int,
-) -> tuple[TensorVariable, TensorVariable]:
+) -> tuple[TensorVariable, TensorVariable, TensorVariable]:
     """Symbolic L-BFGS inverse-Hessian sample.
 
     The dense vs sparse path is selected at graph-construction time from
@@ -420,6 +420,7 @@ def _bfgs_sample_pt(
     -------
     phi : (M, N) samples
     logQ : (M,) log-density under the approximation
+    inv_hessian_diag : (N,) diagonal of sampler covariance used for `phi`
     """
     J2 = 2 * J
 
@@ -447,6 +448,7 @@ def _bfgs_sample_pt(
         logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diag(Lchol))))
         mu = x - H_inv @ g
         phi = (mu[:, None] + Lchol @ u.T).T  # (M, N)
+        inv_hessian_diag = pt.diag(H_inv)
     else:
         # Sparse path: economy QR avoids O(N²) matrices (large-N regime)
         Q, R = pt.linalg.qr(beta * inv_sqrt_alpha[:, None], mode="reduced")  # Q:(N,2J), R:(2J,2J)
@@ -457,9 +459,12 @@ def _bfgs_sample_pt(
         mu = x - ((alpha * g)[:, None] + beta @ (gamma @ btg))[:, 0]  # (N,)
         QtU = Q.T @ u.T  # (2J, M)
         phi = (mu[:, None] + sqrt_alpha[:, None] * (Q @ ((Lchol - pt.eye(J2)) @ QtU) + u.T)).T
+        # diag(Q (L L^T - I) Q^T) = row_norm_sq(Q L) - row_norm_sq(Q)
+        ql = Q @ Lchol
+        inv_hessian_diag = alpha * (1.0 + pt.sum(ql * ql, axis=1) - pt.sum(Q * Q, axis=1))
 
     logQ = -0.5 * (logdet + pt.sum(u * u, axis=-1) + N * np.log(2.0 * np.pi))
-    return phi, logQ
+    return phi, logQ, inv_hessian_diag
 
 
 def make_pathfinder_sample_fn(
@@ -469,6 +474,7 @@ def make_pathfinder_sample_fn(
     jacobian: bool,
     compile_kwargs: dict,
     vectorize: bool = False,
+    return_inv_hessian_diag: bool = False,
 ) -> Function:
     """Compile a single PyTensor function covering bfgs sample + batched logP evaluation.
 
@@ -487,11 +493,13 @@ def make_pathfinder_sample_fn(
     compile_kwargs : dict
     vectorize : bool, optional
         If True, use vectorize_graph instead of pytensor.map. Default False.
+    return_inv_hessian_diag : bool, optional
+        If True, include inverse-Hessian diagonal as 4th output.
 
     Returns
     -------
     fn : Function
-        Compiled: (x, g, alpha, s_win, z_win, u) → (phi, logQ, logP)
+        Compiled: (x, g, alpha, s_win, z_win, u) → (phi, logQ, logP[, inv_hessian_diag])
         where s_win, z_win are (N, J), u is (M, N), and M is a dynamic dimension.
     """
     (logP_single,), single_input = pm.pytensorf.join_nonshared_inputs(
@@ -507,7 +515,9 @@ def make_pathfinder_sample_fn(
     z_win_sym = pt.matrix("z_win", dtype="float64")  # (N, J)
     u_sym = pt.matrix("u", dtype="float64")  # (M, N) — M is dynamic
 
-    phi_sym, logQ_sym = _bfgs_sample_pt(x_sym, g_sym, alpha_sym, s_win_sym, z_win_sym, u_sym, J, N)
+    phi_sym, logQ_sym, inv_hessian_diag_sym = _bfgs_sample_pt(
+        x_sym, g_sym, alpha_sym, s_win_sym, z_win_sym, u_sym, J, N
+    )
 
     if vectorize:
         batched_logP_sym = vectorize_graph(logP_single, replace={single_input: phi_sym})
@@ -518,6 +528,10 @@ def make_pathfinder_sample_fn(
             return_updates=False,
         )
 
+    outputs = [phi_sym, logQ_sym, batched_logP_sym]
+    if return_inv_hessian_diag:
+        outputs.append(inv_hessian_diag_sym)
+
     fn = pytensor.function(
         [
             pytensor.In(x_sym, borrow=True),
@@ -527,7 +541,7 @@ def make_pathfinder_sample_fn(
             pytensor.In(z_win_sym, borrow=True),
             pytensor.In(u_sym, borrow=True),
         ],
-        [phi_sym, logQ_sym, batched_logP_sym],
+        outputs,
         **compile_kwargs,
     )
     fn.trust_input = True
@@ -557,7 +571,7 @@ def make_elbo_from_state_fn(
     S_sym = pt.matrix("S", dtype="float64")
     Z_sym = pt.matrix("Z", dtype="float64")
     u_sym = pt.matrix("u", dtype="float64")
-    phi_sym, logQ_sym = _bfgs_sample_pt(x_sym, g_sym, alpha_sym, S_sym, Z_sym, u_sym, J, N)
+    phi_sym, logQ_sym, _ = _bfgs_sample_pt(x_sym, g_sym, alpha_sym, S_sym, Z_sym, u_sym, J, N)
     if vectorize:
         batched_logP_sym = vectorize_graph(logP_single, replace={single_input: phi_sym})
     else:
@@ -747,7 +761,8 @@ class LBFGSStreamingCallback:
         # Sample + logP in a single compiled call. Pass s_win/z_win as inputs.
         u = self._rng.standard_normal((self.num_elbo_draws, self._N))
         try:
-            _, logQ, logP = self.sample_logp_fn(x, g, alpha, self.s_win, self.z_win, u)
+            sample_out = self.sample_logp_fn(x, g, alpha, self.s_win, self.z_win, u)
+            _, logQ, logP = sample_out[:3]
             logP = np.asarray(logP)
             logQ = np.asarray(logQ)
             finite = np.isfinite(logP)
@@ -880,7 +895,21 @@ def make_single_pathfinder_fn(
     N = x_base.shape[0]
 
     sample_logp_func = make_pathfinder_sample_fn(
-        model, N, maxcor, jacobian=jacobian, compile_kwargs=compile_kwargs, vectorize=vectorize
+        model,
+        N,
+        maxcor,
+        jacobian=jacobian,
+        compile_kwargs=compile_kwargs,
+        vectorize=vectorize,
+    )
+    final_sample_logp_func = make_pathfinder_sample_fn(
+        model,
+        N,
+        maxcor,
+        jacobian=jacobian,
+        compile_kwargs=compile_kwargs,
+        vectorize=vectorize,
+        return_inv_hessian_diag=True,
     )
 
     def _check_lbfgs_status(status):
@@ -889,7 +918,9 @@ def make_single_pathfinder_fn(
         elif status == LBFGSStatus.LBFGS_FAILED:
             raise LBFGSException()
 
-    def _make_result(psi, logP_psi, logQ_psi, lbfgs_niter, elbo_argmax, lbfgs_status):
+    def _make_result(
+        psi, logP_psi, logQ_psi, lbfgs_niter, elbo_argmax, inv_hessian_diag, lbfgs_status
+    ):
         if np.all(~np.isfinite(logQ_psi)):
             raise PathInvalidLogQ()
         path_status = PathStatus.ELBO_ARGMAX_AT_ZERO if elbo_argmax == 0 else PathStatus.SUCCESS
@@ -899,6 +930,7 @@ def make_single_pathfinder_fn(
             logQ=logQ_psi,
             lbfgs_niter=lbfgs_niter,
             elbo_argmax=elbo_argmax,
+            inv_hessian_diag=inv_hessian_diag,
             lbfgs_status=lbfgs_status,
             path_status=path_status,
         )
@@ -916,6 +948,7 @@ def make_single_pathfinder_fn(
         local_lbfgs = LBFGS(cached_fn, maxcor, maxiter, ftol, gtol, maxls, epsilon)
 
         local_sample_logp = sample_logp_func.copy(share_memory=False)
+        local_final_sample_logp = final_sample_logp_func.copy(share_memory=False)
 
         lbfgs_status = LBFGSStatus.LBFGS_FAILED  # default before LBFGS runs
         try:
@@ -965,7 +998,7 @@ def make_single_pathfinder_fn(
                             {"status": "sampling", "current_elbo": None, "step_size": None}
                         )
 
-                    phi_final, logQ_psi_flat, logP_psi_flat = local_sample_logp(
+                    sample_out = local_final_sample_logp(
                         best_state["x"],
                         best_state["g"],
                         best_state["alpha"],
@@ -973,9 +1006,11 @@ def make_single_pathfinder_fn(
                         best_state["z_win"],
                         u_final,
                     )
+                    phi_final, logQ_psi_flat, logP_psi_flat, inv_hessian_diag = sample_out
                     phi_final = np.asarray(phi_final)
                     logQ_psi_flat = np.asarray(logQ_psi_flat)
                     logP_psi_flat = np.asarray(logP_psi_flat)
+                    inv_hessian_diag = np.asarray(inv_hessian_diag)[None]
                     # Add batch dim L=1 to match downstream expectations
                     psi = phi_final[None]  # (1, M, N)
                     logP_psi = logP_psi_flat[None]  # (1, M)
@@ -1012,7 +1047,15 @@ def make_single_pathfinder_fn(
                             path_status=PathStatus.SINGLE_STEP,
                         )
 
-            result = _make_result(psi, logP_psi, logQ_psi, lbfgs_niter, elbo_argmax, lbfgs_status)
+            result = _make_result(
+                psi,
+                logP_psi,
+                logQ_psi,
+                lbfgs_niter,
+                elbo_argmax,
+                inv_hessian_diag,
+                lbfgs_status,
+            )
             if progress_callback is not None:
                 status_str = (
                     "elbo@0" if result.path_status == PathStatus.ELBO_ARGMAX_AT_ZERO else "ok"
@@ -1260,6 +1303,7 @@ class PathfinderResult:
     logQ: NDArray | None = None
     lbfgs_niter: NDArray | None = None
     elbo_argmax: NDArray | None = None
+    inv_hessian_diag: NDArray | None = None
     lbfgs_status: LBFGSStatus = LBFGSStatus.LBFGS_FAILED
     path_status: PathStatus = PathStatus.PATH_FAILED
 
@@ -1310,6 +1354,7 @@ class MultiPathfinderResult:
     logQ: NDArray | None = None
     lbfgs_niter: NDArray | None = None
     elbo_argmax: NDArray | None = None
+    inv_hessian_diag: NDArray | None = None
     lbfgs_status: Counter = field(default_factory=Counter)
     path_status: Counter = field(default_factory=Counter)
     importance_sampling: str | None = "psis"
@@ -1331,7 +1376,14 @@ class MultiPathfinderResult:
     def from_path_results(cls, path_results: list[PathfinderResult]) -> "MultiPathfinderResult":
         """aggregate successful pathfinder results and count the occurrences of each status in PathStatus and LBFGSStatus"""
 
-        NUMERIC_ATTRIBUTES = ["samples", "logP", "logQ", "lbfgs_niter", "elbo_argmax"]
+        NUMERIC_ATTRIBUTES = [
+            "samples",
+            "logP",
+            "logQ",
+            "lbfgs_niter",
+            "elbo_argmax",
+            "inv_hessian_diag",
+        ]
 
         success_results = []
         mpr = cls()

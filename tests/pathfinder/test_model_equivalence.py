@@ -162,39 +162,27 @@ def _make_lbfgs_mock(x_full):
     return patch("pymc_extras.inference.pathfinder.pathfinder.LBFGS", return_value=mock_inst)
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("vectorize", [False, True])
-def test_elbo_call_count(vectorize):
-    """sample_logp_fn is called exactly once per accepted LBFGS step."""
-    model = make_ard_regression()
+def _run_streaming_lbfgs(
+    model: pm.Model,
+    sample_logp_fn,
+    *,
+    seed: int,
+):
+    """Run one streaming L-BFGS optimization and return callback state."""
     neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True, **COMPILE_KWARGS)
     N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
-
-    sample_logp_fn = make_pathfinder_sample_fn(
-        model, N, MAXCOR, jacobian=True, compile_kwargs=COMPILE_KWARGS, vectorize=vectorize
-    )
-
-    call_count = [0]
-
-    def counting_fn(x, g, alpha, s_win, z_win, u):
-        call_count[0] += 1
-        return sample_logp_fn(x, g, alpha, s_win, z_win, u)
 
     ipfn = make_initial_point_fn(model=model)
     ip = Point(ipfn(None), model=model)
     x_base = DictToArrayBijection.map(ip).data
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(seed)
     x0 = x_base + rng.uniform(-JITTER, JITTER, size=x_base.shape)
 
     cached_fn = LRUCache1(neg_logp_dlogp, copy_x=True)
     cb = LBFGSStreamingCallback(
         value_grad_fn=cached_fn,
         x0=x0,
-        sample_logp_fn=counting_fn,
+        sample_logp_fn=sample_logp_fn,
         num_elbo_draws=NUM_ELBO_DRAWS,
         rng=rng,
         J=MAXCOR,
@@ -212,8 +200,83 @@ def test_elbo_call_count(vectorize):
         options={"maxcor": MAXCOR, "maxiter": MAXITER, "ftol": 1e-5, "gtol": 1e-8, "maxls": 1000},
     )
 
+    return cb, rng, N
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("vectorize", [False, True])
+def test_elbo_call_count(vectorize):
+    """sample_logp_fn is called exactly once per accepted LBFGS step."""
+    model = make_ard_regression()
+    N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
+
+    sample_logp_fn = make_pathfinder_sample_fn(
+        model, N, MAXCOR, jacobian=True, compile_kwargs=COMPILE_KWARGS, vectorize=vectorize
+    )
+
+    call_count = [0]
+
+    def counting_fn(x, g, alpha, s_win, z_win, u):
+        call_count[0] += 1
+        return sample_logp_fn(x, g, alpha, s_win, z_win, u)
+
+    cb, _, _ = _run_streaming_lbfgs(model, counting_fn, seed=0)
+
     assert call_count[0] == cb.step_count
     assert cb.step_count > 0
+
+
+def test_inv_hessian_diag_matches_sample_scales():
+    """Diagonal estimate from state matches empirical sample variances."""
+    model = make_ard_regression()
+    N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
+
+    sample_logp_fn = make_pathfinder_sample_fn(
+        model,
+        N,
+        MAXCOR,
+        jacobian=True,
+        compile_kwargs=COMPILE_KWARGS,
+        vectorize=False,
+        return_inv_hessian_diag=True,
+    )
+
+    cb, rng, _ = _run_streaming_lbfgs(model, sample_logp_fn, seed=20260301)
+
+    assert cb.any_valid
+    assert cb.best_state is not None
+
+    state = cb.best_state
+    _, _, _, diag_est = sample_logp_fn(
+        state["x"],
+        state["g"],
+        state["alpha"],
+        state["s_win"],
+        state["z_win"],
+        rng.standard_normal((1, N)),
+    )
+    diag_est = np.asarray(diag_est)
+    assert np.all(np.isfinite(diag_est))
+    assert np.all(diag_est > 0)
+
+    u = rng.standard_normal((4000, N))
+    phi, _, _, _ = sample_logp_fn(
+        state["x"],
+        state["g"],
+        state["alpha"],
+        state["s_win"],
+        state["z_win"],
+        u,
+    )
+    emp_var = np.var(np.asarray(phi), axis=0, ddof=1)
+    assert np.all(np.isfinite(emp_var))
+    assert np.all(emp_var > 0)
+
+    np.testing.assert_allclose(emp_var, diag_est, rtol=0.2, atol=1e-3)
 
 
 @pytest.mark.parametrize("model_name", ["ard_regression", "hd_gaussian"])
