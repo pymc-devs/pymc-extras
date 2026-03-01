@@ -247,32 +247,24 @@ def test_laplace_nonstandard_dims_2d():
     y_obs = pm.draw(
         pmx.DiscreteMarkovChain.dist(
             P=true_P,
-            init_dist=pm.Categorical.dist(
-                logit_p=np.ones(
-                    3,
-                )
-            ),
-            shape=(100, 5),
+            init_dist=pm.Categorical.dist(logit_p=np.ones(3)),
+            shape=(5, 100),
         )
     )
 
     with pm.Model(
         coords={
-            "time": range(y_obs.shape[0]),
+            "time": range(y_obs.shape[-1]),
             "state": list("ABC"),
             "next_state": list("ABC"),
             "unit": [1, 2, 3, 4, 5],
         }
     ) as model:
-        y = pm.Data("y", y_obs, dims=["time", "unit"])
-        init_dist = pm.Categorical.dist(
-            logit_p=np.ones(
-                3,
-            )
-        )
+        y = pm.Data("y", y_obs, dims=["unit", "time"])
+        init_dist = pm.Categorical.dist(logit_p=np.ones(3))
         P = pm.Dirichlet("P", a=np.eye(3) * 2 + 1, dims=["state", "next_state"])
         y_hat = pmx.DiscreteMarkovChain(
-            "y_hat", P=P, init_dist=init_dist, dims=["time", "unit"], observed=y_obs
+            "y_hat", P=P, init_dist=init_dist, dims=["unit", "time"], observed=y_obs
         )
 
         idata = pmx.fit_laplace(progressbar=False)
