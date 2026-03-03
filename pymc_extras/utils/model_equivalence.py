@@ -10,7 +10,7 @@ from pytensor.tensor.random.type import RandomType
 
 
 def equal_computations_up_to_root(
-    xs: Sequence[Variable], ys: Sequence[Variable], ignore_rng_values=True
+    xs: Sequence[Variable], ys: Sequence[Variable], ignore_rng_values=True, strict_dtype=True
 ) -> bool:
     # Check if graphs are equivalent even if root variables have distinct identities
 
@@ -31,10 +31,12 @@ def equal_computations_up_to_root(
             if not x.type.values_eq(x.get_value(), y.get_value()):
                 return False
 
-    return equal_computations(xs, ys, in_xs=x_graph_inputs, in_ys=y_graph_inputs)
+    return equal_computations(
+        xs, ys, in_xs=x_graph_inputs, in_ys=y_graph_inputs, strict_dtype=strict_dtype
+    )
 
 
-def equivalent_models(model1: Model, model2: Model) -> bool:
+def equivalent_models(model1: Model, model2: Model, *, strict_dtype: bool = True) -> bool:
     """Check whether two PyMC models are equivalent.
 
     Examples
@@ -63,4 +65,6 @@ def equivalent_models(model1: Model, model2: Model) -> bool:
     """
     fgraph1, _ = fgraph_from_model(model1)
     fgraph2, _ = fgraph_from_model(model2)
-    return equal_computations_up_to_root(fgraph1.outputs, fgraph2.outputs)
+    return equal_computations_up_to_root(
+        fgraph1.outputs, fgraph2.outputs, strict_dtype=strict_dtype
+    )
