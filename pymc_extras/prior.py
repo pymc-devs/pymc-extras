@@ -84,14 +84,13 @@ Create a prior with a custom transform function by registering it with
 from __future__ import annotations
 
 import copy
-import typing
 import warnings
 
 from collections.abc import Callable, Sequence
 from functools import partial
 from inspect import signature
 from numbers import Number
-from typing import Any, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, runtime_checkable
 
 import numpy as np
 import pymc as pm
@@ -106,7 +105,7 @@ from xarray import DataArray, Dataset
 
 from pymc_extras.deserialize import deserialize, register_deserialization
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     # Lazy import of experimental modules
     from pymc.dims import DimDistribution
     from pytensor.tensor import TensorLike
@@ -1479,15 +1478,17 @@ class Censored:
     def dims(self, dims) -> None:
         self.distribution.dims = dims
 
-    def create_variable(self, name: str, xdist: bool = False) -> pt.TensorVariable:
+    def create_variable(self, name: str, xdist: bool = False) -> TensorVariable | XTensorVariable:
         """Create censored random variable."""
-        if xdist:
-            raise NotImplementedError("Censored does not support xdist yet")
-
-        dist = self.distribution.create_variable(name)
+        dist = self.distribution.create_variable(name, xdist=xdist)
         _remove_random_variable(var=dist)
+        if xdist:
+            from pymc.dims import Censored
 
-        return pm.Censored(name, dist, lower=self.lower, upper=self.upper, dims=self.dims)
+            censored_constructor = Censored
+        else:
+            censored_constructor = pm.Censored
+        return censored_constructor(name, dist, lower=self.lower, upper=self.upper, dims=self.dims)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the censored distribution to a dictionary."""
@@ -1590,7 +1591,8 @@ class Censored:
         name: str,
         mu: pt.TensorLike,
         observed: pt.TensorLike,
-    ) -> pt.TensorVariable:
+        xdist: bool = False,
+    ) -> TensorVariable | XTensorVariable:
         """Create observed censored variable.
 
         Will require that the distribution has a `mu` parameter
@@ -1604,10 +1606,12 @@ class Censored:
             The mu parameter for the likelihood.
         observed : pt.TensorLike
             The observed data.
+        xdist: bool, default False
+            Whether to create a variable from pymc.dims or regular pymc distributions
 
         Returns
         -------
-        pt.TensorVariable
+        TensorVariable or XTensorVariable
             The PyMC variable.
 
         Examples
@@ -1640,17 +1644,22 @@ class Censored:
 
         distribution = self.distribution.deepcopy()
         distribution.parameters["mu"] = mu
-
-        dist = distribution.create_variable(name)
+        dist = distribution.create_variable(name, xdist=xdist)
         _remove_random_variable(var=dist)
 
-        return pm.Censored(
+        if xdist:
+            from pymc.dims import Censored
+
+            censored_constructor = Censored
+        else:
+            censored_constructor = pm.Censored
+        return censored_constructor(
             name,
             dist,
-            observed=observed,
             lower=self.lower,
             upper=self.upper,
             dims=self.dims,
+            observed=observed,
         )
 
 
