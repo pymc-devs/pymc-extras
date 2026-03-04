@@ -978,3 +978,19 @@ class TestRecoverMarginals:
         )
         np.testing.assert_almost_equal(logsumexp(post.lp_idx, axis=-1), 0)
         np.testing.assert_almost_equal(logsumexp(post.lp_sub_idx, axis=-1), 0)
+
+
+def test_unmarginalize_accepts_rv_objects():
+    """Tests that unmarginalize accepts RV objects in addition to string names. See #309"""
+    with pm.Model() as m:
+        idx = pm.Bernoulli("idx", p=0.5)
+        x = pm.Normal("x", mu=idx)
+    marginal_m = marginalize(m, [idx])
+
+    # Should work with string name.
+    result1 = unmarginalize(marginal_m, "idx")
+    assert equivalent_models(result1, m)
+
+    # Should also work with RV object.
+    result2 = unmarginalize(marginal_m, idx)
+    assert equivalent_models(result2, m)
