@@ -504,7 +504,7 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     )
 
     # logp = logp(y | x, params) + logp(x | params) (i.e. logp(x | y, params) up to a constant in x)
-    logp = pt.sum([pt.sum(logps_dict[k]) for k in logps_dict])
+    logp = pt.sum([logp_term.sum() for logp_term in logps_dict.values()])
 
     # Set minimizer initialisation to be random
     # Assumes that the observed variable y is the only element in values, and that d is shape[-1] - if this is invalid it will simply crash rather than producing an invalid result.
