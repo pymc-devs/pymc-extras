@@ -7,12 +7,7 @@ from pytensor import graph_replace
 from pytensor.compile.mode import Mode
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 
-from pymc_extras.statespace.core.properties import (
-    Coord,
-    Parameter,
-    Shock,
-    State,
-)
+from pymc_extras.statespace.core.properties import Coord, Parameter, Shock, State
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
 from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import (
@@ -328,10 +323,14 @@ class BayesianETS(PyMCStateSpace):
             parameters.append(
                 Parameter(
                     name="initial_seasonal",
-                    shape=(self.seasonal_periods,)
-                    if k_endog == 1
-                    else (k_endog, self.seasonal_periods),
-                    dims=(ETS_SEASONAL_DIM,) if k_endog == 1 else (OBS_STATE_DIM, ETS_SEASONAL_DIM),
+                    shape=(
+                        (self.seasonal_periods,)
+                        if k_endog == 1
+                        else (k_endog, self.seasonal_periods)
+                    ),
+                    dims=(
+                        (ETS_SEASONAL_DIM,) if k_endog == 1 else (OBS_STATE_DIM, ETS_SEASONAL_DIM)
+                    ),
                     constraints=None,
                 )
             )
@@ -497,7 +496,9 @@ class BayesianETS(PyMCStateSpace):
         k_states_each = self.k_states // self.k_endog
 
         initial_level = self.make_and_register_variable(
-            "initial_level", shape=(self.k_endog,) if self.k_endog > 1 else (), dtype=floatX
+            "initial_level",
+            shape=(self.k_endog,) if self.k_endog > 1 else (),
+            dtype=floatX,
         )
 
         initial_states = [pt.zeros(k_states_each) for _ in range(self.k_endog)]
@@ -540,7 +541,9 @@ class BayesianETS(PyMCStateSpace):
 
         if self.trend:
             initial_trend = self.make_and_register_variable(
-                "initial_trend", shape=(self.k_endog,) if self.k_endog > 1 else (), dtype=floatX
+                "initial_trend",
+                shape=(self.k_endog,) if self.k_endog > 1 else (),
+                dtype=floatX,
             )
 
             if self.k_endog == 1:
@@ -588,9 +591,11 @@ class BayesianETS(PyMCStateSpace):
         if self.seasonal:
             initial_seasonal = self.make_and_register_variable(
                 "initial_seasonal",
-                shape=(self.seasonal_periods,)
-                if self.k_endog == 1
-                else (self.k_endog, self.seasonal_periods),
+                shape=(
+                    (self.seasonal_periods,)
+                    if self.k_endog == 1
+                    else (self.k_endog, self.seasonal_periods)
+                ),
                 dtype=floatX,
             )
             if self.k_endog == 1:
@@ -604,7 +609,9 @@ class BayesianETS(PyMCStateSpace):
                 ]
 
             gamma = self.make_and_register_variable(
-                "gamma", shape=() if self.k_endog == 1 else (self.k_endog,), dtype=floatX
+                "gamma",
+                shape=() if self.k_endog == 1 else (self.k_endog,),
+                dtype=floatX,
             )
 
             param = gamma if self.use_transformed_parameterization else (1 - alpha) * gamma
@@ -651,7 +658,8 @@ class BayesianETS(PyMCStateSpace):
 
         # Remove the stationary_dampening dummies before saving the transition matrix
         self.ssm["transition"] = pt.specify_shape(
-            graph_replace(T, {stationary_dampening: 1.0}), (self.k_states, self.k_states)
+            graph_replace(T, {stationary_dampening: 1.0}),
+            (self.k_states, self.k_states),
         )
 
         Zs = [np.zeros((self.k_endog, self.k_states // self.k_endog)) for _ in range(self.k_endog)]
@@ -675,14 +683,18 @@ class BayesianETS(PyMCStateSpace):
         else:
             state_cov_idx = ("state_cov", *np.diag_indices(self.k_posdef))
             state_cov = self.make_and_register_variable(
-                "sigma_state", shape=() if self.k_posdef == 1 else (self.k_posdef,), dtype=floatX
+                "sigma_state",
+                shape=() if self.k_posdef == 1 else (self.k_posdef,),
+                dtype=floatX,
             )
             self.ssm[state_cov_idx] = state_cov**2
 
         if self.measurement_error:
             obs_cov_idx = ("obs_cov", *np.diag_indices(self.k_endog))
             obs_cov = self.make_and_register_variable(
-                "sigma_obs", shape=() if self.k_endog == 1 else (self.k_endog,), dtype=floatX
+                "sigma_obs",
+                shape=() if self.k_endog == 1 else (self.k_endog,),
+                dtype=floatX,
             )
             self.ssm[obs_cov_idx] = obs_cov**2
 

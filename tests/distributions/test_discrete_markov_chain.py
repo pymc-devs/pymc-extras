@@ -29,7 +29,9 @@ def transition_probability_tests(steps, n_states, n_lags, n_draws, atol):
     # Test x0 is uniform over n_states
     for i in range(n_lags):
         assert np.allclose(
-            np.histogram(draws[:, ..., i], bins=n_states)[0] / n_draws, 1 / n_states, atol=atol
+            np.histogram(draws[:, ..., i], bins=n_states)[0] / n_draws,
+            1 / n_states,
+            atol=atol,
         )
 
     n_grams = [[tuple(row[i : i + n_lags + 1]) for i in range(len(row) - n_lags)] for row in draws]
@@ -240,7 +242,11 @@ class TestDiscreteMarkovRV:
 
             # Sampler needs no tuning
             idata = pm.sample(
-                tune=0, chains=4, draws=250, progressbar=False, compute_convergence_checks=False
+                tune=0,
+                chains=4,
+                draws=250,
+                progressbar=False,
+                compute_convergence_checks=False,
             )
 
         np.testing.assert_allclose(

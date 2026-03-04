@@ -80,9 +80,14 @@ class TestRegression:
         seasonal = st.FrequencySeasonality(name="annual", season_length=12, n=4)
         mod = reg + ll + seasonal
 
-        assert mod.ssm["design"].eval({"data_exog": regression_data}).shape == (100, 1, 2 + 2 + 8)
+        assert mod.ssm["design"].eval({"data_exog": regression_data}).shape == (
+            100,
+            1,
+            2 + 2 + 8,
+        )
         assert_allclose(
-            mod.ssm["design", 5, 0, :2].eval({"data_exog": regression_data}), regression_data[5]
+            mod.ssm["design", 5, 0, :2].eval({"data_exog": regression_data}),
+            regression_data[5],
         )
 
         if innovations:
@@ -311,7 +316,12 @@ def test_regression_mixed_shared_and_not_shared():
     assert mod.k_states == 4
     assert mod.k_posdef == 4
 
-    assert mod.state_names == ("A[data_1]", "A[data_2]", "B[joint_shared]", "C[joint_shared]")
+    assert mod.state_names == (
+        "A[data_1]",
+        "A[data_2]",
+        "B[joint_shared]",
+        "C[joint_shared]",
+    )
     assert mod.shock_names == ("A", "B_shared", "C_shared")
 
     data_joint = np.random.standard_normal(size=(10, 2))

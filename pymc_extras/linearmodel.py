@@ -9,7 +9,10 @@ from pymc_extras.model_builder import ModelBuilder
 
 class LinearModel(ModelBuilder, BaseEstimator):
     def __init__(
-        self, model_config: dict | None = None, sampler_config: dict | None = None, nsamples=100
+        self,
+        model_config: dict | None = None,
+        sampler_config: dict | None = None,
+        nsamples=100,
     ):
         self.nsamples = nsamples
         super().__init__(model_config, sampler_config)

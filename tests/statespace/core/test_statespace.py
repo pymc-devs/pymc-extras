@@ -23,14 +23,8 @@ from pymc_extras.statespace.utils.constants import (
     MATRIX_NAMES,
     SMOOTHER_OUTPUT_NAMES,
 )
-from tests.statespace.shared_fixtures import (
-    rng,
-)
-from tests.statespace.test_utilities import (
-    fast_eval,
-    load_nile_test_data,
-    make_test_inputs,
-)
+from tests.statespace.shared_fixtures import rng
+from tests.statespace.test_utilities import fast_eval, load_nile_test_data, make_test_inputs
 
 floatX = pytensor.config.floatX
 nile = load_nile_test_data()
@@ -95,7 +89,11 @@ def ss_mod():
     P0 = np.eye(2, dtype=floatX) * 1e6
 
     ss_mod = StateSpace(
-        k_endog=nile.shape[1], k_states=2, k_posdef=1, filter_type="standard", verbose=False
+        k_endog=nile.shape[1],
+        k_states=2,
+        k_posdef=1,
+        filter_type="standard",
+        verbose=False,
     )
     for X, name in zip(
         [Z, R, H, Q, P0],
@@ -272,7 +270,9 @@ def pymc_mod_no_exog(ss_mod_no_exog, rng):
         initial_trend = pm.Normal("initial_trend", dims=["state_trend"])
         P0_sigma = pm.Exponential("P0_sigma", 1)
         P0 = pm.Deterministic(
-            "P0", pt.eye(ss_mod_no_exog.k_states) * P0_sigma, dims=["state", "state_aux"]
+            "P0",
+            pt.eye(ss_mod_no_exog.k_states) * P0_sigma,
+            dims=["state", "state_aux"],
         )
         sigma_trend = pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
         ss_mod_no_exog.build_statespace_graph(y)
@@ -288,7 +288,9 @@ def pymc_mod_no_exog_mv(ss_mod_no_exog_mv, rng):
         trend_initial = pm.Normal("initial_trend", dims=["endog_trend", "state_trend"])
         P0_sigma = pm.Exponential("P0_sigma", 1)
         P0 = pm.Deterministic(
-            "P0", pt.eye(ss_mod_no_exog_mv.k_states) * P0_sigma, dims=["state", "state_aux"]
+            "P0",
+            pt.eye(ss_mod_no_exog_mv.k_states) * P0_sigma,
+            dims=["state", "state_aux"],
         )
         trend_sigma = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "shock_trend"])
         ss_mod_no_exog_mv.build_statespace_graph(y)
@@ -308,7 +310,9 @@ def pymc_mod_no_exog_mv_dt(ss_mod_no_exog_mv, rng):
         trend_initial = pm.Normal("initial_trend", dims=["endog_trend", "state_trend"])
         P0_sigma = pm.Exponential("P0_sigma", 1)
         P0 = pm.Deterministic(
-            "P0", pt.eye(ss_mod_no_exog_mv.k_states) * P0_sigma, dims=["state", "state_aux"]
+            "P0",
+            pt.eye(ss_mod_no_exog_mv.k_states) * P0_sigma,
+            dims=["state", "state_aux"],
         )
         trend_sigma = pm.Exponential("sigma_trend", 1, dims=["endog_trend", "shock_trend"])
         ss_mod_no_exog_mv.build_statespace_graph(y)
@@ -328,7 +332,9 @@ def pymc_mod_no_exog_dt(ss_mod_no_exog_dt, rng):
         initial_trend = pm.Normal("initial_trend", dims=["state_trend"])
         P0_sigma = pm.Exponential("P0_sigma", 1)
         P0 = pm.Deterministic(
-            "P0", pt.eye(ss_mod_no_exog_dt.k_states) * P0_sigma, dims=["state", "state_aux"]
+            "P0",
+            pt.eye(ss_mod_no_exog_dt.k_states) * P0_sigma,
+            dims=["state", "state_aux"],
         )
         sigma_trend = pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
         ss_mod_no_exog_dt.build_statespace_graph(y)
@@ -545,7 +551,9 @@ def test_sample_conditional_with_time_varying():
 
     ss_mod = TVCovariance()
     empty_data = pd.DataFrame(
-        np.nan, index=pd.date_range("2020-01-01", periods=100, freq="D"), columns=["data"]
+        np.nan,
+        index=pd.date_range("2020-01-01", periods=100, freq="D"),
+        columns=["data"],
     )
 
     coords = ss_mod.coords
@@ -607,7 +615,11 @@ def test_bad_forecast_arguments(use_datetime_index, caplog):
     scenario = pd.DataFrame(0, index=forecast_idx, columns=[0, 1, 2])
 
     ss_mod._validate_forecast_args(
-        time_index=time_idx, start=start, periods=10, scenario=scenario, use_scenario_index=True
+        time_index=time_idx,
+        start=start,
+        periods=10,
+        scenario=scenario,
+        use_scenario_index=True,
     )
     last_message = caplog.messages[-1]
     assert "start, end, and periods arguments are ignored" in last_message
@@ -824,7 +836,9 @@ def test_finalize_secenario_dict(data_type, use_datetime_index, use_scenario_ind
     scenario = {
         "a": data_type(np.zeros((10,))),
         "b": pd.DataFrame(
-            np.zeros((10, 2)), columns=ss_mod._fit_coords["features_b"], index=initial_index
+            np.zeros((10, 2)),
+            columns=ss_mod._fit_coords["features_b"],
+            index=initial_index,
         ),
     }
 
@@ -862,7 +876,8 @@ def test_invalid_scenarios():
 
     # Omitting the data raises
     with pytest.raises(
-        ValueError, match="This model was fit using exogenous data. Forecasting cannot be performed"
+        ValueError,
+        match="This model was fit using exogenous data. Forecasting cannot be performed",
     ):
         ss_mod._validate_scenario_data(None)
 
@@ -897,7 +912,8 @@ def test_invalid_scenarios():
 
     # If a data frame is provided, it needs to have all columns
     with pytest.raises(
-        ValueError, match="Scenario data for variable 'a' is missing the following column: column_2"
+        ValueError,
+        match="Scenario data for variable 'a' is missing the following column: column_2",
     ):
         scenario = pd.DataFrame(np.zeros((10, 1)), columns=["column_1"])
         ss_mod._validate_scenario_data(scenario)
@@ -931,7 +947,8 @@ def test_invalid_scenarios():
     )
 
     with pytest.raises(
-        ValueError, match="Scenario data must have the same number of time steps for all variables"
+        ValueError,
+        match="Scenario data must have the same number of time steps for all variables",
     ):
         scenario = {
             "a": pd.DataFrame(np.zeros((10, 2)), columns=ss_mod._fit_coords["features_a"]),
@@ -1005,7 +1022,12 @@ def test_forecast(filter_output, mod_name, idata_name, start, end, periods, rng,
     delta = time_idx.freq if is_datetime else 1
 
     forecast_idata = mod.forecast(
-        idata, start=start, end=end, periods=periods, filter_output=filter_output, random_seed=rng
+        idata,
+        start=start,
+        end=end,
+        periods=periods,
+        filter_output=filter_output,
+        random_seed=rng,
     )
 
     forecast_idx = forecast_idata.coords["time"].values
@@ -1013,7 +1035,12 @@ def test_forecast(filter_output, mod_name, idata_name, start, end, periods, rng,
 
     assert forecast_idx.shape == (10,)
     assert forecast_idata.forecast_latent.dims == ("chain", "draw", "time", "state")
-    assert forecast_idata.forecast_observed.dims == ("chain", "draw", "time", "observed_state")
+    assert forecast_idata.forecast_observed.dims == (
+        "chain",
+        "draw",
+        "time",
+        "observed_state",
+    )
 
     assert not np.any(np.isnan(forecast_idata.forecast_latent.values))
     assert not np.any(np.isnan(forecast_idata.forecast_observed.values))
@@ -1201,7 +1228,8 @@ def test_foreacast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
     # Extract exogenous data for the forecast period
     scenario = {
         "data_exog": pd.DataFrame(
-            exog_data[["x1"]].loc[start_date:].iloc[:n_periods], columns=exog_data[["x1"]].columns
+            exog_data[["x1"]].loc[start_date:].iloc[:n_periods],
+            columns=exog_data[["x1"]].columns,
         )
     }
 
@@ -1247,7 +1275,8 @@ def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
         idata_exog, filter_output_names=specific_outputs
     )
     missing_outputs = np.setdiff1d(
-        specific_outputs, [x for x in idata_filter_specific.posterior_predictive.data_vars]
+        specific_outputs,
+        [x for x in idata_filter_specific.posterior_predictive.data_vars],
     )
 
     assert missing_outputs.size == 0

@@ -1,16 +1,15 @@
-import arviz as az
 import numpy as np
 import pymc
 import pytensor
 import pytensor.tensor as pt
 
-from arviz import InferenceData
 from better_optimize import basinhopping, minimize
 from better_optimize.constants import minimize_method
 from pymc import DictToArrayBijection, Model, join_nonshared_inputs
 from pymc.blocking import RaveledVars
 from pymc.util import RandomSeed
 from pytensor.tensor.variable import TensorVariable
+from xarray import DataTree
 
 from pymc_extras.inference.laplace_approx.idata import (
     add_data_to_inference_data,
@@ -37,7 +36,7 @@ def fit_dadvi(
     random_seed: RandomSeed = None,
     progressbar: bool = True,
     **optimizer_kwargs,
-) -> az.InferenceData:
+) -> DataTree:
     """
     Does inference using Deterministic ADVI (Automatic Differentiation Variational Inference), DADVI for short.
 
@@ -197,9 +196,9 @@ def fit_dadvi(
         return_unconstrained=include_transformed,
         random_seed=random_seed,
     )
-    idata = InferenceData(posterior=posterior)
+    idata = DataTree.from_dict({"posterior": posterior})
     if include_transformed:
-        idata.add_groups(unconstrained_posterior=unconstrained_posterior)
+        idata["unconstrained_posterior"] = unconstrained_posterior
 
     var_name_to_model_var = {f"{var_name}_mu": var_name for var_name in initial_point_dict.keys()}
     var_name_to_model_var.update(

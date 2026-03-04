@@ -14,9 +14,7 @@ from pymc.testing import mock_sample_setup_and_teardown
 
 from pymc_extras.statespace import BayesianVARMAX
 from pymc_extras.statespace.utils.constants import SHORT_NAME_TO_LONG
-from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
-    rng,
-)
+from tests.statespace.shared_fixtures import rng  # pylint: disable=unused-import
 
 mock_sample = pytest.fixture(scope="function")(mock_sample_setup_and_teardown)
 
@@ -61,7 +59,10 @@ def pymc_mod(varma_mod, data):
             "state_chol", n=varma_mod.k_posdef, eta=1, sd_dist=pm.Exponential.dist(1)
         )
         ar_params = pm.Normal(
-            "ar_params", mu=0, sigma=0.1, dims=["observed_state", "lag_ar", "observed_state_aux"]
+            "ar_params",
+            mu=0,
+            sigma=0.1,
+            dims=["observed_state", "lag_ar", "observed_state_aux"],
         )
         state_cov = pm.Deterministic(
             "state_cov", state_chol @ state_chol.T, dims=["shock", "shock_aux"]
@@ -185,7 +186,13 @@ parameters = [
     },
 ]
 
-ids = ["from-posterior-cov", "scalar_shock_size", "array_shock_size", "user-cov", "trajectory"]
+ids = [
+    "from-posterior-cov",
+    "scalar_shock_size",
+    "array_shock_size",
+    "user-cov",
+    "trajectory",
+]
 
 
 @pytest.mark.parametrize("parameters", parameters, ids=ids)
@@ -222,7 +229,11 @@ def test_varmax_workflow(rng, mock_sample):
     with pm.Model(coords=ss_mod.coords) as m:
         state_cov_diag = pm.Exponential("state_cov_diag", 1, dims=["shock"])
         pm.Deterministic("state_cov", pt.diag(state_cov_diag), dims=["shock", "shock_aux"])
-        pm.Normal("ar_params", sigma=0.1, dims=["observed_state", "lag_ar", "observed_state_aux"])
+        pm.Normal(
+            "ar_params",
+            sigma=0.1,
+            dims=["observed_state", "lag_ar", "observed_state_aux"],
+        )
         pm.Exponential("sigma_obs", 1, dims=["observed_state"])
 
         ss_mod.build_statespace_graph(df)
@@ -281,7 +292,11 @@ class TestVARMAXWithExogenous:
         assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
 
     def test_create_varmax_with_exogenous_exog_names_dict(self, data):
-        exog_state_names = {"observed_0": ["a", "b"], "observed_1": ["c"], "observed_2": []}
+        exog_state_names = {
+            "observed_0": ["a", "b"],
+            "observed_1": ["c"],
+            "observed_2": [],
+        }
         mod = BayesianVARMAX(
             endog_names=["observed_0", "observed_1", "observed_2"],
             order=(1, 0),
@@ -373,7 +388,10 @@ class TestVARMAXWithExogenous:
                 for name in mod.exog_state_names:
                     if mod.exog_state_names.get(name):
                         pm.Normal(
-                            f"beta_{name}", mu=0, sigma=1, dims=mod.param_dims[f"beta_{name}"]
+                            f"beta_{name}",
+                            mu=0,
+                            sigma=1,
+                            dims=mod.param_dims[f"beta_{name}"],
                         )
 
             mod.build_statespace_graph(data=df)

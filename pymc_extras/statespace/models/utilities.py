@@ -6,11 +6,7 @@ import pytensor.tensor as pt
 
 from pytensor.tensor import TensorVariable
 
-from pymc_extras.statespace.utils.constants import (
-    LONG_MATRIX_NAMES,
-    MATRIX_NAMES,
-    VECTOR_VALUED,
-)
+from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES, MATRIX_NAMES, VECTOR_VALUED
 
 
 def cleanup_states(states: list[str]) -> list[str]:
@@ -279,7 +275,7 @@ def make_SARIMA_transition_matrix(
 
     if S > 0:
         # "Rolling" indices for seasonal differences
-        (row_roll_idx, col_roll_idx) = np.diag_indices(S * D)
+        row_roll_idx, col_roll_idx = np.diag_indices(S * D)
         row_roll_idx = row_roll_idx + d + 1
         col_roll_idx = col_roll_idx + d
 
@@ -563,7 +559,10 @@ def add_tensors_by_dim_labels(
         else:
             # In the case where we want to align multiple dimensions, use block_diag to accomplish padding on the last
             # two dimensions
-            dims = [*[i for i in range(tensor.ndim) if i not in labeled_axis], *labeled_axis]
+            dims = [
+                *[i for i in range(tensor.ndim) if i not in labeled_axis],
+                *labeled_axis,
+            ]
             return pt.linalg.block_diag(
                 type_cast(TensorVariable, tensor.transpose(*dims)),
                 type_cast(TensorVariable, other_tensor.transpose(*dims)),
@@ -642,10 +641,10 @@ def join_tensors_by_dim_labels(
 
 
 def get_exog_dims_from_idata(exog_name, idata):
-    if exog_name in idata.posterior.data_vars:
-        exog_dims = idata.posterior[exog_name].dims[2:]
+    if exog_name in idata["posterior"].data_vars:
+        exog_dims = idata["posterior"][exog_name].dims[2:]
     elif exog_name in getattr(idata, "constant_data", []):
-        exog_dims = idata.constant_data[exog_name].dims
+        exog_dims = idata["constant_data"][exog_name].dims
     elif exog_name in getattr(idata, "mutable_data", []):
         exog_dims = idata.mutable_data[exog_name].dims
     else:

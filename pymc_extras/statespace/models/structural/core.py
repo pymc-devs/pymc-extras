@@ -173,7 +173,13 @@ class StructuralTimeSeries(PyMCStateSpace):
         k_states, k_posdef, k_endog = ssm.k_states, ssm.k_posdef, ssm.k_endog
 
         self._init_info_objects(
-            param_info, data_info, shock_info, state_info, coords_info, k_states, k_endog
+            param_info,
+            data_info,
+            shock_info,
+            state_info,
+            coords_info,
+            k_states,
+            k_endog,
         )
 
         super().__init__(
@@ -981,7 +987,11 @@ class Component:
         return new_comp
 
     def build(
-        self, name=None, filter_type="standard", verbose=True, mode: str | Mode | None = None
+        self,
+        name=None,
+        filter_type="standard",
+        verbose=True,
+        mode: str | Mode | None = None,
     ):
         """
         Build a StructuralTimeSeries statespace model from the current component(s)

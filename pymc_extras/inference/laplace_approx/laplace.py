@@ -18,7 +18,6 @@ import logging
 from collections.abc import Callable
 from typing import Literal
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import pytensor
@@ -152,8 +151,8 @@ def unpack_last_axis(packed_input, packed_shapes):
         # Single case currently fails in unpack
         return [pt.split_dims(packed_input, packed_shapes[0], axis=-1)]
 
-    keep_axes = tuple(range(packed_input.ndim))[:-1]
-    return pt.unpack(packed_input, keep_axes=keep_axes, packed_shapes=packed_shapes)
+    axes = tuple(range(packed_input.ndim))[:-1]
+    return pt.unpack(packed_input, axes=axes, packed_shapes=packed_shapes)
 
 
 def draws_from_laplace_approx(
@@ -275,7 +274,9 @@ def draws_from_laplace_approx(
             zip(var_names, output_buffers, strict=not return_unconstrained)
         )
     }
-    posterior_dataset = dict_to_dataset(posterior, coords=model_coords, dims=model_dims, library=pm)
+    posterior_dataset = dict_to_dataset(
+        posterior, coords=model_coords, dims=model_dims, inference_library=pm
+    )
     unconstrained_posterior_dataset = None
 
     if return_unconstrained:
@@ -312,7 +313,7 @@ def draws_from_laplace_approx(
             unconstrained_posterior,
             coords=model_coords,
             dims=model_dims,
-            library=pm,
+            inference_library=pm,
         )
 
     return posterior_dataset, unconstrained_posterior_dataset
@@ -337,7 +338,7 @@ def fit_laplace(
     vectorize_draws: bool = True,
     optimizer_kwargs: dict | None = None,
     compile_kwargs: dict | None = None,
-) -> az.InferenceData:
+) -> xr.DataTree:
     """
     Create a Laplace (quadratic) approximation for a posterior distribution.
 
@@ -481,11 +482,14 @@ def fit_laplace(
         idata.fit["covariance_matrix"] = xr.DataArray(
             H_inv,
             dims=("rows", "columns"),
-            coords={"rows": unpacked_variable_names, "columns": unpacked_variable_names},
+            coords={
+                "rows": unpacked_variable_names,
+                "columns": unpacked_variable_names,
+            },
         )
 
     # We override the posterior/unconstrained_posterior from find_MAP
-    idata.posterior, unconstrained_posterior = draws_from_laplace_approx(
+    idata["posterior"], unconstrained_posterior = draws_from_laplace_approx(
         mean=idata.fit["mean_vector"].values,
         covariance=idata.fit["covariance_matrix"].values,
         draws=draws,
