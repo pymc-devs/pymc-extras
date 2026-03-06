@@ -24,7 +24,7 @@ from pymc_extras.model.marginal.marginal_model import (
     recover_marginals,
     unmarginalize,
 )
-from pymc_extras.utils.model_equivalence import equivalent_models
+from pymc_extras.utils.model_equivalence import equal_computations_up_to_root, equivalent_models
 
 # FIXME: A Blockwise of Reshape should be rewritten into a Reshape, as it's rather inneficient
 # This shows up in `test_one_to_many_unaligned_marginalized_rvs`
@@ -978,6 +978,33 @@ class TestRecoverMarginals:
         )
         np.testing.assert_almost_equal(logsumexp(post.lp_idx, axis=-1), 0)
         np.testing.assert_almost_equal(logsumexp(post.lp_sub_idx, axis=-1), 0)
+
+
+def test_forward_after_sampling():
+    # Regression test where forward graph was modified during sampling
+    # Specifically `model.initial_point`, but we test the whole pipeline
+
+    with pm.Model() as m:
+        p_outlier = pm.Beta("p_outlier", 1, 1)
+        is_outlier = pm.Bernoulli("is_outlier", p=p_outlier, shape=(10,))
+        sigma = pm.Exponential("sigma", 1, shape=(2,))
+        pm.Normal("y_hat", mu=0, sigma=sigma[is_outlier])
+
+    marginalized_mod = marginalize(m, [is_outlier])
+
+    # Check that model.initial_point() does not modify the inner graph of the MarginalRV
+    marginal_rv = marginalized_mod["y_hat"]
+    inner_outputs_before = marginal_rv.owner.op.fgraph.clone().outputs
+    marginalized_mod.initial_point()
+    inner_outputs_after = marginal_rv.owner.op.fgraph.outputs
+    assert equal_computations_up_to_root(inner_outputs_before, inner_outputs_after)
+
+    assert pm.draw(marginalized_mod["y_hat"]).shape == (10,)
+
+    with marginalized_mod:
+        pm.sample(tune=1, chains=1, draws=1, compute_convergence_checks=False)
+
+    assert pm.draw(marginalized_mod["y_hat"]).shape == (10,)
 
 
 def test_numpyro_compat():
