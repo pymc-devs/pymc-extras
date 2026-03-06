@@ -978,3 +978,16 @@ class TestRecoverMarginals:
         )
         np.testing.assert_almost_equal(logsumexp(post.lp_idx, axis=-1), 0)
         np.testing.assert_almost_equal(logsumexp(post.lp_sub_idx, axis=-1), 0)
+
+
+def test_numpyro_compat():
+    pytest.importorskip("numpyro")
+
+    with pm.Model() as m:
+        p_outlier = pm.Beta("p_outlier", 1, 1)
+        is_outlier = pm.Bernoulli("is_outlier", p=p_outlier, shape=(10,))
+        sigma = pm.Exponential("sigma", 1, shape=(2,))
+        pm.Normal("y_hat", mu=0, sigma=sigma[is_outlier])
+
+    with marginalize(m, [is_outlier]):
+        pm.sample(nuts_sampler="numpyro", chains=1, tune=1, draws=1)
