@@ -60,7 +60,10 @@ def test_AR1(rng):
     np.testing.assert_allclose(np.array([true_theta]), theta_inla, atol=0.2)
 
 
-@pytest.mark.filterwarnings(r"ignore:INLA is currently experimental")
+@pytest.mark.filterwarnings(
+    r"ignore:INLA is currently experimental",
+    r"ignore:Numba will use object mode to run",
+)
 def test_3_layer_normal(rng):
     """
     Test INLA against a simple toy problem:
