@@ -440,6 +440,16 @@ def test_base_class_raises():
         )
 
 
+def test_two_statespace_models_can_coexist_with_names(monkeypatch):
+    monkeypatch.setattr(PyMCStateSpace, "make_symbolic_graph", lambda self: None)
+
+    with pm.Model():
+        ssm_a = PyMCStateSpace(k_endog=1, k_states=1, k_posdef=1, name="a")
+        ssm_b = PyMCStateSpace(k_endog=1, k_states=1, k_posdef=1, name="b")
+
+        assert ssm_a.prefixed_name("data") != ssm_b.prefixed_name("data")
+
+
 def test_update_raises_if_missing_variables(ss_mod):
     with pm.Model() as mod:
         rho = pm.Normal("rho")

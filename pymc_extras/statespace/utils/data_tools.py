@@ -121,7 +121,7 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
         return preprocess_numpy_data(data.values, n_obs, obs_coords)
 
 
-def add_data_to_active_model(values, index, data_dims=None):
+def add_data_to_active_model(values, index, data_dims=None, data_name="data"):
     pymc_mod = modelcontext(None)
     if data_dims is None:
         data_dims = [TIME_DIM, OBS_STATE_DIM]
@@ -146,7 +146,7 @@ def add_data_to_active_model(values, index, data_dims=None):
     else:
         data_shape = (None, values.shape[-1])
 
-    data = pm.Data("data", values, dims=data_dims, shape=data_shape)
+    data = pm.Data(data_name, values, dims=data_dims, shape=data_shape)
 
     return data
 
@@ -178,7 +178,13 @@ def mask_missing_values_in_data(values, missing_fill_value=None):
 
 
 def register_data_with_pymc(
-    data, n_obs, obs_coords, register_data=True, missing_fill_value=None, data_dims=None
+    data,
+    n_obs,
+    obs_coords,
+    register_data=True,
+    missing_fill_value=None,
+    data_dims=None,
+    data_name="data",
 ):
     if isinstance(data, pt.TensorVariable | TensorSharedVariable):
         values, index = preprocess_tensor_data(data, n_obs, obs_coords)
@@ -192,7 +198,7 @@ def register_data_with_pymc(
     data, nan_mask = mask_missing_values_in_data(values, missing_fill_value)
 
     if register_data:
-        data = add_data_to_active_model(data, index, data_dims)
+        data = add_data_to_active_model(data, index, data_dims, data_name=data_name)
     else:
-        data = pytensor.shared(data, name="data")
+        data = pytensor.shared(data, name=data_name)
     return data, nan_mask
