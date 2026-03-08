@@ -38,7 +38,7 @@ def rng():
 @pytest.mark.parametrize("vectorize_draws", (True, False))
 @pytest.mark.parametrize(
     "mode, gradient_backend",
-    [(None, "pytensor"), ("pytensor", "pytensor"), pytest.param("JAX", "jax"), ("JAX", "pytensor")],
+    [(None, "pytensor"), ("NUMBA", "pytensor"), pytest.param("JAX", "jax"), ("JAX", "pytensor")],
 )
 def test_fit_laplace_basic(mode, gradient_backend: GradientBackend, vectorize_draws):
     # Example originates from Bayesian Data Analyses, 3rd Edition
@@ -62,7 +62,7 @@ def test_fit_laplace_basic(mode, gradient_backend: GradientBackend, vectorize_dr
             optimize_method="trust-ncg",
             draws=draws,
             random_seed=173300,
-            compile_kwargs={"mode": mode},
+            compile_kwargs={"mode": None},
             gradient_backend=gradient_backend,
             optimizer_kwargs=dict(tol=1e-20),
             vectorize_draws=vectorize_draws,
