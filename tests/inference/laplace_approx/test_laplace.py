@@ -59,7 +59,7 @@ def test_fit_laplace_basic(mode, gradient_backend: GradientBackend, vectorize_dr
 
         idata = pmx.fit(
             method="laplace",
-            optimize_method="trust-ncg",
+            optimize_method="L-BFGS-B",
             draws=draws,
             random_seed=173300,
             compile_kwargs={"mode": mode},
