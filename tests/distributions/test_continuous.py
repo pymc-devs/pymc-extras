@@ -34,7 +34,7 @@ from pymc.testing import (
 )
 
 # the distributions to be tested
-from pymc_extras.distributions import Chi, GenExtreme, Maxwell
+from pymc_extras.distributions import Chi, ExtGenPareto, GenExtreme, GenPareto, Maxwell
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:Numba will use object mode to run Generalized Extreme Value:UserWarning"
@@ -141,6 +141,227 @@ class TestGenExtreme(BaseTestDistributionRandom):
         "check_pymc_draws_match_reference",
         "check_rv_size",
     ]
+
+
+class TestGenParetoClass:
+    """
+    Wrapper class so that tests of experimental additions can be dropped into
+    PyMC directly on adoption.
+    """
+
+    def test_logp(self):
+        def ref_logp(value, mu, sigma, xi):
+            scaled = (value - mu) / sigma
+            if scaled < 0:
+                return -np.inf
+            if xi < 0 and scaled > -1 / xi:
+                return -np.inf
+            if 1 + xi * scaled <= 0:
+                return -np.inf
+            return sp.genpareto.logpdf(value, c=xi, loc=mu, scale=sigma)
+
+        check_logp(
+            GenPareto,
+            R,
+            {
+                "mu": R,
+                "sigma": Rplusbig,
+                "xi": Domain([-0.5, -0.1, 0, 0.1, 0.5, 1]),
+            },
+            ref_logp,
+            # GPD has no mathematical constraint on xi (unlike GEV), only sigma > 0
+            skip_paramdomain_outside_edge_test=True,
+        )
+
+    def test_logcdf(self):
+        def ref_logcdf(value, mu, sigma, xi):
+            scaled = (value - mu) / sigma
+            if scaled < 0:
+                return -np.inf
+            if xi < 0 and scaled > -1 / xi:
+                return 0.0  # log(1) at upper bound
+            return sp.genpareto.logcdf(value, c=xi, loc=mu, scale=sigma)
+
+        check_logcdf(
+            GenPareto,
+            R,
+            {
+                "mu": R,
+                "sigma": Rplusbig,
+                "xi": Domain([-0.5, -0.1, 0, 0.1, 0.5, 1]),
+            },
+            ref_logcdf,
+            decimal=select_by_precision(float64=6, float32=2),
+            # GPD has no mathematical constraint on xi (unlike GEV), only sigma > 0
+            skip_paramdomain_outside_edge_test=True,
+        )
+
+    @pytest.mark.parametrize(
+        "mu, sigma, xi, size, expected",
+        [
+            (0, 1, 0, None, np.log(2)),  # Exponential case: median = log(2)
+            (0, 1, 0.5, None, (2**0.5 - 1) / 0.5),  # median = (2^xi - 1) / xi
+            (0, 1, -0.5, None, (2**-0.5 - 1) / -0.5),
+            (1, 2, 0, None, 1 + 2 * np.log(2)),  # mu + sigma * log(2)
+            (0, 1, 0.5, 5, np.full(5, (2**0.5 - 1) / 0.5)),
+            (
+                np.arange(3),
+                np.arange(1, 4),
+                0.5,
+                (2, 3),
+                np.full((2, 3), np.arange(3) + np.arange(1, 4) * (2**0.5 - 1) / 0.5),
+            ),
+        ],
+    )
+    def test_genpareto_support_point(self, mu, sigma, xi, size, expected):
+        with pm.Model() as model:
+            GenPareto("x", mu=mu, sigma=sigma, xi=xi, size=size)
+        assert_support_point_is_expected(model, expected)
+
+
+class TestGenPareto(BaseTestDistributionRandom):
+    pymc_dist = GenPareto
+    pymc_dist_params = {"mu": 0, "sigma": 1, "xi": 0.1}
+    expected_rv_op_params = {"mu": 0, "sigma": 1, "xi": 0.1}
+    # GenPareto uses same xi sign convention as scipy
+    reference_dist_params = {"loc": 0, "scale": 1, "c": 0.1}
+    reference_dist = seeded_scipy_distribution_builder("genpareto")
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+
+class TestExtGenParetoClass:
+    """
+    Tests for the Extended Generalized Pareto Distribution (ExtGPD).
+    ExtGPD has CDF G(x) = H(x)^kappa where H is the GPD CDF.
+    """
+
+    def test_logp(self):
+        def ref_logp(value, mu, sigma, xi, kappa):
+            # ExtGPD pdf: g(x) = kappa * H(x)^(kappa-1) * h(x)
+            # where H is GPD CDF and h is GPD PDF
+            scaled = (value - mu) / sigma
+            if scaled < 0:
+                return -np.inf
+            if xi < 0 and scaled > -1 / xi:
+                return -np.inf
+            if 1 + xi * scaled <= 0:
+                return -np.inf
+
+            H = sp.genpareto.cdf(value, c=xi, loc=mu, scale=sigma)
+            if H <= 0:
+                return -np.inf
+            log_h = sp.genpareto.logpdf(value, c=xi, loc=mu, scale=sigma)
+            return np.log(kappa) + (kappa - 1) * np.log(H) + log_h
+
+        check_logp(
+            ExtGenPareto,
+            Rplus,
+            {
+                "mu": Domain([0, 0, 0, 0], edges=(0, 0)),
+                "sigma": Rplusbig,
+                "xi": Domain([-0.3, 0, 0.1, 0.5]),
+                "kappa": Domain([0.5, 1.0, 2.0, 5.0]),
+            },
+            ref_logp,
+            skip_paramdomain_outside_edge_test=True,
+        )
+
+    def test_logcdf(self):
+        def ref_logcdf(value, mu, sigma, xi, kappa):
+            # ExtGPD CDF: G(x) = H(x)^kappa
+            # log CDF = kappa * log(H(x))
+            scaled = (value - mu) / sigma
+            if scaled < 0:
+                return -np.inf
+            if xi < 0 and scaled > -1 / xi:
+                return 0.0  # log(1) at upper bound
+
+            H = sp.genpareto.cdf(value, c=xi, loc=mu, scale=sigma)
+            if H <= 0:
+                return -np.inf
+            return kappa * np.log(H)
+
+        check_logcdf(
+            ExtGenPareto,
+            Rplus,
+            {
+                "mu": Domain([0, 0, 0, 0], edges=(0, 0)),
+                "sigma": Rplusbig,
+                "xi": Domain([-0.3, 0, 0.1, 0.5]),
+                "kappa": Domain([0.5, 1.0, 2.0, 5.0]),
+            },
+            ref_logcdf,
+            decimal=select_by_precision(float64=6, float32=2),
+            skip_paramdomain_outside_edge_test=True,
+        )
+
+    def test_kappa_one_equals_gpd(self):
+        """When kappa=1, ExtGPD should equal GPD."""
+
+        # Create ExtGPD with kappa=1
+        ext_dist = ExtGenPareto.dist(mu=0, sigma=1, xi=0.2, kappa=1)
+        gpd_dist = GenPareto.dist(mu=0, sigma=1, xi=0.2)
+
+        test_values = np.array([0.1, 0.5, 1.0, 2.0, 5.0])
+
+        ext_logp = pm.logp(ext_dist, test_values).eval()
+        gpd_logp = pm.logp(gpd_dist, test_values).eval()
+
+        np.testing.assert_allclose(ext_logp, gpd_logp, rtol=1e-6)
+
+    @pytest.mark.parametrize(
+        "mu, sigma, xi, kappa, size, expected",
+        [
+            # kappa=1 should give GPD median: sigma * (2^xi - 1) / xi
+            (0, 1, 0.5, 1.0, None, (2**0.5 - 1) / 0.5),
+            # kappa=1, xi=0: exponential median = log(2)
+            (0, 1, 0, 1.0, None, np.log(2)),
+            # kappa=2: H(m) = 0.5^0.5, so m = sigma * [(1-0.5^0.5)^(-xi) - 1] / xi
+            (0, 1, 0.5, 2.0, None, ((1 - 0.5**0.5) ** (-0.5) - 1) / 0.5),
+            # With size
+            (0, 1, 0.5, 1.0, 5, np.full(5, (2**0.5 - 1) / 0.5)),
+        ],
+    )
+    def test_extgenpareto_support_point(self, mu, sigma, xi, kappa, size, expected):
+        with pm.Model() as model:
+            ExtGenPareto("x", mu=mu, sigma=sigma, xi=xi, kappa=kappa, size=size)
+        assert_support_point_is_expected(model, expected)
+
+
+class TestExtGenPareto(BaseTestDistributionRandom):
+    """Test random sampling for ExtGPD."""
+
+    pymc_dist = ExtGenPareto
+    pymc_dist_params = {"mu": 0, "sigma": 1, "xi": 0.1, "kappa": 2.0}
+    expected_rv_op_params = {"mu": 0, "sigma": 1, "xi": 0.1, "kappa": 2.0}
+    tests_to_run = [
+        "check_pymc_params_match_rv_op",
+        "check_rv_size",
+    ]
+
+    def test_random_samples_follow_distribution(self):
+        """Test that random samples follow the ExtGPD distribution using KS test."""
+        rng = np.random.default_rng(42)
+        mu, sigma, xi, kappa = 0, 1, 0.2, 2.0
+
+        # Generate samples
+        dist = ExtGenPareto.dist(mu=mu, sigma=sigma, xi=xi, kappa=kappa)
+        samples = pm.draw(dist, draws=1000, random_seed=rng)
+
+        # Define ExtGPD CDF for KS test
+        def ext_gpd_cdf(x, mu, sigma, xi, kappa):
+            H = sp.genpareto.cdf(x, c=xi, loc=mu, scale=sigma)
+            return np.power(H, kappa)
+
+        # KS test
+        from scipy.stats import kstest
+
+        stat, pvalue = kstest(samples, lambda x: ext_gpd_cdf(x, mu, sigma, xi, kappa))
+        assert pvalue > 0.01, f"KS test failed with p-value {pvalue}"
 
 
 class TestChiClass:
