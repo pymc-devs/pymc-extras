@@ -535,6 +535,7 @@ class ModelBuilder:
         self,
         X_pred: np.ndarray | pd.DataFrame | pd.Series,
         extend_idata: bool = True,
+        predictions: bool = True,
         **kwargs,
     ) -> np.ndarray:
         """
@@ -546,6 +547,9 @@ class ModelBuilder:
         X_pred : array-like if sklearn is available, otherwise array, shape (n_pred, n_features)
             The input data used for prediction.
         extend_idata : Boolean determining whether the predictions should be added to inference data object.
+            Defaults to True.
+        predictions : bool
+            Whether to use the predictions group for posterior predictive sampling.
             Defaults to True.
         **kwargs: Additional arguments to pass to pymc.sample_posterior_predictive
 
@@ -563,8 +567,10 @@ class ModelBuilder:
         >>> pred_mean = model.predict(prediction_data)
         """
 
+        X_pred = self._validate_data(X_pred)
+
         posterior_predictive_samples = self.sample_posterior_predictive(
-            X_pred, extend_idata, combined=False, **kwargs
+            X_pred, extend_idata, combined=False, predictions=predictions, **kwargs
         )
 
         if self.output_var not in posterior_predictive_samples:
@@ -629,7 +635,9 @@ class ModelBuilder:
 
         return prior_predictive_samples
 
-    def sample_posterior_predictive(self, X_pred, extend_idata, combined, **kwargs):
+    def sample_posterior_predictive(
+        self, X_pred, extend_idata, combined, predictions=True, **kwargs
+    ):
         """
         Sample from the model's posterior predictive distribution.
 
@@ -639,6 +647,8 @@ class ModelBuilder:
             The input data used for prediction using prior distribution..
         extend_idata : Boolean determining whether the predictions should be added to inference data object.
             Defaults to False.
+        predictions : Boolean determing whether to use the predictions group for posterior predictive sampling.
+            Defaults to True.
         combined: Combine chain and draw dims into sample. Won't work if a dim named sample already exists.
             Defaults to True.
         **kwargs: Additional arguments to pass to pymc.sample_posterior_predictive
@@ -651,13 +661,15 @@ class ModelBuilder:
         self._data_setter(X_pred)
 
         with self.model:  # sample with new input data
-            post_pred = pm.sample_posterior_predictive(self.idata, **kwargs)
+            post_pred = pm.sample_posterior_predictive(
+                self.idata, predictions=predictions, **kwargs
+            )
             if extend_idata:
                 self.idata.extend(post_pred, join="right")
 
-        posterior_predictive_samples = az.extract(
-            post_pred, "posterior_predictive", combined=combined
-        )
+        group_name = "predictions" if predictions else "posterior_predictive"
+
+        posterior_predictive_samples = az.extract(post_pred, group_name, combined=combined)
 
         return posterior_predictive_samples
 
@@ -705,6 +717,7 @@ class ModelBuilder:
         X_pred: np.ndarray | pd.DataFrame | pd.Series,
         extend_idata: bool = True,
         combined: bool = True,
+        predictions: bool = True,
         **kwargs,
     ) -> xr.DataArray:
         """
@@ -718,6 +731,8 @@ class ModelBuilder:
             Defaults to True.
         combined: Combine chain and draw dims into sample. Won't work if a dim named sample already exists.
             Defaults to True.
+        predictions : Boolean determing whether to use the predictions group for posterior predictive sampling.
+            Defaults to True.
         **kwargs: Additional arguments to pass to pymc.sample_posterior_predictive
 
         Returns
@@ -728,7 +743,7 @@ class ModelBuilder:
 
         X_pred = self._validate_data(X_pred)
         posterior_predictive_samples = self.sample_posterior_predictive(
-            X_pred, extend_idata, combined, **kwargs
+            X_pred, extend_idata, combined, predictions=predictions, **kwargs
         )
 
         if self.output_var not in posterior_predictive_samples:
