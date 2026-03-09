@@ -14,8 +14,8 @@ dependencies:
   - pytest
   - pytest-cov
   - pydantic>=2.0.0
-  - preliz>=0.20.0
+  - preliz>=0.22.0
   - pip
   - pip:
       - jax
-      - blackjax
+      - blackjax>=0.12
