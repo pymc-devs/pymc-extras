@@ -92,6 +92,9 @@ allow-direct-references = true
 [tool.pytest.ini_options]
 minversion = "6.0"
 xfail_strict = true
+markers = [
+  "slow: marks tests as slow-running (deselect with '-m \"not slow\"')",
+]
 addopts = [
   "-v",
   "--doctest-modules",
