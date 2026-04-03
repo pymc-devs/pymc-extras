@@ -18,6 +18,42 @@ ATOL = 1e-8 if floatX.endswith("64") else 1e-4
 RTOL = 0 if floatX.endswith("64") else 1e-6
 
 
+def _build_named_structural_model(name: str):
+    return (
+        st.LevelTrend(order=1, innovations_order=1)
+        + st.Regression(name="reg", state_names=["x"])
+        + st.MeasurementError(name="obs")
+    ).build(name=name, verbose=False)
+
+
+def test_structural_name_propagates_to_base_and_scopes_p0():
+    ss_mod = _build_named_structural_model(name="m1")
+
+    assert ss_mod.name == "m1"
+    assert "P0" in ss_mod.param_names
+    assert ss_mod.prefixed_name("P0") in ss_mod._name_to_variable
+    assert "P0" not in ss_mod._name_to_variable
+
+
+def test_named_structural_models_do_not_collide_in_placeholder_registries():
+    with pm.Model():
+        m1 = _build_named_structural_model(name="m1")
+        m2 = _build_named_structural_model(name="m2")
+
+    var_keys_1 = set(m1._name_to_variable)
+    var_keys_2 = set(m2._name_to_variable)
+    data_keys_1 = set(m1._name_to_data)
+    data_keys_2 = set(m2._name_to_data)
+
+    assert var_keys_1.isdisjoint(var_keys_2)
+    assert data_keys_1.isdisjoint(data_keys_2)
+
+    assert var_keys_1 == {m1.prefixed_name(name) for name in m1.param_names}
+    assert var_keys_2 == {m2.prefixed_name(name) for name in m2.param_names}
+    assert data_keys_1 == {m1.prefixed_name(name) for name in m1.data_names}
+    assert data_keys_2 == {m2.prefixed_name(name) for name in m2.data_names}
+
+
 def test_add_components():
     ll = st.LevelTrend(order=2)
     se = st.TimeSeasonality(name="seasonal", season_length=12)
@@ -195,3 +231,139 @@ def test_sequence_type_component_arguments(arg_type):
 
     assert ss_mod.k_endog == len(state_names)
     assert sorted(ss_mod.observed_states) == sorted(list(state_names))
+
+
+class TestGraphReplacePlaceholderNamespacing:
+    """Tests for the graph_replace-based placeholder namespacing in StructuralTimeSeries."""
+
+    def test_same_component_reused_in_two_named_models_no_aliasing(self):
+        """A single Component used in two named models creates independent placeholders."""
+        trend = st.LevelTrend(order=1, innovations_order=1)
+
+        m1 = trend.build(name="m1", verbose=False)
+        m2 = trend.build(name="m2", verbose=False)
+
+        # All m1 placeholders should be prefixed with "m1_"
+        for sv in m1._tensor_variable_info:
+            assert sv.name.startswith("m1_"), f"Expected m1_ prefix, got {sv.name}"
+            # P0 tensor name is mutated by PytensorRepresentation.__setitem__
+            if not sv.name.endswith("_P0"):
+                assert sv.name == sv.symbolic_variable.name
+
+        # All m2 placeholders should be prefixed with "m2_"
+        for sv in m2._tensor_variable_info:
+            assert sv.name.startswith("m2_"), f"Expected m2_ prefix, got {sv.name}"
+            if not sv.name.endswith("_P0"):
+                assert sv.name == sv.symbolic_variable.name
+
+        # No overlap in placeholder Variable objects between models
+        m1_var_ids = {id(sv.symbolic_variable) for sv in m1._tensor_variable_info}
+        m2_var_ids = {id(sv.symbolic_variable) for sv in m2._tensor_variable_info}
+        assert m1_var_ids.isdisjoint(m2_var_ids)
+
+    def test_reused_component_with_data_placeholders(self):
+        """Regression (data placeholders) also get independent prefixed copies."""
+        comp = st.LevelTrend(order=1, innovations_order=1) + st.Regression(
+            name="reg", state_names=["x"]
+        )
+
+        m1 = comp.build(name="m1", verbose=False)
+        m2 = comp.build(name="m2", verbose=False)
+
+        # Variable placeholders
+        m1_var_ids = {id(sv.symbolic_variable) for sv in m1._tensor_variable_info}
+        m2_var_ids = {id(sv.symbolic_variable) for sv in m2._tensor_variable_info}
+        assert m1_var_ids.isdisjoint(m2_var_ids)
+
+        # Data placeholders
+        m1_data_ids = {id(sd.symbolic_data) for sd in m1._tensor_data_info}
+        m2_data_ids = {id(sd.symbolic_data) for sd in m2._tensor_data_info}
+        assert m1_data_ids.isdisjoint(m2_data_ids)
+
+        for sd in m1._tensor_data_info:
+            assert sd.name.startswith("m1_")
+            assert sd.name == sd.symbolic_data.name
+        for sd in m2._tensor_data_info:
+            assert sd.name.startswith("m2_")
+            assert sd.name == sd.symbolic_data.name
+
+    def test_symbolic_info_name_matches_variable_name(self):
+        """After prefixing, metadata names must match actual Variable.name."""
+        mod = (st.LevelTrend(order=1, innovations_order=1) + st.MeasurementError(name="obs")).build(
+            name="test_model", verbose=False
+        )
+
+        for sv in mod._tensor_variable_info:
+            # P0 tensor name is mutated by PytensorRepresentation.__setitem__
+            if not sv.name.endswith("_P0"):
+                assert (
+                    sv.name == sv.symbolic_variable.name
+                ), f"Mismatch: metadata={sv.name}, variable={sv.symbolic_variable.name}"
+
+        for sd in mod._tensor_data_info:
+            assert (
+                sd.name == sd.symbolic_data.name
+            ), f"Mismatch: metadata={sd.name}, data={sd.symbolic_data.name}"
+
+        # Validate via the dedicated helper
+        mod._validate_symbolic_info()
+
+    def test_unnamed_model_preserves_original_placeholders(self):
+        """When name is None, placeholders should be unchanged from the component."""
+        trend = st.LevelTrend(order=1, innovations_order=1)
+        mod = trend.build(name=None, verbose=False)
+
+        for sv in mod._tensor_variable_info:
+            # P0 tensor name is mutated by PytensorRepresentation.__setitem__
+            if sv.name != "P0":
+                assert sv.name == sv.symbolic_variable.name
+
+    def test_prefixed_placeholders_are_in_ssm_graph(self):
+        """Old unprefixed placeholders must not appear in the SSM matrices of
+        a named model; new prefixed ones must."""
+        from pytensor.graph.traversal import explicit_graph_inputs
+
+        from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES
+
+        trend = st.LevelTrend(order=1, innovations_order=1)
+        mod = trend.build(name="ns", verbose=False)
+
+        # Collect all explicit graph inputs across all SSM matrices
+        all_matrices = [getattr(mod.ssm, name) for name in LONG_MATRIX_NAMES]
+        graph_inputs = set(explicit_graph_inputs(all_matrices))
+        graph_input_names = {v.name for v in graph_inputs if hasattr(v, "name") and v.name}
+
+        # Every non-P0 registered variable should appear in the graph as a prefixed input
+        # (P0 is excluded because __setitem__ renames its tensor to "initial_state_cov")
+        expected_names = {
+            sv.name for sv in mod._tensor_variable_info if not sv.name.endswith("_P0")
+        }
+        # graph inputs should be a superset of registered variable names
+        assert (
+            expected_names <= graph_input_names
+        ), f"Missing from graph: {expected_names - graph_input_names}"
+
+        # Original unprefixed names (pre-prefix) should NOT appear
+        original_names = {"initial_level_trend", "sigma_level_trend"}
+        assert original_names.isdisjoint(
+            graph_input_names
+        ), f"Old unprefixed names still in graph: {original_names & graph_input_names}"
+
+    def test_validate_symbolic_info_catches_mismatch(self):
+        """_validate_symbolic_info should raise on name/variable mismatch."""
+        from pymc_extras.statespace.core.properties import SymbolicVariable, SymbolicVariableInfo
+
+        mod = st.LevelTrend(order=1, innovations_order=1).build(name="v", verbose=False)
+
+        # Corrupt a metadata name to trigger validation error
+        corrupted = SymbolicVariableInfo(
+            symbolic_variables=tuple(
+                SymbolicVariable(name="WRONG_NAME", symbolic_variable=sv.symbolic_variable)
+                if i == 0
+                else sv
+                for i, sv in enumerate(mod._tensor_variable_info)
+            )
+        )
+        mod._tensor_variable_info = corrupted
+        with pytest.raises(ValueError, match="Variable name mismatch"):
+            mod._validate_symbolic_info()
