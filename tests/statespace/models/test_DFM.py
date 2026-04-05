@@ -9,6 +9,7 @@ import pytest
 import statsmodels.api as sm
 
 from numpy.testing import assert_allclose
+from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.graph.traversal import explicit_graph_inputs
 from statsmodels.tsa.statespace.dynamic_factor import DynamicFactor
 
@@ -27,6 +28,8 @@ from pymc_extras.statespace.utils.constants import (
     SHORT_NAME_TO_LONG,
 )
 from tests.statespace.shared_fixtures import rng
+
+mock_sample = pytest.fixture(scope="function")(mock_sample_setup_and_teardown)
 
 floatX = pytensor.config.floatX
 
@@ -718,3 +721,50 @@ class TestDFMConfiguration:
         assert len(mod.shock_names) == k_factors + k_endog + (
             k_exog if shared_exog_states else k_exog * k_endog
         )
+
+
+def test_dfm_workflow(rng, mock_sample):
+    df = pd.read_csv(
+        "tests/statespace/_data/statsmodels_macrodata_processed.csv",
+        index_col=0,
+        parse_dates=True,
+    ).astype(floatX)
+    df.index.freq = df.index.inferred_freq
+
+    ss_mod = BayesianDynamicFactor(
+        endog_names=df.columns.tolist(),
+        k_factors=1,
+        factor_order=1,
+        error_order=0,
+        measurement_error=True,
+        verbose=False,
+    )
+
+    with pm.Model(coords=ss_mod.coords) as m:
+        pm.Normal("x0", dims=["state"])
+        P0_diag = pm.Exponential("P0_diag", 1, dims=["state"])
+        pm.Deterministic("P0", pt.diag(P0_diag), dims=["state", "state_aux"])
+
+        pm.Normal("factor_loadings", dims=["observed_state", "factor"])
+        pm.Normal("factor_ar", dims=["factor", "lag_ar"])
+        pm.Exponential("error_sigma", 1, dims=["observed_state"])
+        pm.Exponential("sigma_obs", 1, dims=["observed_state"])
+
+        ss_mod.build_statespace_graph(df)
+
+        idata = pm.sample()
+
+    post = ss_mod.sample_conditional_posterior(idata, mvn_method="svd")
+    assert "filtered_posterior" in post
+    assert "smoothed_posterior" in post
+    assert "predicted_posterior" in post
+
+    forecast = ss_mod.forecast(idata, periods=10, random_seed=rng)
+    assert "forecast_latent" in forecast
+    assert "forecast_observed" in forecast
+    assert np.isfinite(forecast.forecast_latent.values).all()
+    assert np.isfinite(forecast.forecast_observed.values).all()
+
+    irf = ss_mod.impulse_response_function(idata, n_steps=10, random_seed=rng)
+    assert "irf" in irf
+    assert np.isfinite(irf.irf.values).all()

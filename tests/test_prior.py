@@ -1,8 +1,8 @@
 from copy import deepcopy
-from typing import NamedTuple
 
 import numpy as np
 import pymc as pm
+import pytensor
 import pytensor.tensor as pt
 import pytest
 import xarray as xr
@@ -11,6 +11,7 @@ from graphviz.graphs import Digraph
 from preliz.distributions import distributions as preliz_distributions
 from pydantic import ValidationError
 from pymc.model_graph import fast_eval
+from xarray import DataArray
 
 import pymc_extras.prior as pr
 
@@ -33,6 +34,7 @@ from pymc_extras.prior import (
     register_tensor_transform,
     sample_prior,
 )
+from pymc_extras.utils.model_equivalence import equivalent_models
 
 
 @pytest.mark.parametrize(
@@ -87,9 +89,28 @@ def test_handle_dims_with_impossible_dims(x, dims, desired_dims) -> None:
 
 
 def test_missing_transform() -> None:
-    match = "Neither pytensor.tensor nor pymc.math have the function 'foo_bar'"
+    match = r"Function 'foo_bar' not present in pytensor.tensor or pymc.math"
     with pytest.raises(UnknownTransformError, match=match):
         Prior("Normal", transform="foo_bar")
+
+
+def test_getattr() -> None:
+    assert pr.Normal() == Prior("Normal")
+
+
+def test_import_directly() -> None:
+    try:
+        from pymc_extras.prior import Normal
+    except Exception as e:
+        pytest.fail(f"Unexpected exception: {e}")
+
+    assert Normal() == Prior("Normal")
+
+
+def test_import_incorrect_directly() -> None:
+    match = "PyMC doesn't have a distribution of name 'SomeIncorrectDistribution'"
+    with pytest.raises(UnsupportedDistributionError, match=match):
+        from pymc_extras.prior import SomeIncorrectDistribution  # noqa: F401
 
 
 def test_get_item() -> None:
@@ -240,21 +261,20 @@ def test_create_variable_multiple_times() -> None:
             assert fast_eval(model[f"{prefix}{suffix}"]).shape == dim
 
 
-@pytest.fixture
-def large_var() -> Prior:
-    mu = Prior(
+def test_create_variable() -> None:
+    large_var = Prior(
         "Normal",
-        mu=Prior("Normal", mu=1),
-        sigma=Prior("HalfNormal"),
-        dims="channel",
-        centered=False,
+        mu=Prior(
+            "Normal",
+            mu=Prior("Normal", mu=1),
+            sigma=Prior("HalfNormal"),
+            dims="channel",
+            centered=False,
+        ),
+        sigma=Prior("HalfNormal", sigma=Prior("HalfNormal"), dims="geo"),
+        dims=("geo", "channel"),
     )
-    sigma = Prior("HalfNormal", sigma=Prior("HalfNormal"), dims="geo")
 
-    return Prior("Normal", mu=mu, sigma=sigma, dims=("geo", "channel"))
-
-
-def test_create_variable(large_var) -> None:
     coords = {
         "channel": ["a", "b", "c"],
         "geo": ["x", "y"],
@@ -303,9 +323,21 @@ def test_transform() -> None:
         assert fast_eval(model[var_name]).shape == dim
 
 
-def test_to_dict(large_var) -> None:
-    data = large_var.to_dict()
+def test_to_dict() -> None:
+    large_var = Prior(
+        "Normal",
+        mu=Prior(
+            "Normal",
+            mu=Prior("Normal", mu=1),
+            sigma=Prior("HalfNormal"),
+            dims="channel",
+            centered=False,
+        ),
+        sigma=Prior("HalfNormal", sigma=Prior("HalfNormal"), dims="geo"),
+        dims=("geo", "channel"),
+    )
 
+    data = large_var.to_dict()
     assert data == {
         "dist": "Normal",
         "kwargs": {
@@ -338,6 +370,8 @@ def test_to_dict(large_var) -> None:
         "dims": ("geo", "channel"),
     }
 
+    assert Prior.from_dict(data) == large_var
+
 
 def test_to_dict_numpy() -> None:
     var = Prior("Normal", mu=np.array([0, 10, 20]), dims="channel")
@@ -350,8 +384,20 @@ def test_to_dict_numpy() -> None:
     }
 
 
-def test_dict_round_trip(large_var) -> None:
-    assert Prior.from_dict(large_var.to_dict()) == large_var
+@pytest.mark.parametrize("dims", (None, (), ("city",)))
+def test_dict_round_trip_dims(dims) -> None:
+    prior = Prior("Normal", dims=dims)
+    d = prior.to_dict()
+
+    expected_d = {"dist": "Normal"}
+    if dims is not None:
+        expected_d["dims"] = dims
+    assert d == expected_d
+
+    prior_again = Prior.from_dict(d)
+    assert prior_again.dims == dims
+    assert prior_again == prior
+    assert prior_again.to_dict() == expected_d
 
 
 def test_constrain_with_transform_error() -> None:
@@ -361,16 +407,12 @@ def test_constrain_with_transform_error() -> None:
         var.constrain(lower=0, upper=1)
 
 
-def test_constrain(mocker) -> None:
+def test_constrain() -> None:
     var = Prior("Normal")
 
-    mocker.patch(
-        "preliz.maxent",
-        return_value=mocker.Mock(params_dict={"mu": 5, "sigma": 2}),
-    )
-
-    new_var = var.constrain(lower=0, upper=1)
-    assert new_var == Prior("Normal", mu=5, sigma=2)
+    new_var = var.constrain(lower=0, upper=1, mass=0.9545)
+    np.testing.assert_allclose(new_var.parameters["mu"], 0.5, rtol=1e-4)
+    np.testing.assert_allclose(new_var.parameters["sigma"], 0.25, rtol=1e-4)
 
 
 def test_dims_change() -> None:
@@ -397,12 +439,12 @@ def test_deepcopy() -> None:
     new_priors = deepcopy(priors)
     priors["alpha"].dims = "channel"
 
-    assert new_priors["alpha"].dims == ()
+    assert new_priors["alpha"].dims is None
 
 
-@pytest.fixture
-def mmm_default_model_config():
-    return {
+def test_backwards_compat() -> None:
+    """Make sure functionality is compatible with use in PyMC-marketing, where Prior objects originated from."""
+    mmm_default_model_config = {
         "intercept": {"dist": "Normal", "kwargs": {"mu": 0, "sigma": 2}},
         "likelihood": {
             "dist": "Normal",
@@ -422,8 +464,6 @@ def mmm_default_model_config():
         },
     }
 
-
-def test_backwards_compat(mmm_default_model_config) -> None:
     result = {param: Prior.from_dict(value) for param, value in mmm_default_model_config.items()}
     assert result == {
         "intercept": Prior("Normal", mu=0, sigma=2),
@@ -512,6 +552,26 @@ def test_equality_non_prior() -> None:
     dist = Prior("Normal")
 
     assert dist != 1
+
+
+def test_equality_data_array() -> None:
+    da1 = DataArray([1, 2], dims="x")
+    da2 = DataArray([1, 2], dims="x")
+    da3 = DataArray([1, 3], dims="x")
+    da4 = DataArray([1, 2], dims="y")
+
+    p1 = Prior("Normal", mu=da1)
+    p2 = Prior("Normal", mu=da2)
+    p3 = Prior("Normal", mu=da3)
+    p4 = Prior("Normal", mu=da4)
+    p5 = Prior("StudentT", mu=da1)
+    p6 = Prior("Normal", mu=np.array([1, 2]))
+
+    assert p1 == p2
+    assert p1 != p3
+    assert p1 != p4
+    assert p1 != p5
+    assert p1 != p6
 
 
 def test_deepcopy_memo() -> None:
@@ -660,546 +720,685 @@ def test_zsn_non_centered() -> None:
         pytest.fail(f"Unexpected exception: {e}")
 
 
-class Arbitrary:
-    def __init__(self, dims: str | tuple[str, ...]) -> None:
-        self.dims = dims
+class TestCustomClass:
+    def test_sample_prior_arbitrary_no_name(self) -> None:
+        class ArbitraryWithoutName:
+            def __init__(self, dims: str | tuple[str, ...]) -> None:
+                self.dims = dims
 
-    def create_variable(self, name: str):
-        return pm.Normal(name, dims=self.dims)
+            def create_variable(self, name: str, xdist: bool = False):
+                if xdist:
+                    raise NotImplementedError
 
+                with pm.Model(name=name):
+                    location = pm.Normal("location", dims=self.dims)
+                    scale = pm.HalfNormal("scale", dims=self.dims)
 
-class ArbitraryWithoutName:
-    def __init__(self, dims: str | tuple[str, ...]) -> None:
-        self.dims = dims
+                    return pm.Normal("standard_normal") * scale + location
 
-    def create_variable(self, name: str):
-        with pm.Model(name=name):
-            location = pm.Normal("location", dims=self.dims)
-            scale = pm.HalfNormal("scale", dims=self.dims)
+        var = ArbitraryWithoutName(dims="channel")
 
-            return pm.Normal("standard_normal") * scale + location
+        prior = sample_prior(var, coords={"channel": ["A", "B", "C"]}, draws=25)
 
+        assert isinstance(prior, xr.Dataset)
+        assert "variable" not in prior
 
-def test_sample_prior_arbitrary() -> None:
-    var = Arbitrary(dims="channel")
-
-    prior = sample_prior(var, coords={"channel": ["A", "B", "C"]}, draws=25)
-
-    assert isinstance(prior, xr.Dataset)
-
-
-def test_sample_prior_arbitrary_no_name() -> None:
-    var = ArbitraryWithoutName(dims="channel")
-
-    prior = sample_prior(var, coords={"channel": ["A", "B", "C"]}, draws=25)
-
-    assert isinstance(prior, xr.Dataset)
-    assert "variable" not in prior
-
-    prior_with = sample_prior(
-        var,
-        coords={"channel": ["A", "B", "C"]},
-        draws=25,
-        wrap=True,
-    )
-
-    assert isinstance(prior_with, xr.Dataset)
-    assert "variable" in prior_with
-
-
-def test_create_prior_with_arbitrary() -> None:
-    dist = Prior(
-        "Normal",
-        mu=Arbitrary(dims=("channel",)),
-        sigma=1,
-        dims=("channel", "geo"),
-    )
-
-    coords = {
-        "channel": ["C1", "C2", "C3"],
-        "geo": ["G1", "G2"],
-    }
-    with pm.Model(coords=coords) as model:
-        dist.create_variable("var")
-
-    assert "var_mu" in model
-    var_mu = model["var_mu"]
-
-    assert fast_eval(var_mu).shape == (len(coords["channel"]),)
-
-
-def test_censored_is_variable_factory() -> None:
-    normal = Prior("Normal")
-    censored_normal = Censored(normal, lower=0)
-
-    assert isinstance(censored_normal, VariableFactory)
-
-
-@pytest.mark.parametrize(
-    "dims, expected_dims",
-    [
-        ("channel", ("channel",)),
-        (("channel", "geo"), ("channel", "geo")),
-    ],
-    ids=["string", "tuple"],
-)
-def test_censored_dims_from_distribution(dims, expected_dims) -> None:
-    normal = Prior("Normal", dims=dims)
-    censored_normal = Censored(normal, lower=0)
-
-    assert censored_normal.dims == expected_dims
-
-
-def test_censored_variables_created() -> None:
-    normal = Prior("Normal", mu=Prior("Normal"), dims="dim")
-    censored_normal = Censored(normal, lower=0)
-
-    coords = {"dim": range(3)}
-    with pm.Model(coords=coords) as model:
-        censored_normal.create_variable("var")
-
-    var_names = ["var", "var_mu"]
-    assert set(var.name for var in model.unobserved_RVs) == set(var_names)
-    dims = [(3,), ()]
-    for var_name, dim in zip(var_names, dims, strict=False):
-        assert fast_eval(model[var_name]).shape == dim
-
-
-def test_censored_sample_prior() -> None:
-    normal = Prior("Normal", dims="channel")
-    censored_normal = Censored(normal, lower=0)
-
-    coords = {"channel": ["A", "B", "C"]}
-    prior = censored_normal.sample_prior(coords=coords, draws=25)
-
-    assert isinstance(prior, xr.Dataset)
-    assert prior.sizes == {"chain": 1, "draw": 25, "channel": 3}
-
-
-def test_censored_to_graph() -> None:
-    normal = Prior("Normal", dims="channel")
-    censored_normal = Censored(normal, lower=0)
-
-    G = censored_normal.to_graph()
-    assert isinstance(G, Digraph)
-
-
-def test_censored_likelihood_variable() -> None:
-    normal = Prior("Normal", sigma=Prior("HalfNormal"), dims="channel")
-    censored_normal = Censored(normal, lower=0)
-
-    coords = {"channel": range(3)}
-    with pm.Model(coords=coords) as model:
-        mu = pm.Normal("mu")
-        variable = censored_normal.create_likelihood_variable(
-            name="likelihood",
-            mu=mu,
-            observed=[1, 2, 3],
+        prior_with = sample_prior(
+            var,
+            coords={"channel": ["A", "B", "C"]},
+            draws=25,
+            wrap=True,
         )
 
-    assert isinstance(variable, pt.TensorVariable)
-    assert model.observed_RVs == [variable]
-    assert "likelihood_sigma" in model
+        assert isinstance(prior_with, xr.Dataset)
+        assert "variable" in prior_with
+
+    def test_arbitrary_class(self) -> None:
+        class Arbitrary:
+            def __init__(self, dims: str | tuple[str, ...]) -> None:
+                self.dims = dims
+
+            def create_variable(self, name: str):
+                return pm.Normal(name, dims=self.dims)
+
+        prior = Prior(
+            "Normal",
+            mu=Arbitrary(dims=("channel",)),
+            sigma=1,
+            dims=("channel", "geo"),
+        )
+
+        coords = {
+            "channel": ["C1", "C2", "C3"],
+            "geo": ["G1", "G2"],
+        }
+        with pm.Model(coords=coords) as model:
+            prior.create_variable("var")
+
+        assert "var_mu" in model
+        var_mu = model["var_mu"]
+        assert fast_eval(var_mu).shape == (len(coords["channel"]),)
+
+    def test_arbitrary_class_sample_prior(self) -> None:
+        class Arbitrary:
+            def __init__(self, dims: str | tuple[str, ...]) -> None:
+                self.dims = dims
+
+            def create_variable(self, name: str):
+                return pm.Normal(name, dims=self.dims)
+
+        var = Arbitrary(dims="channel")
+        prior = sample_prior(var, coords={"channel": ["A", "B", "C"]}, draws=25)
+        assert isinstance(prior, xr.Dataset)
+
+    def test_arbitrary_serialization(self) -> None:
+        class ArbitrarySerializable:
+            def __init__(self, dims: str | tuple[str, ...]) -> None:
+                self.dims = dims
+
+            def create_variable(self, name: str):
+                return pm.Normal(name, dims=self.dims)
+
+            def to_dict(self):
+                return {"dims": self.dims}
+
+        arbitrary_serialized_data = {"dims": ("channel",)}
+
+        register_deserialization(
+            lambda data: isinstance(data, dict) and data.keys() == {"dims"},
+            lambda data: ArbitrarySerializable(**data),
+        )
+
+        dist = Prior(
+            "Normal",
+            mu=ArbitrarySerializable(dims=("channel",)),
+            sigma=1,
+            dims=("channel", "geo"),
+        )
+
+        data = {
+            "dist": "Normal",
+            "kwargs": {
+                "mu": arbitrary_serialized_data,
+                "sigma": 1,
+            },
+            "dims": ("channel", "geo"),
+        }
+
+        assert dist.to_dict() == data
+
+        dist_again = deserialize(data)
+        assert isinstance(dist_again["mu"], ArbitrarySerializable)
+        assert dist_again["mu"].dims == ("channel",)
+
+        DESERIALIZERS.pop()
 
 
-def test_censored_likelihood_unsupported_distribution() -> None:
-    cauchy = Prior("Cauchy")
-    censored_cauchy = Censored(cauchy, lower=0)
+class TestScaled:
+    def test_scaled_initializes_correctly(self) -> None:
+        """Test that the Scaled class initializes correctly."""
+        normal = Prior("Normal", mu=0, sigma=1)
+        scaled = Scaled(normal, factor=2.0)
 
-    with pm.Model():
-        mu = pm.Normal("mu")
-        with pytest.raises(UnsupportedDistributionError):
-            censored_cauchy.create_likelihood_variable(
+        assert scaled.dist == normal
+        assert scaled.factor == 2.0
+
+    def test_scaled_dims_property(self) -> None:
+        """Test that the dims property returns the dimensions of the underlying distribution."""
+        normal = Prior("Normal", mu=0, sigma=1, dims="channel")
+        scaled = Scaled(normal, factor=2.0)
+
+        assert scaled.dims == ("channel",)
+
+        # Test with multiple dimensions
+        normal.dims = ("channel", "geo")
+        assert scaled.dims == ("channel", "geo")
+
+    def test_scaled_create_variable(self) -> None:
+        """Test that the create_variable method properly scales the variable."""
+        normal = Prior("Normal", mu=0, sigma=1)
+        scaled = Scaled(normal, factor=2.0)
+
+        with pm.Model() as model:
+            scaled_var = scaled.create_variable("scaled_var")
+
+        # Check that both the scaled and unscaled variables exist
+        assert "scaled_var" in model
+        assert "scaled_var_unscaled" in model
+
+        # The deterministic node should be the scaled variable
+        assert model["scaled_var"] == scaled_var
+
+    def test_scaled_creates_correct_dimensions(self) -> None:
+        """Test that the scaled variable has the correct dimensions."""
+        normal = Prior("Normal", dims="channel")
+        scaled = Scaled(normal, factor=2.0)
+
+        coords = {"channel": ["A", "B", "C"]}
+        with pm.Model(coords=coords):
+            scaled_var = scaled.create_variable("scaled_var")
+
+        # Check that the scaled variable has the correct dimensions
+        assert fast_eval(scaled_var).shape == (3,)
+
+    def test_scaled_applies_factor(self) -> None:
+        """Test that the scaling factor is correctly applied."""
+        normal = Prior("Normal", mu=0, sigma=1)
+        factor = 3.5
+        scaled = Scaled(normal, factor=factor)
+
+        # Sample from prior to verify scaling
+        prior = sample_prior(scaled, draws=10, name="scaled_var")
+        df_prior = prior.to_dataframe()
+
+        # Check that scaled values are original values times the factor
+        unscaled_values = df_prior["scaled_var_unscaled"].to_numpy()
+        scaled_values = df_prior["scaled_var"].to_numpy()
+        np.testing.assert_allclose(scaled_values, unscaled_values * factor)
+
+    def test_scaled_with_tensor_factor(self) -> None:
+        """Test that the Scaled class works with a tensor factor."""
+        normal = Prior("Normal", mu=0, sigma=1)
+        factor = pt.as_tensor_variable(2.5)
+        scaled = Scaled(normal, factor=factor)
+
+        # Sample from prior to verify tensor scaling
+        prior = sample_prior(scaled, draws=10, name="scaled_var")
+        df_prior = prior.to_dataframe()
+
+        # Check that scaled values are original values times the factor
+        unscaled_values = df_prior["scaled_var_unscaled"].to_numpy()
+        scaled_values = df_prior["scaled_var"].to_numpy()
+        np.testing.assert_allclose(scaled_values, unscaled_values * 2.5)
+
+    def test_scaled_with_hierarchical_prior(self) -> None:
+        """Test that the Scaled class works with hierarchical priors."""
+        normal = Prior("Normal", mu=Prior("Normal"), sigma=Prior("HalfNormal"), dims="channel")
+        scaled = Scaled(normal, factor=2.0)
+
+        coords = {"channel": ["A", "B", "C"]}
+        with pm.Model(coords=coords) as model:
+            scaled.create_variable("scaled_var")
+
+        # Check that all necessary variables were created
+        assert "scaled_var" in model
+        assert "scaled_var_unscaled" in model
+        assert "scaled_var_unscaled_mu" in model
+        assert "scaled_var_unscaled_sigma" in model
+
+    def test_scaled_sample_prior(self) -> None:
+        """Test that sample_prior works with the Scaled class."""
+        normal = Prior("Normal", dims="channel")
+        scaled = Scaled(normal, factor=2.0)
+
+        coords = {"channel": ["A", "B", "C"]}
+        prior = sample_prior(scaled, coords=coords, draws=25, name="scaled_var")
+
+        assert isinstance(prior, xr.Dataset)
+        assert prior.sizes == {"chain": 1, "draw": 25, "channel": 3}
+        assert "scaled_var" in prior
+        assert "scaled_var_unscaled" in prior
+
+
+class TestCensored:
+    def test_censored_is_variable_factory(
+        self,
+    ) -> None:
+        normal = Prior("Normal")
+        censored_normal = Censored(normal, lower=0)
+
+        assert isinstance(censored_normal, VariableFactory)
+
+    def test_deserialize_censored(self) -> None:
+        data = {
+            "class": "Censored",
+            "data": {
+                "dist": {
+                    "dist": "Normal",
+                },
+                "lower": 0,
+                "upper": float("inf"),
+            },
+        }
+
+        instance = deserialize(data)
+        assert isinstance(instance, Censored)
+        assert isinstance(instance.distribution, Prior)
+        assert instance.lower == 0
+        assert instance.upper == float("inf")
+
+    @pytest.mark.parametrize(
+        "dims, expected_dims",
+        [
+            ("channel", ("channel",)),
+            (("channel", "geo"), ("channel", "geo")),
+        ],
+        ids=["string", "tuple"],
+    )
+    def test_censored_dims_from_distribution(self, dims, expected_dims) -> None:
+        normal = Prior("Normal", dims=dims)
+        censored_normal = Censored(normal, lower=0)
+
+        assert censored_normal.dims == expected_dims
+
+    def test_censored_variables_created(
+        self,
+    ) -> None:
+        normal = Prior("Normal", mu=Prior("Normal"), dims="dim")
+        censored_normal = Censored(normal, lower=0)
+
+        coords = {"dim": range(3)}
+        with pm.Model(coords=coords) as model:
+            censored_normal.create_variable("var")
+
+        var_names = ["var", "var_mu"]
+        assert set(var.name for var in model.unobserved_RVs) == set(var_names)
+        dims = [(3,), ()]
+        for var_name, dim in zip(var_names, dims, strict=False):
+            assert fast_eval(model[var_name]).shape == dim
+
+    def test_censored_sample_prior(
+        self,
+    ) -> None:
+        normal = Prior("Normal", dims="channel")
+        censored_normal = Censored(normal, lower=0)
+
+        coords = {"channel": ["A", "B", "C"]}
+        prior = censored_normal.sample_prior(coords=coords, draws=25)
+
+        assert isinstance(prior, xr.Dataset)
+        assert prior.sizes == {"chain": 1, "draw": 25, "channel": 3}
+
+    def test_censored_to_graph(
+        self,
+    ) -> None:
+        normal = Prior("Normal", dims="channel")
+        censored_normal = Censored(normal, lower=0)
+
+        G = censored_normal.to_graph()
+        assert isinstance(G, Digraph)
+
+    def test_censored_likelihood_variable(
+        self,
+    ) -> None:
+        normal = Prior("Normal", sigma=Prior("HalfNormal"), dims="channel")
+        censored_normal = Censored(normal, lower=0)
+
+        coords = {"channel": range(3)}
+        with pm.Model(coords=coords) as model:
+            mu = pm.Normal("mu")
+            variable = censored_normal.create_likelihood_variable(
                 name="likelihood",
                 mu=mu,
-                observed=1,
+                observed=[1, 2, 3],
             )
 
+        assert isinstance(variable, pt.TensorVariable)
+        assert model.observed_RVs == [variable]
+        assert "likelihood_sigma" in model
 
-def test_censored_likelihood_already_has_mu() -> None:
-    normal = Prior("Normal", mu=Prior("Normal"), sigma=Prior("HalfNormal"))
-    censored_normal = Censored(normal, lower=0)
+    def test_censored_likelihood_unsupported_distribution(
+        self,
+    ) -> None:
+        cauchy = Prior("Cauchy")
+        censored_cauchy = Censored(cauchy, lower=0)
 
-    with pm.Model():
-        mu = pm.Normal("mu")
-        with pytest.raises(MuAlreadyExistsError):
-            censored_normal.create_likelihood_variable(
-                name="likelihood",
+        with pm.Model():
+            mu = pm.Normal("mu")
+            with pytest.raises(UnsupportedDistributionError):
+                censored_cauchy.create_likelihood_variable(
+                    name="likelihood",
+                    mu=mu,
+                    observed=1,
+                )
+
+    def test_censored_likelihood_already_has_mu(
+        self,
+    ) -> None:
+        normal = Prior("Normal", mu=Prior("Normal"), sigma=Prior("HalfNormal"))
+        censored_normal = Censored(normal, lower=0)
+
+        with pm.Model():
+            mu = pm.Normal("mu")
+            with pytest.raises(MuAlreadyExistsError):
+                censored_normal.create_likelihood_variable(
+                    name="likelihood",
+                    mu=mu,
+                    observed=1,
+                )
+
+    def test_censored_to_dict(
+        self,
+    ) -> None:
+        normal = Prior("Normal", mu=0, sigma=1, dims="channel")
+        censored_normal = Censored(normal, lower=0)
+
+        data = censored_normal.to_dict()
+        assert data == {
+            "class": "Censored",
+            "data": {"dist": normal.to_dict(), "lower": 0, "upper": float("inf")},
+        }
+
+    @pytest.mark.parametrize(
+        "mu",
+        [
+            0,
+            np.arange(10),
+        ],
+        ids=["scalar", "vector"],
+    )
+    def test_censored_logp(self, mu) -> None:
+        n_points = 10
+        observed = np.zeros(n_points)
+        coords = {"idx": range(n_points)}
+        with pm.Model(coords=coords) as model:
+            normal = Prior("Normal", dims="idx")
+            Censored(normal, lower=0).create_likelihood_variable(
+                "censored_normal",
+                observed=observed,
                 mu=mu,
-                observed=1,
+            )
+        logp = model.compile_logp()
+
+        with pm.Model() as expected_model:
+            pm.Censored(
+                "censored_normal",
+                pm.Normal.dist(mu=mu, sigma=1, shape=n_points),
+                lower=0,
+                upper=np.inf,
+                observed=observed,
+            )
+        expected_logp = expected_model.compile_logp()
+
+        point = {}
+        np.testing.assert_allclose(logp(point), expected_logp(point))
+
+    def test_censored_with_tensor_variable(self) -> None:
+        normal = Prior("Normal", dims="channel")
+        lower = pt.as_tensor_variable([0, 1, 2])
+        censored_normal = Censored(normal, lower=lower)
+
+        assert censored_normal.to_dict() == {
+            "class": "Censored",
+            "data": {
+                "dist": normal.to_dict(),
+                "lower": [0, 1, 2],
+                "upper": float("inf"),
+            },
+        }
+
+    def test_censored_dims_setter(self) -> None:
+        normal = Prior("Normal", dims="channel")
+        censored_normal = Censored(normal, lower=0)
+        censored_normal.dims = "date"
+        assert normal.dims == ("date",)
+
+    def test_censored_normal(self) -> None:
+        coords = {"idx": range(5)}
+        observed = np.arange(5, dtype=float)
+        mu = np.pi
+
+        with pm.Model(coords=coords) as model:
+            sigma = Prior("HalfNormal")
+            normal = Prior("Normal", sigma=sigma, dims="idx")
+            Censored(normal, lower=0).create_likelihood_variable(
+                "censored_normal",
+                mu=mu,
+                observed=observed,
             )
 
+        with pm.Model(coords=coords) as expected_model:
+            sigma = pm.HalfNormal("censored_normal_sigma")
+            normal = pm.Normal.dist(mu=mu, sigma=sigma)
+            pm.Censored(
+                "censored_normal",
+                normal,
+                lower=0,
+                upper=np.inf,
+                observed=observed,
+                dims="idx",
+            )
 
-def test_censored_to_dict() -> None:
-    normal = Prior("Normal", mu=0, sigma=1, dims="channel")
-    censored_normal = Censored(normal, lower=0)
+        # This doesn't work because of no OpFromGraph equality impl
+        # assert equivalent_models(model, expected_model)
 
-    data = censored_normal.to_dict()
-    assert data == {
-        "class": "Censored",
-        "data": {"dist": normal.to_dict(), "lower": 0, "upper": float("inf")},
-    }
+        ip = model.initial_point()
+        np.testing.assert_allclose(model.compile_logp()(ip), expected_model.compile_logp()(ip))
 
+    def test_censored_with_alternative_class(self) -> None:
+        def is_type(data):
+            return isinstance(data, dict) and "distribution" in data
 
-def test_deserialize_censored() -> None:
-    data = {
-        "class": "Censored",
-        "data": {
-            "dist": {
-                "dist": "Normal",
+        def deserialize_func(data):
+            return Prior(**data)
+
+        register_deserialization(is_type=is_type, deserialize=deserialize_func)
+
+        data = {
+            "class": "Censored",
+            "data": {
+                "dist": {
+                    "distribution": "Normal",
+                },
+                "lower": 0,
+                "upper": 10,
             },
-            "lower": 0,
-            "upper": float("inf"),
-        },
-    }
+        }
 
-    instance = deserialize(data)
-    assert isinstance(instance, Censored)
-    assert isinstance(instance.distribution, Prior)
-    assert instance.lower == 0
-    assert instance.upper == float("inf")
+        instance = deserialize(data)
 
+        assert isinstance(instance, Censored)
+        assert instance.lower == 0
+        assert instance.upper == 10
+        assert instance.distribution == Prior("Normal")
 
-class ArbitrarySerializable(Arbitrary):
-    def to_dict(self):
-        return {"dims": self.dims}
+        DESERIALIZERS.pop()
 
-
-@pytest.fixture
-def arbitrary_serialized_data() -> dict:
-    return {"dims": ("channel",)}
-
-
-def test_create_prior_with_arbitrary_serializable(arbitrary_serialized_data) -> None:
-    dist = Prior(
-        "Normal",
-        mu=ArbitrarySerializable(dims=("channel",)),
-        sigma=1,
-        dims=("channel", "geo"),
+    @pytest.mark.filterwarnings(
+        "ignore:The `pymc.dims` module is experimental and may contain critical bugs"
     )
+    def test_censored_xdist(self):
+        import pymc.dims as pmd
 
-    assert dist.to_dict() == {
-        "dist": "Normal",
-        "kwargs": {
-            "mu": arbitrary_serialized_data,
-            "sigma": 1,
-        },
-        "dims": ("channel", "geo"),
-    }
+        coords = {
+            "batch": range(2),
+            "city": range(3),
+        }
+        dims = tuple(coords.keys())
+        observed = pmd.as_xtensor(np.ones((2, 3)), dims=dims)
+        mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
 
+        censored_with_mu = Censored(Prior("Normal", mu=mu, dims=dims), lower=0)
+        censored_without_mu = Censored(Prior("Normal", dims=dims), lower=0)
 
-@pytest.fixture
-def register_arbitrary_deserialization():
-    register_deserialization(
-        lambda data: isinstance(data, dict) and data.keys() == {"dims"},
-        lambda data: ArbitrarySerializable(**data),
-    )
+        res = censored_with_mu.sample_prior(draws=7, coords=coords, xdist=True)
+        assert res.sizes == {"chain": 1, "draw": 7, "batch": 2, "city": 3}
+        assert (res.variable >= 0).all()
 
-    yield
+        with pm.Model(coords=coords) as m:
+            censored_with_mu.create_variable("x", xdist=True)
+            censored_without_mu.create_likelihood_variable(
+                "y", mu=mu, observed=observed, xdist=True
+            )
 
-    DESERIALIZERS.pop()
+        with pm.Model(coords=coords) as ref_m:
+            dist = pmd.Normal.dist(mu=mu, sigma=1)
+            pmd.Censored("x", dist=dist, lower=0, dims=dims)
+            pmd.Censored("y", dist=dist, lower=0, observed=observed, dims=dims)
 
-
-def test_deserialize_arbitrary_within_prior(
-    arbitrary_serialized_data,
-    register_arbitrary_deserialization,
-) -> None:
-    data = {
-        "dist": "Normal",
-        "kwargs": {
-            "mu": arbitrary_serialized_data,
-            "sigma": 1,
-        },
-        "dims": ("channel", "geo"),
-    }
-
-    dist = deserialize(data)
-    assert isinstance(dist["mu"], ArbitrarySerializable)
-    assert dist["mu"].dims == ("channel",)
+        assert equivalent_models(m, ref_m, strict_dtype=False)
 
 
-def test_censored_with_tensor_variable() -> None:
-    normal = Prior("Normal", dims="channel")
-    lower = pt.as_tensor_variable([0, 1, 2])
-    censored_normal = Censored(normal, lower=lower)
-
-    assert censored_normal.to_dict() == {
-        "class": "Censored",
-        "data": {
-            "dist": normal.to_dict(),
-            "lower": [0, 1, 2],
-            "upper": float("inf"),
-        },
-    }
-
-
-def test_censored_dims_setter() -> None:
-    normal = Prior("Normal", dims="channel")
-    censored_normal = Censored(normal, lower=0)
-    censored_normal.dims = "date"
-    assert normal.dims == ("date",)
-
-
-class ModelData(NamedTuple):
-    mu: float
-    observed: list[float]
-
-
-@pytest.fixture(scope="session")
-def model_data() -> ModelData:
-    return ModelData(mu=0, observed=[0, 1, 2, 3, 4])
-
-
-@pytest.fixture(scope="session")
-def normal_model_with_censored_API(model_data) -> pm.Model:
-    coords = {"idx": range(len(model_data.observed))}
-    with pm.Model(coords=coords) as model:
-        sigma = Prior("HalfNormal")
-        normal = Prior("Normal", sigma=sigma, dims="idx")
-        Censored(normal, lower=0).create_likelihood_variable(
-            "censored_normal",
-            mu=model_data.mu,
-            observed=model_data.observed,
-        )
-
-    return model
-
-
-@pytest.fixture(scope="session")
-def normal_model_with_censored_logp(normal_model_with_censored_API):
-    return normal_model_with_censored_API.compile_logp()
-
-
-@pytest.fixture(scope="session")
-def expected_normal_model(model_data) -> pm.Model:
-    n_points = len(model_data.observed)
-    with pm.Model() as expected_model:
-        sigma = pm.HalfNormal("censored_normal_sigma")
-        normal = pm.Normal.dist(mu=model_data.mu, sigma=sigma, shape=n_points)
-        pm.Censored(
-            "censored_normal",
-            normal,
-            lower=0,
-            upper=np.inf,
-            observed=model_data.observed,
-        )
-
-    return expected_model
-
-
-@pytest.fixture(scope="session")
-def expected_normal_model_logp(expected_normal_model):
-    return expected_normal_model.compile_logp()
-
-
-@pytest.mark.parametrize("sigma_log__", [-10, -5, -2.5, 0, 2.5, 5, 10])
-def test_censored_normal_logp(
-    sigma_log__,
-    normal_model_with_censored_logp,
-    expected_normal_model_logp,
-) -> None:
-    points = {"censored_normal_sigma_log__": sigma_log__}
-    normal_model_logp = normal_model_with_censored_logp(points)
-    expected_model_logp = expected_normal_model_logp(points)
-    np.testing.assert_allclose(normal_model_logp, expected_model_logp)
-
-
-@pytest.mark.parametrize(
-    "mu",
-    [
-        0,
-        np.arange(10),
-    ],
-    ids=["scalar", "vector"],
+@pytest.mark.filterwarnings(
+    "ignore:The `pymc.dims` module is experimental and may contain critical bugs"
 )
-def test_censored_logp(mu) -> None:
-    n_points = 10
-    observed = np.zeros(n_points)
-    coords = {"idx": range(n_points)}
-    with pm.Model(coords=coords) as model:
-        normal = Prior("Normal", dims="idx")
-        Censored(normal, lower=0).create_likelihood_variable(
-            "censored_normal",
-            observed=observed,
+class TestXDist:
+    def test_xdist_serialization(self):
+        import pymc.dims as pmd
+
+        mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
+        sigma = DataArray([4, 5], dims=("country",))
+        dims = ("city", "batch", "country")
+
+        prior = Prior(
+            "Normal",
             mu=mu,
+            sigma=sigma,
+            dims=dims,
         )
-    logp = model.compile_logp()
 
-    with pm.Model() as expected_model:
-        pm.Censored(
-            "censored_normal",
-            pm.Normal.dist(mu=mu, sigma=1, shape=n_points),
-            lower=0,
-            upper=np.inf,
-            observed=observed,
-        )
-    expected_logp = expected_model.compile_logp()
-
-    point = {}
-    np.testing.assert_allclose(logp(point), expected_logp(point))
-
-
-def test_scaled_initializes_correctly() -> None:
-    """Test that the Scaled class initializes correctly."""
-    normal = Prior("Normal", mu=0, sigma=1)
-    scaled = Scaled(normal, factor=2.0)
-
-    assert scaled.dist == normal
-    assert scaled.factor == 2.0
-
-
-def test_scaled_dims_property() -> None:
-    """Test that the dims property returns the dimensions of the underlying distribution."""
-    normal = Prior("Normal", mu=0, sigma=1, dims="channel")
-    scaled = Scaled(normal, factor=2.0)
-
-    assert scaled.dims == ("channel",)
-
-    # Test with multiple dimensions
-    normal.dims = ("channel", "geo")
-    assert scaled.dims == ("channel", "geo")
-
-
-def test_scaled_create_variable() -> None:
-    """Test that the create_variable method properly scales the variable."""
-    normal = Prior("Normal", mu=0, sigma=1)
-    scaled = Scaled(normal, factor=2.0)
-
-    with pm.Model() as model:
-        scaled_var = scaled.create_variable("scaled_var")
-
-    # Check that both the scaled and unscaled variables exist
-    assert "scaled_var" in model
-    assert "scaled_var_unscaled" in model
-
-    # The deterministic node should be the scaled variable
-    assert model["scaled_var"] == scaled_var
-
-
-def test_scaled_creates_correct_dimensions() -> None:
-    """Test that the scaled variable has the correct dimensions."""
-    normal = Prior("Normal", dims="channel")
-    scaled = Scaled(normal, factor=2.0)
-
-    coords = {"channel": ["A", "B", "C"]}
-    with pm.Model(coords=coords):
-        scaled_var = scaled.create_variable("scaled_var")
-
-    # Check that the scaled variable has the correct dimensions
-    assert fast_eval(scaled_var).shape == (3,)
-
-
-def test_scaled_applies_factor() -> None:
-    """Test that the scaling factor is correctly applied."""
-    normal = Prior("Normal", mu=0, sigma=1)
-    factor = 3.5
-    scaled = Scaled(normal, factor=factor)
-
-    # Sample from prior to verify scaling
-    prior = sample_prior(scaled, draws=10, name="scaled_var")
-    df_prior = prior.to_dataframe()
-
-    # Check that scaled values are original values times the factor
-    unscaled_values = df_prior["scaled_var_unscaled"].to_numpy()
-    scaled_values = df_prior["scaled_var"].to_numpy()
-    np.testing.assert_allclose(scaled_values, unscaled_values * factor)
-
-
-def test_scaled_with_tensor_factor() -> None:
-    """Test that the Scaled class works with a tensor factor."""
-    normal = Prior("Normal", mu=0, sigma=1)
-    factor = pt.as_tensor_variable(2.5)
-    scaled = Scaled(normal, factor=factor)
-
-    # Sample from prior to verify tensor scaling
-    prior = sample_prior(scaled, draws=10, name="scaled_var")
-    df_prior = prior.to_dataframe()
-
-    # Check that scaled values are original values times the factor
-    unscaled_values = df_prior["scaled_var_unscaled"].to_numpy()
-    scaled_values = df_prior["scaled_var"].to_numpy()
-    np.testing.assert_allclose(scaled_values, unscaled_values * 2.5)
-
-
-def test_scaled_with_hierarchical_prior() -> None:
-    """Test that the Scaled class works with hierarchical priors."""
-    normal = Prior("Normal", mu=Prior("Normal"), sigma=Prior("HalfNormal"), dims="channel")
-    scaled = Scaled(normal, factor=2.0)
-
-    coords = {"channel": ["A", "B", "C"]}
-    with pm.Model(coords=coords) as model:
-        scaled.create_variable("scaled_var")
-
-    # Check that all necessary variables were created
-    assert "scaled_var" in model
-    assert "scaled_var_unscaled" in model
-    assert "scaled_var_unscaled_mu" in model
-    assert "scaled_var_unscaled_sigma" in model
-
-
-def test_scaled_sample_prior() -> None:
-    """Test that sample_prior works with the Scaled class."""
-    normal = Prior("Normal", dims="channel")
-    scaled = Scaled(normal, factor=2.0)
-
-    coords = {"channel": ["A", "B", "C"]}
-    prior = sample_prior(scaled, coords=coords, draws=25, name="scaled_var")
-
-    assert isinstance(prior, xr.Dataset)
-    assert prior.sizes == {"chain": 1, "draw": 25, "channel": 3}
-    assert "scaled_var" in prior
-    assert "scaled_var_unscaled" in prior
-
-
-def test_getattr() -> None:
-    assert pr.Normal() == Prior("Normal")
-
-
-def test_import_directly() -> None:
-    try:
-        from pymc_extras.prior import Normal
-    except Exception as e:
-        pytest.fail(f"Unexpected exception: {e}")
-
-    assert Normal() == Prior("Normal")
-
-
-def test_import_incorrect_directly() -> None:
-    match = "PyMC doesn't have a distribution of name 'SomeIncorrectDistribution'"
-    with pytest.raises(UnsupportedDistributionError, match=match):
-        from pymc_extras.prior import SomeIncorrectDistribution  # noqa: F401
-
-
-@pytest.fixture
-def alternative_prior_deserialize():
-    def is_type(data):
-        return isinstance(data, dict) and "distribution" in data
-
-    def deserialize(data):
-        return Prior(**data)
-
-    register_deserialization(is_type=is_type, deserialize=deserialize)
-
-    yield
-
-    DESERIALIZERS.pop()
-
-
-def test_censored_with_alternative(alternative_prior_deserialize) -> None:
-    data = {
-        "class": "Censored",
-        "data": {
-            "dist": {
-                "distribution": "Normal",
+        data = prior.to_dict()
+        assert data == {
+            "dims": ("city", "batch", "country"),
+            "dist": "Normal",
+            "kwargs": {
+                "mu": {
+                    "class": "DataArray",
+                    "data": [1, 2, 3],
+                    "dims": ["city"],
+                },
+                "sigma": {
+                    "class": "DataArray",
+                    "data": [4, 5],
+                    "dims": ["country"],
+                },
             },
-            "lower": 0,
-            "upper": 10,
-        },
-    }
+        }
 
-    instance = deserialize(data)
+        prior_again = deserialize(data)
+        # Commented out because Prior equality fails with PyTensor / Xarray variables in the parameters
+        # assert prior_again == prior
 
-    assert isinstance(instance, Censored)
-    assert instance.lower == 0
-    assert instance.upper == 10
-    assert instance.distribution == Prior("Normal")
+        data_again = prior_again.to_dict()
+        assert data_again == data
+
+    @pytest.mark.parametrize("transform", (None, "exp"))
+    def test_xdist_prior(self, transform):
+        import pymc.dims as pmd
+
+        mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
+        sigma = DataArray([4, 5], dims=("country",))
+        dims = ("city", "batch", "country")
+        coords = {
+            "city": range(3),
+            "country": range(2),
+            "batch": range(5),
+        }
+
+        prior = Prior(
+            "Normal",
+            mu=mu,
+            sigma=sigma,
+            dims=dims,
+            transform=transform,
+        )
+
+        res = prior.sample_prior(draws=7, coords=coords, xdist=True)
+        assert res.sizes == {"chain": 1, "draw": 7, "city": 3, "batch": 5, "country": 2}
+
+        with pm.Model(coords=coords) as prior_m:
+            prior.create_variable("x", xdist=True)
+
+        if transform is None:
+            with pm.Model(coords=coords) as expected_prior_m:
+                pmd.Normal("x", mu=mu, sigma=sigma, dims=dims)
+        else:
+            with pm.Model(coords=coords) as expected_prior_m:
+                x_raw = pmd.Normal("x_raw", mu=mu, sigma=sigma, dims=dims)
+                pmd.Deterministic("x", pmd.math.exp(x_raw))
+
+        assert equivalent_models(prior_m, expected_prior_m)
+
+    def test_xdist_likelihood(self):
+        import pymc.dims as pmd
+
+        mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
+        sigma = DataArray([4, 5], dims=("country",))
+        dims = ("city", "batch", "country")
+        coords = {
+            "batch": range(5),
+            "city": range(3),
+            "country": range(2),
+        }
+
+        likelihood = Prior(
+            "Normal",
+            sigma=sigma,
+            dims=dims,
+        )
+        observed = np.random.normal(size=(3, 5, 2))
+        with pm.Model(coords=coords) as obs_m:
+            x_obs = pmd.Data("x_obs", observed, dims=dims)
+            likelihood.create_likelihood_variable("x", mu=mu, observed=x_obs.T, xdist=True)
+
+        with pm.Model(coords=coords) as expected_obs_m:
+            x_obs = pmd.Data("x_obs", observed, dims=dims)
+            pmd.Normal("x", mu=mu, sigma=sigma, observed=x_obs.T, dims=dims)
+
+        assert equivalent_models(obs_m, expected_obs_m)
+
+    def test_dims(self) -> None:
+        assert Prior("Normal").dims is None
+        assert Prior("Normal", dims=()).dims == ()
+
+        p = Prior("Normal", mu=Prior("Normal", dims=("city",)))
+        assert p.dims is None
+
+        coords = {"city": range(3)}
+        with pm.Model(coords=coords) as m:
+            with pytest.raises(UnsupportedShapeError):
+                p.create_variable("x")
+
+        with pm.Model(coords=coords) as m:
+            # xdist can infer dims on its own
+            p.create_variable("x", xdist=True)
+            assert m.named_vars_to_dims["x"] == ("city",)
+
+        p.dims = ("city",)
+        with pm.Model(coords=coords) as m:
+            p.create_variable("x")
+            assert m.named_vars_to_dims["x"] == ("city",)
+
+        # This is always invalid
+        with pytest.raises(UnsupportedShapeError):
+            p.dims = ()
+
+    @pytest.mark.parametrize(
+        "mu",
+        (
+            [10, 20],
+            np.array([10, 20]),
+            pt.as_tensor([10, 20]),
+        ),
+    )
+    def test_implicit_conversion_with_dims(self, mu):
+        # When xdist=True, list/numpy parameters should be converted to DataArray if dims are present
+        p_wo_dims = Prior("Normal", mu=mu, dims=None)
+        p_with_dims = Prior("Normal", mu=mu, dims=("test_dim",))
+
+        coords = {"test_dim": ["a", "b"]}
+        with pm.Model(coords=coords):
+            with pytest.warns(UserWarning, match="Implicit conversion"):
+                res = p_with_dims.create_variable("v", xdist=True)
+                assert res.dims == ("test_dim",)
+
+            with pytest.raises(ValueError, match="Cannot infer dims"):
+                p_wo_dims.create_variable("v", xdist=True)
+
+    def test_core_dims(self):
+        from pymc.dims import ZeroSumNormal
+
+        coords = {"country": range(3), "city": range(4)}
+
+        prior = Prior("ZeroSumNormal", sigma=np.pi, core_dims=("city",), dims=("country", "city"))
+        with pm.Model(coords=coords) as m:
+            prior.create_variable("x", xdist=True)
+
+        with pm.Model(coords=coords) as ref_m:
+            ZeroSumNormal("x", sigma=np.pi, core_dims=("city",), dims=("country", "city"))
+
+        # This fails because SymbolicRandomVariable (which ZeroSumNormal is), doesn't have `__eq__` implemented
+        # assert equivalent_models(m, ref_m)
+        ip = m.initial_point()
+        with pytensor.config.change_flags(mode="FAST_COMPILE"):
+            assert m.compile_logp()(ip) == ref_m.compile_logp()(ip)

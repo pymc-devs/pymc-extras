@@ -1,4 +1,3 @@
-import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
@@ -8,7 +7,9 @@ from pymc.distributions.dist_math import check_parameters
 from pymc.distributions.distribution import Continuous, SymbolicRandomVariable
 from pymc.distributions.shape_utils import get_support_shape_1d
 from pymc.logprob.abstract import _logprob
+from pymc.pytensorf import normalize_rng_param
 from pytensor.graph.basic import Node
+from pytensor.tensor.random import multivariate_normal
 
 floatX = pytensor.config.floatX
 COV_ZERO_TOL = 0
@@ -152,6 +153,7 @@ class _LinearGaussianStateSpace(Continuous):
         Q,
         steps,
         size=None,
+        rng=None,
         sequence_names=None,
         append_x0=True,
         method="svd",
@@ -178,7 +180,7 @@ class _LinearGaussianStateSpace(Continuous):
         ]
         non_sequences = [x for x in [c_, d_, T_, Z_, R_, H_, Q_] if x not in sequences]
 
-        rng = pytensor.shared(np.random.default_rng())
+        rng = normalize_rng_param(rng)
 
         def sort_args(args):
             sorted_args = []
@@ -367,44 +369,25 @@ class SequenceMvNormal(Continuous):
 
     @classmethod
     def dist(cls, mus, covs, logp, method="svd", **kwargs):
+        mus, covs, logp = map(pt.as_tensor_variable, (mus, covs, logp))
         return super().dist([mus, covs, logp], method=method, **kwargs)
 
     @classmethod
-    def rv_op(cls, mus, covs, logp, method="svd", size=None):
-        # Batch dimensions (if any) will be on the far left, but scan requires time to be there instead
-        if mus.ndim > 2:
-            mus = pt.moveaxis(mus, -2, 0)
-        if covs.ndim > 3:
-            covs = pt.moveaxis(covs, -3, 0)
+    def rv_op(cls, mus, covs, logp, method="svd", size=None, rng=None):
+        rng = normalize_rng_param(rng)
+        logp_ = logp.type()
 
         mus_, covs_ = mus.type(), covs.type()
-
-        logp_ = logp.type()
-        rng = pytensor.shared(np.random.default_rng())
-
-        def step(mu, cov, rng):
-            new_rng, mvn = pm.MvNormal.dist(mu=mu, cov=cov, rng=rng, method=method).owner.outputs
-            return new_rng, mvn
-
-        seq_mvn_rng, mvn_seq = pytensor.scan(
-            step,
-            sequences=[mus_, covs_],
-            outputs_info=[rng, None],
-            strict=True,
-            n_steps=mus_.shape[0],
-            return_updates=False,
-        )
-        mvn_seq = pt.specify_shape(mvn_seq, mus.type.shape)
-
-        # Move time axis back to position -2 so batches are on the left
-        if mvn_seq.ndim > 2:
-            mvn_seq = pt.moveaxis(mvn_seq, 0, -2)
+        seq_mvn_rng, mvn_seq = multivariate_normal(
+            mean=mus_, cov=covs_, rng=rng, method=method
+        ).owner.outputs
 
         mvn_seq_op = KalmanFilterRV(
             inputs=[mus_, covs_, logp_, rng], outputs=[seq_mvn_rng, mvn_seq], ndim_supp=2
         )
 
         mvn_seq = mvn_seq_op(mus, covs, logp, rng)
+
         return mvn_seq
 
 

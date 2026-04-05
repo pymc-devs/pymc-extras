@@ -469,3 +469,39 @@ def test_SARIMA_with_exogenous(rng, mock_sample):
         2,
     )
     np.testing.assert_allclose(ss_mod._fit_exog_data["exogenous_data"]["value"], data_val)
+
+
+def test_sarimax_workflow(mock_sample):
+    data = load_nile_test_data()
+
+    ss_mod = BayesianSARIMAX(
+        order=(1, 0, 1),
+        stationary_initialization=True,
+        measurement_error=True,
+        verbose=False,
+    )
+
+    with pm.Model(coords=ss_mod.coords) as m:
+        pm.Normal("ar_params", dims=["lag_ar"])
+        pm.Normal("ma_params", dims=["lag_ma"])
+        pm.Exponential("sigma_state", 1)
+        pm.Exponential("sigma_obs", 1)
+
+        ss_mod.build_statespace_graph(data)
+
+        idata = pm.sample()
+
+    post = ss_mod.sample_conditional_posterior(idata, mvn_method="svd")
+    assert "filtered_posterior" in post
+    assert "smoothed_posterior" in post
+    assert "predicted_posterior" in post
+
+    forecast = ss_mod.forecast(idata, periods=10, random_seed=42)
+    assert "forecast_latent" in forecast
+    assert "forecast_observed" in forecast
+    assert np.isfinite(forecast.forecast_latent.values).all()
+    assert np.isfinite(forecast.forecast_observed.values).all()
+
+    irf = ss_mod.impulse_response_function(idata, n_steps=10, random_seed=42)
+    assert "irf" in irf
+    assert np.isfinite(irf.irf.values).all()

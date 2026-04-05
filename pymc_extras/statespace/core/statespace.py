@@ -1021,7 +1021,6 @@ class PyMCStateSpace:
             .. deprecated:: 0.2.5
                 The `mode` argument is deprecated and will be removed in a future version. Pass ``mode`` to the
                 model constructor, or manually specify ``compile_kwargs`` in sampling functions instead.
-
         """
         if mode is not None:
             warnings.warn(
@@ -1559,7 +1558,11 @@ class PyMCStateSpace:
         """
 
         return self._sample_conditional(
-            idata=idata, group="prior", random_seed=random_seed, mvn_method=mvn_method, **kwargs
+            idata=idata,
+            group="prior",
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            **kwargs,
         )
 
     def sample_conditional_posterior(
@@ -1602,7 +1605,11 @@ class PyMCStateSpace:
         """
 
         return self._sample_conditional(
-            idata=idata, group="posterior", random_seed=random_seed, mvn_method=mvn_method, **kwargs
+            idata=idata,
+            group="posterior",
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            **kwargs,
         )
 
     def sample_unconditional_prior(

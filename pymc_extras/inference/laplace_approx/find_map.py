@@ -258,7 +258,7 @@ def find_MAP(
     )
 
     f_fused, f_hessp = scipy_optimize_funcs_from_loss(
-        loss=-model.logp(),
+        loss=-model.logp(jacobian=False),
         inputs=model.continuous_value_vars + model.discrete_value_vars,
         initial_point_dict=DictToArrayBijection.rmap(initial_params),
         use_grad=use_grad,

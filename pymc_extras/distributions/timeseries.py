@@ -188,7 +188,7 @@ class DiscreteMarkovChain(Distribution):
                 P[tuple([...] + [0] * (n_lags + 1))], pt.atleast_1d(init_dist)[..., 0]
             )
 
-        init_dist = change_dist_size(init_dist, (n_lags, *batch_size))
+        init_dist = change_dist_size(init_dist, (*batch_size, n_lags))
         init_dist_ = init_dist.type()
         P_ = P.type()
         steps_ = steps.type()
@@ -203,14 +203,18 @@ class DiscreteMarkovChain(Distribution):
 
         state_next_rng, markov_chain = pytensor.scan(
             transition,
-            outputs_info=[state_rng, *_make_outputs_info(n_lags, init_dist_)],
+            outputs_info=[
+                state_rng,
+                # Move lags to the front for scan
+                *_make_outputs_info(n_lags, pt.moveaxis(init_dist_, -1, 0)),
+            ],
             non_sequences=[P_],
             n_steps=steps_,
             strict=True,
             return_updates=False,
         )
 
-        discrete_mc_ = pt.moveaxis(pt.concatenate([init_dist_, markov_chain], axis=0), 0, -1)
+        discrete_mc_ = pt.concatenate([init_dist_, pt.moveaxis(markov_chain, 0, -1)], axis=-1)
 
         discrete_mc_op = DiscreteMarkovChainRV(
             inputs=[P_, steps_, init_dist_, state_rng],
@@ -265,15 +269,16 @@ def discrete_mc_logp(op, values, P, steps, init_dist, state_rng, **kwargs):
     mc_logprob += pt.log(P[tuple(indexes)]).sum(axis=-1)
 
     # We cannot leave any RV in the logp graph, even if just for an assert
-    [init_dist_leading_dim] = constant_fold(
-        [pt.atleast_1d(init_dist).shape[0]], raise_not_constant=False
+    # If this is a core_dim, it should be part of the signature
+    [init_dist_core_dim] = constant_fold(
+        [pt.atleast_1d(init_dist).shape[-1]], raise_not_constant=False
     )
 
     return check_parameters(
         mc_logprob,
         pt.all(pt.eq(P.shape[-(n_lags + 1) :], P.shape[-1])),
         pt.all(pt.allclose(P.sum(axis=-1), 1.0)),
-        pt.eq(init_dist_leading_dim, n_lags),
+        pt.eq(init_dist_core_dim, n_lags),
         msg="Last (n_lags + 1) dimensions of P must be square, "
         "P must sum to 1 along the last axis, "
         "First dimension of init_dist must be n_lags",
