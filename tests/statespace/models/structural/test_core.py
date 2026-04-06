@@ -236,14 +236,8 @@ def test_sequence_type_component_arguments(arg_type):
 class TestGraphReplacePlaceholderNamespacing:
     @staticmethod
     def _variable_names_match(mod):
-        """Check that metadata names match actual tensor variable names (excluding P0)."""
+        """Check that all variable metadata names carry the expected model prefix."""
         for sv in mod._tensor_variable_info:
-            is_p0 = sv.name == "P0" or (mod.name and sv.name == mod.prefixed_name("P0"))
-            if not is_p0 and sv.name != sv.symbolic_variable.name:
-                raise ValueError(
-                    f"Variable name mismatch: metadata={sv.name}, "
-                    f"variable={sv.symbolic_variable.name}"
-                )
             if mod.name and not sv.name.startswith(f"{mod.name}_"):
                 raise ValueError(f"Variable {sv.name} missing expected prefix {mod.name}_")
 
@@ -270,13 +264,9 @@ class TestGraphReplacePlaceholderNamespacing:
 
         for sv in m1._tensor_variable_info:
             assert sv.name.startswith("m1_")
-            if not sv.name.endswith("_P0"):
-                assert sv.name == sv.symbolic_variable.name
 
         for sv in m2._tensor_variable_info:
             assert sv.name.startswith("m2_")
-            if not sv.name.endswith("_P0"):
-                assert sv.name == sv.symbolic_variable.name
 
         m1_var_ids = {id(sv.symbolic_variable) for sv in m1._tensor_variable_info}
         m2_var_ids = {id(sv.symbolic_variable) for sv in m2._tensor_variable_info}
@@ -309,21 +299,16 @@ class TestGraphReplacePlaceholderNamespacing:
             name="test_model", verbose=False
         )
 
-        for sv in mod._tensor_variable_info:
-            if not sv.name.endswith("_P0"):
-                assert sv.name == sv.symbolic_variable.name
-
         for sd in mod._tensor_data_info:
             assert sd.name == sd.symbolic_data.name
 
         self._variable_names_match(mod)
 
-    def test_unnamed_model_preserves_original_placeholders(self):
+    def test_unnamed_model_has_no_prefix_on_variable_names(self):
         mod = st.LevelTrend(order=1, innovations_order=1).build(name=None, verbose=False)
 
-        for sv in mod._tensor_variable_info:
-            if sv.name != "P0":
-                assert sv.name == sv.symbolic_variable.name
+        registered_names = {sv.name for sv in mod._tensor_variable_info}
+        assert registered_names == set(mod.param_names)
 
     def test_prefixed_placeholders_are_in_ssm_graph(self):
         from pytensor.graph.traversal import explicit_graph_inputs
@@ -337,9 +322,8 @@ class TestGraphReplacePlaceholderNamespacing:
             v.name for v in explicit_graph_inputs(all_matrices) if hasattr(v, "name") and v.name
         }
 
-        expected_names = {
-            sv.name for sv in mod._tensor_variable_info if not sv.name.endswith("_P0")
-        }
+        p0_name = mod.prefixed_name("P0")
+        expected_names = {sv.name for sv in mod._tensor_variable_info if sv.name != p0_name}
         assert expected_names <= graph_input_names
 
         unprefixed_names = {"initial_level_trend", "sigma_level_trend"}
@@ -358,5 +342,5 @@ class TestGraphReplacePlaceholderNamespacing:
                 for i, sv in enumerate(mod._tensor_variable_info)
             )
         )
-        with pytest.raises(ValueError, match="Variable name mismatch"):
+        with pytest.raises(ValueError, match="missing expected prefix"):
             self._variable_names_match(mod)

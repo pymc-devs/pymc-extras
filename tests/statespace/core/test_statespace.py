@@ -442,7 +442,9 @@ def test_base_class_raises():
 
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 def test_two_named_statespace_models_coexist_end_to_end(mock_pymc_sample):
-    data = pd.DataFrame(np.random.default_rng(42).normal(size=(100, 1)).astype(floatX), columns=["y"])
+    data = pd.DataFrame(
+        np.random.default_rng(42).normal(size=(100, 1)).astype(floatX), columns=["y"]
+    )
 
     ss_a = st.LevelTrend(name="trend", order=1, innovations_order=1).build(name="a", verbose=False)
     ss_b = st.LevelTrend(name="trend", order=1, innovations_order=1).build(name="b", verbose=False)
