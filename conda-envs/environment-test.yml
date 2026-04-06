@@ -3,10 +3,8 @@ channels:
 - conda-forge
 - nodefaults
 dependencies:
-  - pymc>=5.27.1
-  - pytensor>=2.37.0
   - scikit-learn
-  - better-optimize>=0.1.5
+  - better-optimize>=0.3.2
   - dask<2025.1.1
   - xhistogram
   - statsmodels
@@ -19,3 +17,5 @@ dependencies:
   - pip:
       - jax
       - blackjax
+      - pymc @ git+https://github.com/pymc-devs/pymc.git@v6
+      - pytensor @ git+https://github.com/pymc-devs/pytensor.git@v3
