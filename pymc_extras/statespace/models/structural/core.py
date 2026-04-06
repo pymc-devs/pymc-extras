@@ -241,12 +241,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         self._param_names = strip(self._param_info.names)
 
     def _prefix_placeholder_variables(self, ssm, tensor_variable_info, tensor_data_info):
-        """Replace placeholder variables in SSM matrices with prefixed-name copies.
-
-        Creates new placeholder variables whose names are prefixed with the model name,
-        applies graph_replace to swap them into all SSM matrices, and rebuilds the
-        symbolic info objects to reference the new placeholders.
-        """
+        """Replace placeholder variables in SSM matrices with prefixed-name copies."""
         replacements = {}
         new_variables = []
         for sv in tensor_variable_info:
@@ -268,49 +263,13 @@ class StructuralTimeSeries(PyMCStateSpace):
         matrices = [getattr(ssm, name) for name in LONG_MATRIX_NAMES]
         replaced_matrices = graph_replace(matrices, replace=replacements, strict=False)
 
-        new_ssm = ssm.copy()
         for mat_name, new_mat in zip(LONG_MATRIX_NAMES, replaced_matrices):
-            setattr(new_ssm, mat_name, new_mat)
+            setattr(ssm, mat_name, new_mat)
 
         new_variable_info = SymbolicVariableInfo(symbolic_variables=tuple(new_variables))
         new_data_info = SymbolicDataInfo(symbolic_data=tuple(new_data_entries))
 
-        return new_ssm, new_variable_info, new_data_info
-
-    def _validate_symbolic_info(self):
-        """Validate that symbolic info metadata names match actual Variable names.
-
-        Note: P0 is excluded from the name-match check because
-        PytensorRepresentation.__setitem__ mutates the tensor name to the
-        matrix name ("initial_state_cov") after registration.
-        """
-        for sv in self._tensor_variable_info:
-            # P0 is assigned as an entire matrix via ssm["initial_state_cov"] = P0,
-            # which mutates the tensor's .name to "initial_state_cov".
-            is_p0 = sv.name == "P0" or (self.name and sv.name == self.prefixed_name("P0"))
-            if not is_p0 and sv.name != sv.symbolic_variable.name:
-                raise ValueError(
-                    f"Variable name mismatch: metadata={sv.name}, "
-                    f"variable={sv.symbolic_variable.name}"
-                )
-            if self.name and not sv.name.startswith(f"{self.name}_"):
-                raise ValueError(f"Variable {sv.name} missing expected prefix {self.name}_")
-
-        for sd in self._tensor_data_info:
-            if sd.name != sd.symbolic_data.name:
-                raise ValueError(
-                    f"Data name mismatch: metadata={sd.name}, " f"data={sd.symbolic_data.name}"
-                )
-            if self.name and not sd.name.startswith(f"{self.name}_"):
-                raise ValueError(f"Data {sd.name} missing expected prefix {self.name}_")
-
-        var_ids = [id(sv.symbolic_variable) for sv in self._tensor_variable_info]
-        if len(var_ids) != len(set(var_ids)):
-            raise ValueError("Duplicate Variable objects in tensor_variable_info")
-
-        data_ids = [id(sd.symbolic_data) for sd in self._tensor_data_info]
-        if len(data_ids) != len(set(data_ids)):
-            raise ValueError("Duplicate Variable objects in tensor_data_info")
+        return ssm, new_variable_info, new_data_info
 
     def _init_ssm(self, ssm: PytensorRepresentation, k_posdef: int) -> None:
         """Initialize state space model representation."""

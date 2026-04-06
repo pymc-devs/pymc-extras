@@ -1092,7 +1092,7 @@ class PyMCStateSpace:
         obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
 
         SequenceMvNormal(
-            "obs",
+            self.prefixed_name("obs"),
             mus=observed_states,
             covs=observed_covariances,
             logp=logp,

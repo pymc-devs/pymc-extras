@@ -234,48 +234,65 @@ def test_sequence_type_component_arguments(arg_type):
 
 
 class TestGraphReplacePlaceholderNamespacing:
-    """Tests for the graph_replace-based placeholder namespacing in StructuralTimeSeries."""
+    @staticmethod
+    def _variable_names_match(mod):
+        """Check that metadata names match actual tensor variable names (excluding P0)."""
+        for sv in mod._tensor_variable_info:
+            is_p0 = sv.name == "P0" or (mod.name and sv.name == mod.prefixed_name("P0"))
+            if not is_p0 and sv.name != sv.symbolic_variable.name:
+                raise ValueError(
+                    f"Variable name mismatch: metadata={sv.name}, "
+                    f"variable={sv.symbolic_variable.name}"
+                )
+            if mod.name and not sv.name.startswith(f"{mod.name}_"):
+                raise ValueError(f"Variable {sv.name} missing expected prefix {mod.name}_")
+
+        for sd in mod._tensor_data_info:
+            if sd.name != sd.symbolic_data.name:
+                raise ValueError(
+                    f"Data name mismatch: metadata={sd.name}, data={sd.symbolic_data.name}"
+                )
+            if mod.name and not sd.name.startswith(f"{mod.name}_"):
+                raise ValueError(f"Data {sd.name} missing expected prefix {mod.name}_")
+
+        var_ids = [id(sv.symbolic_variable) for sv in mod._tensor_variable_info]
+        if len(var_ids) != len(set(var_ids)):
+            raise ValueError("Duplicate Variable objects in tensor_variable_info")
+
+        data_ids = [id(sd.symbolic_data) for sd in mod._tensor_data_info]
+        if len(data_ids) != len(set(data_ids)):
+            raise ValueError("Duplicate Variable objects in tensor_data_info")
 
     def test_same_component_reused_in_two_named_models_no_aliasing(self):
-        """A single Component used in two named models creates independent placeholders."""
         trend = st.LevelTrend(order=1, innovations_order=1)
-
         m1 = trend.build(name="m1", verbose=False)
         m2 = trend.build(name="m2", verbose=False)
 
-        # All m1 placeholders should be prefixed with "m1_"
         for sv in m1._tensor_variable_info:
-            assert sv.name.startswith("m1_"), f"Expected m1_ prefix, got {sv.name}"
-            # P0 tensor name is mutated by PytensorRepresentation.__setitem__
+            assert sv.name.startswith("m1_")
             if not sv.name.endswith("_P0"):
                 assert sv.name == sv.symbolic_variable.name
 
-        # All m2 placeholders should be prefixed with "m2_"
         for sv in m2._tensor_variable_info:
-            assert sv.name.startswith("m2_"), f"Expected m2_ prefix, got {sv.name}"
+            assert sv.name.startswith("m2_")
             if not sv.name.endswith("_P0"):
                 assert sv.name == sv.symbolic_variable.name
 
-        # No overlap in placeholder Variable objects between models
         m1_var_ids = {id(sv.symbolic_variable) for sv in m1._tensor_variable_info}
         m2_var_ids = {id(sv.symbolic_variable) for sv in m2._tensor_variable_info}
         assert m1_var_ids.isdisjoint(m2_var_ids)
 
     def test_reused_component_with_data_placeholders(self):
-        """Regression (data placeholders) also get independent prefixed copies."""
         comp = st.LevelTrend(order=1, innovations_order=1) + st.Regression(
             name="reg", state_names=["x"]
         )
-
         m1 = comp.build(name="m1", verbose=False)
         m2 = comp.build(name="m2", verbose=False)
 
-        # Variable placeholders
         m1_var_ids = {id(sv.symbolic_variable) for sv in m1._tensor_variable_info}
         m2_var_ids = {id(sv.symbolic_variable) for sv in m2._tensor_variable_info}
         assert m1_var_ids.isdisjoint(m2_var_ids)
 
-        # Data placeholders
         m1_data_ids = {id(sd.symbolic_data) for sd in m1._tensor_data_info}
         m2_data_ids = {id(sd.symbolic_data) for sd in m2._tensor_data_info}
         assert m1_data_ids.isdisjoint(m2_data_ids)
@@ -287,76 +304,53 @@ class TestGraphReplacePlaceholderNamespacing:
             assert sd.name.startswith("m2_")
             assert sd.name == sd.symbolic_data.name
 
-    def test_symbolic_info_name_matches_variable_name(self):
-        """After prefixing, metadata names must match actual Variable.name."""
+    def test_metadata_names_match_variable_names(self):
         mod = (st.LevelTrend(order=1, innovations_order=1) + st.MeasurementError(name="obs")).build(
             name="test_model", verbose=False
         )
 
         for sv in mod._tensor_variable_info:
-            # P0 tensor name is mutated by PytensorRepresentation.__setitem__
             if not sv.name.endswith("_P0"):
-                assert (
-                    sv.name == sv.symbolic_variable.name
-                ), f"Mismatch: metadata={sv.name}, variable={sv.symbolic_variable.name}"
+                assert sv.name == sv.symbolic_variable.name
 
         for sd in mod._tensor_data_info:
-            assert (
-                sd.name == sd.symbolic_data.name
-            ), f"Mismatch: metadata={sd.name}, data={sd.symbolic_data.name}"
+            assert sd.name == sd.symbolic_data.name
 
-        # Validate via the dedicated helper
-        mod._validate_symbolic_info()
+        self._variable_names_match(mod)
 
     def test_unnamed_model_preserves_original_placeholders(self):
-        """When name is None, placeholders should be unchanged from the component."""
-        trend = st.LevelTrend(order=1, innovations_order=1)
-        mod = trend.build(name=None, verbose=False)
+        mod = st.LevelTrend(order=1, innovations_order=1).build(name=None, verbose=False)
 
         for sv in mod._tensor_variable_info:
-            # P0 tensor name is mutated by PytensorRepresentation.__setitem__
             if sv.name != "P0":
                 assert sv.name == sv.symbolic_variable.name
 
     def test_prefixed_placeholders_are_in_ssm_graph(self):
-        """Old unprefixed placeholders must not appear in the SSM matrices of
-        a named model; new prefixed ones must."""
         from pytensor.graph.traversal import explicit_graph_inputs
 
         from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES
 
-        trend = st.LevelTrend(order=1, innovations_order=1)
-        mod = trend.build(name="ns", verbose=False)
+        mod = st.LevelTrend(order=1, innovations_order=1).build(name="ns", verbose=False)
 
-        # Collect all explicit graph inputs across all SSM matrices
         all_matrices = [getattr(mod.ssm, name) for name in LONG_MATRIX_NAMES]
-        graph_inputs = set(explicit_graph_inputs(all_matrices))
-        graph_input_names = {v.name for v in graph_inputs if hasattr(v, "name") and v.name}
+        graph_input_names = {
+            v.name for v in explicit_graph_inputs(all_matrices) if hasattr(v, "name") and v.name
+        }
 
-        # Every non-P0 registered variable should appear in the graph as a prefixed input
-        # (P0 is excluded because __setitem__ renames its tensor to "initial_state_cov")
         expected_names = {
             sv.name for sv in mod._tensor_variable_info if not sv.name.endswith("_P0")
         }
-        # graph inputs should be a superset of registered variable names
-        assert (
-            expected_names <= graph_input_names
-        ), f"Missing from graph: {expected_names - graph_input_names}"
+        assert expected_names <= graph_input_names
 
-        # Original unprefixed names (pre-prefix) should NOT appear
-        original_names = {"initial_level_trend", "sigma_level_trend"}
-        assert original_names.isdisjoint(
-            graph_input_names
-        ), f"Old unprefixed names still in graph: {original_names & graph_input_names}"
+        unprefixed_names = {"initial_level_trend", "sigma_level_trend"}
+        assert unprefixed_names.isdisjoint(graph_input_names)
 
-    def test_validate_symbolic_info_catches_mismatch(self):
-        """_validate_symbolic_info should raise on name/variable mismatch."""
+    def test_corrupted_metadata_name_raises(self):
         from pymc_extras.statespace.core.properties import SymbolicVariable, SymbolicVariableInfo
 
         mod = st.LevelTrend(order=1, innovations_order=1).build(name="v", verbose=False)
 
-        # Corrupt a metadata name to trigger validation error
-        corrupted = SymbolicVariableInfo(
+        mod._tensor_variable_info = SymbolicVariableInfo(
             symbolic_variables=tuple(
                 SymbolicVariable(name="WRONG_NAME", symbolic_variable=sv.symbolic_variable)
                 if i == 0
@@ -364,6 +358,5 @@ class TestGraphReplacePlaceholderNamespacing:
                 for i, sv in enumerate(mod._tensor_variable_info)
             )
         )
-        mod._tensor_variable_info = corrupted
         with pytest.raises(ValueError, match="Variable name mismatch"):
-            mod._validate_symbolic_info()
+            self._variable_names_match(mod)
