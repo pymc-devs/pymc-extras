@@ -186,7 +186,7 @@ def add_fit_to_inference_data(
         data["covariance_matrix"] = cov_dataarray
 
     dataset = xr.Dataset(data)
-    idata.add_groups(fit=dataset)
+    idata["fit"] = xr.DataTree(dataset=dataset)
 
     return idata
 
@@ -219,14 +219,15 @@ def add_data_to_inference_data(
     model = pm.modelcontext(model) if model is None else model
 
     if model.deterministics:
+        posterior_ds = idata["posterior"].dataset
         expand_dims = {}
-        if "chain" not in idata["posterior"].coords:
+        if "chain" not in posterior_ds.coords:
             expand_dims["chain"] = [0]
-        if "draw" not in idata["posterior"].coords:
+        if "draw" not in posterior_ds.coords:
             expand_dims["draw"] = [0]
 
         idata["posterior"] = pm.compute_deterministics(
-            idata["posterior"].expand_dims(expand_dims),
+            posterior_ds.expand_dims(expand_dims),
             model=model,
             merge_dataset=True,
             progressbar=progressbar,
@@ -237,25 +238,22 @@ def add_data_to_inference_data(
 
     observed_data = dict_to_dataset(
         find_observations(model),
-        library=pm,
+        inference_library=pm,
         coords=coords,
         dims=dims,
-        default_dims=[],
+        sample_dims=[],
     )
 
     constant_data = dict_to_dataset(
         find_constants(model),
-        library=pm,
+        inference_library=pm,
         coords=coords,
         dims=dims,
-        default_dims=[],
+        sample_dims=[],
     )
 
-    idata.add_groups(
-        {"observed_data": observed_data, "constant_data": constant_data},
-        coords=coords,
-        dims=dims,
-    )
+    idata["observed_data"] = xr.DataTree(dataset=observed_data)
+    idata["constant_data"] = xr.DataTree(dataset=constant_data)
 
     return idata
 
@@ -410,6 +408,6 @@ def add_optimizer_result_to_inference_data(
     dataset = optimizer_result_to_dataset(
         result, method=method, mu=mu, model=model, var_name_to_model_var=var_name_to_model_var
     )
-    idata.add_groups({"optimizer_result": dataset})
+    idata["optimizer_result"] = xr.DataTree(dataset=dataset)
 
     return idata

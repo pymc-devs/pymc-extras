@@ -329,7 +329,7 @@ class TestAddPathfinderToDataTree:
         # Check groups were added
         # Note: Since MockMultiPathfinderResult is not a real MultiPathfinderResult,
         # it gets treated as a single-path result, so only 'sample_stats' group is added
-        groups = list(idata_updated.groups())
+        groups = list(idata_updated.children)
         assert "posterior" in groups
         assert "sample_stats" in groups
         # pathfinder_paths is only created for true MultiPathfinderResult instances
@@ -375,7 +375,7 @@ class TestDiagnosticsAndConfigGroups:
         idata_updated = add_pathfinder_to_inference_data(idata, result, model=None)
 
         # Check that we only have one pathfinder group
-        groups = list(idata_updated.groups())
+        groups = list(idata_updated.children)
         assert "sample_stats" in groups
         assert "pathfinder_config" not in groups  # No separate config group
 
@@ -414,7 +414,7 @@ class TestDiagnosticsAndConfigGroups:
         )
 
         # Check that we only have one pathfinder group
-        groups = list(idata_updated.groups())
+        groups = list(idata_updated.children)
         assert "sample_stats" in groups
         assert "pathfinder_diagnostics" not in groups  # No separate diagnostics group
 
@@ -451,7 +451,7 @@ class TestDiagnosticsAndConfigGroups:
         )
 
         # Check diagnostics group was NOT added
-        groups = list(idata_updated.groups())
+        groups = list(idata_updated.children)
         assert "pathfinder_diagnostics" not in groups
 
 

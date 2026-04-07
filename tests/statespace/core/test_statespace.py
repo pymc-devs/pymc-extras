@@ -397,7 +397,7 @@ def idata(pymc_mod, rng, mock_pymc_sample):
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
 
-    idata.extend(idata_prior)
+    idata.update(idata_prior)
     return idata
 
 
@@ -406,7 +406,7 @@ def idata_exog(exog_pymc_mod, rng, mock_pymc_sample):
     with exog_pymc_mod:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
-    idata.extend(idata_prior)
+    idata.update(idata_prior)
     return idata
 
 
@@ -415,7 +415,7 @@ def idata_exog_mv(exog_pymc_mod_mv, rng, mock_pymc_sample):
     with exog_pymc_mod_mv:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
-    idata.extend(idata_prior)
+    idata.update(idata_prior)
     return idata
 
 
@@ -424,7 +424,7 @@ def idata_no_exog(pymc_mod_no_exog, rng, mock_pymc_sample):
     with pymc_mod_no_exog:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
-    idata.extend(idata_prior)
+    idata.update(idata_prior)
     return idata
 
 
@@ -433,7 +433,7 @@ def idata_no_exog_mv(pymc_mod_no_exog_mv, rng, mock_pymc_sample):
     with pymc_mod_no_exog_mv:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
-    idata.extend(idata_prior)
+    idata.update(idata_prior)
     return idata
 
 
@@ -442,7 +442,7 @@ def idata_no_exog_mv_dt(pymc_mod_no_exog_mv_dt, rng, mock_pymc_sample):
     with pymc_mod_no_exog_mv_dt:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
-    idata.extend(idata_prior)
+    idata.update(idata_prior)
     return idata
 
 
@@ -451,7 +451,7 @@ def idata_no_exog_dt(pymc_mod_no_exog_dt, rng, mock_pymc_sample):
     with pymc_mod_no_exog_dt:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
-    idata.extend(idata_prior)
+    idata.update(idata_prior)
     return idata
 
 

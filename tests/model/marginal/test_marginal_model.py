@@ -842,7 +842,9 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = from_dict({"posterior": prior})
+            idata = from_dict(
+                {"posterior": {k: np.expand_dims(v, axis=0) for k, v in prior.items()}}
+            )
 
         if explicit_model:
             idata = recover_marginals(idata, model=marginal_m, return_samples=True)
@@ -940,7 +942,9 @@ class TestRecoverMarginals:
                 random_seed=rng,
                 return_inferencedata=False,
             )
-            idata = from_dict({"posterior": prior})
+            idata = from_dict(
+                {"posterior": {k: np.expand_dims(v, axis=0) for k, v in prior.items()}}
+            )
 
             idata = recover_marginals(idata, return_samples=True)
         post = idata.posterior

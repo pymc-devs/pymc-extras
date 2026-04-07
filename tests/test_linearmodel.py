@@ -82,7 +82,7 @@ def test_save_load(fitted_linear_model_instance):
     temp = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False)
     model.save(temp.name)
     model2 = LinearModel.load(temp.name)
-    assert model.idata.groups() == model2.idata.groups()
+    assert set(model.idata.children) == set(model2.idata.children)
 
     X_pred = pd.DataFrame({"input": np.random.uniform(low=0, high=1, size=100)})
     pred1 = model.predict(X_pred, random_seed=423)

@@ -274,7 +274,9 @@ def draws_from_laplace_approx(
             zip(var_names, output_buffers, strict=not return_unconstrained)
         )
     }
-    posterior_dataset = dict_to_dataset(posterior, coords=model_coords, dims=model_dims, library=pm)
+    posterior_dataset = dict_to_dataset(
+        posterior, coords=model_coords, dims=model_dims, inference_library=pm
+    )
     unconstrained_posterior_dataset = None
 
     if return_unconstrained:
@@ -311,7 +313,7 @@ def draws_from_laplace_approx(
             unconstrained_posterior,
             coords=model_coords,
             dims=model_dims,
-            library=pm,
+            inference_library=pm,
         )
 
     return posterior_dataset, unconstrained_posterior_dataset

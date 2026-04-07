@@ -489,7 +489,7 @@ def add_pathfinder_to_inference_data(
     ...     idata = pmx.fit(method="pathfinder", model=model, add_pathfinder_groups=False)
     >>> # Assuming we have pathfinder results
     >>> idata = add_pathfinder_to_inference_data(idata, results, model=model)
-    >>> print(list(idata.groups()))  # Will show ['posterior', 'sample_stats']
+    >>> print(list(idata.groups))  # Will show ['posterior', 'sample_stats']
     >>> # Access nested data:
     >>> print(
     ...     [k for k in idata.sample_stats.data_vars.keys() if k.startswith("paths_")]
@@ -514,8 +514,8 @@ def add_pathfinder_to_inference_data(
     else:
         consolidated_ds = pathfinder_result_to_xarray(result, model=model)
 
-    if group in idata.groups():
+    if group in idata.children:
         warnings.warn(f"Group '{group}' already exists in DataTree, it will be replaced.")
 
-    idata.add_groups({group: consolidated_ds})
+    idata[group] = xr.DataTree(dataset=consolidated_ds)
     return idata
