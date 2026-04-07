@@ -26,7 +26,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         linker: [cvm, numba]
-        python-version: ["3.11"]
+        python-version: ["3.12"]
         test-subset:
           - tests/model
           - tests/statespace/core/test_statespace.py
