@@ -2,7 +2,7 @@ import numpy as np
 
 from pymc import Model
 from pymc.printing import str_for_dist, str_for_potential_or_deterministic
-from pytensor import Mode
+from pytensor.compile.mode import Mode
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.type import Constant, Variable
 from rich.box import SIMPLE_HEAD

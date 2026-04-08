@@ -7,8 +7,10 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from pytensor import Mode, Variable, config
+from pytensor import config
 from pytensor import tensor as pt
+from pytensor.compile.mode import Mode
+from pytensor.graph.basic import Variable
 
 from pymc_extras.statespace.core.properties import (
     Coord,

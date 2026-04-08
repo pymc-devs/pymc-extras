@@ -13,7 +13,8 @@ import pytensor.tensor as pt
 from pymc.model import modelcontext
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import RandomState
-from pytensor import Variable, graph_replace
+from pytensor.graph.basic import Variable
+from pytensor.graph.replace import graph_replace
 from pytensor.graph.traversal import explicit_graph_inputs
 from rich.box import SIMPLE_HEAD
 from rich.console import Console

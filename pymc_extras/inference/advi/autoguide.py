@@ -6,9 +6,9 @@ import pytensor.tensor as pt
 from pymc.distributions import Normal
 from pymc.logprob.basic import conditional_logp
 from pymc.model.core import Deterministic, Model
-from pytensor import graph_replace
 from pytensor.gradient import disconnected_grad
 from pytensor.graph.basic import Variable
+from pytensor.graph.replace import graph_replace
 
 from pymc_extras.inference.advi.pytensorf import get_symbolic_rv_shapes
 

@@ -50,7 +50,7 @@ from pymc.util import (
     _get_seeds_per_chain,
     get_default_varnames,
 )
-from pytensor.compile.function.types import Function
+from pytensor.compile.executor import Function
 from pytensor.compile.mode import FAST_COMPILE, Mode
 from pytensor.graph import clone_replace, vectorize_graph
 from pytensor.tensor import TensorVariable
