@@ -7,7 +7,6 @@ import pytensor.tensor as pt
 import pytest
 import xarray as xr
 
-from graphviz.graphs import Digraph
 from preliz.distributions import distributions as preliz_distributions
 from pydantic import ValidationError
 from pymc.model_graph import fast_eval
@@ -497,6 +496,8 @@ def test_sample_prior_missing_coords() -> None:
 
 
 def test_to_graph() -> None:
+    graphviz = pytest.importorskip("graphviz")
+
     hierarchical_distribution = Prior(
         "Normal",
         mu=Prior("Normal"),
@@ -505,7 +506,7 @@ def test_to_graph() -> None:
     )
 
     G = hierarchical_distribution.to_graph()
-    assert isinstance(G, Digraph)
+    assert isinstance(G, graphviz.graphs.Digraph)
 
 
 def test_from_dict_list() -> None:
@@ -1012,11 +1013,12 @@ class TestCensored:
     def test_censored_to_graph(
         self,
     ) -> None:
+        graphviz = pytest.importorskip("graphviz")
         normal = Prior("Normal", dims="channel")
         censored_normal = Censored(normal, lower=0)
 
         G = censored_normal.to_graph()
-        assert isinstance(G, Digraph)
+        assert isinstance(G, graphviz.graphs.Digraph)
 
     def test_censored_likelihood_variable(
         self,
