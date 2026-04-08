@@ -127,6 +127,9 @@ def add_data_to_active_model(values, index, data_dims=None):
         data_dims = [TIME_DIM, OBS_STATE_DIM]
     time_dim = data_dims[0]
 
+    if isinstance(index, pd.Index):
+        index = index.rename(time_dim)
+
     if time_dim not in pymc_mod.coords:
         pymc_mod.add_coord(time_dim, index)
     else:
