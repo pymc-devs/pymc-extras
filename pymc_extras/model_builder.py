@@ -627,6 +627,11 @@ class ModelBuilder:
 
         prior_predictive_samples = az.extract(prior_pred, "prior_predictive", combined=combined)
 
+        if isinstance(prior_predictive_samples, xr.DataArray):
+            prior_predictive_samples = prior_predictive_samples.to_dataset(
+                name=prior_predictive_samples.name
+            )
+
         return prior_predictive_samples
 
     def sample_posterior_predictive(self, X_pred, extend_idata, combined, **kwargs):
@@ -658,6 +663,11 @@ class ModelBuilder:
         posterior_predictive_samples = az.extract(
             post_pred, "posterior_predictive", combined=combined
         )
+
+        if isinstance(posterior_predictive_samples, xr.DataArray):
+            posterior_predictive_samples = posterior_predictive_samples.to_dataset(
+                name=posterior_predictive_samples.name
+            )
 
         return posterior_predictive_samples
 
