@@ -490,7 +490,7 @@ def sample_prior(
     return pm.sample_prior_predictive(
         model=model,
         **sample_prior_predictive_kwargs,
-    ).prior
+    ).prior.dataset
 
 
 def _param_value_with_dims(param: str, value, dims: Dims | None):
