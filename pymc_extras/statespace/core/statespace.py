@@ -2347,7 +2347,7 @@ class PyMCStateSpace:
             cov_dims = ["data_time", ALL_STATE_DIM, ALL_STATE_AUX_DIM]
 
         with pm.Model(coords=temp_coords) as forecast_model:
-            (_, _, *matrices), grouped_outputs = self._kalman_filter_outputs_from_dummy_graph(
+            _, grouped_outputs = self._kalman_filter_outputs_from_dummy_graph(
                 data_dims=["data_time", OBS_STATE_DIM],
             )
 
@@ -2374,9 +2374,20 @@ class PyMCStateSpace:
                 "P0_slice", cov_frozen[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
             )
 
-            # Get matrices with n_timesteps set to forecast length for time-varying models
-            # Note: matrices already has x0, P0 skipped from _kalman_filter_outputs_from_dummy_graph
-            forecast_matrices = self._insert_constant_timestep(matrices, len(forecast_index))
+            # Get fresh matrices with n_timesteps placeholder still intact.
+            # Build for the full timeline (training + forecast) so that time-varying matrices
+            # continue at the correct phase, then slice to keep only the forecast portion.
+            n_train = len(time_index)
+            n_total = n_train + len(forecast_index)
+
+            full_matrices = self._insert_constant_timestep(self.unpack_statespace(), n_total)
+            _, _, *forecast_matrices = full_matrices
+
+            forecast_names = MATRIX_NAMES[2:]  # c, d, T, Z, R, H, Q
+            forecast_matrices = [
+                m[n_train:] if m.ndim == (2 if name in VECTOR_VALUED else 3) else m
+                for m, name in zip(forecast_matrices, forecast_names)
+            ]
 
             _ = LinearGaussianStateSpace(
                 "forecast",
@@ -2640,6 +2651,12 @@ class PyMCStateSpace:
         -------
         pm.InferenceData
             An Arviz InferenceData object containing impulse response function in a variable named "irf".
+
+        Notes
+        -----
+        For models with time-varying transition matrices, the IRF is computed starting at phase 0 of the
+        time-varying cycle. This means the response represents the effect of a shock occurring at the first
+        modeled state, T(0).
         """
         options = [shock_size, shock_cov, shock_trajectory]
         n_options = sum(x is not None for x in options)

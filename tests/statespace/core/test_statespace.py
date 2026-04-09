@@ -1358,12 +1358,32 @@ class TestTimeVaryingTransition:
 
     @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
     @pytest.mark.filterwarnings("ignore:No start date provided")
-    def test_forecast(self, ss_mod_time_varying, idata_time_varying):
-        result = ss_mod_time_varying.forecast(idata_time_varying, periods=10)
+    @pytest.mark.parametrize(
+        "periods", [10, 50], ids=["shorter_than_training", "longer_than_training"]
+    )
+    def test_forecast(self, ss_mod_time_varying, idata_time_varying, periods):
+        n_obs = 40  # must match pymc_mod_time_varying fixture
+        result = ss_mod_time_varying.forecast(idata_time_varying, periods=periods)
+
         assert "forecast_latent" in result
         assert "forecast_observed" in result
-        assert result["forecast_latent"].shape[2] == 10
+        assert result["forecast_latent"].dims == ("chain", "draw", "time", "state")
+        assert result["forecast_observed"].dims == ("chain", "draw", "time", "observed_state")
+        assert result["forecast_latent"].shape[2] == periods
         assert not np.any(np.isnan(result["forecast_latent"].values))
+        assert not np.any(np.isnan(result["forecast_observed"].values))
+
+        # Value check: the model has y_t = d_t + Z @ x_t with Z=[[1]] and H=0 (no obs noise),
+        # so forecast_observed - forecast_latent = d_t = slope * t.
+        # Forecast matrices are phase-aligned: they continue from n_obs, not from 0.
+        latent = result["forecast_latent"].values  # (chain, draw, time, state)
+        observed = result["forecast_observed"].values  # (chain, draw, time, obs)
+        slope = idata_time_varying.posterior["slope"].values  # (chain, draw)
+
+        intercepts = observed[..., 0] - latent[..., 0]  # (chain, draw, time)
+        expected = slope[..., None] * np.arange(n_obs, n_obs + periods)[None, None, :]
+
+        assert_allclose(intercepts, expected, atol=1e-5, rtol=1e-5)
 
     @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
     def test_impulse_response_function(self, ss_mod_time_varying, idata_time_varying):

@@ -55,7 +55,9 @@ def test_time_seasonality(s, d, innovations, remove_first_state, rng):
 
 @pytest.mark.parametrize("d", [1, 3])
 @pytest.mark.parametrize("start_state", [0, 2, "state_2"])
-def test_time_seasonality_start_state(d, start_state, rng):
+@pytest.mark.parametrize("use_time_varying", [True, False], ids=["time_varying", "static"])
+@pytest.mark.parametrize("remove_first_state", [True, False])
+def test_time_seasonality_start_state(d, start_state, use_time_varying, remove_first_state, rng):
     s = 4
     state_names = [f"state_{i}" for i in range(s)]
 
@@ -65,13 +67,18 @@ def test_time_seasonality_start_state(d, start_state, rng):
         innovations=False,
         name="season",
         state_names=state_names,
-        remove_first_state=True,
+        remove_first_state=remove_first_state,
         start_state=start_state,
+        use_time_varying=use_time_varying,
     )
 
-    params = np.array([1.0, 2.0, 3.0], dtype=config.floatX)
-    implied_gamma0 = -params.sum()
-    default_seasons = [implied_gamma0, params[0], params[1], params[2]]
+    if remove_first_state:
+        params = np.array([1.0, 2.0, 3.0], dtype=config.floatX)
+        implied_gamma0 = -params.sum()
+        default_seasons = [implied_gamma0, params[0], params[1], params[2]]
+    else:
+        params = np.array([1.0, 2.0, 3.0, 4.0], dtype=config.floatX)
+        default_seasons = [params[0], params[1], params[2], params[3]]
 
     start_idx = state_names.index(start_state) if isinstance(start_state, str) else start_state
     expected_seasons = default_seasons[start_idx:] + default_seasons[:start_idx]
@@ -175,6 +182,12 @@ def test_time_seasonality_multiple_observed(rng, d, remove_first_state):
     np.testing.assert_allclose(T_v, expected_T, atol=ATOL, rtol=RTOL)
     np.testing.assert_allclose(Q_v, np.array([[0.1**2, 0.0], [0.0, 0.8**2]]), atol=ATOL, rtol=RTOL)
 
+    k_states_per_endog = d * (s - 1) if remove_first_state else d * s
+    Z0 = np.zeros((1, k_states_per_endog))
+    Z0[0, 0] = 1.0
+    expected_Z = np.block([[Z0, np.zeros_like(Z0)], [np.zeros_like(Z0), Z0]])
+    np.testing.assert_allclose(Z_v, expected_Z, atol=ATOL, rtol=RTOL)
+
 
 @pytest.mark.parametrize("d", [2, 3])
 @pytest.mark.parametrize("remove_first_state", [True, False])
@@ -204,6 +217,13 @@ def test_time_seasonality_multiple_observed_time_varying(rng, d, remove_first_st
     assert_pattern_repeats(y[:, 0], s * d, atol=ATOL, rtol=RTOL)
     assert_pattern_repeats(y[:, 1], s * d, atol=ATOL, rtol=RTOL)
 
+    k_states_per_endog = (s - 1) if remove_first_state else s
+    Z0 = np.zeros((1, k_states_per_endog))
+    Z0[0, 0] = 1.0
+    expected_Z = np.block([[Z0, np.zeros_like(Z0)], [np.zeros_like(Z0), Z0]])
+    Z_v = mod.ssm["design"].eval()
+    np.testing.assert_allclose(Z_v, expected_Z, atol=ATOL, rtol=RTOL)
+
 
 def test_time_seasonality_shared_states():
     mod = st.TimeSeasonality(
@@ -229,6 +249,34 @@ def test_time_seasonality_shared_states():
     np.testing.assert_allclose(Z, np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
     np.testing.assert_allclose(T, np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]))
     np.testing.assert_allclose(R, np.array([[1.0], [0.0], [0.0]]))
+
+
+@pytest.mark.parametrize("use_time_varying", [True, False], ids=["time_varying", "static"])
+def test_time_seasonality_shared_states_with_duration(rng, use_time_varying):
+    s, d = 4, 3
+    mod = st.TimeSeasonality(
+        season_length=s,
+        duration=d,
+        innovations=False,
+        name="season",
+        observed_state_names=["data_1", "data_2"],
+        remove_first_state=True,
+        share_states=True,
+        use_time_varying=use_time_varying,
+    )
+
+    assert mod.k_endog == 2
+    expected_k_states = (s - 1) if use_time_varying else d * (s - 1)
+    assert mod.k_states == expected_k_states
+    assert mod.k_posdef == 0
+
+    x0 = np.array([1.0, 2.0, 3.0], dtype=config.floatX)
+    params = {"params_season": x0}
+    _, y = simulate_from_numpy_model(mod, rng, params, steps=s * d * 4)
+
+    assert_pattern_repeats(y[:, 0], s * d, atol=ATOL, rtol=RTOL)
+    assert_pattern_repeats(y[:, 1], s * d, atol=ATOL, rtol=RTOL)
+    np.testing.assert_allclose(y[:, 0], y[:, 1], atol=ATOL, rtol=RTOL)
 
 
 def test_add_mixed_shared_not_shared_time_seasonality():
@@ -394,8 +442,10 @@ def test_add_time_varying_and_static_seasonality(rng):
     x, y = simulate_from_numpy_model(mod, rng, params, steps=steps)
 
     # Combined output should have period = LCM of individual periods
-    # For testing, verify the model runs without error and output shape is correct
+    # LCM(s1*d1, s2*d2) = LCM(12, 10) = 60
     assert y.shape == (steps,)
+    assert not np.any(np.isnan(y))
+    assert_pattern_repeats(y, 60, atol=ATOL, rtol=RTOL)
 
 
 @pytest.mark.parametrize("n", [1, 2, 3, None])
@@ -409,8 +459,9 @@ def test_frequency_seasonality(n, s, rng):
     x0 = rng.normal(size=mod.n_coefs).astype(config.floatX)
     params = {"params_season": x0, "sigma_season": 0.0}
 
-    decimal = s_str.split(".") if "." in (s_str := str(s)) else "0"
-    T = int(s * 10 ** len(decimal))
+    s_str = str(s)
+    n_decimal = len(s_str.split(".")[1]) if "." in s_str else 0
+    T = int(s * 10**n_decimal)
 
     x, y = simulate_from_numpy_model(mod, rng, params, steps=2 * T)
     assert_pattern_repeats(y, T, atol=ATOL, rtol=RTOL)

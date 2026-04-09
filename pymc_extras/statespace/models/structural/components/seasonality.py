@@ -452,14 +452,15 @@ class TimeSeasonality(Component):
 
         T_hold = pt.eye(n)
 
-        time_idx = pt.arange(self.n_timesteps)
-        is_rotation_step = pt.eq(time_idx % self.duration, self.duration - 1)
+        # Build one complete cycle: [I, I, ..., I, T_rotate] of length `duration`
+        # Then tile to cover n_timesteps
+        cycle_matrices = [T_hold for _ in range(self.duration - 1)] + [T_rotate]
+        T_cycle = pt.stack(cycle_matrices)  # (duration, n, n)
 
-        return pt.where(
-            is_rotation_step[:, None, None],
-            pt.broadcast_to(T_rotate, (self.n_timesteps, n, n)),
-            pt.broadcast_to(T_hold, (self.n_timesteps, n, n)),
-        )
+        n_cycles = (self.n_timesteps + self.duration - 1) // self.duration  # ceiling division
+        T_tiled = pt.tile(T_cycle, (n_cycles, 1, 1))
+
+        return T_tiled[: self.n_timesteps]
 
     def _build_transition_matrix(self) -> TensorVariable:
         """Build the full transition matrix, handling multivariate via block_diag."""
@@ -522,15 +523,18 @@ class TimeSeasonality(Component):
             if use_tv:
                 return initial_params
             else:
-                return pt.extra_ops.repeat(initial_params, self.duration, axis=0)
+                # Static mode: state is d blocks of s elements each
+                # Tile the full season vector d times
+                return pt.tile(initial_params, self.duration)
         else:
             if use_tv:
                 return initial_params.ravel()
             else:
-                return pt.extra_ops.repeat(initial_params, self.duration, axis=1).ravel()
+                # Static mode: tile each row (endog) d times, then ravel
+                return pt.tile(initial_params, (1, self.duration)).ravel()
 
     def _apply_start_state_shift(
-        self, initial_state: TensorVariable, T: TensorVariable
+        self, initial_state: TensorVariable, T: TensorVariable | None
     ) -> TensorVariable:
         """Shift initial state to account for start_state offset."""
         if self.start_idx == 0:
@@ -569,7 +573,7 @@ class TimeSeasonality(Component):
         k_posdef = self._k_posdef_per_endog()
 
         R = pt.zeros((k_states, k_posdef))[0, 0].set(1.0)
-        self.ssm["selection", :, :] = pt.join(0, *[R for _ in range(k_endog_effective)])
+        self.ssm["selection", :, :] = pt.linalg.block_diag(*[R for _ in range(k_endog_effective)])
 
         sigma = self.make_and_register_variable(
             f"sigma_{self.name}",
@@ -606,8 +610,10 @@ class TimeSeasonality(Component):
         else:
             initial_state = self._build_initial_state_simple(initial_params)
 
-        # Apply start_state shift (handles time-varying vs static internally)
-        T_for_shift = self._build_static_transition()
+        # Apply start_state shift
+        T_for_shift = (
+            None if self._uses_time_varying_transition else self._build_static_transition()
+        )
         initial_state = self._apply_start_state_shift(initial_state, T_for_shift)
 
         self.ssm["initial_state", :] = initial_state
