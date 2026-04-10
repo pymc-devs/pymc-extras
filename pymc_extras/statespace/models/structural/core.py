@@ -140,8 +140,10 @@ class StructuralTimeSeries(PyMCStateSpace):
         ----------
         ssm : PytensorRepresentation
             The state space representation containing system matrices.
-        name : str
-            Name of the model. If None, defaults to "StructuralTimeSeries".
+        name : str, optional
+            Prefix applied to all internal graph variable and data names, allowing multiple
+            state space models to coexist in the same PyMC model without naming collisions.
+            If ``None`` (default), no prefix is applied and variable names are unchanged.
         coords_info : CoordInfo
             Coordinate specifications for model dimensions.
         param_info : ParameterInfo
@@ -167,7 +169,6 @@ class StructuralTimeSeries(PyMCStateSpace):
         mode : str | Mode | None, default None
             PyTensor compilation mode.
         """
-        self._name = name or "StructuralTimeSeries"
         self.measurement_error = measurement_error
 
         k_states, k_posdef, k_endog = ssm.k_states, ssm.k_posdef, ssm.k_endog
@@ -1025,8 +1026,13 @@ class Component:
 
         Parameters
         ----------
-        name: str, optional
-            Name of the exogenous data being modeled. Default is "data"
+        name : str, optional
+            Prefix applied to all internal graph variable and data names, allowing multiple
+            structural models to coexist in the same PyMC model without naming collisions.
+            If ``None`` (default), no prefix is applied. When a name is provided, prior
+            variables must be named with the prefix, e.g. ``pm.Normal("m1_initial_trend", ...)``
+            for ``name="m1"``. Use ``model.prefixed_name(p)`` for each ``p`` in
+            ``model.param_names`` to get the expected names.
 
         filter_type : str, optional
             The type of Kalman filter to use. Valid options are "standard", "univariate", "single", "cholesky", and
