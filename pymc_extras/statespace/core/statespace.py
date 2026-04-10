@@ -863,8 +863,7 @@ class PyMCStateSpace:
         with pymc_model:
             for param_name in self.param_names:
                 name = self.prefixed_name(param_name)
-                param = getattr(pymc_model, name, None)
-                if param is not None:
+                if name in pymc_model:
                     found_params.append(param_name)
 
         missing_params = list(set(self.param_names) - set(found_params))
@@ -901,8 +900,7 @@ class PyMCStateSpace:
         with pymc_model:
             for data_name in data_names:
                 name = self.prefixed_name(data_name)
-                data = getattr(pymc_model, name, None)
-                if data is not None:
+                if name in pymc_model:
                     found_data.append(data_name)
 
         missing_data = list(set(data_names) - set(found_data))

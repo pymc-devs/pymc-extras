@@ -69,7 +69,7 @@ def generate_timeseries():
 
 @pytest.fixture()
 def create_model(load_dataset):
-    ss_mod = structural.LevelTrend(order=2).build("data", verbose=False)
+    ss_mod = structural.LevelTrend(order=2).build(verbose=False)
 
     def _create_model(f):
         data = load_dataset(f)
@@ -122,7 +122,7 @@ def make_model(index):
     a = pd.DataFrame(index=index, columns=["A", "B", "C", "D"], data=np.arange(n * 4).reshape(n, 4))
 
     mod = LevelTrend(order=2, innovations_order=[0, 1])
-    ss_mod = mod.build(name="a", verbose=False)
+    ss_mod = mod.build(verbose=False)
 
     initial_trend_dims, sigma_trend_dims, P0_dims = ss_mod.param_dims.values()
     coords = ss_mod.coords
