@@ -1190,8 +1190,6 @@ class Prior:
             ).constrain(lower=0.5, upper=0.8)
 
         """
-        import warnings
-
         from preliz import maxent
 
         if self.transform:
@@ -1201,12 +1199,10 @@ class Prior:
             kwargs = {}
             kwargs.setdefault("plot", False)
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            if kwargs["plot"]:
-                new_parameters = maxent(self.preliz, lower, upper, mass, **kwargs)[0].params_dict
-            else:
-                new_parameters = maxent(self.preliz, lower, upper, mass, **kwargs).params_dict
+        if kwargs["plot"]:
+            new_parameters = maxent(self.preliz, lower, upper, mass, **kwargs)[0].params_dict
+        else:
+            new_parameters = maxent(self.preliz, lower, upper, mass, **kwargs).params_dict
 
         return Prior(
             self.distribution,

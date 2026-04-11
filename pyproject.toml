@@ -104,7 +104,10 @@ filterwarnings =[
     'ignore:os\.fork\(\) was called\.:RuntimeWarning',
 
     # Preliz needs to update for pytensor > 2.35
-    'ignore:.*`pytensor\.graph\.basic\.ancestors`.*`pytensor\.graph\.traversal\.ancestors`.*:FutureWarning:^preliz(\.|$)',
+    'ignore:.*`pytensor\.graph\.basic\.ancestors`.*`pytensor\.graph\.traversal\.ancestors`.*:FutureWarning:^preliz(\.$)',
+
+    # Preliz triggers pytensor broadcastable deprecation internally
+    'ignore:The `broadcastable` keyword is deprecated:DeprecationWarning:pytensor',
 
     # OpenMP library warning on windows CI
     'ignore::RuntimeWarning:threadpoolctl',
