@@ -2383,6 +2383,31 @@ class PyMCStateSpace:
             full_matrices = self._insert_constant_timestep(self.unpack_statespace(), n_total)
             _, _, *forecast_matrices = full_matrices
 
+            # For exogenous-data-driven matrices the time dimension comes from the
+            # data shared variable, not from the n_timesteps symbolic.  Replace the
+            # shared variables with concatenated training + scenario tensors so the
+            # [n_train:] slice below yields the correct forecast portion.
+            # TODO: Is there a way to handle this in a fully symbolic way, without having to
+            #  run the full scan on training data to get the system's state at the start date?
+            if scenario is not None and self._needs_exog_data:
+                exog_replace = {}
+                for name in self.data_names:
+                    if name not in scenario:
+                        continue
+                    forecast_data = scenario[name]
+                    train_val = self._fit_exog_data[name]["value"]
+                    fc_val = (
+                        forecast_data.values
+                        if isinstance(forecast_data, pd.DataFrame)
+                        else np.asarray(forecast_data)
+                    )
+                    combined = np.concatenate([train_val, fc_val], axis=0)
+                    exog_replace[forecast_model[name]] = pt.as_tensor_variable(combined, name=name)
+                if exog_replace:
+                    forecast_matrices = graph_replace(
+                        forecast_matrices, replace=exog_replace, strict=False
+                    )
+
             forecast_names = MATRIX_NAMES[2:]  # c, d, T, Z, R, H, Q
             forecast_matrices = [
                 m[n_train:] if m.ndim == (2 if name in VECTOR_VALUED else 3) else m
