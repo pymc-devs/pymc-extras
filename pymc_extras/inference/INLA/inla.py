@@ -3,7 +3,7 @@ import warnings
 import arviz as az
 import pymc as pm
 
-from pytensor.tensor import TensorLike, TensorVariable
+from pytensor.tensor import TensorLike, TensorVariable, as_tensor
 
 from pymc_extras.model.marginal.marginal_model import marginalize
 
@@ -91,13 +91,9 @@ def fit_INLA(
     )
     model = pm.modelcontext(model)
 
-    # Get the TensorVariable if Q is provided as an RV
-    if isinstance(Q, TensorVariable) and Q in model.rvs_to_values.keys():
-        Q = model.rvs_to_values[Q]
-
     # Marginalize out the latent field
     marginalize_kwargs = {
-        "Q": Q,
+        "Q": as_tensor(Q),
         "minimizer_seed": minimizer_seed,
         "minimizer_kwargs": minimizer_kwargs,
     }

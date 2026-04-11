@@ -9,7 +9,7 @@ import pytensor.tensor as pt
 from pymc.distributions import Bernoulli, Categorical, DiscreteUniform
 from pymc.distributions.distribution import _support_point, support_point
 from pymc.distributions.multivariate import _logdet_from_cholesky
-from pymc.logprob.abstract import MeasurableOp, ValuedRV, _logprob
+from pymc.logprob.abstract import MeasurableOp, _logprob
 from pymc.logprob.basic import conditional_logp, logp
 from pymc.pytensorf import constant_fold
 from pytensor import Variable
@@ -147,12 +147,10 @@ class MarginalLaplaceRV(MarginalRV):
     def __init__(
         self,
         *args,
-        Q: TensorVariable,
         minimizer_seed: int,
         minimizer_kwargs: dict = {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}},
         **kwargs,
     ) -> None:
-        self.Q = Q
         self.minimizer_seed = minimizer_seed
         self.minimizer_kwargs = minimizer_kwargs
         super().__init__(*args, **kwargs)
@@ -493,6 +491,10 @@ def get_laplace_approx(
 
 @_logprob.register(MarginalLaplaceRV)
 def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
+    # Get Q and remove it from the graph (stored as a dummy input)
+    inputs = list(inputs)
+    Q = inputs.pop(-1)
+
     # Clone the inner RV graph of the Marginalized RV
     x, *inner_rvs = inline_ofg_outputs(op, inputs)
 
@@ -521,31 +523,6 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     d = values[0].data.shape[-1]
     rng = np.random.default_rng(op.minimizer_seed)
     x0_init = rng.random(d)
-
-    # Get Q from the list of inputs
-    Q = None
-    if isinstance(op.Q, TensorVariable):
-        for var in inputs:
-            if var.owner is not None and isinstance(var.owner.op, ValuedRV):
-                for inp in var.owner.inputs:
-                    if (
-                        inp.name is not None
-                        and inp.name == op.Q.name
-                        or inp.name == op.Q.name + "_log"
-                    ):
-                        Q = var
-                        break
-
-            if var.name is not None and var.name == op.Q.name or var.name == op.Q.name + "_log":
-                Q = var
-                break
-
-        if Q is None:
-            raise ValueError(f"No inputs could be matched to precision matrix {op.Q}: {inputs}.")
-
-    # Q is an array
-    else:
-        Q = op.Q
 
     # Obtain laplace approx
     x0, log_laplace_approx = get_laplace_approx(

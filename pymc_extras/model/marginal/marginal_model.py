@@ -601,6 +601,10 @@ def replace_marginal_subgraph(
     # Add any other shared variable inputs
     inputs += collect_shared_vars(output_rvs, blockers=inputs)
 
+    if use_laplace:
+        Q = marginalize_kwargs.pop("Q")
+        inputs.append(Q)
+
     inner_inputs = [inp.clone() for inp in inputs]
     inner_outputs = clone_replace(outputs, replace=dict(zip(inputs, inner_inputs)))
     inner_outputs = remove_model_vars(inner_outputs)
