@@ -54,7 +54,11 @@ jobs:
           cache-environment: true
       - name: Install pymc-extras
         run: |
+          pip install "pymc @ git+https://github.com/pymc-devs/pymc.git"
+          pip install "pytensor @ git+https://github.com/pymc-devs/pytensor.git"
+          pip install "preliz @ git+https://github.com/arviz-devs/preliz.git"
           pip install -e ".[dev]" --no-deps
+
           python --version
           pip check
       - name: Run tests
@@ -100,7 +104,11 @@ jobs:
           cache-environment: true
       - name: Install pymc-extras
         run: |
+          pip install "pymc @ git+https://github.com/pymc-devs/pymc.git"
+          pip install "pytensor @ git+https://github.com/pymc-devs/pytensor.git"
+          pip install "preliz @ git+https://github.com/arviz-devs/preliz.git"
           pip install -e ".[dev]" --no-deps
+
           python --version
       - name: Run tests
         # This job uses a cmd shell, therefore the environment variable syntax is different!
