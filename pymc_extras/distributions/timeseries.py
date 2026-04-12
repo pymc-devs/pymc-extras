@@ -175,7 +175,9 @@ class DiscreteMarkovChain(Distribution):
                 UserWarning,
             )
             k = P.shape[-1]
-            init_dist = pm.Categorical.dist(p=pt.full((k,), 1 / k))
+            _, init_dist = pm.Categorical.dist(
+                p=pt.full((k,), 1 / k), rng=pt.random.shared_rng(seed=0), return_next_rng=True
+            )
 
         return super().dist([P, steps, init_dist], n_lags=n_lags, **kwargs)
 
@@ -198,7 +200,7 @@ class DiscreteMarkovChain(Distribution):
         def transition(*args):
             old_rng, *states, transition_probs = args
             p = transition_probs[tuple(states)]
-            next_rng, next_state = pm.Categorical.dist(p=p, rng=old_rng).owner.outputs
+            next_rng, next_state = pm.Categorical.dist(p=p, rng=old_rng, return_next_rng=True)
             return next_rng, next_state
 
         state_next_rng, markov_chain = pytensor.scan(

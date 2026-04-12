@@ -232,10 +232,23 @@ def draws_from_laplace_approx(
     size = (draws,) if vectorize_draws else ()
     if covariance is not None:
         sigma_pt = pt.matrix("cov", shape=(n, n), dtype=covariance.dtype)
-        laplace_approximation = pm.MvNormal.dist(mu=mu_pt, cov=sigma_pt, size=size, method="svd")
+        _, laplace_approximation = pm.MvNormal.dist(
+            mu=mu_pt,
+            cov=sigma_pt,
+            size=size,
+            method="svd",
+            rng=pt.random.shared_rng(seed=0),
+            return_next_rng=True,
+        )
     else:
         sigma_pt = pt.vector("sigma", shape=(n,), dtype=standard_deviation.dtype)
-        laplace_approximation = pm.Normal.dist(mu=mu_pt, sigma=sigma_pt, size=(*size, n))
+        _, laplace_approximation = pm.Normal.dist(
+            mu=mu_pt,
+            sigma=sigma_pt,
+            size=(*size, n),
+            rng=pt.random.shared_rng(seed=0),
+            return_next_rng=True,
+        )
 
     constrained_vars = unpack_last_axis(
         laplace_approximation,

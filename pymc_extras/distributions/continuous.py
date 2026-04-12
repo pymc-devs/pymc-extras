@@ -270,7 +270,10 @@ class Chi:
 
     @staticmethod
     def chi_dist(nu: TensorVariable, size: TensorVariable) -> TensorVariable:
-        return pt.math.sqrt(ChiSquared.dist(nu=nu, size=size))
+        _, rv = ChiSquared.dist(
+            nu=nu, size=size, rng=pt.random.shared_rng(seed=0), return_next_rng=True
+        )
+        return pt.math.sqrt(rv)
 
     def __new__(cls, name, nu, **kwargs):
         if "observed" not in kwargs:
@@ -331,7 +334,8 @@ class Maxwell:
 
         a = CheckParameterValue("a > 0")(a, pt.all(pt.gt(a, 0)))
 
-        return Chi.dist(nu=3, size=size) * a
+        _, chi = Chi.dist(nu=3, size=size, rng=pt.random.shared_rng(seed=0), return_next_rng=True)
+        return chi * a
 
     def __new__(cls, name, a, **kwargs):
         return CustomDist(
