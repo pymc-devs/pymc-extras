@@ -143,7 +143,8 @@ def fit_dadvi(
     )
 
     dadvi_initial_point = {
-        f"{var_name}_mu": np.zeros_like(value).ravel()
+        f"{var_name}_mu": np.asarray(value).ravel()
+
         for var_name, value in initial_point_dict.items()
     }
     dadvi_initial_point.update(
