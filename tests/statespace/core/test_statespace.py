@@ -461,7 +461,7 @@ def idata_time_varying(pymc_mod_time_varying, rng, mock_pymc_sample):
     with pymc_mod_time_varying:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
         idata_prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
-    idata.extend(idata_prior)
+    idata.update(idata_prior)
     return idata
 
 
