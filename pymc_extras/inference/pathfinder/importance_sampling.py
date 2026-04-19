@@ -6,6 +6,7 @@ from typing import Literal
 
 import arviz as az
 import numpy as np
+import xarray as xr
 
 from numpy.typing import NDArray
 from scipy.special import logsumexp
@@ -99,12 +100,11 @@ def importance_sampling(
                 "ignore", category=RuntimeWarning, message="overflow encountered in exp"
             )
             match method:
-                case "psis":
-                    replace = False
-                    logiw, pareto_k = az.psislw(logiw)
-                case "psir":
-                    replace = True
-                    logiw, pareto_k = az.psislw(logiw)
+                case "psis" | "psir":
+                    replace = method == "psir"
+                    logiw_da, pareto_k_da = az.psislw(xr.DataArray(logiw, dims="__sample__"))
+                    logiw = logiw_da.values
+                    pareto_k = float(pareto_k_da)
                 case "identity":
                     replace = False
                     pareto_k = None

@@ -237,6 +237,10 @@ def test_pathfinder_importance_sampling(importance_sampling):
         assert idata.posterior["tau"].shape == (1, num_draws)
         assert idata.posterior["theta"].shape == (1, num_draws, 8)
 
+    if importance_sampling in ("psis", "psir"):
+        pareto_k = idata.sample_stats["pareto_k"].item()
+        assert isinstance(pareto_k, float) and np.isfinite(pareto_k)
+
 
 def test_pathfinder_initvals():
     # Run a model with an ordered transform that will fail unless initvals are in place
