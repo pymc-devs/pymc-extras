@@ -155,27 +155,7 @@ def _get_dist_param_names(dist_class) -> list[str]:
 
 
 def _get_consumed_dims(distribution: str, parameters: dict) -> set[str]:
-    """Return the set of dims consumed as core dims but not re-emitted in the output.
-
-    Uses rv_op metadata (ndims_params, ndim_supp) to determine which dims of
-    Prior-valued parameters are "consumed" by the distribution (i.e., they are
-    core dims of the parameter that do not appear in the output).
-
-    Following the NumPy generalized ufunc (gufunc) convention that PyMC inherits,
-    core dims are always the **rightmost** axes of a parameter tensor. Consumed
-    dims are therefore always taken from the trailing (rightmost) end of a
-    parameter's ``dims`` tuple — never from the left.
-
-    The number of purely consumed dims for parameter i is:
-        max(0, ndims_params[i] - ndim_supp)
-
-    Examples
-    --------
-    - Categorical(p)->(): ndims_params=[1], ndim_supp=0 -> p's rightmost dim is consumed
-    - MvNormal(mu,cov)->(n): ndims_params=[1,2], ndim_supp=1
-        -> mu: 1-1=0 (not consumed), cov: 2-1=1 (rightmost dim consumed)
-    - Dirichlet(a)->(a): ndims_params=[1], ndim_supp=1 -> 1-1=0 (not consumed)
-    """
+    """Return dims consumed by a distribution's rightmost core axes but not re-emitted in the output."""
     dist_class = getattr(pm, distribution, None)
     if dist_class is None:
         return set()
@@ -222,12 +202,9 @@ def handle_dims(
     desired_dims : Dims
         The desired dimensions of the tensor.
     consumed_dims : frozenset[str], optional
-        Dimensions that are core dims of the parameter and will be consumed
-        internally by the distribution op. Following the NumPy gufunc convention
-        inherited by PyMC, consumed dims are always the **rightmost** axes of the
-        parameter tensor — never the leftmost. These are excluded from the
-        batch-dim alignment check and dimshuffle, but preserved as trailing axes
-        so the distribution op can consume them. Defaults to an empty frozenset.
+        Rightmost dims of the parameter consumed by the distribution and not
+        re-emitted in the output. Excluded from batch alignment but preserved
+        as trailing axes for the distribution op.
 
     Returns
     -------
