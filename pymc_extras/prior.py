@@ -161,14 +161,19 @@ def _get_consumed_dims(distribution: str, parameters: dict) -> set[str]:
     Prior-valued parameters are "consumed" by the distribution (i.e., they are
     core dims of the parameter that do not appear in the output).
 
+    Following the NumPy generalized ufunc (gufunc) convention that PyMC inherits,
+    core dims are always the **rightmost** axes of a parameter tensor. Consumed
+    dims are therefore always taken from the trailing (rightmost) end of a
+    parameter's ``dims`` tuple — never from the left.
+
     The number of purely consumed dims for parameter i is:
         max(0, ndims_params[i] - ndim_supp)
 
     Examples
     --------
-    - Categorical(p)->(): ndims_params=[1], ndim_supp=0 -> p's dim is consumed
-    - MvNormal(n),(n,n)->(n): ndims_params=[1,2], ndim_supp=1
-        -> mu: 1-1=0 (not consumed), cov: 2-1=1 (last dim consumed)
+    - Categorical(p)->(): ndims_params=[1], ndim_supp=0 -> p's rightmost dim is consumed
+    - MvNormal(mu,cov)->(n): ndims_params=[1,2], ndim_supp=1
+        -> mu: 1-1=0 (not consumed), cov: 2-1=1 (rightmost dim consumed)
     - Dirichlet(a)->(a): ndims_params=[1], ndim_supp=1 -> 1-1=0 (not consumed)
     """
     dist_class = getattr(pm, distribution, None)
@@ -218,9 +223,11 @@ def handle_dims(
         The desired dimensions of the tensor.
     consumed_dims : frozenset[str], optional
         Dimensions that are core dims of the parameter and will be consumed
-        internally by the distribution op. These are excluded from the batch-dim
-        alignment check and dimshuffle, but preserved as trailing axes so the
-        distribution op can consume them. Defaults to an empty frozenset.
+        internally by the distribution op. Following the NumPy gufunc convention
+        inherited by PyMC, consumed dims are always the **rightmost** axes of the
+        parameter tensor — never the leftmost. These are excluded from the
+        batch-dim alignment check and dimshuffle, but preserved as trailing axes
+        so the distribution op can consume them. Defaults to an empty frozenset.
 
     Returns
     -------
@@ -623,9 +630,10 @@ class Prior:
         be registered with `register_tensor_transform` function or
         be available in either `pytensor.tensor` or `pymc.math`.
     core_dims : Dims, optional
-        The core (support) dimensions of the distribution. When not provided,
-        core_dims is inferred automatically from the distribution's ``rv_op``
-        metadata:
+        The core (support) dimensions of the distribution. Following the NumPy
+        gufunc convention inherited by PyMC, core dims are always the
+        **rightmost** axes of the output tensor. When not provided, core_dims is
+        inferred automatically from the distribution's ``rv_op`` metadata:
 
         - Distributions whose output has support dims (``ndim_supp > 0``, e.g.
           ``Dirichlet``) use the last ``ndim_supp`` dims of ``dims``.
