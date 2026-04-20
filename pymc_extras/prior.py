@@ -84,6 +84,7 @@ Create a prior with a custom transform function by registering it with
 from __future__ import annotations
 
 import copy
+import inspect
 import warnings
 
 from collections.abc import Callable, Sequence
@@ -147,7 +148,62 @@ def _remove_leading_xs(args: list[str | int]) -> list[str | int]:
     return args
 
 
-def handle_dims(x: pt.TensorLike, dims: Dims, desired_dims: Dims) -> pt.TensorVariable:
+def _get_dist_param_names(dist_class) -> list[str]:
+    """Return ordered parameter names from a PyMC distribution's dist() signature."""
+    sig = inspect.signature(dist_class.dist)
+    return [p for p in sig.parameters if p not in ("size", "kwargs")]
+
+
+def _get_consumed_dims(distribution: str, parameters: dict) -> set[str]:
+    """Return the set of dims consumed as core dims but not re-emitted in the output.
+
+    Uses rv_op metadata (ndims_params, ndim_supp) to determine which dims of
+    Prior-valued parameters are "consumed" by the distribution (i.e., they are
+    core dims of the parameter that do not appear in the output).
+
+    The number of purely consumed dims for parameter i is:
+        max(0, ndims_params[i] - ndim_supp)
+
+    Examples
+    --------
+    - Categorical(p)->(): ndims_params=[1], ndim_supp=0 -> p's dim is consumed
+    - MvNormal(n),(n,n)->(n): ndims_params=[1,2], ndim_supp=1
+        -> mu: 1-1=0 (not consumed), cov: 2-1=1 (last dim consumed)
+    - Dirichlet(a)->(a): ndims_params=[1], ndim_supp=1 -> 1-1=0 (not consumed)
+    """
+    dist_class = getattr(pm, distribution, None)
+    if dist_class is None:
+        return set()
+    rv_op = getattr(dist_class, "rv_op", None)
+    ndims_params = getattr(rv_op, "ndims_params", None)
+    ndim_supp = getattr(rv_op, "ndim_supp", 0) or 0
+    if not ndims_params:
+        return set()
+
+    try:
+        param_names = _get_dist_param_names(dist_class)
+    except (ValueError, TypeError):
+        return set()
+
+    consumed: set[str] = set()
+    for i, pname in enumerate(param_names):
+        if i >= len(ndims_params):
+            break
+        n_consumed = ndims_params[i] - ndim_supp
+        if n_consumed <= 0:
+            continue
+        val = parameters.get(pname)
+        if isinstance(val, Prior) and val.dims:
+            consumed.update(val.dims[-n_consumed:])
+    return consumed
+
+
+def handle_dims(
+    x: pt.TensorLike,
+    dims: Dims,
+    desired_dims: Dims,
+    consumed_dims: frozenset[str] = frozenset(),
+) -> pt.TensorVariable:
     """Take a tensor of dims `dims` and align it to `desired_dims`.
 
     Doesn't check for validity of the dims
@@ -160,6 +216,11 @@ def handle_dims(x: pt.TensorLike, dims: Dims, desired_dims: Dims) -> pt.TensorVa
         The current dimensions of the tensor.
     desired_dims : Dims
         The desired dimensions of the tensor.
+    consumed_dims : frozenset[str], optional
+        Dimensions that are core dims of the parameter and will be consumed
+        internally by the distribution op. These are excluded from the batch-dim
+        alignment check and dimshuffle, but preserved as trailing axes so the
+        distribution op can consume them. Defaults to an empty frozenset.
 
     Returns
     -------
@@ -192,20 +253,28 @@ def handle_dims(x: pt.TensorLike, dims: Dims, desired_dims: Dims) -> pt.TensorVa
     dims = dims if isinstance(dims, tuple) else (dims,)
     desired_dims = desired_dims if isinstance(desired_dims, tuple) else (desired_dims,)
 
-    if difference := set(dims).difference(desired_dims):
+    batch_dims = tuple(d for d in dims if d not in consumed_dims)
+
+    if difference := set(batch_dims).difference(desired_dims):
         raise UnsupportedShapeError(
             f"Dims {dims} of data are not a subset of the desired dims {desired_dims}. "
             f"{difference} is missing from the desired dims."
         )
 
-    aligned_dims = np.array(dims)[:, None] == np.array(desired_dims)
+    if not batch_dims:
+        return x
+
+    n_core_dims = len(dims) - len(batch_dims)
+
+    aligned_dims = np.array(batch_dims)[:, None] == np.array(desired_dims)
 
     missing_dims = aligned_dims.sum(axis=0) == 0
     new_idx = aligned_dims.argmax(axis=0)
 
     args = ["x" if missing else idx for (idx, missing) in zip(new_idx, missing_dims, strict=False)]
     args = _remove_leading_xs(args)
-    return x.dimshuffle(*args)
+    core_dim_indices = list(range(len(batch_dims), len(batch_dims) + n_core_dims))
+    return x.dimshuffle(*args, *core_dim_indices)
 
 
 DimHandler = Callable[[pt.TensorLike, Dims], pt.TensorLike]
@@ -244,8 +313,10 @@ def create_dim_handler(desired_dims: Dims) -> DimHandler:
 
     """
 
-    def func(x: pt.TensorLike, dims: Dims) -> pt.TensorVariable:
-        return handle_dims(x, dims, desired_dims)
+    def func(
+        x: pt.TensorLike, dims: Dims, consumed_dims: frozenset[str] = frozenset()
+    ) -> pt.TensorVariable:
+        return handle_dims(x, dims, desired_dims, consumed_dims)
 
     return func
 
@@ -551,6 +622,20 @@ class Prior:
         created, by default None or no transform. The transformation must
         be registered with `register_tensor_transform` function or
         be available in either `pytensor.tensor` or `pymc.math`.
+    core_dims : Dims, optional
+        The core (support) dimensions of the distribution. When not provided,
+        core_dims is inferred automatically from the distribution's ``rv_op``
+        metadata:
+
+        - Distributions whose output has support dims (``ndim_supp > 0``, e.g.
+          ``Dirichlet``) use the last ``ndim_supp`` dims of ``dims``.
+        - Distributions that consume input dims without re-emitting them
+          (``ndim_supp == 0``, e.g. ``Categorical``) use the dims identified as
+          consumed by :func:`_get_consumed_dims`.
+
+        Only needs to be set explicitly when the automatic inference is
+        insufficient or when using the ``xdist=True`` path with a custom
+        distribution.
 
     Examples
     --------
@@ -664,6 +749,17 @@ class Prior:
         else:
             core_dims = tuple(core_dims)
         self.core_dims = core_dims
+
+        # Auto-compute core_dims when not explicitly set. See the class
+        # docstring for the two cases handled.
+        if not self.core_dims and self.dims:
+            dist_class = getattr(pm, self.distribution, None)
+            rv_op = getattr(dist_class, "rv_op", None) if dist_class else None
+            ndim_supp = getattr(rv_op, "ndim_supp", 0) or 0
+            if ndim_supp > 0:
+                self.core_dims = tuple(self.dims[-ndim_supp:])
+            else:
+                self.core_dims = tuple(_get_consumed_dims(self.distribution, self.parameters))
 
         self._checks()
 
@@ -797,9 +893,12 @@ class Prior:
             if (other_dims := getattr(value, "dims", None)) is not None:
                 other_dims_set.update(other_dims)
 
-        if not other_dims_set.issubset(self.dims):
+        consumed = _get_consumed_dims(self.distribution, self.parameters)
+        remaining = other_dims_set - consumed
+
+        if not remaining.issubset(self.dims):
             raise UnsupportedShapeError(
-                f"Parameter dims {other_dims} are not a subset of the prior dims {self.dims}"
+                f"Parameter dims {remaining} are not a subset of the prior dims {self.dims}"
             )
 
     def __str__(self) -> str:
@@ -827,7 +926,11 @@ class Prior:
         if xdist:
             return value.create_variable(child_name, xdist=True)
         else:
-            return self.dim_handler(value.create_variable(child_name), value.dims or ())
+            consumed = _get_consumed_dims(self.distribution, self.parameters)
+            child_consumed = frozenset(d for d in (value.dims or ()) if d in consumed)
+            return self.dim_handler(
+                value.create_variable(child_name), value.dims or (), child_consumed
+            )
 
     def _create_centered_variable(self, name: str, xdist: bool = False):
         parameters = {
@@ -836,7 +939,7 @@ class Prior:
         }
         if xdist:
             pymc_distribution = _get_pymc_dim_distribution(self.distribution)
-            core_dims_kwargs = {"core_dims": self.core_dims}
+            core_dims_kwargs = {"core_dims": self.core_dims if self.core_dims else None}
         else:
             pymc_distribution = self.pymc_distribution
             core_dims_kwargs = {}
@@ -870,7 +973,7 @@ class Prior:
         }
         if xdist:
             pymc_distribution = _get_pymc_dim_distribution(self.distribution)
-            core_dims_kwargs = {"core_dims": self.core_dims}
+            core_dims_kwargs = {"core_dims": self.core_dims if self.core_dims else None}
         else:
             pymc_distribution = self.pymc_distribution
             core_dims_kwargs = {}
