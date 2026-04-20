@@ -630,20 +630,9 @@ class Prior:
         be registered with `register_tensor_transform` function or
         be available in either `pytensor.tensor` or `pymc.math`.
     core_dims : Dims, optional
-        The core (support) dimensions of the distribution. Following the NumPy
-        gufunc convention inherited by PyMC, core dims are always the
-        **rightmost** axes of the output tensor. When not provided, core_dims is
-        inferred automatically from the distribution's ``rv_op`` metadata:
-
-        - Distributions whose output has support dims (``ndim_supp > 0``, e.g.
-          ``Dirichlet``) use the last ``ndim_supp`` dims of ``dims``.
-        - Distributions that consume input dims without re-emitting them
-          (``ndim_supp == 0``, e.g. ``Categorical``) use the dims identified as
-          consumed by :func:`_get_consumed_dims`.
-
-        Only needs to be set explicitly when the automatic inference is
-        insufficient or when using the ``xdist=True`` path with a custom
-        distribution.
+        The rightmost support dimensions of the distribution output. Inferred
+        automatically from ``rv_op`` metadata; only set explicitly for custom
+        distributions.
 
     Examples
     --------
