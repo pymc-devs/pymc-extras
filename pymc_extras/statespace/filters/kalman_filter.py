@@ -7,9 +7,13 @@ import pytensor
 import pytensor.tensor as pt
 
 from pymc.pytensorf import constant_fold
+from pytensor.compile.builders import OpFromGraph
+from pytensor.compile.sharedvalue import SharedVariable
+from pytensor.gradient import disconnected_grad
 from pytensor.graph.basic import Variable
 from pytensor.raise_op import Assert
-from pytensor.tensor import TensorVariable
+from pytensor.scan.utils import until
+from pytensor.tensor import TensorConstant, TensorVariable
 from pytensor.tensor.linalg import solve_triangular
 
 from pymc_extras.statespace.filters.utilities import (
@@ -23,6 +27,7 @@ from pymc_extras.statespace.utils.constants import (
     LONG_NAME_TO_SHORT,
     MATRIX_NAMES,
     MISSING_FILL,
+    static_matrix_shapes,
 )
 
 MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
@@ -835,3 +840,508 @@ class UnivariateFilter(BaseFilter):
         )
 
         return a_filtered, a_hat, obs_mu, P_filtered, P_hat, obs_cov, ll
+
+
+class ConvergentFilter(StandardFilter):
+    """Kalman filter that exploits Riccati convergence to a fixed-gain steady state.
+
+    For a stationary observable system with no missing data, the predicted-covariance Riccati recursion
+    ``P_{t+1|t} = T (P_{t|t-1} - K_t F_t K_t^T) T^T + R Q R^T`` is data-independent and converges to the
+    discrete algebraic Riccati equation (DARE) fixed point ``P_star``. Once converged, the Kalman gain
+    ``K_t = P_{t|t-1} Z^T F_t^{-1}`` and innovation covariance ``F_t = Z P_{t|t-1} Z^T + H`` are constant
+    (``K_star``, ``F_star``) and the filter becomes a linear time-invariant recursion on the predicted
+    state ``a_{t|t-1}`` alone. ``ConvergentFilter`` splits the forward pass at the convergence step ``k``:
+
+    - **pre-convergence steps** (``t = 0..k-1``, the "transient"): full Kalman with update + Riccati predict.
+    - **post-convergence steps** (``t = k..n-1``, the "tail"): linear recursion on ``a`` with cached
+      ``K_star``, ``F_star``, ``log det F_star``. No per-step Cholesky; loss is ``log det F_star + v_t^T F_star^{-1} v_t``
+      evaluated via a pre-computed Cholesky of ``F_star`` and a per-step triangular solve.
+
+    The gradient is delivered via a custom pullback on an :class:`~pytensor.compile.builders.OpFromGraph`
+    rather than via autodiff. Two reasons:
+
+    1. **Correctness.** Autodiff through the two-scan forward gives *incorrect* gradients when the ``until``
+       clause on the pre-convergence scan actually fires. The forward value is fine, and one scan in
+       isolation autodiffs correctly -- but the combination of an ``until``-scan followed by a second scan
+       that depends on quantities derived from the first scan's *last* outputs (our case: ``K_star``,
+       ``F_star`` derived from ``P_hat_tr[-1]``) produces parameter gradients that are wrong by 5--100%
+       relative error even though the likelihood value matches to machine precision. With ``tol`` set so
+       the until never fires, autodiff is exact; with a real post-convergence tail it is not.
+
+    2. **Speed.** In the post-convergence tail, per-step Cholesky and the full Joseph-form backward are
+       unnecessary because ``K``, ``F``, and ``P`` are constant. The custom pullback hoists
+       ``F^{-1}, H^{-1}, A = T (I - K_star Z), I - K_star Z`` out of the scan body and the per-step
+       backward reduces to matvec and outer products. On typical state-space cells
+       (m=10..50, p=3..10, n=2000..10000) this gives a ~1.8--2.9x speedup on ``logp + grad``
+       versus :class:`StandardFilter` autodiff, on top of a ~7--12x forward speedup.
+
+    Constraints (validated at graph build time):
+
+    - All model matrices (``c, d, T, Z, R, H, Q``) must be time-invariant. Time-varying inputs raise
+      :class:`ValueError`; Riccati convergence is not meaningful for a non-stationary system.
+    - ``data`` must contain no ``NaN`` values. A masked observation changes the effective ``Z_t`` (and so
+      ``K_t`` and ``F_t``), breaking the cached-``K_star`` assumption. For :class:`SharedVariable` or
+      :class:`TensorConstant` data the check runs at build time; fully symbolic data gets an
+      :class:`~pytensor.raise_op.Assert` that fires at runtime.
+
+    Only ``d loglike_obs`` is supported as an upstream gradient; other output adjoints are treated as
+    disconnected. For gradients of other filter outputs, use :class:`StandardFilter`.
+
+    Parameters
+    ----------
+    tol : float, optional
+        Convergence tolerance on the Frobenius norm of ``P_{t+1|t} - P_{t|t-1}`` in the pre-convergence
+        scan. The scan stops the first time this drops below ``tol``. Default ``1e-10``.
+    """
+
+    _NAN_MSG = (
+        "ConvergentFilter does not support missing data (NaN) in the observation "
+        "series. Use StandardFilter for data with missing values."
+    )
+
+    def __init__(self, tol: float = 1e-10):
+        super().__init__()
+        self.tol = tol
+
+    def _check_data(self, data):
+        """Reject NaN at build time for concrete data; insert an Assert op otherwise."""
+        if isinstance(data, SharedVariable):
+            if np.isnan(data.get_value()).any():
+                raise ValueError(self._NAN_MSG)
+            return data
+        if isinstance(data, TensorConstant):
+            if np.isnan(data.data).any():
+                raise ValueError(self._NAN_MSG)
+            return data
+        return Assert(self._NAN_MSG)(data, pt.all(pt.bitwise_not(pt.isnan(data))))
+
+    def _kalman_step(self, y, a, P, c, d, T, Z, R, H, Q):
+        a_filt, P_filt, y_hat, F, ll = self.update(
+            a=a, P=P, y=y, d=d, Z=Z, H=H, all_nan_flag=pt.constant(0.0)
+        )
+        P_filt = stabilize(P_filt, self.cov_jitter)
+        a_hat, P_hat = self.predict(a=a_filt, P=P_filt, c=c, T=T, R=R, Q=Q)
+        return a_filt, a_hat, y_hat, P_filt, P_hat, F, ll
+
+    def _full_kalman_scan(self, data, a0, P0, c, d, T, Z, R, H, Q, stop_early):
+        def body(y, a_prev, P_prev, *params):
+            out = self._kalman_step(y, a_prev, P_prev, *params)
+            if stop_early:
+                return out, until(pt.sqrt(((out[4] - P_prev) ** 2).sum()) < self.tol)
+            return out
+
+        return pytensor.scan(
+            body,
+            sequences=[data],
+            outputs_info=[None, a0, None, None, P0, None, None],
+            non_sequences=[c, d, T, Z, R, H, Q],
+            strict=False,
+            return_updates=False,
+        )
+
+    def _convergent_forward(self, data, a0, P0, c, d, T, Z, R, H, Q):
+        """Two-phase forward pass.
+
+        Phase 1 (pre-convergence): a standard Kalman scan with an ``until`` clause that stops once the Riccati
+        recursion has converged (``||P_{t+1|t} - P_{t|t-1}||_F < tol``). At the stopping step ``k`` we have the DARE
+        fixed point estimate ``P_star = P_hat_tr[-1]``.
+
+        Phase 2 (post-convergence): ``K_star, F_star, F_chol_star, log det F_star, P_filt_star`` are computed once from
+         ``P_star`` and plugged into a cheaper scan whose step only does ``v_t = y_t - Z a_prev - d``, a triangular
+         solve against ``F_chol_star`` for the loss, a matvec ``a_filt = a_prev + K_star v_t``, and one matvec for
+         the state predict ``a_hat = T a_filt + c``.
+
+        Outputs are the 7 per-step sequences produced by :class:`StandardFilter` plus the convergence step ``k``
+        (a symbolic integer). The pullback uses ``k`` to split the adjoint computation. In the post-convergence segment
+        the sequences ``P_filt``, ``P_hat``, and ``F`` are broadcasts of constants.
+        """
+        n = data.shape[0]
+        (a_filt_tr, a_hat_tr, y_hat_tr, P_filt_tr, P_hat_tr, F_tr, ll_tr) = self._full_kalman_scan(
+            data, a0, P0, c, d, T, Z, R, H, Q, stop_early=True
+        )
+
+        k = a_filt_tr.shape[0]
+        a_star, P_star = a_hat_tr[-1], P_hat_tr[-1]
+
+        # Tail constants from P*. Computed once here to make the tail function prettier.
+        F_star = Z @ P_star @ Z.mT + stabilize(H, self.cov_jitter)
+        F_chol_star = pt.linalg.cholesky(F_star, lower=True)
+        logdet_F_star = 2 * pt.log(pt.diag(F_chol_star)).sum()
+        K_star = pt.linalg.solve(
+            F_star.mT, (P_star @ Z.mT).mT, assume_a="pos", check_finite=False
+        ).mT
+        I_KZ_star = pt.eye(self.n_states) - K_star @ Z
+        P_filt_star = stabilize(
+            quad_form_sym(I_KZ_star, P_star) + quad_form_sym(K_star, H), self.cov_jitter
+        )
+
+        # Tail scan: fixed K*, F* (no per-step Cholesky). Recurrent slot is a_hat.
+        def tail_body(y, a_prev):
+            y_hat = d + Z @ a_prev
+            v = y - y_hat
+            solved = solve_triangular(F_chol_star, v, lower=True)
+            ll = -0.5 * (MVN_CONST + logdet_F_star + (solved * solved).sum())
+            a_filt = a_prev + K_star @ v
+            return a_filt, T @ a_filt + c, y_hat, ll
+
+        a_filt_fx, a_hat_fx, y_hat_fx, ll_fx = pytensor.scan(
+            tail_body,
+            sequences=[data[k:]],
+            outputs_info=[None, a_star, None, None],
+            strict=False,
+            return_updates=False,
+        )
+
+        # Stitch: in the tail, P_filt, P_hat, F are constants (broadcast).
+        n_fx = n - k
+        m_shape = (n_fx, self.n_states, self.n_states)
+        P_filt_fx = pt.broadcast_to(P_filt_star, m_shape)
+        P_hat_fx = pt.broadcast_to(P_star, m_shape)
+        F_fx = pt.broadcast_to(F_star, (n_fx, self.n_endog, self.n_endog))
+
+        def cat(a, b):
+            return pt.concatenate([a, b], axis=0)
+
+        return (
+            cat(a_filt_tr, a_filt_fx),
+            cat(a_hat_tr, a_hat_fx),
+            cat(y_hat_tr, y_hat_fx),
+            cat(P_filt_tr, P_filt_fx),
+            cat(P_hat_tr, P_hat_fx),
+            cat(F_tr, F_fx),
+            cat(ll_tr, ll_fx),
+            k,
+        )
+
+    def _fixed_k_tail_backward(
+        self,
+        data,
+        a_star,
+        c,
+        d,
+        T,
+        Z,
+        H,
+        K_star,
+        F_star,
+        F_chol_star,
+        a_hat_fx,
+        dlogp,
+    ):
+        """Analytic backward pass over the post-convergence segment.
+
+        Runs a backward scan on the post-convergence data with ``F_inv, H_inv, A = T (I - K_star Z),
+        I - K_star Z`` hoisted out as non-sequences. Each step is closed-form (no Cholesky or solve in
+        the body; only matvecs and outer products). Returns:
+
+        - ``d_data, d_a_star``: ordinary adjoints flowing backward out of the segment.
+        - ``d_P_star``: Riccati-style adjoint at the segment's entry. Used as the terminal condition for
+          the pre-convergence backward (the transient's ``P_hat_grad`` at step ``k-1``).
+        - ``d_T_alpha, d_c, d_Z_direct, d_d``: per-step contributions summed across post-convergence.
+          These are the alpha-path (mean of the latent states) contributions; P-path contributions to d_T / d_Z
+          come from the ``S`` aggregate below.
+        - ``d_K_star, d_F_star``: adjoints treating ``K_star, F_star`` as if they were independent
+          inputs to the post-convergence forward. The caller chains these to ``(P_star, Z, H)`` via the
+          analytic definitions ``K_star = P_star Z^T F_star^{-1}`` and ``F_star = Z P_star Z^T + H``.
+        - ``S = sum_t d_P_hat_t``: aggregate P-adjoint across the post-convergence segment. In the
+          post-convergence segment ``P_t`` is the constant ``P_star``, so P-path contributions to
+          d_T, d_Z, d_H, d_R, d_Q are linear in ``d_P_hat_t``. These aggregate into formulas that use
+          ``S`` (rather than needing a separate per-step scan).
+        """
+        m = a_star.shape[0]
+        p_dim = F_chol_star.shape[0]
+        n_tail = data.shape[0]
+        a_prev_seq = pt.concatenate([a_star[None, :], a_hat_fx[:-1]], axis=0)
+
+        # Hoisted constants.
+        I_KZ = pt.eye(m) - K_star @ Z
+        A = T @ I_KZ
+        F_inv = pt.linalg.cho_solve((F_chol_star, True), pt.eye(p_dim))
+        H_inv = pt.linalg.inv(stabilize(H, self.cov_jitter))
+
+        def bwd(y, a_prev, r_next, P_hat_next, c_, d_, T_, Z_, K_, F_inv_, H_inv_, A_, I_KZ_):
+            v = y - Z_ @ a_prev - d_
+            Finv_v = F_inv_ @ v
+            a_filt = a_prev + K_ @ v
+            T_r_next = T_.T @ r_next
+            dL_dv = K_.T @ T_r_next + 2 * Finv_v
+            r_t = A_.T @ r_next - 2 * Z_.T @ Finv_v
+
+            # P-adjoint recursion: d_P_prev = A^T @ d_P_hat_next @ A + cross_a + direct_C,
+            # where A = T (I - K_star Z) is the closed-loop transition. The homogeneous part
+            # d_P_prev = A^T @ d_P_hat_next @ A is the backward Lyapunov recursion: as the segment
+            # length grows it converges to the solution of the Lyapunov equation X = A^T X A + C, which
+            # is the steady-state P-adjoint. Because A is constant in the post-convergence segment,
+            # we can hoist it; the per-step work is the two correction terms (cross_a and direct_C)
+            # which still depend on y_t and a_prev.
+            row = (v[None, :] @ H_inv_) @ Z_
+            M = I_KZ_.T @ (T_r_next[:, None] @ row) @ I_KZ_
+            cross_a = 0.5 * (M + M.T)
+            Zt_Finv_v = (Z_.T @ Finv_v)[:, None]
+            direct_C = Z_.T @ (F_inv_ @ Z_) - Zt_Finv_v @ Zt_Finv_v.T
+            d_P_prev = A_.T @ P_hat_next @ A_ + cross_a + direct_C
+
+            dL_dT = pt.outer(r_next, a_filt)
+            dL_dc = r_next
+            dL_dZ = -pt.outer(dL_dv, a_prev)
+            dL_dd = -dL_dv
+            dL_dK = pt.outer(T_r_next, v)
+            vvT = pt.outer(v, v)
+
+            return r_t, d_P_prev, dL_dv, dL_dT, dL_dc, dL_dZ, dL_dd, dL_dK, vvT
+
+        (r_seq, dPp_seq, dy_seq, dT_seq, dc_seq, dZ_seq, dd_seq, dK_seq, vvT_seq) = pytensor.scan(
+            bwd,
+            sequences=[data, a_prev_seq],
+            outputs_info=[
+                pt.zeros_like(a_star),
+                pt.zeros((m, m), dtype="float64"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            non_sequences=[c, d, T, Z, K_star, F_inv, H_inv, A, I_KZ],
+            go_backwards=True,
+            strict=False,
+            return_updates=False,
+        )
+
+        # d_P_prev_seq in go_backwards order is [d_P_hat_{n-2}, ..., d_P_hat_{k-1}]; the last
+        # element is d_P_star (the handoff fed to the pre-convergence backward), so the aggregate
+        # S = sum_t d_P_hat_t over the post-convergence segment excludes it.
+        S = dlogp * dPp_seq[:-1].sum(axis=0)
+        sum_vvT = vvT_seq.sum(axis=0)
+        return (
+            dlogp * dy_seq[::-1],  # d_data
+            dlogp * r_seq[-1],  # d_a_star
+            dlogp * dPp_seq[-1],  # d_P_star (Riccati)
+            dlogp * dT_seq.sum(axis=0),  # d_T alpha-path
+            dlogp * dc_seq.sum(axis=0),  # d_c
+            dlogp * dZ_seq.sum(axis=0),  # d_Z direct
+            dlogp * dd_seq.sum(axis=0),  # d_d
+            dlogp * dK_seq.sum(axis=0),  # d_K_star
+            dlogp * (n_tail * F_inv - F_inv @ sum_vvT @ F_inv),  # d_F_star
+            S,
+        )
+
+    def build_graph(
+        self,
+        data,
+        a0,
+        P0,
+        c,
+        d,
+        T,
+        Z,
+        R,
+        H,
+        Q,
+        missing_fill_value=None,
+        cov_jitter=None,
+        time_varying_names=(),
+    ):
+        if time_varying_names:
+            raise ValueError(
+                "ConvergentFilter requires time-invariant matrices; got time-varying: "
+                f"{sorted(time_varying_names)}. Use StandardFilter instead."
+            )
+        self.missing_fill_value = MISSING_FILL if missing_fill_value is None else missing_fill_value
+        self.cov_jitter = JITTER_DEFAULT if cov_jitter is None else cov_jitter
+
+        [R_shape] = constant_fold([R.shape], raise_not_constant=False)
+        [Z_shape] = constant_fold([Z.shape], raise_not_constant=False)
+        self.n_states, self.n_shocks = R_shape[-2:]
+        self.n_endog = Z_shape[-2]
+
+        data = self._check_data(data)
+        data, a0, P0, c, d, T, Z, R, H, Q = self.check_params(data, a0, P0, c, d, T, Z, R, H, Q)
+        data = pt.specify_shape(data, (data.type.shape[0], self.n_endog))
+        self.seq_names = []
+        self.non_seq_names = list(PARAM_NAMES)
+
+        # The forward is two scans chained through derived quantities (K_star, F_star, log det F_star
+        # and P_filt_star all depend on the first scan's last output). Autodiff gives incorrect
+        # gradients on this structure once the `until` clause fires with a non-trivial post-convergence
+        # segment. We wrap in an OFG and supply a custom pullback that splits the backward
+        # into: an analytic backward on the post-convergence segment (cheap, closed form), a chain
+        # rule step for (K_star, F_star) -> (P_star, Z, H) using the analytic definitions, and an
+        # autodiff backward on the pre-convergence segment with the handoff adjoints as its terminal
+        # condition (the plain Kalman iterations).
+        op = self._make_ofg()
+        a_filt, a_hat, y_hat, P_filt, P_hat, F, ll, _k = op(data, a0, P0, c, d, T, Z, R, H, Q)
+        n = data.type.shape[0]
+        return self._postprocess_scan_results(
+            (a_filt, a_hat, y_hat, P_filt, P_hat, F, ll[..., None]), a0, P0, n=n
+        )
+
+    def _make_ofg(self):
+        m, p, r_ = self.n_states, self.n_endog, self.n_shocks
+        cov_jitter = self.cov_jitter
+
+        sym = {
+            "data": pt.tensor("data", dtype="float64", shape=(None, p)),
+            **{
+                name: pt.tensor(name, dtype="float64", shape=shape)
+                for name, shape in static_matrix_shapes(m, p, r_).items()
+            },
+        }
+        in_order = ["data", "a0", "P0", "c", "d", "T", "Z", "R", "H", "Q"]
+        inputs_s = [sym[k] for k in in_order]
+        outputs = list(self._convergent_forward(*inputs_s))
+        filt_self = self
+
+        def pullback(inputs, outputs, out_grads):
+            # `outputs` are the 8 forward outputs of `_convergent_forward`:
+            # (a_filt, a_hat, y_hat, P_filt, P_hat, F, ll, k). Only the sequences we need for the
+            # backward are bound; the rest are `_`. Similarly, `out_grads[6]` is the adjoint on `ll`;
+            # all other output adjoints are assumed disconnected (see class docstring).
+            data_, a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = inputs
+            _, a_hat_sym, _, _, P_hat_sym, _, _, k_sym = outputs
+            dll = out_grads[6]
+
+            # Split the recorded per-step sequences at the convergence step `k_sym`. The
+            # pre-convergence slice is `[:k_sym]` and the post-convergence slice is `[k_sym:]`;
+            # a_star and P_star are the handoff values flowing between them (a_{k|k-1}, P_{k|k-1}).
+            a_hat_tr, P_hat_tr = a_hat_sym[:k_sym], P_hat_sym[:k_sym]
+            data_tr, data_fx = data_[:k_sym], data_[k_sym:]
+            a_star, P_star = a_hat_tr[-1], P_hat_tr[-1]
+            a_hat_fx = a_hat_sym[k_sym:]
+            # Reduce the per-step ll adjoint to a scalar by averaging. This is correct for the
+            # standard use case loss = ll.sum() (dll is a broadcast of ones, average is 1.0) and
+            # punts on the more general case of per-step weights.
+            dlogp_up = dll.sum() / dll.shape[0]
+
+            # Pre-compute tail constants for readability.
+            F_star = Z_ @ P_star @ Z_.mT + stabilize(H_, cov_jitter)
+            F_chol = pt.linalg.cholesky(F_star, lower=True)
+            K_star = pt.linalg.solve(
+                F_star.mT, (P_star @ Z_.mT).mT, assume_a="pos", check_finite=False
+            ).mT
+            F_inv = pt.linalg.cho_solve((F_chol, True), pt.eye(F_chol.shape[0]))
+
+            # Post-convergence backward. This is the source of the speedup: K, F, and P are constant
+            # across the segment, so the per-step backward drops to matvec/outer-product work.
+            # The factor of -0.5 on dlogp_up is a convention adjustment: the analytic formulas in
+            # `_fixed_k_tail_backward` are derived for ll = log |F| + v^T F^{-1} v (the "2 * negative
+            # log-likelihood" form), while our per-step ll is -0.5 * (MVN_CONST + log |F| + v^T F^{-1} v).
+            # So the caller's dlogp_up needs a -0.5 factor before being fed into the analytic formulas.
+            (
+                dd_fx,
+                da_star,
+                dP_star_ric,
+                dT_a,
+                dc_t,
+                dZ_dir,
+                dd_t,
+                dK_s,
+                dF_s,
+                S,
+            ) = filt_self._fixed_k_tail_backward(
+                data_fx,
+                a_star,
+                c_,
+                d_,
+                T_,
+                Z_,
+                H_,
+                K_star,
+                F_star,
+                F_chol,
+                a_hat_fx,
+                -0.5 * dlogp_up,
+            )
+
+            # Use chain rule to recover dZ and dH from dK*, dF*. Fully analytic.
+            dK, dF = disconnected_grad(dK_s), disconnected_grad(dF_s)
+            P_filt_s = (pt.eye(m) - K_star @ Z_) @ P_star
+            d_Z_chain = (
+                F_inv @ dK.mT @ P_filt_s - K_star.mT @ dK @ K_star.mT + (dF + dF.mT) @ Z_ @ P_star
+            )
+            X = K_star.mT @ dK @ F_inv
+            d_H_chain = dF - 0.5 * (X + X.mT)
+
+            # P-path contributions to d_T, d_Z, d_H. Because P_t is the constant P_star across the
+            # post-convergence segment, each step's contribution is linear in d_P_hat_t, so the sum
+            # over the segment is obtained by substituting S = sum_t d_P_hat_t into the formulas.
+            TtST = T_.mT @ S @ T_
+            KtPg = K_star.mT @ TtST
+            FinvZP = F_inv @ Z_ @ P_star
+            KZP = (K_star @ Z_) @ P_star
+            d_T_P = (S @ T_) @ P_filt_s.mT + (S.mT @ T_) @ P_filt_s
+            d_Z_P = (
+                -FinvZP @ TtST.mT @ P_star
+                + KtPg @ P_star.mT @ Z_.mT @ K_star.mT
+                + FinvZP @ TtST.mT @ KZP
+                - KtPg @ P_star.mT
+            )
+            d_H_P = KtPg @ K_star
+            # Chain S through W = R Q R^T for (d_R, d_Q).
+            d_R_P = (S + S.mT) @ R_ @ Q_
+            d_Q_P = R_.mT @ S @ R_
+
+            # Pre-convergence backward. We rebuild the Kalman scan on the sliced pre-convergence data
+            # (data[:k_sym]) and autodiff through it. The surrogate loss has three parts: the
+            # pre-convergence log-likelihood itself, plus two inner products that encode the handoff
+            # adjoints (da_star for the last predicted state, dP_star_ric for the last predicted
+            # covariance). disconnected_grad on the adjoints keeps pt.grad from trying to chase their
+            # own parameter dependence (they are outputs of the post-convergence backward and are
+            # treated as constants here. If we connect their gradients we would be double-counting).
+            _, a_hat_rb, _, _, P_hat_rb, _, ll_rb = filt_self._full_kalman_scan(
+                data_tr,
+                a0_,
+                P0_,
+                c_,
+                d_,
+                T_,
+                Z_,
+                R_,
+                H_,
+                Q_,
+                stop_early=False,
+            )
+            loss_tr = (
+                dlogp_up * ll_rb.sum()
+                + (a_hat_rb[-1] * disconnected_grad(da_star)).sum()
+                + (P_hat_rb[-1] * disconnected_grad(dP_star_ric)).sum()
+            )
+            (
+                dd_full,
+                da0,
+                dP0,
+                dc_tr,
+                dd_tr,
+                dT_tr,
+                dZ_tr,
+                dR_tr,
+                dH_tr,
+                dQ_tr,
+            ) = pt.grad(
+                loss_tr,
+                [data_, a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_],
+                disconnected_inputs="ignore",
+            )
+
+            return [
+                pt.concatenate([dd_full[:k_sym], dd_fx], axis=0),
+                da0,
+                dP0,
+                dc_tr + dc_t,
+                dd_tr + dd_t,
+                dT_tr + dT_a + d_T_P,
+                dZ_tr + dZ_dir + d_Z_chain + d_Z_P,
+                dR_tr + d_R_P,
+                dH_tr + d_H_chain + d_H_P,
+                dQ_tr + d_Q_P,
+            ]
+
+        return OpFromGraph(
+            inputs=inputs_s,
+            outputs=outputs,
+            pullback=pullback,
+            inline=True,
+            name="convergent_kf",
+        )

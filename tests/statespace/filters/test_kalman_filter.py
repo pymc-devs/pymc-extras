@@ -388,3 +388,167 @@ def test_kalman_filter_jax(filter):
 
     for name, jax_res, pt_res in zip(output_names, jax_outputs, pt_outputs):
         assert_allclose(jax_res, pt_res, atol=ATOL, rtol=RTOL, err_msg=f"{name} failed!")
+
+
+# -------------------- ConvergentFilter --------------------
+# Tests comparing ConvergentFilter outputs and gradients to StandardFilter.
+# ConvergentFilter requires stationary parameters and no missing data, so it
+# can't join the shared parametrized suite above.
+
+
+from pymc_extras.statespace.filters import ConvergentFilter
+
+
+def _make_stationary_system(m, p, n_shocks, n, rng):
+    """Build a valid stable stationary system for ConvergentFilter testing."""
+    T_np = rng.standard_normal((m, m)) * 0.3
+    T_np = T_np / (np.abs(np.linalg.eigvals(T_np)).max() * 1.5)
+    Z_np = rng.standard_normal((p, m)) * 0.5
+    H_root = rng.standard_normal((p, p)) * 0.3
+    H_np = H_root @ H_root.T + 0.2 * np.eye(p)
+    Q_root = rng.standard_normal((n_shocks, n_shocks)) * 0.3
+    Q_np = Q_root @ Q_root.T + 0.1 * np.eye(n_shocks)
+    R_np = rng.standard_normal((m, n_shocks)) * 0.5
+    c_np = rng.standard_normal(m) * 0.05
+    d_np = rng.standard_normal(p) * 0.05
+    a0_np = rng.standard_normal(m) * 0.1
+    P0_np = np.eye(m) * 0.5
+    a = rng.multivariate_normal(a0_np, P0_np)
+    data_np = np.empty((n, p), dtype=floatX)
+    for t in range(n):
+        w = R_np @ rng.multivariate_normal(np.zeros(n_shocks), Q_np)
+        eps = rng.multivariate_normal(np.zeros(p), H_np)
+        a = T_np @ a + c_np + w
+        data_np[t] = Z_np @ a + d_np + eps
+    return [
+        data_np.astype(floatX),
+        a0_np.astype(floatX),
+        P0_np.astype(floatX),
+        c_np.astype(floatX),
+        d_np.astype(floatX),
+        T_np.astype(floatX),
+        Z_np.astype(floatX),
+        R_np.astype(floatX),
+        H_np.astype(floatX),
+        Q_np.astype(floatX),
+    ]
+
+
+@pytest.mark.parametrize(
+    "m,p,n_shocks,n",
+    [(5, 2, 5, 100), (10, 3, 10, 200)],
+    ids=["small", "medium"],
+)
+def test_convergent_filter_forward_matches_standard(m, p, n_shocks, n, rng):
+    """ConvergentFilter forward outputs should match StandardFilter to numerical precision."""
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+
+    def build(filter_cls):
+        inputs, outputs = initialize_filter(filter_cls(), p=p, m=m, r=n_shocks, n=n)
+        return pytensor.function(inputs, outputs, on_unused_input="ignore")
+
+    fn_std = build(StandardFilter)
+    fn_conv = build(ConvergentFilter)
+    out_std = fn_std(*vals)
+    out_conv = fn_conv(*vals)
+
+    for name, s, c in zip(output_names, out_std, out_conv):
+        assert_allclose(
+            c,
+            s,
+            atol=ATOL,
+            rtol=RTOL,
+            err_msg=f"ConvergentFilter {name} differs from StandardFilter",
+        )
+
+
+@pytest.mark.parametrize(
+    "m,p,n_shocks,n",
+    [(5, 2, 5, 100), (10, 3, 10, 200)],
+    ids=["small", "medium"],
+)
+def test_convergent_filter_gradient_matches_standard(m, p, n_shocks, n, rng):
+    """ConvergentFilter gradients (via custom OFG split pullback) should match
+    StandardFilter (via autodiff) for every model parameter."""
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+
+    def build(filter_cls):
+        inputs, outputs = initialize_filter(filter_cls(), p=p, m=m, r=n_shocks, n=n)
+        data_, a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = inputs
+        ll_obs = outputs[-1]
+        loss = ll_obs.sum()
+        grads = pt.grad(loss, [a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_])
+        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
+
+    fn_std = build(StandardFilter)
+    fn_conv = build(ConvergentFilter)
+    out_std = fn_std(*vals)
+    out_conv = fn_conv(*vals)
+
+    names = ["loss", "d_a0", "d_P0", "d_c", "d_d", "d_T", "d_Z", "d_R", "d_H", "d_Q"]
+    symmetric = {"d_P0", "d_H", "d_Q"}
+    for name, s, c in zip(names, out_std, out_conv):
+        s = np.asarray(s)
+        c = np.asarray(c)
+        if name in symmetric:
+            s = 0.5 * (s + s.T)
+            c = 0.5 * (c + c.T)
+        assert_allclose(
+            c,
+            s,
+            atol=ATOL,
+            rtol=RTOL,
+            err_msg=f"ConvergentFilter {name} differs from StandardFilter",
+        )
+
+
+def test_convergent_filter_rejects_time_varying_params():
+    """Declaring any matrix time-varying should raise ValueError at build time."""
+    data = pt.matrix("data")
+    a0 = pt.vector("a0")
+    P0 = pt.matrix("P0")
+    c = pt.vector("c")
+    d = pt.vector("d")
+    T = pt.matrix("T")
+    Z = pt.matrix("Z")
+    R = pt.matrix("R")
+    H = pt.matrix("H")
+    Q = pt.matrix("Q")
+    with pytest.raises(ValueError, match="time-invariant"):
+        ConvergentFilter().build_graph(
+            data, a0, P0, c, d, T, Z, R, H, Q, time_varying_names=["transition"]
+        )
+
+
+def test_convergent_filter_rejects_nan_constant_data():
+    """NaN in a TensorConstant data tensor should raise ValueError at build time."""
+    n, p = 10, 2
+    data_arr = np.zeros((n, p), dtype=floatX)
+    data_arr[3, 0] = np.nan
+    data = pt.as_tensor(data_arr)
+    a0 = pt.vector("a0")
+    P0 = pt.matrix("P0")
+    c = pt.vector("c")
+    d = pt.vector("d")
+    T = pt.matrix("T")
+    Z = pt.matrix("Z")
+    R = pt.matrix("R")
+    H = pt.matrix("H")
+    Q = pt.matrix("Q")
+    with pytest.raises(ValueError, match="missing data"):
+        ConvergentFilter().build_graph(data, a0, P0, c, d, T, Z, R, H, Q)
+
+
+def test_convergent_filter_asserts_nan_symbolic_data(rng):
+    """For fully symbolic data, NaN should be caught by a runtime Assert op."""
+    m, p, n_shocks, n = 3, 2, 3, 30
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+    # Inject NaN at runtime
+    vals[0][5, 0] = np.nan
+
+    inputs, outputs = initialize_filter(ConvergentFilter(), p=p, m=m, r=n_shocks, n=n)
+    fn = pytensor.function(inputs, outputs, on_unused_input="ignore")
+
+    # The Assert op raises AssertionError at evaluation time
+    with pytest.raises(AssertionError):
+        fn(*vals)

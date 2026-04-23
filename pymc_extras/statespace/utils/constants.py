@@ -61,6 +61,34 @@ MATRIX_DIMS = {
     "Q": (SHOCK_DIM, SHOCK_AUX_DIM),
 }
 
+
+def static_matrix_shapes(m: int, p: int, r: int) -> dict[str, tuple[int, ...]]:
+    """Concrete shapes of the static (non-time-varying) state-space matrices.
+
+    Keys match the filter's parameter naming (``a0`` rather than ``x0``).
+
+    Parameters
+    ----------
+    m : int
+        State dimension.
+    p : int
+        Observation dimension.
+    r : int
+        Shock dimension.
+    """
+    return {
+        "a0": (m,),
+        "P0": (m, m),
+        "c": (m,),
+        "d": (p,),
+        "T": (m, m),
+        "Z": (p, m),
+        "R": (m, r),
+        "H": (p, p),
+        "Q": (r, r),
+    }
+
+
 FILTER_OUTPUT_DIMS = {
     "filtered_states": (TIME_DIM, ALL_STATE_DIM),
     "smoothed_states": (TIME_DIM, ALL_STATE_DIM),
