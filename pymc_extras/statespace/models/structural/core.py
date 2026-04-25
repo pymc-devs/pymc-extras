@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from pytensor import Mode, Variable, config
+from pytensor import Mode, Variable, config, graph_replace
 from pytensor import tensor as pt
 
 from pymc_extras.statespace.core.properties import (
@@ -117,7 +117,7 @@ class StructuralTimeSeries(PyMCStateSpace):
     def __init__(
         self,
         ssm: PytensorRepresentation,
-        name: str,
+        name: str | None,
         coords_info: CoordInfo,
         param_info: ParameterInfo,
         data_info: DataInfo,
@@ -140,8 +140,10 @@ class StructuralTimeSeries(PyMCStateSpace):
         ----------
         ssm : PytensorRepresentation
             The state space representation containing system matrices.
-        name : str
-            Name of the model. If None, defaults to "StructuralTimeSeries".
+        name : str, optional
+            Prefix applied to all internal graph variable and data names, allowing multiple
+            state space models to coexist in the same PyMC model without naming collisions.
+            If ``None`` (default), no prefix is applied and variable names are unchanged.
         coords_info : CoordInfo
             Coordinate specifications for model dimensions.
         param_info : ParameterInfo
@@ -167,7 +169,6 @@ class StructuralTimeSeries(PyMCStateSpace):
         mode : str | Mode | None, default None
             PyTensor compilation mode.
         """
-        self._name = name or "StructuralTimeSeries"
         self.measurement_error = measurement_error
 
         k_states, k_posdef, k_endog = ssm.k_states, ssm.k_posdef, ssm.k_endog
@@ -184,7 +185,13 @@ class StructuralTimeSeries(PyMCStateSpace):
             verbose=verbose,
             measurement_error=measurement_error,
             mode=mode,
+            name=name,
         )
+
+        if name is not None:
+            ssm, tensor_variable_info, tensor_data_info = self._prefix_placeholder_variables(
+                ssm, tensor_variable_info, tensor_data_info
+            )
 
         self._tensor_variable_info = tensor_variable_info
         self._tensor_data_info = tensor_data_info
@@ -233,6 +240,37 @@ class StructuralTimeSeries(PyMCStateSpace):
         self._data_names = strip([d.name for d in self._data_info if not d.is_exogenous])
         self._shock_names = strip(self._shock_info.names)
         self._param_names = strip(self._param_info.names)
+
+    def _prefix_placeholder_variables(self, ssm, tensor_variable_info, tensor_data_info):
+        """Replace placeholder variables in SSM matrices with prefixed-name copies."""
+        replacements = {}
+        new_variables = []
+        for sv in tensor_variable_info:
+            old_var = sv.symbolic_variable
+            new_var = old_var.type(name=self.prefixed_name(sv.name))
+            replacements[old_var] = new_var
+            new_variables.append(SymbolicVariable(name=new_var.name, symbolic_variable=new_var))
+
+        new_data_entries = []
+        for sd in tensor_data_info:
+            old_var = sd.symbolic_data
+            new_var = old_var.type(name=self.prefixed_name(sd.name))
+            replacements[old_var] = new_var
+            new_data_entries.append(SymbolicData(name=new_var.name, symbolic_data=new_var))
+
+        if not replacements:
+            return ssm, tensor_variable_info, tensor_data_info
+
+        matrices = [getattr(ssm, name) for name in LONG_MATRIX_NAMES]
+        replaced_matrices = graph_replace(matrices, replace=replacements, strict=False)
+
+        for mat_name, new_mat in zip(LONG_MATRIX_NAMES, replaced_matrices):
+            setattr(ssm, mat_name, new_mat)
+
+        new_variable_info = SymbolicVariableInfo(symbolic_variables=tuple(new_variables))
+        new_data_info = SymbolicDataInfo(symbolic_data=tuple(new_data_entries))
+
+        return ssm, new_variable_info, new_data_info
 
     def _init_ssm(self, ssm: PytensorRepresentation, k_posdef: int) -> None:
         """Initialize state space model representation."""
@@ -994,8 +1032,13 @@ class Component:
 
         Parameters
         ----------
-        name: str, optional
-            Name of the exogenous data being modeled. Default is "data"
+        name : str, optional
+            Prefix applied to all internal graph variable and data names, allowing multiple
+            structural models to coexist in the same PyMC model without naming collisions.
+            If ``None`` (default), no prefix is applied. When a name is provided, prior
+            variables must be named with the prefix, e.g. ``pm.Normal("m1_initial_trend", ...)``
+            for ``name="m1"``. Use ``model.prefixed_name(p)`` for each ``p`` in
+            ``model.param_names`` to get the expected names.
 
         filter_type : str, optional
             The type of Kalman filter to use. Valid options are "standard", "univariate", "single", "cholesky", and

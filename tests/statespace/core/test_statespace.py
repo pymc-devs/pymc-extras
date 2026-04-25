@@ -505,6 +505,35 @@ def test_base_class_raises():
         )
 
 
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+def test_two_named_statespace_models_coexist_end_to_end(mock_pymc_sample):
+    data = pd.DataFrame(
+        np.random.default_rng(42).normal(size=(100, 1)).astype(floatX), columns=["y"]
+    )
+
+    ss_a = st.LevelTrend(name="trend", order=1, innovations_order=1).build(name="a", verbose=False)
+    ss_b = st.LevelTrend(name="trend", order=1, innovations_order=1).build(name="b", verbose=False)
+
+    with pm.Model(coords={**ss_a.coords, **ss_b.coords}) as m:
+        pm.Normal("a_initial_trend", dims=["state_trend"])
+        a_P0_sigma = pm.Exponential("a_P0_sigma", 1)
+        pm.Deterministic("a_P0", pt.eye(ss_a.k_states) * a_P0_sigma, dims=["state", "state_aux"])
+        pm.Exponential("a_sigma_trend", 1, dims=["shock_trend"])
+        ss_a.build_statespace_graph(data)
+
+        pm.Normal("b_initial_trend", dims=["state_trend"])
+        b_P0_sigma = pm.Exponential("b_P0_sigma", 1)
+        pm.Deterministic("b_P0", pt.eye(ss_b.k_states) * b_P0_sigma, dims=["state", "state_aux"])
+        pm.Exponential("b_sigma_trend", 1, dims=["shock_trend"])
+        ss_b.build_statespace_graph(data)
+
+        idata = pm.sample(draws=10, tune=0, chains=1)
+
+    assert "a_obs" in m.named_vars
+    assert "b_obs" in m.named_vars
+    assert "posterior" in idata.groups()
+
+
 def test_update_raises_if_missing_variables(ss_mod):
     with pm.Model() as mod:
         rho = pm.Normal("rho")

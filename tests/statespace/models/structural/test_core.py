@@ -18,6 +18,42 @@ ATOL = 1e-8 if floatX.endswith("64") else 1e-4
 RTOL = 0 if floatX.endswith("64") else 1e-6
 
 
+def _build_named_structural_model(name: str):
+    return (
+        st.LevelTrend(order=1, innovations_order=1)
+        + st.Regression(name="reg", state_names=["x"])
+        + st.MeasurementError(name="obs")
+    ).build(name=name, verbose=False)
+
+
+def test_structural_name_propagates_to_base_and_scopes_p0():
+    ss_mod = _build_named_structural_model(name="m1")
+
+    assert ss_mod.name == "m1"
+    assert "P0" in ss_mod.param_names
+    assert ss_mod.prefixed_name("P0") in ss_mod._name_to_variable
+    assert "P0" not in ss_mod._name_to_variable
+
+
+def test_named_structural_models_do_not_collide_in_placeholder_registries():
+    with pm.Model():
+        m1 = _build_named_structural_model(name="m1")
+        m2 = _build_named_structural_model(name="m2")
+
+    var_keys_1 = set(m1._name_to_variable)
+    var_keys_2 = set(m2._name_to_variable)
+    data_keys_1 = set(m1._name_to_data)
+    data_keys_2 = set(m2._name_to_data)
+
+    assert var_keys_1.isdisjoint(var_keys_2)
+    assert data_keys_1.isdisjoint(data_keys_2)
+
+    assert var_keys_1 == {m1.prefixed_name(name) for name in m1.param_names}
+    assert var_keys_2 == {m2.prefixed_name(name) for name in m2.param_names}
+    assert data_keys_1 == {m1.prefixed_name(name) for name in m1.data_names}
+    assert data_keys_2 == {m2.prefixed_name(name) for name in m2.data_names}
+
+
 def test_add_components():
     ll = st.LevelTrend(order=2)
     se = st.TimeSeasonality(name="seasonal", season_length=12)
@@ -195,3 +231,116 @@ def test_sequence_type_component_arguments(arg_type):
 
     assert ss_mod.k_endog == len(state_names)
     assert sorted(ss_mod.observed_states) == sorted(list(state_names))
+
+
+class TestGraphReplacePlaceholderNamespacing:
+    @staticmethod
+    def _variable_names_match(mod):
+        """Check that all variable metadata names carry the expected model prefix."""
+        for sv in mod._tensor_variable_info:
+            if mod.name and not sv.name.startswith(f"{mod.name}_"):
+                raise ValueError(f"Variable {sv.name} missing expected prefix {mod.name}_")
+
+        for sd in mod._tensor_data_info:
+            if sd.name != sd.symbolic_data.name:
+                raise ValueError(
+                    f"Data name mismatch: metadata={sd.name}, data={sd.symbolic_data.name}"
+                )
+            if mod.name and not sd.name.startswith(f"{mod.name}_"):
+                raise ValueError(f"Data {sd.name} missing expected prefix {mod.name}_")
+
+        var_ids = [id(sv.symbolic_variable) for sv in mod._tensor_variable_info]
+        if len(var_ids) != len(set(var_ids)):
+            raise ValueError("Duplicate Variable objects in tensor_variable_info")
+
+        data_ids = [id(sd.symbolic_data) for sd in mod._tensor_data_info]
+        if len(data_ids) != len(set(data_ids)):
+            raise ValueError("Duplicate Variable objects in tensor_data_info")
+
+    def test_same_component_reused_in_two_named_models_no_aliasing(self):
+        trend = st.LevelTrend(order=1, innovations_order=1)
+        m1 = trend.build(name="m1", verbose=False)
+        m2 = trend.build(name="m2", verbose=False)
+
+        for sv in m1._tensor_variable_info:
+            assert sv.name.startswith("m1_")
+
+        for sv in m2._tensor_variable_info:
+            assert sv.name.startswith("m2_")
+
+        m1_var_ids = {id(sv.symbolic_variable) for sv in m1._tensor_variable_info}
+        m2_var_ids = {id(sv.symbolic_variable) for sv in m2._tensor_variable_info}
+        assert m1_var_ids.isdisjoint(m2_var_ids)
+
+    def test_reused_component_with_data_placeholders(self):
+        comp = st.LevelTrend(order=1, innovations_order=1) + st.Regression(
+            name="reg", state_names=["x"]
+        )
+        m1 = comp.build(name="m1", verbose=False)
+        m2 = comp.build(name="m2", verbose=False)
+
+        m1_var_ids = {id(sv.symbolic_variable) for sv in m1._tensor_variable_info}
+        m2_var_ids = {id(sv.symbolic_variable) for sv in m2._tensor_variable_info}
+        assert m1_var_ids.isdisjoint(m2_var_ids)
+
+        m1_data_ids = {id(sd.symbolic_data) for sd in m1._tensor_data_info}
+        m2_data_ids = {id(sd.symbolic_data) for sd in m2._tensor_data_info}
+        assert m1_data_ids.isdisjoint(m2_data_ids)
+
+        for sd in m1._tensor_data_info:
+            assert sd.name.startswith("m1_")
+            assert sd.name == sd.symbolic_data.name
+        for sd in m2._tensor_data_info:
+            assert sd.name.startswith("m2_")
+            assert sd.name == sd.symbolic_data.name
+
+    def test_metadata_names_match_variable_names(self):
+        mod = (st.LevelTrend(order=1, innovations_order=1) + st.MeasurementError(name="obs")).build(
+            name="test_model", verbose=False
+        )
+
+        for sd in mod._tensor_data_info:
+            assert sd.name == sd.symbolic_data.name
+
+        self._variable_names_match(mod)
+
+    def test_unnamed_model_has_no_prefix_on_variable_names(self):
+        mod = st.LevelTrend(order=1, innovations_order=1).build(name=None, verbose=False)
+
+        registered_names = {sv.name for sv in mod._tensor_variable_info}
+        assert registered_names == set(mod.param_names)
+
+    def test_prefixed_placeholders_are_in_ssm_graph(self):
+        from pytensor.graph.traversal import explicit_graph_inputs
+
+        from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES
+
+        mod = st.LevelTrend(order=1, innovations_order=1).build(name="ns", verbose=False)
+
+        all_matrices = [getattr(mod.ssm, name) for name in LONG_MATRIX_NAMES]
+        graph_input_names = {
+            v.name for v in explicit_graph_inputs(all_matrices) if hasattr(v, "name") and v.name
+        }
+
+        p0_name = mod.prefixed_name("P0")
+        expected_names = {sv.name for sv in mod._tensor_variable_info if sv.name != p0_name}
+        assert expected_names <= graph_input_names
+
+        unprefixed_names = {"initial_level_trend", "sigma_level_trend"}
+        assert unprefixed_names.isdisjoint(graph_input_names)
+
+    def test_corrupted_metadata_name_raises(self):
+        from pymc_extras.statespace.core.properties import SymbolicVariable, SymbolicVariableInfo
+
+        mod = st.LevelTrend(order=1, innovations_order=1).build(name="v", verbose=False)
+
+        mod._tensor_variable_info = SymbolicVariableInfo(
+            symbolic_variables=tuple(
+                SymbolicVariable(name="WRONG_NAME", symbolic_variable=sv.symbolic_variable)
+                if i == 0
+                else sv
+                for i, sv in enumerate(mod._tensor_variable_info)
+            )
+        )
+        with pytest.raises(ValueError, match="missing expected prefix"):
+            self._variable_names_match(mod)
