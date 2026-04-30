@@ -479,6 +479,7 @@ def get_laplace_approx(
     # This step is also expensive (but not as much as minimize). Could be made more efficient by recycling hessian from the minimizer step, however that requires a bespoke algorithm described in Rasmussen & Williams
     # since the general optimisation scheme maximises logp(x | y, params) rather than logp(y | x, params), and thus the hessian that comes out of methods
     # like L-BFGS-B is in fact not the hessian of logp(y | x, params)
+    # TODO: Use vectorized hessian?
     hess = pytensor.gradient.hessian(log_likelihood, x)
 
     # Evaluate logp of Laplace approx of logp(x | y, params) at some point x
@@ -490,10 +491,9 @@ def get_laplace_approx(
 
 
 @_logprob.register(MarginalLaplaceRV)
-def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
+def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs_and_Q, **kwargs):
     # Get Q and remove it from the graph (stored as a dummy input)
-    inputs = list(inputs)
-    Q = inputs.pop(-1)
+    *inputs, Q = inputs_and_Q
 
     # Clone the inner RV graph of the Marginalized RV
     x, *inner_rvs = inline_ofg_outputs(op, inputs)
@@ -505,30 +505,33 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs, **kwargs):
     rv_values = inner_rv_values | {x: marginalized_vv}
     logps_dict = conditional_logp(rv_values=rv_values, **kwargs)
 
+    # logp(x | params)
+    logp_x = logps_dict.pop(marginalized_vv).sum()
+
     # logp(y | x, params)
-    log_likelihood = pt.sum(
-        [logp_term.sum() for value, logp_term in logps_dict.items() if value is not marginalized_vv]
-    )
+    logp_y = pt.sum([logp_term.sum() for value, logp_term in logps_dict.items()])
 
-    # logp = logp(y | x, params) + logp(x | params) (i.e. logp(x | y, params) up to a constant in x)
-    logp = pt.sum([logp_term.sum() for logp_term in logps_dict.values()])
+    # logp_total = logp(y | x, params) + logp(x | params) (i.e. logp(x | y, params) up to a constant in x)
+    logp_total = logp_x + logp_y
 
-    # Set minimizer initialisation to be random
-    # Assumes that the observed variable y is the only element in values, and that d is shape[-1] - if this is invalid it will simply crash rather than producing an invalid result.
-    # A more robust method of obtaining d would be ideal.
-    if len(values) > 1:
-        warnings.warn(
-            f"INLA assumes that the latent field {marginalized_vv.name} is of the same dimension as the observables and that there is only one observable, however more than one input value to the logp was provided."
-        )
-    d = values[0].data.shape[-1]
-    rng = np.random.default_rng(op.minimizer_seed)
-    x0_init = rng.random(d)
+    # Set minimizer initialisation to be random (TODO: Let pymc accept this one, maybe when rng is constant)
+    # TODO: Use newer pytensor helper
+    d = pt.prod(constant_fold(tuple(x.shape), raise_not_constant=True))
+    # rng = np.random.default_rng(op.minimizer_seed)
+    # x0_init = pt.random.uniform(rng=pytensor.shared(rng), size=d)
+    x0_init = pt.ones(d)
 
     # Obtain laplace approx
     x0, log_laplace_approx = get_laplace_approx(
-        log_likelihood, logp, marginalized_vv, x0_init, Q, op.minimizer_kwargs
+        logp_y,
+        logp_total,
+        x=marginalized_vv,
+        x0_init=x0_init,
+        Q=Q,
+        minimizer_kwargs=op.minimizer_kwargs
     )
 
     # logp(y | params) = logp(y | x, params) + logp(x | params) - logp(x | y, params)
-    marginal_likelihood = logp - log_laplace_approx
-    return pytensor.graph.replace.graph_replace(marginal_likelihood, {marginalized_vv: x0})
+    # TODO: Can we recover the elementwise logp?
+    marginal_likelihood = logp_total - log_laplace_approx
+    return graph_replace(marginal_likelihood, {marginalized_vv: x0})
