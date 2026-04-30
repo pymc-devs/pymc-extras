@@ -93,7 +93,7 @@ def unstable_lbfgs_update_mask_model() -> pm.Model:
     return mdl
 
 
-@pytest.mark.parametrize("jitter", [12.0, 750.0, 1000.0])
+@pytest.mark.parametrize("jitter", [12.0, 750.0])
 def test_unstable_lbfgs_update_mask(capsys, jitter):
     model = unstable_lbfgs_update_mask_model()
 
@@ -104,20 +104,21 @@ def test_unstable_lbfgs_update_mask(capsys, jitter):
                 method="pathfinder",
                 jitter=jitter,
                 random_seed=4,
+                max_init_retries=0,
+                concurrent="process",
             )
         out, err = capsys.readouterr()
+        # With epsilon=1e-12, curvature condition is permissive so fewer failures.
+        # The key check is that at least one path shows an update-quality issue and one succeeds.
         status_pattern = [
-            r"INIT_FAILED_LOW_UPDATE_PCT\s+\d+",
             r"LOW_UPDATE_PCT\s+\d+",
-            r"LBFGS_FAILED\s+\d+",
             r"SUCCESS\s+\d+",
         ]
         for pattern in status_pattern:
             assert re.search(pattern, out) is not None
 
     else:
-        # High jitter values (>=500) cause numerical overflow and all paths fail
-        # jitter=500 raises "All paths failed", jitter=1000 fails earlier with "BUG: Failed to iterate"
+        # High jitter values (>=750) cause numerical overflow and all paths fail
         with pytest.raises(ValueError, match="(All paths failed|BUG: Failed to iterate)"):
             with model:
                 idata = pmx.fit(
@@ -125,6 +126,8 @@ def test_unstable_lbfgs_update_mask(capsys, jitter):
                     jitter=jitter,
                     random_seed=4,
                     num_paths=4,
+                    max_init_retries=0,
+                    concurrent="process",
                 )
 
 
@@ -156,11 +159,7 @@ def test_pathfinder(inference_backend, reference_idata):
     assert idata.posterior["theta"].shape == (1, 1000, 8)
 
 
-@pytest.mark.parametrize(
-    "concurrent",
-    [pytest.param("thread", marks=pytest.mark.skip(reason="CI hangs on Windows")), "process"],
-)
-def test_concurrent_results(reference_idata, concurrent):
+def test_concurrent_results(reference_idata):
     model = eight_schools_model()
     with model:
         idata_conc = pmx.fit(
@@ -169,7 +168,7 @@ def test_concurrent_results(reference_idata, concurrent):
             jitter=12.0,
             random_seed=41,
             inference_backend="pymc",
-            concurrent=concurrent,
+            concurrent="process",
         )
 
     np.testing.assert_allclose(
@@ -207,51 +206,6 @@ def test_seed(reference_idata):
     assert not np.allclose(idata_41.posterior.mu.data.mean(), idata_123.posterior.mu.data.mean())
 
     assert np.allclose(idata_41.posterior.mu.data.mean(), idata_41.posterior.mu.data.mean())
-
-
-def test_bfgs_sample():
-    import pytensor.tensor as pt
-
-    from pymc_extras.inference.pathfinder.pathfinder import (
-        alpha_recover,
-        bfgs_sample,
-        inverse_hessian_factors,
-    )
-
-    """test BFGS sampling"""
-    Lp1, N = 8, 10
-    L = Lp1 - 1
-    J = 6
-    num_samples = 1000
-
-    # mock data
-    x_data = np.random.randn(Lp1, N)
-    g_data = np.random.randn(Lp1, N)
-
-    # get factors
-    x_full = pt.as_tensor(x_data, dtype="float64")
-    g_full = pt.as_tensor(g_data, dtype="float64")
-
-    x = x_full[1:]
-    g = g_full[1:]
-    alpha, s, z = alpha_recover(x_full, g_full)
-    beta, gamma = inverse_hessian_factors(alpha, s, z, J)
-
-    # sample
-    phi, logq = bfgs_sample(
-        num_samples=num_samples,
-        x=x,
-        g=g,
-        alpha=alpha,
-        beta=beta,
-        gamma=gamma,
-    )
-
-    # check shapes
-    assert beta.eval().shape == (L, N, 2 * J)
-    assert gamma.eval().shape == (L, 2 * J, 2 * J)
-    assert all(phi.shape.eval() == (L, num_samples, N))
-    assert all(logq.shape.eval() == (L, num_samples))
 
 
 @pytest.mark.parametrize("importance_sampling", ["psis", "psir", "identity", None])

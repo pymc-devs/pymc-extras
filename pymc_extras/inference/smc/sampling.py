@@ -215,7 +215,10 @@ def arviz_from_particles(model, particles):
         strace = NDArray(name=model.name)
         strace.setup(n_particles, 0)
     for particle_index in range(0, n_particles):
-        strace.record(point={k: np.asarray(by_varname[k][0][particle_index]) for k in varnames})
+        strace.record(
+            point={k: np.asarray(by_varname[k][0][particle_index]) for k in varnames},
+            in_warmup=False,
+        )
         multitrace = MultiTrace((strace,))
     return to_inference_data(multitrace, log_likelihood=False)
 
