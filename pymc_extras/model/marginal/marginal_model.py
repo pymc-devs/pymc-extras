@@ -603,7 +603,7 @@ def replace_marginal_subgraph(
 
     if use_laplace:
         Q = marginalize_kwargs.pop("Q")
-        inputs.append(Q)
+        inputs.append(Q.copy()) # TODO MAY BE UNECESSARY
 
     inner_inputs = [inp.clone() for inp in inputs]
     inner_outputs = clone_replace(outputs, replace=dict(zip(inputs, inner_inputs)))
@@ -626,6 +626,8 @@ def replace_marginal_subgraph(
     )
 
     new_outputs = marginalization_op(*inputs)
+    import pytensor
+    pytensor.dprint(new_outputs, print_shape=True)
     for old_output, new_output in zip(outputs, new_outputs):
         new_output.name = old_output.name
 
@@ -639,4 +641,4 @@ def replace_marginal_subgraph(
             var_to_replace = old_output.owner.inputs[0]
         model_replacements.append((var_to_replace, new_output))
 
-    fgraph.replace_all(model_replacements)
+    fgraph.replace_all(model_replacements, import_missing=True)
