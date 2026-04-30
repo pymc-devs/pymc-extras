@@ -26,7 +26,10 @@ def rng():
     return np.random.default_rng(seed)
 
 
-@pytest.mark.filterwarnings(r"ignore:INLA is currently experimental")
+@pytest.mark.filterwarnings(
+    r"ignore:INLA is currently experimental",
+    r"ignore:Numba will use object mode to run",
+)
 def test_AR1(rng):
     T = 10
     x = np.zeros((T,))
