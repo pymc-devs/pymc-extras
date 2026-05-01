@@ -247,8 +247,12 @@ def marginalize(
         ]
         input_rvs = _unique((*marginalized_rv_input_rvs, *other_direct_rv_ancestors))
 
+        if use_laplace:
+            Q = marginalize_kwargs["Q"]
+            marginalize_kwargs["Q"] = memo.get(Q, pt.as_tensor_variable(Q)).copy()
+
         replace_marginal_subgraph(
-            fg, rv_to_marginalize, dependent_rvs, input_rvs, use_laplace=use_laplace, memo=memo, **marginalize_kwargs
+            fg, rv_to_marginalize, dependent_rvs, input_rvs, use_laplace, **marginalize_kwargs
         )
 
     return model_from_fgraph(fg, mutate_fgraph=True)
@@ -574,8 +578,6 @@ def replace_marginal_subgraph(
     rv_to_marginalize,
     dependent_rvs,
     input_rvs,
-    *,
-    memo,
     use_laplace=False,
     **marginalize_kwargs,
 ) -> None:
@@ -604,11 +606,8 @@ def replace_marginal_subgraph(
     inputs += collect_shared_vars(output_rvs, blockers=inputs)
 
     if use_laplace:
-        # TODO: If Q is an RV it must be a direct parameter so it should show in the inputs by default
-        # Assert that and avoid redundant parameter. Only when it's constant must it be artificially added
         Q = marginalize_kwargs.pop("Q")
-        Q = memo.get(Q, pt.as_tensor_variable(Q))
-        inputs.append(Q.copy())
+        inputs.append(Q)
 
     inner_inputs = [inp.clone() for inp in inputs]
     inner_outputs = clone_replace(outputs, replace=dict(zip(inputs, inner_inputs)))
@@ -631,8 +630,6 @@ def replace_marginal_subgraph(
     )
 
     new_outputs = marginalization_op(*inputs)
-    import pytensor
-    pytensor.dprint(new_outputs, print_shape=True)
     for old_output, new_output in zip(outputs, new_outputs):
         new_output.name = old_output.name
 
