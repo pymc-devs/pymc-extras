@@ -646,4 +646,4 @@ def replace_marginal_subgraph(
             var_to_replace = old_output.owner.inputs[0]
         model_replacements.append((var_to_replace, new_output))
 
-    fgraph.replace_all(model_replacements, import_missing=False)
+    fgraph.replace_all(model_replacements)
