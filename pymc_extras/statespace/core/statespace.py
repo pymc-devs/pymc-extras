@@ -2770,7 +2770,7 @@ class PyMCStateSpace:
             else:
                 shock_trajectory = pt.as_tensor_variable(shock_trajectory)
 
-            time_varying_T = T.ndim == 3
+            time_varying_T = "transition" in self.ssm.time_varying_names
 
             def irf_step(*args):
                 if time_varying_T:

@@ -5,7 +5,7 @@ import pytensor.tensor as pt
 
 from pymc_extras.statespace.core import PyMCStateSpace
 from pymc_extras.statespace.filters.distributions import LinearGaussianStateSpace
-from pymc_extras.statespace.utils.constants import SHORT_NAME_TO_LONG
+from pymc_extras.statespace.utils.constants import LONG_NAME_TO_SHORT
 
 
 def compile_statespace(
@@ -16,11 +16,7 @@ def compile_statespace(
 
     x0, _, c, d, T, Z, R, H, Q = statespace_model._unpack_statespace_with_placeholders()
 
-    sequence_names = [x.name for x in [c, d] if x.ndim == 2]
-    sequence_names += [x.name for x in [T, Z, R, H, Q] if x.ndim == 3]
-
-    rename_dict = {v: k for k, v in SHORT_NAME_TO_LONG.items()}
-    sequence_names = list(map(rename_dict.get, sequence_names))
+    sequence_names = [LONG_NAME_TO_SHORT[name] for name in statespace_model.ssm.time_varying_names]
 
     P0 = pt.zeros((x0.shape[0], x0.shape[0]))
 
