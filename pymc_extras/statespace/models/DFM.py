@@ -626,17 +626,13 @@ class BayesianDynamicFactor(PyMCStateSpace):
             if self.shared_exog_states:
                 # Shared exogenous states: same exog data is used across all endogenous variables
                 # Shape becomes (n_timepoints, k_endog, k_exog)
-                Z_exog = pt.specify_shape(
-                    pt.join(1, *[pt.expand_dims(exog_data, 1) for _ in range(self.k_endog)]),
-                    (None, self.k_endog, self.k_exog),
-                )
+                Z_exog = pt.join(1, *[pt.expand_dims(exog_data, 1) for _ in range(self.k_endog)])
             else:
                 # Separate exogenous states: each endogenous variable gets its own exog block
                 # Create block-diagonal structure and reshape to (n_timepoints, k_endog, k_exog * k_endog)
                 Z_exog = pt.linalg.block_diag(
                     *[pt.expand_dims(exog_data, 1) for _ in range(self.k_endog)]
                 )
-                Z_exog = pt.specify_shape(Z_exog, (None, self.k_endog, self.k_exog * self.k_endog))
 
             # Repeat base design_matrix over time dimension to match exogenous time series
             n_timepoints = Z_exog.shape[0]

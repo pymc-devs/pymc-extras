@@ -487,9 +487,7 @@ class BayesianETS(PyMCStateSpace):
         # dampening factors on all components. We then set the initial covariance to the steady-state of that system,
         # which we hope is similar enough to give a good initialization for the non-stationary system.
 
-        T_stationary = pt.specify_shape(T_stationary, (self.k_states, self.k_states))
         P0 = solve_discrete_lyapunov(T_stationary, pt.linalg.matrix_dot(R, Q, R.T))
-        P0 = pt.specify_shape(P0, (self.k_states, self.k_states))
 
         return P0
 
@@ -645,14 +643,12 @@ class BayesianETS(PyMCStateSpace):
         R = pt.linalg.block_diag(*R_list)
 
         self.ssm["initial_state"] = x0
-        self.ssm["selection"] = pt.specify_shape(R, shape=(self.k_states, self.k_posdef))
+        self.ssm["selection"] = R
 
         T = pt.linalg.block_diag(*T_components)
 
         # Remove the stationary_dampening dummies before saving the transition matrix
-        self.ssm["transition"] = pt.specify_shape(
-            graph_replace(T, {stationary_dampening: 1.0}), (self.k_states, self.k_states)
-        )
+        self.ssm["transition"] = graph_replace(T, {stationary_dampening: 1.0})
 
         Zs = [np.zeros((self.k_endog, self.k_states // self.k_endog)) for _ in range(self.k_endog)]
         for i, Z in enumerate(Zs):

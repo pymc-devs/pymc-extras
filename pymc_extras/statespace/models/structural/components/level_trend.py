@@ -296,29 +296,19 @@ class LevelTrend(Component):
         triu_idx = pt.triu_indices(k_states)
         T = pt.zeros((k_states, k_states))[triu_idx[0], triu_idx[1]].set(1)
 
-        self.ssm["transition", :, :] = pt.specify_shape(
-            pt.linalg.block_diag(*[T for _ in range(k_endog_effective)]),
-            (self.k_states, self.k_states),
-        )
+        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
 
         R = np.eye(k_states)
         R = R[:, self.innovations_order]
 
-        self.ssm["selection", :, :] = pt.specify_shape(
-            pt.linalg.block_diag(*[R for _ in range(k_endog_effective)]),
-            (self.k_states, self.k_posdef),
-        )
+        self.ssm["selection", :, :] = pt.linalg.block_diag(*[R for _ in range(k_endog_effective)])
 
         Z = np.array([1.0] + [0.0] * (k_states - 1)).reshape((1, -1))
 
         if self.share_states:
-            self.ssm["design", :, :] = pt.specify_shape(
-                pt.join(0, *[Z for _ in range(k_endog)]), (self.k_endog, self.k_states)
-            )
+            self.ssm["design", :, :] = pt.join(0, *[Z for _ in range(k_endog)])
         else:
-            self.ssm["design", :, :] = pt.specify_shape(
-                pt.linalg.block_diag(*[Z for _ in range(k_endog)]), (self.k_endog, self.k_states)
-            )
+            self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
 
         if k_posdef > 0:
             sigma_trend = self.make_and_register_variable(

@@ -216,9 +216,7 @@ class Autoregressive(Component):
                 ar_idx = (np.zeros(k_nonzero, dtype="int"), np.nonzero(self.order)[0])
                 T = T[ar_idx].set(ar_params[i])
                 transition_matrices.append(T)
-            T = pt.specify_shape(
-                pt.linalg.block_diag(*transition_matrices), (self.k_states, self.k_states)
-            )
+            T = pt.linalg.block_diag(*transition_matrices)
 
         self.ssm["transition", :, :] = T
 
@@ -227,9 +225,7 @@ class Autoregressive(Component):
         R_mask[0] = True
         R = R[:, R_mask]
 
-        self.ssm["selection", :, :] = pt.specify_shape(
-            pt.linalg.block_diag(*[R for _ in range(k_endog_effective)]), (self.k_states, k_posdef)
-        )
+        self.ssm["selection", :, :] = pt.linalg.block_diag(*[R for _ in range(k_endog_effective)])
 
         Zs = [pt.zeros((1, k_states))[0, 0].set(1.0) for _ in range(k_endog)]
 
@@ -237,7 +233,7 @@ class Autoregressive(Component):
             Z = pt.join(0, *Zs)
         else:
             Z = pt.linalg.block_diag(*Zs)
-        self.ssm["design", :, :] = pt.specify_shape(Z, (k_endog, self.k_states))
+        self.ssm["design", :, :] = Z
 
         cov_idx = ("state_cov", *np.diag_indices(k_posdef))
         self.ssm[cov_idx] = sigma_ar**2

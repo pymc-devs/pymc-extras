@@ -332,8 +332,7 @@ class Cycle(Component):
             rho = 1
 
         T = rho * _frequency_transition_block(lamb, j=1)
-        transition = block_diag(*[T for _ in range(k_endog_effective)])
-        self.ssm["transition"] = pt.specify_shape(transition, (self.k_states, self.k_states))
+        self.ssm["transition", :, :] = block_diag(*[T for _ in range(k_endog_effective)])
 
         if self.innovations:
             if k_endog_effective == 1:
@@ -343,10 +342,9 @@ class Cycle(Component):
                 sigma_cycle = self.make_and_register_variable(
                     f"sigma_{self.name}", shape=(k_endog_effective,)
                 )
-                state_cov = block_diag(
+                self.ssm["state_cov", :, :] = block_diag(
                     *[pt.eye(2) * sigma_cycle[i] ** 2 for i in range(k_endog_effective)]
                 )
-                self.ssm["state_cov"] = pt.specify_shape(state_cov, (self.k_states, self.k_states))
         else:
             # explicitly set state cov to 0 when no innovations
             self.ssm["state_cov", :, :] = pt.zeros((self.k_posdef, self.k_posdef))

@@ -1553,9 +1553,7 @@ class PyMCStateSpace:
             x0, P0, c, d, T, Z, R, H, Q = matrices
 
             if not self.measurement_error:
-                H_jittered = pm.Deterministic(
-                    "H_jittered", pt.specify_shape(stabilize(H), (self.k_endog, self.k_endog))
-                )
+                H_jittered = pm.Deterministic("H_jittered", stabilize(H))
                 matrices = [x0, P0, c, d, T, Z, R, H_jittered, Q]
 
             LinearGaussianStateSpace(
