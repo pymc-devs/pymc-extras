@@ -11,10 +11,10 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
-import xarray as xr
+from xarray import DataTree
 
 
-def fit(method: str, **kwargs) -> xr.DataTree:
+def fit(method: str, **kwargs) -> DataTree:
     """
     Fit a model with an inference algorithm.
     See :func:`fit_pathfinder` and :func:`fit_laplace` for more details.
@@ -29,7 +29,7 @@ def fit(method: str, **kwargs) -> xr.DataTree:
 
     Returns
     -------
-    xr.DataTree
+    DataTree
     """
     if method == "pathfinder":
         from pymc_extras.inference.pathfinder import fit_pathfinder

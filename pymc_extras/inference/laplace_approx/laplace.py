@@ -35,7 +35,7 @@ from pymc.util import get_untransformed_name, is_transformed_name
 from pytensor.graph import vectorize_graph
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.optimize import minimize
-from xarray import Dataset
+from xarray import Dataset, DataTree
 
 from pymc_extras.inference.laplace_approx.find_map import (
     _compute_inverse_hessian,
@@ -232,23 +232,10 @@ def draws_from_laplace_approx(
     size = (draws,) if vectorize_draws else ()
     if covariance is not None:
         sigma_pt = pt.matrix("cov", shape=(n, n), dtype=covariance.dtype)
-        _, laplace_approximation = pm.MvNormal.dist(
-            mu=mu_pt,
-            cov=sigma_pt,
-            size=size,
-            method="svd",
-            rng=pt.random.shared_rng(seed=0),
-            return_next_rng=True,
-        )
+        laplace_approximation = pm.MvNormal.dist(mu=mu_pt, cov=sigma_pt, size=size, method="svd")
     else:
         sigma_pt = pt.vector("sigma", shape=(n,), dtype=standard_deviation.dtype)
-        _, laplace_approximation = pm.Normal.dist(
-            mu=mu_pt,
-            sigma=sigma_pt,
-            size=(*size, n),
-            rng=pt.random.shared_rng(seed=0),
-            return_next_rng=True,
-        )
+        laplace_approximation = pm.Normal.dist(mu=mu_pt, sigma=sigma_pt, size=(*size, n))
 
     constrained_vars = unpack_last_axis(
         laplace_approximation,
@@ -351,7 +338,7 @@ def fit_laplace(
     vectorize_draws: bool = True,
     optimizer_kwargs: dict | None = None,
     compile_kwargs: dict | None = None,
-) -> xr.DataTree:
+) -> DataTree:
     """
     Create a Laplace (quadratic) approximation for a posterior distribution.
 
@@ -408,7 +395,7 @@ def fit_laplace(
 
     Returns
     -------
-    xr.DataTree
+    DataTree
         A DataTree object containing the approximated posterior samples.
 
     Examples

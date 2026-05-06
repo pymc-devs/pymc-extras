@@ -94,7 +94,7 @@ def fit_dadvi(
 
     Returns
     -------
-    xr.DataTree
+    DataTree
         The inference data containing the results of the DADVI algorithm.
 
     References

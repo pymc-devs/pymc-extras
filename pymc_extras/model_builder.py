@@ -28,6 +28,7 @@ import pymc as pm
 import xarray as xr
 
 from pymc.util import RandomState
+from xarray import DataTree
 
 # If scikit-learn is available, use its data validator
 try:
@@ -82,7 +83,7 @@ class ModelBuilder:
 
         self.model_config = model_config  # parameters for priors etc.
         self.model = None  # Set by build_model
-        self.idata: xr.DataTree | None = None  # idata is generated during fitting
+        self.idata: DataTree | None = None  # idata is generated during fitting
         self.is_fitted_ = False
 
     def _validate_data(self, X, y=None):
@@ -317,7 +318,7 @@ class ModelBuilder:
 
         Parameters
         ----------
-        idata : xr.DataTree, optional
+        idata : DataTree, optional
             The DataTree object to set attributes on.
 
         Raises
@@ -332,7 +333,7 @@ class ModelBuilder:
         Examples
         --------
         >>> model = MyModel(ModelBuilder)
-        >>> idata = xr.DataTree.from_dict(your_dataset)
+        >>> idata = DataTree.from_dict(your_dataset)
         >>> model.set_idata_attrs(idata=idata)
         >>> assert (
         ...     "id" in idata.attrs
@@ -468,7 +469,7 @@ class ModelBuilder:
         predictor_names: list[str] | None = None,
         random_seed: RandomState = None,
         **kwargs: Any,
-    ) -> xr.DataTree:
+    ) -> DataTree:
         """
         Fit a model using the data passed as a parameter.
         Sets attrs to inference data of the model.
@@ -492,7 +493,7 @@ class ModelBuilder:
 
         Returns
         -------
-        self : xr.DataTree
+        self : DataTree
             returns inference data of the fitted model.
 
         Examples
@@ -525,7 +526,7 @@ class ModelBuilder:
                 category=UserWarning,
                 message="The group fit_data is not defined in the DataTree scheme",
             )
-            self.idata["fit_data"] = xr.DataTree(dataset=combined_data.to_xarray())  # type: ignore
+            self.idata["fit_data"] = DataTree(dataset=combined_data.to_xarray())  # type: ignore
 
         self.is_fitted_ = True
 
@@ -617,7 +618,7 @@ class ModelBuilder:
         else:
             self._data_setter(X_pred, y_pred)
         with self.model:  # sample with new input data
-            prior_pred: xr.DataTree = pm.sample_prior_predictive(samples, **kwargs)
+            prior_pred: DataTree = pm.sample_prior_predictive(samples, **kwargs)
             self.set_idata_attrs(prior_pred)
             if extend_idata:
                 if self.idata is not None:

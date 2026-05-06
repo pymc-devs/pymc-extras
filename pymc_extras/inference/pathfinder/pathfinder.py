@@ -30,7 +30,6 @@ import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
-import xarray as xr
 
 from arviz_base import from_dict
 from numpy.typing import NDArray
@@ -61,6 +60,7 @@ from rich.progress import TextColumn, TimeElapsedColumn
 from rich.table import Column, Table
 from rich.text import Text
 from threadpoolctl import threadpool_limits
+from xarray import DataTree
 
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 from pymc_extras.inference.pathfinder.importance_sampling import (
@@ -211,8 +211,8 @@ def convert_flat_trace_to_idata(
     inference_backend: Literal["pymc", "blackjax"] = "pymc",
     model: Model | None = None,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
-) -> xr.DataTree:
-    """convert flattened samples to xr.DataTree format.
+) -> DataTree:
+    """convert flattened samples to DataTree format.
 
     Parameters
     ----------
@@ -1850,7 +1850,7 @@ def fit_pathfinder(
     add_pathfinder_groups: bool = True,
     display_summary: bool | Literal["auto"] = "auto",
     store_diagnostics: bool = False,
-) -> xr.DataTree:
+) -> DataTree:
     """
     Fit the Pathfinder Variational Inference algorithm.
 
@@ -1942,7 +1942,7 @@ def fit_pathfinder(
 
     Returns
     -------
-    xr.DataTree
+    DataTree
         The inference data containing the results of the Pathfinder algorithm.
 
     References

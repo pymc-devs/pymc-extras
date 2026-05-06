@@ -12,6 +12,7 @@ from pymc.blocking import RaveledVars
 from pymc.util import get_default_varnames
 from scipy.optimize import OptimizeResult
 from scipy.sparse.linalg import LinearOperator
+from xarray import DataTree
 
 
 def make_default_labels(name: str, shape: tuple[int, ...]) -> list:
@@ -84,7 +85,7 @@ def map_results_to_inference_data(
 
     Returns
     -------
-    idata: xr.DataTree
+    idata: DataTree
         The provided DataTree, with the MAP point added to the posterior group.
     """
 
@@ -143,11 +144,11 @@ def map_results_to_inference_data(
 
 
 def add_fit_to_inference_data(
-    idata: xr.DataTree,
+    idata: DataTree,
     mu: RaveledVars,
     H_inv: np.ndarray | None,
     model: pm.Model | None = None,
-) -> xr.DataTree:
+) -> DataTree:
     """
     Add the mean vector and covariance matrix of the Laplace approximation to a DataTree object.
 
@@ -164,7 +165,7 @@ def add_fit_to_inference_data(
 
     Returns
     -------
-    idata: xr.DataTree
+    idata: DataTree
         The provided DataTree, with the mean vector and covariance matrix added to the "fit" group.
     """
     model = pm.modelcontext(model) if model is None else model
@@ -186,23 +187,23 @@ def add_fit_to_inference_data(
         data["covariance_matrix"] = cov_dataarray
 
     dataset = xr.Dataset(data)
-    idata["fit"] = xr.DataTree(dataset=dataset)
+    idata["fit"] = DataTree(dataset=dataset)
 
     return idata
 
 
 def add_data_to_inference_data(
-    idata: xr.DataTree,
+    idata: DataTree,
     progressbar: bool = True,
     model: pm.Model | None = None,
     compile_kwargs: dict | None = None,
-) -> xr.DataTree:
+) -> DataTree:
     """
     Add observed and constant data to a DataTree object.
 
     Parameters
     ----------
-    idata: xr.DataTree
+    idata: DataTree
         A DataTree object containing the approximated posterior samples.
     progressbar: bool
         Whether to display a progress bar during computations. Default is True.
@@ -213,7 +214,7 @@ def add_data_to_inference_data(
 
     Returns
     -------
-    idata: xr.DataTree
+    idata: DataTree
         The provided DataTree, with observed and constant data added.
     """
     model = pm.modelcontext(model) if model is None else model
@@ -252,8 +253,8 @@ def add_data_to_inference_data(
         sample_dims=[],
     )
 
-    idata["observed_data"] = xr.DataTree(dataset=observed_data)
-    idata["constant_data"] = xr.DataTree(dataset=constant_data)
+    idata["observed_data"] = DataTree(dataset=observed_data)
+    idata["constant_data"] = DataTree(dataset=constant_data)
 
     return idata
 
@@ -374,19 +375,19 @@ def optimizer_result_to_dataset(
 
 
 def add_optimizer_result_to_inference_data(
-    idata: xr.DataTree,
+    idata: DataTree,
     result: OptimizeResult,
     method: minimize_method | Literal["basinhopping"],
     mu: RaveledVars | None = None,
     model: pm.Model | None = None,
     var_name_to_model_var: dict[str, str] | None = None,
-) -> xr.DataTree:
+) -> DataTree:
     """
     Add the optimization result to a DataTree object.
 
     Parameters
     ----------
-    idata: xr.DataTree
+    idata: DataTree
         A DataTree object containing the approximated posterior samples.
     result: OptimizeResult
         The result of the optimization process.
@@ -402,12 +403,12 @@ def add_optimizer_result_to_inference_data(
 
     Returns
     -------
-    idata: xr.DataTree
+    idata: DataTree
         The provided DataTree, with the optimization results added to the "optimizer" group.
     """
     dataset = optimizer_result_to_dataset(
         result, method=method, mu=mu, model=model, var_name_to_model_var=var_name_to_model_var
     )
-    idata["optimizer_result"] = xr.DataTree(dataset=dataset)
+    idata["optimizer_result"] = DataTree(dataset=dataset)
 
     return idata

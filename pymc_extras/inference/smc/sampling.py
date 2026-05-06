@@ -23,7 +23,6 @@ import blackjax
 import jax
 import jax.numpy as jnp
 import numpy as np
-import xarray as xr
 
 from blackjax.smc import extend_params
 from blackjax.smc.resampling import systematic
@@ -33,6 +32,7 @@ from pymc.backends.base import MultiTrace
 from pymc.initial_point import make_initial_point_expression
 from pymc.sampling.jax import get_jaxified_graph
 from pymc.util import RandomState, _get_seeds_per_chain
+from xarray import DataTree
 
 log = logging.getLogger(__name__)
 
@@ -320,7 +320,7 @@ def blackjax_particles_from_pymc_population(model, pymc_population):
 
 
 def add_to_inference_data(
-    inference_data: xr.DataTree,
+    inference_data: DataTree,
     n_particles: int,
     target_ess: float,
     num_mcmc_steps: int,
@@ -332,7 +332,7 @@ def add_to_inference_data(
     running_time_seconds: float,
 ):
     """
-    Adds several SMC parameters into the xr.DataTree result
+    Adds several SMC parameters into the DataTree result
 
     Parameters
     ----------

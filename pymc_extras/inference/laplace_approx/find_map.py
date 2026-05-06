@@ -230,7 +230,7 @@ def find_MAP(
 
     Returns
     -------
-    map_result: xr.DataTree
+    map_result: DataTree
         Results of Maximum A Posteriori (MAP) estimation, including the optimized point, inverse Hessian, transformed
         latent variables, and optimizer results.
     """

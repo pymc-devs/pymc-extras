@@ -179,6 +179,8 @@ class _LinearGaussianStateSpace(Continuous):
         ]
         non_sequences = [x for x in [c_, d_, T_, Z_, R_, H_, Q_] if x not in sequences]
 
+        rng = normalize_rng_param(rng)
+
         def sort_args(args):
             sorted_args = []
 
@@ -222,18 +224,14 @@ class _LinearGaussianStateSpace(Continuous):
         Z_init = Z_ if Z_ in non_sequences else Z_[0]
         H_init = H_ if H_ in non_sequences else H_[0]
 
-        rng = normalize_rng_param(rng)
-
-        next_rng, init_x_ = pm.MvNormal.dist(a0_, P0_, rng=rng, method=method, return_next_rng=True)
-        next_rng, init_y_ = pm.MvNormal.dist(
-            Z_init @ init_x_, H_init, rng=next_rng, method=method, return_next_rng=True
-        )
+        init_x_ = pm.MvNormal.dist(a0_, P0_, rng=rng, method=method)
+        init_y_ = pm.MvNormal.dist(Z_init @ init_x_, H_init, rng=rng, method=method)
 
         init_dist_ = pt.concatenate([init_x_, init_y_], axis=0)
 
         ss_rng, statespace = pytensor.scan(
             step_fn,
-            outputs_info=[next_rng, init_dist_],
+            outputs_info=[rng, init_dist_],
             sequences=None if len(sequences) == 0 else sequences,
             non_sequences=[*non_sequences],
             n_steps=steps,

@@ -25,6 +25,7 @@ import pymc as pm
 import xarray as xr
 
 from pymc.blocking import DictToArrayBijection
+from xarray import DataTree
 
 from pymc_extras.inference.pathfinder.lbfgs import LBFGSStatus
 from pymc_extras.inference.pathfinder.pathfinder import (
@@ -445,13 +446,13 @@ def _determine_num_paths(result: MultiPathfinderResult) -> int:
 
 
 def add_pathfinder_to_inference_data(
-    idata: xr.DataTree,
+    idata: DataTree,
     result: PathfinderResult | MultiPathfinderResult,
     model: pm.Model | None = None,
     *,
     group: str = "sample_stats",
     store_diagnostics: bool = False,
-) -> xr.DataTree:
+) -> DataTree:
     """
     Add pathfinder results to an ArviZ DataTree object as a single consolidated group.
 
@@ -463,7 +464,7 @@ def add_pathfinder_to_inference_data(
 
     Parameters
     ----------
-    idata : xr.DataTree
+    idata : DataTree
         DataTree object to modify
     result : PathfinderResult | MultiPathfinderResult
         Pathfinder results to add
@@ -476,7 +477,7 @@ def add_pathfinder_to_inference_data(
 
     Returns
     -------
-    xr.DataTree
+    DataTree
         Modified DataTree object with consolidated pathfinder group added
 
     Examples
@@ -517,5 +518,5 @@ def add_pathfinder_to_inference_data(
     if group in idata.children:
         warnings.warn(f"Group '{group}' already exists in DataTree, it will be replaced.")
 
-    idata[group] = xr.DataTree(dataset=consolidated_ds)
+    idata[group] = DataTree(dataset=consolidated_ds)
     return idata

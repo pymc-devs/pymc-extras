@@ -231,12 +231,11 @@ def _(
     rng, size, loc, scale = node.inputs
     if transform is not None:
         raise NotImplementedError("Reparametrization of Normal with Transform is not implemented")
-    _, vip_rv_ = pm.Normal.dist(
+    vip_rv_ = pm.Normal.dist(
         lam * loc,
         scale**lam,
         size=size,
         rng=rng,
-        return_next_rng=True,
     )
     vip_rv_.name = f"{name}::tau_"
 
@@ -267,11 +266,10 @@ def _(
     rng, size, scale = node.inputs
     scale_centered = scale**lam
     scale_noncentered = scale ** (1 - lam)
-    _, vip_rv_ = pm.Exponential.dist(
+    vip_rv_ = pm.Exponential.dist(
         scale=scale_centered,
         size=size,
         rng=rng,
-        return_next_rng=True,
     )
     vip_rv_value_ = vip_rv_.clone()
     vip_rv_.name = f"{name}::tau_"

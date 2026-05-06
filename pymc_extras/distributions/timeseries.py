@@ -175,9 +175,7 @@ class DiscreteMarkovChain(Distribution):
                 UserWarning,
             )
             k = P.shape[-1]
-            _, init_dist = pm.Categorical.dist(
-                p=pt.full((k,), 1 / k), rng=pt.random.shared_rng(seed=0), return_next_rng=True
-            )
+            init_dist = pm.Categorical.dist(p=pt.full((k,), 1 / k))
 
         return super().dist([P, steps, init_dist], n_lags=n_lags, **kwargs)
 

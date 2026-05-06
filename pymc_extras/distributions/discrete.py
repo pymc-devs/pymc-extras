@@ -252,13 +252,8 @@ class BetaNegativeBinomial:
         if rv_size_is_none(size):
             alpha, beta, r = pt.broadcast_arrays(alpha, beta, r)
 
-        _, p = pm.Beta.dist(
-            alpha, beta, size=size, rng=pt.random.shared_rng(seed=0), return_next_rng=True
-        )
-        _, rv = pm.NegativeBinomial.dist(
-            p, r, size=size, rng=pt.random.shared_rng(seed=0), return_next_rng=True
-        )
-        return rv
+        p = pm.Beta.dist(alpha, beta, size=size)
+        return pm.NegativeBinomial.dist(p, r, size=size)
 
     @staticmethod
     def beta_negative_binomial_logp(value, alpha, beta, r):
@@ -366,13 +361,7 @@ class Skellam:
         if rv_size_is_none(size):
             mu1, mu2 = pt.broadcast_arrays(mu1, mu2)
 
-        _, p1 = pm.Poisson.dist(
-            mu=mu1, size=size, rng=pt.random.shared_rng(seed=0), return_next_rng=True
-        )
-        _, p2 = pm.Poisson.dist(
-            mu=mu2, size=size, rng=pt.random.shared_rng(seed=0), return_next_rng=True
-        )
-        return p1 - p2
+        return pm.Poisson.dist(mu=mu1, size=size) - pm.Poisson.dist(mu=mu2, size=size)
 
     @staticmethod
     def skellam_logp(value, mu1, mu2):

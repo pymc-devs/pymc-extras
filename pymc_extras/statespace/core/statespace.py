@@ -1825,7 +1825,7 @@ class PyMCStateSpace:
             Statespace matrices to be sampled. Valid names are short names: x0, P0, c, d, T, Z, R, H, Q, or
              "formal" names: initial_state, initial_state_cov, state_intercept, obs_intercept, transition, design,
                              selection, obs_cov, state_cov
-        idata: xr.DataTree
+        idata: DataTree
             DataTree from which to sample
 
         group: str, one of "posterior" or "prior"
@@ -2620,7 +2620,7 @@ class PyMCStateSpace:
 
         Parameters
         ----------
-        idata : xr.DataTree
+        idata : DataTree
             A DataTree object containing the posterior distribution over model parameters.
 
         n_steps: int
@@ -2673,7 +2673,7 @@ class PyMCStateSpace:
 
         Returns
         -------
-        xr.DataTree
+        DataTree
             A DataTree object containing impulse response function in a variable named "irf".
 
         Notes

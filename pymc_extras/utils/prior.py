@@ -19,9 +19,9 @@ from typing import TypedDict
 import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
-import xarray
 
 from pymc.logprob.transforms import Transform
+from xarray import DataTree
 
 
 class ParamCfg(TypedDict):
@@ -74,7 +74,7 @@ def _parse_args(
     return results
 
 
-def _flatten(idata: xarray.DataTree, **kwargs: ParamCfg) -> FlatInfo:
+def _flatten(idata: DataTree, **kwargs: ParamCfg) -> FlatInfo:
     posterior = idata["posterior"]
     vars = list()
     info = list()
@@ -131,7 +131,7 @@ def _mvn_prior_from_flat_info(name, flat_info: FlatInfo):
 
 
 def prior_from_idata(
-    idata: xarray.DataTree,
+    idata: DataTree,
     name="trace_prior_",
     *,
     var_names: Sequence[str] = (),
@@ -151,7 +151,7 @@ def prior_from_idata(
 
     Parameters
     ----------
-    idata: xr.DataTree
+    idata: DataTree
         Inference data with posterior group
     var_names: Sequence[str]
         names of variables to take as is from the posterior

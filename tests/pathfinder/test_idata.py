@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from xarray import DataTree
+
 # Mock objects for testing without full dependencies
 from pymc_extras.inference.pathfinder.lbfgs import LBFGSStatus
 from pymc_extras.inference.pathfinder.pathfinder import PathfinderConfig, PathStatus
@@ -310,7 +312,7 @@ class TestAddPathfinderToDataTree:
 
         # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = xr.DataTree.from_dict({"/posterior": posterior})
+        idata = DataTree.from_dict({"/posterior": posterior})
 
         # Create mock result with proper single-path status values
         # (Note: MockMultiPathfinderResult isn't a real MultiPathfinderResult,
@@ -347,7 +349,7 @@ class TestDiagnosticsAndConfigGroups:
 
         # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = xr.DataTree.from_dict({"/posterior": posterior})
+        idata = DataTree.from_dict({"/posterior": posterior})
 
         # Create mock config
         config = PathfinderConfig(
@@ -394,7 +396,7 @@ class TestDiagnosticsAndConfigGroups:
 
         # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = xr.DataTree.from_dict({"/posterior": posterior})
+        idata = DataTree.from_dict({"/posterior": posterior})
 
         # Create mock result with diagnostic data
         result = MockMultiPathfinderResult(
@@ -435,7 +437,7 @@ class TestDiagnosticsAndConfigGroups:
 
         # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = xr.DataTree.from_dict({"/posterior": posterior})
+        idata = DataTree.from_dict({"/posterior": posterior})
 
         # Create mock result with diagnostic data
         result = MockMultiPathfinderResult(
