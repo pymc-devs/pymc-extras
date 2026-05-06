@@ -102,12 +102,12 @@ def importance_sampling(
             match method:
                 case "psis":
                     replace = False
-                    logiw_da = xr.DataArray(logiw, dims=["sample"])
+                    logiw_da = xr.DataArray(-logiw, dims=["sample"])
                     logiw_da, pareto_k = logiw_da.azstats.psislw(dim="sample")
                     logiw, pareto_k = logiw_da.values, float(pareto_k)
                 case "psir":
                     replace = True
-                    logiw_da = xr.DataArray(logiw, dims=["sample"])
+                    logiw_da = xr.DataArray(-logiw, dims=["sample"])
                     logiw_da, pareto_k = logiw_da.azstats.psislw(dim="sample")
                     logiw, pareto_k = logiw_da.values, float(pareto_k)
                 case "identity":
