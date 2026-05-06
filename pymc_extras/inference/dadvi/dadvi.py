@@ -5,8 +5,9 @@ import pytensor.tensor as pt
 
 from better_optimize import basinhopping, minimize
 from better_optimize.constants import minimize_method
-from pymc import DictToArrayBijection, Model, join_nonshared_inputs
-from pymc.blocking import RaveledVars
+from pymc import Model
+from pymc.blocking import DictToArrayBijection, RaveledVars
+from pymc.pytensorf import join_nonshared_inputs
 from pymc.util import RandomSeed
 from pytensor.tensor.variable import TensorVariable
 from xarray import DataTree

@@ -2,12 +2,11 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 
-from pymc import intX
 from pymc.distributions.dist_math import check_parameters
 from pymc.distributions.distribution import Continuous, SymbolicRandomVariable
 from pymc.distributions.shape_utils import get_support_shape_1d
 from pymc.logprob.abstract import _logprob
-from pymc.pytensorf import normalize_rng_param
+from pymc.pytensorf import intX, normalize_rng_param
 from pytensor.graph.basic import Node
 from pytensor.tensor.random import multivariate_normal
 

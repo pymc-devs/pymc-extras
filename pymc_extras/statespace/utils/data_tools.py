@@ -6,7 +6,8 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 
-from pymc import ImputationWarning, modelcontext
+from pymc import modelcontext
+from pymc.exceptions import ImputationWarning
 from pytensor.tensor.sharedvar import TensorSharedVariable
 
 from pymc_extras.statespace.utils.constants import (

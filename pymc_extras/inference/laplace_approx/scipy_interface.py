@@ -9,7 +9,7 @@ import pymc as pm
 import pytensor
 
 from better_optimize.constants import MINIMIZE_MODE_KWARGS
-from pymc import join_nonshared_inputs
+from pymc.pytensorf import join_nonshared_inputs
 from pytensor import tensor as pt
 from pytensor.compile import Function
 from pytensor.tensor import TensorVariable

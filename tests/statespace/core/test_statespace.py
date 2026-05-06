@@ -12,6 +12,7 @@ import pytensor.tensor as pt
 import pytest
 
 from numpy.testing import assert_allclose
+from pymc.exceptions import ImputationWarning
 from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.compile import SharedVariable
 from pytensor.graph.traversal import graph_inputs
@@ -520,7 +521,7 @@ def test_build_statespace_graph_warns_if_data_has_nans():
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))
         P0 = pm.Deterministic("P0", pt.eye(1, dtype=floatX))
-        with pytest.warns(pm.ImputationWarning):
+        with pytest.warns(ImputationWarning):
             ss_mod.build_statespace_graph(
                 data=np.full((10, 1), np.nan, dtype=floatX), register_data=False
             )
