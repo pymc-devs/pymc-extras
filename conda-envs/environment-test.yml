@@ -3,7 +3,6 @@ channels:
 - conda-forge
 - nodefaults
 dependencies:
-  - arviz>=1.1
   - scikit-learn
   - better-optimize>=0.3.2
   - dask<2025.1.1
