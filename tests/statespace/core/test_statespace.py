@@ -158,6 +158,7 @@ def ss_mod_time_varying():
             slope = self.make_and_register_variable("slope", ())
             time_trend = slope * pt.arange(self.n_timesteps)
             self.ssm["obs_intercept"] = time_trend[:, None]
+            self.ssm.declare_time_varying("obs_intercept")
 
         @property
         def param_names(self) -> list[str]:
@@ -591,6 +592,7 @@ def test_sample_conditional_with_time_varying():
 
             sigma_cov = self.make_and_register_variable("sigma_cov", (None,))
             self.ssm["state_cov"] = sigma_cov[:, None, None] ** 2
+            self.ssm.declare_time_varying("state_cov")
 
         @property
         def param_names(self) -> list[str]:

@@ -133,6 +133,7 @@ def f_standard_nd():
 
     inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
 
+    time_varying_names = ("transition", "design", "selection", "obs_cov", "state_cov")
     (
         filtered_states,
         predicted_states,
@@ -141,9 +142,11 @@ def f_standard_nd():
         predicted_covs,
         observed_covs,
         ll_obs,
-    ) = StandardFilter().build_graph(*inputs)
+    ) = StandardFilter().build_graph(*inputs, time_varying_names=time_varying_names)
 
-    smoothed_states, smoothed_covs = ksmoother.build_graph(T, R, Q, filtered_states, filtered_covs)
+    smoothed_states, smoothed_covs = ksmoother.build_graph(
+        T, R, Q, filtered_states, filtered_covs, time_varying_names=time_varying_names
+    )
 
     outputs = [
         filtered_states,

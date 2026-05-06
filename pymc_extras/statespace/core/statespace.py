@@ -60,7 +60,6 @@ from pymc_extras.statespace.utils.constants import (
     SHOCK_DIM,
     SHORT_NAME_TO_LONG,
     TIME_DIM,
-    VECTOR_VALUED,
 )
 from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
 
@@ -967,15 +966,15 @@ class PyMCStateSpace:
 
         pm_mod = modelcontext(None)
         matrices = self.unpack_statespace()
+        time_varying_names = self.ssm.time_varying_names
 
         registered_matrices = []
         for i, (matrix, name) in enumerate(zip(matrices, MATRIX_NAMES)):
-            time_varying_ndim = 2 if name in VECTOR_VALUED else 3
             if not getattr(pm_mod, name, None):
                 shape, dims = self._get_matrix_shape_and_dims(name)
                 has_dims = dims is not None
 
-                if matrix.ndim == time_varying_ndim and has_dims:
+                if SHORT_NAME_TO_LONG[name] in time_varying_names and has_dims:
                     dims = (TIME_DIM, *dims)
 
                 x = pm.Deterministic(name, matrix, dims=dims)
@@ -1116,6 +1115,7 @@ class PyMCStateSpace:
             *self.unpack_statespace(),
             missing_fill_value=missing_fill_value,
             cov_jitter=cov_jitter,
+            time_varying_names=self.ssm.time_varying_names,
         )
 
         logp = filter_outputs.pop(-1)
@@ -1188,7 +1188,13 @@ class PyMCStateSpace:
             *_, T, Z, R, H, Q = matrices
 
             smooth_states, smooth_covariances = self.kalman_smoother.build_graph(
-                T, R, Q, filtered_states, filtered_covariances, cov_jitter=cov_jitter
+                T,
+                R,
+                Q,
+                filtered_states,
+                filtered_covariances,
+                cov_jitter=cov_jitter,
+                time_varying_names=self.ssm.time_varying_names,
             )
             smooth_states.name = "smooth_states"
             smooth_covariances.name = "smooth_covariances"
@@ -1311,6 +1317,7 @@ class PyMCStateSpace:
             R,
             H,
             Q,
+            time_varying_names=self.ssm.time_varying_names,
         )
 
         filter_outputs.pop(-1)
@@ -1320,7 +1327,12 @@ class PyMCStateSpace:
         filtered_covariances, predicted_covariances, _ = covariances
 
         [smoothed_states, smoothed_covariances] = self.kalman_smoother.build_graph(
-            T, R, Q, filtered_states, filtered_covariances
+            T,
+            R,
+            Q,
+            filtered_states,
+            filtered_covariances,
+            time_varying_names=self.ssm.time_varying_names,
         )
 
         grouped_outputs = [
@@ -1937,10 +1949,16 @@ class PyMCStateSpace:
                 R,
                 H,
                 Q,
+                time_varying_names=self.ssm.time_varying_names,
             )
 
             smoother_outputs = self.kalman_smoother.build_graph(
-                T, R, Q, filter_outputs[0], filter_outputs[3]
+                T,
+                R,
+                Q,
+                filter_outputs[0],
+                filter_outputs[3],
+                time_varying_names=self.ssm.time_varying_names,
             )
 
             filter_outputs = filter_outputs[:-1] + list(smoother_outputs)
@@ -2409,8 +2427,9 @@ class PyMCStateSpace:
                     )
 
             forecast_names = MATRIX_NAMES[2:]  # c, d, T, Z, R, H, Q
+            time_varying_names = self.ssm.time_varying_names
             forecast_matrices = [
-                m[n_train:] if m.ndim == (2 if name in VECTOR_VALUED else 3) else m
+                m[n_train:] if SHORT_NAME_TO_LONG[name] in time_varying_names else m
                 for m, name in zip(forecast_matrices, forecast_names)
             ]
 

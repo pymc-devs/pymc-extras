@@ -18,6 +18,7 @@ from pymc_extras.statespace.filters.utilities import (
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_NAMES,
     JITTER_DEFAULT,
+    LONG_NAME_TO_SHORT,
     MATRIX_NAMES,
     MISSING_FILL,
 )
@@ -150,6 +151,7 @@ class BaseFilter(ABC):
         Q,
         missing_fill_value=None,
         cov_jitter=None,
+        time_varying_names=(),
     ) -> list[TensorVariable]:
         """
         Construct the computation graph for the Kalman filter. See [1] for details.
@@ -200,8 +202,11 @@ class BaseFilter(ABC):
 
         data, a0, P0, *params = self.check_params(data, a0, P0, c, d, T, Z, R, H, Q)
         data = pt.specify_shape(data, (data.type.shape[0], self.n_endog))
+        # ``time_varying_names`` is keyed on long names ("transition", ...) but the filter
+        # tracks ordering with the short single-letter names. Translate.
+        time_varying_short = {LONG_NAME_TO_SHORT[n] for n in time_varying_names}
         sequences, non_sequences, seq_names, non_seq_names = split_vars_into_seq_and_nonseq(
-            params, PARAM_NAMES
+            params, PARAM_NAMES, time_varying_short
         )
 
         self.seq_names = seq_names

@@ -250,6 +250,7 @@ class Regression(Component):
             self.ssm["design"] = pt.specify_shape(
                 Z, (None, k_endog, regression_data.type.shape[1] * k_endog)
             )
+        self.ssm.declare_time_varying("design")
 
         if self.innovations:
             sigma_beta = self.make_and_register_variable(

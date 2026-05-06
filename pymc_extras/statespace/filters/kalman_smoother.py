@@ -6,7 +6,7 @@ from pymc_extras.statespace.filters.utilities import (
     split_vars_into_seq_and_nonseq,
     stabilize,
 )
-from pymc_extras.statespace.utils.constants import JITTER_DEFAULT
+from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, LONG_NAME_TO_SHORT
 
 
 class KalmanSmoother:
@@ -60,7 +60,14 @@ class KalmanSmoother:
         return a, P, a_smooth, P_smooth, T, R, Q
 
     def build_graph(
-        self, T, R, Q, filtered_states, filtered_covariances, cov_jitter=JITTER_DEFAULT
+        self,
+        T,
+        R,
+        Q,
+        filtered_states,
+        filtered_covariances,
+        cov_jitter=JITTER_DEFAULT,
+        time_varying_names=(),
     ):
         self.cov_jitter = cov_jitter
 
@@ -69,8 +76,9 @@ class KalmanSmoother:
         a_last = pt.specify_shape(filtered_states[-1], (k,))
         P_last = pt.specify_shape(filtered_covariances[-1], (k, k))
 
+        time_varying_short = {LONG_NAME_TO_SHORT[n] for n in time_varying_names}
         sequences, non_sequences, seq_names, non_seq_names = split_vars_into_seq_and_nonseq(
-            [T, R, Q], ["T", "R", "Q"]
+            [T, R, Q], ["T", "R", "Q"], time_varying_short
         )
 
         self.seq_names = seq_names

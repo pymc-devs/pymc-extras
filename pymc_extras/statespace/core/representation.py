@@ -7,20 +7,19 @@ import pytensor.tensor as pt
 floatX = pytensor.config.floatX
 KeyLike = tuple[str | int, ...] | str
 
-# core_ndim: number of trailing dims that define the matrix's "core" shape (1 for vectors,
-# 2 for matrices). Anything stored to the left of those dims is interpreted as a time and/or
-# batch dim by downstream consumers; the representation does not try to distinguish them.
-# time_varying: False rules out leading dims entirely (used for x0 and P0).
-_MATRIX_SPECS: dict[str, tuple[int, bool]] = {
-    "design": (2, True),
-    "obs_intercept": (1, True),
-    "obs_cov": (2, True),
-    "transition": (2, True),
-    "state_intercept": (1, True),
-    "selection": (2, True),
-    "state_cov": (2, True),
-    "initial_state": (1, False),
-    "initial_state_cov": (2, False),
+# Number of trailing dims that define each matrix's "core" shape (1 for vectors, 2 for
+# matrices). Anything to the left is a time and/or batch dim; downstream consumers
+# distinguish them by consulting ``Representation.time_varying_names``.
+_CORE_NDIM: dict[str, int] = {
+    "design": 2,
+    "obs_intercept": 1,
+    "obs_cov": 2,
+    "transition": 2,
+    "state_intercept": 1,
+    "selection": 2,
+    "state_cov": 2,
+    "initial_state": 1,
+    "initial_state_cov": 2,
 }
 
 
@@ -99,9 +98,18 @@ class PytensorRepresentation:
     | ``state_cov``       | ``(r, r)``              |
     +---------------------+-------------------------+
 
-    Any matrix except :math:`\bar x_0` and :math:`P_0` may carry a leading dim of length
-    ``n`` (the number of observations) to declare it time-varying. Downstream consumers
-    decide static vs. time-varying by reading ``stored.ndim``.
+    Any matrix may carry a leading dim of length ``n`` (the number of observations) to
+    make it time-varying. The model is responsible for declaring which matrices vary over
+    time via :meth:`declare_time_varying`; downstream consumers (filter, smoother, etc.)
+    read :attr:`time_varying_names` to dispatch.
+
+    .. warning::
+
+        The time dim must always be the **leftmost** axis of a time-varying matrix. The
+        Kalman filter scan iterates over axis 0, ``pm.Deterministic`` registration prepends
+        a ``TIME_DIM`` coord to the dim list, and forecast slicing reads ``matrix[n_train:]``
+        — all of these assume the time axis sits in front of the core dims. Optional batch
+        dims may sit even further left (``(*batch, time, *core)``).
 
     Examples
     --------
@@ -137,6 +145,7 @@ class PytensorRepresentation:
     """
 
     __slots__ = (
+        "_time_varying_names",
         "design",
         "initial_state",
         "initial_state_cov",
@@ -182,7 +191,9 @@ class PytensorRepresentation:
             "initial_state_cov": initial_state_cov,
         }
 
-        for name in _MATRIX_SPECS:
+        self._time_varying_names: set[str] = set()
+
+        for name in _CORE_NDIM:
             value = provided[name]
             if value is None:
                 tensor = pt.as_tensor_variable(
@@ -207,7 +218,7 @@ class PytensorRepresentation:
         }[name]
 
     def _validate_name(self, name: str) -> None:
-        if name not in _MATRIX_SPECS:
+        if name not in _CORE_NDIM:
             raise IndexError(f"{name!r} is an invalid state space matrix name")
 
     def _coerce(
@@ -215,11 +226,12 @@ class PytensorRepresentation:
     ) -> pt.TensorVariable:
         """Wrap ``value`` as a named TensorVariable after validating the trailing core dims.
 
-        Anything to the left of the core dims is accepted unchanged: ``core``,
-        ``(time, *core)``, ``(*batch, *core)``, or ``(*batch, time, *core)`` are all valid.
-        ``time_varying=False`` matrices reject any leading dim.
+        Anything to the left of the core dims is accepted unchanged -- ``core``,
+        ``(time, *core)``, ``(*batch, *core)``, and ``(*batch, time, *core)`` are all valid.
+        Whether a leading dim is "time" or "batch" is the model's decision, recorded via
+        ``declare_time_varying``; the rep itself does not guess.
         """
-        core_ndim, time_varying = _MATRIX_SPECS[name]
+        core_ndim = _CORE_NDIM[name]
         core_shape = self._core_shape(name)
 
         if isinstance(value, np.ndarray):
@@ -235,28 +247,30 @@ class PytensorRepresentation:
                 f"{name} must have at least {core_ndim} dimension(s); got ndim={tensor.ndim}"
             )
 
-        if not time_varying and tensor.ndim != core_ndim:
-            raise ValueError(
-                f"{name} is never time-varying; expected ndim={core_ndim}, got ndim={tensor.ndim}"
-            )
-
         trailing = tensor.type.shape[-core_ndim:]
         for got, want in zip(trailing, core_shape, strict=True):
-            # Static-None means the dim is unknown until runtime; allow it.
+            # A None entry in ``tensor.type.shape`` is a runtime-only dim (pytensor doesn't
+            # know its size at graph time). Skip; let it fail at runtime if wrong.
             if got is not None and got != want:
                 raise ValueError(f"Trailing dims of {name} are {trailing}, expected {core_shape}")
 
         return tensor
 
-    def is_time_varying(self, name: str) -> bool:
-        """Return True iff the stored tensor has a leading dim beyond its core shape."""
-        self._validate_name(name)
-        return getattr(self, name).ndim > _MATRIX_SPECS[name][0]
+    @property
+    def time_varying_names(self) -> frozenset[str]:
+        """Names of matrices the model declared as time-varying.
 
-    def core_ndim(self, name: str) -> int:
-        """Return the number of trailing dims that define ``name``'s core shape."""
-        self._validate_name(name)
-        return _MATRIX_SPECS[name][0]
+        The Kalman filter iterates over the leading dim of these tensors at scan time;
+        all other matrices are passed in as scan non-sequences (i.e. used unchanged at
+        every step).
+        """
+        return frozenset(self._time_varying_names)
+
+    def declare_time_varying(self, *names: str) -> None:
+        """Mark matrices as time-varying. The filter will iterate over the leading dim."""
+        for name in names:
+            self._validate_name(name)
+            self._time_varying_names.add(name)
 
     def __getitem__(self, key: KeyLike) -> pt.TensorVariable:
         if isinstance(key, str):

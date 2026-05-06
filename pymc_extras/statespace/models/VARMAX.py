@@ -513,6 +513,7 @@ class BayesianVARMAX(PyMCStateSpace):
                 raise NotImplementedError()
 
             self.ssm["obs_intercept"] = obs_intercept
+            self.ssm.declare_time_varying("obs_intercept")
 
         if self.stationary_initialization:
             # Solve for matrix quadratic for P0

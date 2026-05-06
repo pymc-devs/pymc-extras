@@ -646,6 +646,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
             design_matrix = pt.concatenate([design_matrix_time, Z_exog], axis=2)
 
         self.ssm["design"] = design_matrix
+        if self.exog_flag:
+            self.ssm.declare_time_varying("design")
 
         # Transition matrix (T)
         # Construction with block-diagonal structure:

@@ -583,6 +583,7 @@ class BayesianSARIMAX(PyMCStateSpace):
             )
 
             self.ssm["obs_intercept"] = (exog_data @ exog_beta)[:, None]
+            self.ssm.declare_time_varying("obs_intercept")
 
         # Set up the state covariance matrix
         state_cov_idx = ("state_cov", *np.diag_indices(self.k_posdef))

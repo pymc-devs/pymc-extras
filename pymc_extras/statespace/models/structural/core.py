@@ -894,6 +894,7 @@ class Component:
             obs_cov=obs_cov,
             state_cov=state_cov,
         )
+        new_ssm.declare_time_varying(*(self.ssm.time_varying_names | other.ssm.time_varying_names))
 
         return new_ssm
 
