@@ -54,8 +54,6 @@ jobs:
           cache-environment: true
       - name: Install pymc-extras
         run: |
-          pip install "pymc @ git+https://github.com/pymc-devs/pymc.git"
-          pip install "preliz @ git+https://github.com/arviz-devs/preliz.git"
           pip install -e ".[dev]" --no-deps
 
           python --version
@@ -103,8 +101,6 @@ jobs:
           cache-environment: true
       - name: Install pymc-extras
         run: |
-          pip install "pymc @ git+https://github.com/pymc-devs/pymc.git"
-          pip install "preliz @ git+https://github.com/arviz-devs/preliz.git"
           pip install -e ".[dev]" --no-deps
 
           python --version
