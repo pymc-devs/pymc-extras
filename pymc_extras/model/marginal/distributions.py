@@ -517,11 +517,9 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs_and_Q, **kwa
     # Set minimizer initialisation to be random (TODO: Let pymc accept this one, maybe when rng is constant)
     # TODO: Use newer pytensor helper
     d = pt.prod(constant_fold(tuple(x.shape), raise_not_constant=True))
-    # rng = np.random.default_rng(op.minimizer_seed)
-    # x0_init = pt.random.uniform(rng=pytensor.shared(rng), size=d)
     x0_init = pt.ones(d)
 
-    # Obtain laplace approx
+    # Obtain laplace approx for logp(x | y, params)
     x0, log_laplace_approx = get_laplace_approx(
         logp_y,
         logp_total,
