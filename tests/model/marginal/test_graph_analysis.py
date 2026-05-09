@@ -14,11 +14,15 @@ from pymc_extras.model.marginal.graph_analysis import (
 def test_is_conditional_dependent_static_shape():
     """Test that we don't consider dependencies through "constant" shape Ops"""
     x1 = pt.matrix("x1", shape=(None, 5))
-    y1 = pt.random.normal(size=pt.shape(x1))
+    _, y1 = pt.random.normal(
+        size=pt.shape(x1), rng=pt.random.shared_rng(seed=0), return_next_rng=True
+    )
     assert is_conditional_dependent(y1, x1, [x1, y1])
 
     x2 = pt.matrix("x2", shape=(9, 5))
-    y2 = pt.random.normal(size=pt.shape(x2))
+    _, y2 = pt.random.normal(
+        size=pt.shape(x2), rng=pt.random.shared_rng(seed=0), return_next_rng=True
+    )
     assert not is_conditional_dependent(y2, x2, [x2, y2])
 
 
@@ -145,25 +149,36 @@ class TestSubgraphBatchDimConnection:
     def test_random_variable(self):
         inp = pt.tensor(shape=(5, 4, 3))
 
-        out1 = pt.random.normal(loc=inp)
-        out2 = pt.random.categorical(p=inp[..., None])
-        out3 = pt.random.multivariate_normal(mean=inp[..., None], cov=pt.eye(1))
+        _, out1 = pt.random.normal(loc=inp, rng=pt.random.shared_rng(seed=0), return_next_rng=True)
+        _, out2 = pt.random.categorical(
+            p=inp[..., None], rng=pt.random.shared_rng(seed=0), return_next_rng=True
+        )
+        _, out3 = pt.random.multivariate_normal(
+            mean=inp[..., None],
+            cov=pt.eye(1),
+            rng=pt.random.shared_rng(seed=0),
+            return_next_rng=True,
+        )
         [dims1, dims2, dims3] = subgraph_batch_dim_connection(inp, [out1, out2, out3])
         assert dims1 == (0, 1, 2)
         assert dims2 == (0, 1, 2)
         assert dims3 == (0, 1, 2, None)
 
-        invalid_out = pt.random.categorical(p=inp)
+        _, invalid_out = pt.random.categorical(
+            p=inp, rng=pt.random.shared_rng(seed=0), return_next_rng=True
+        )
         with pytest.raises(ValueError, match="Use of known dimensions"):
             subgraph_batch_dim_connection(inp, [invalid_out])
 
-        invalid_out = pt.random.multivariate_normal(mean=inp, cov=pt.eye(3))
+        _, invalid_out = pt.random.multivariate_normal(
+            mean=inp, cov=pt.eye(3), rng=pt.random.shared_rng(seed=0), return_next_rng=True
+        )
         with pytest.raises(ValueError, match="Use of known dimensions"):
             subgraph_batch_dim_connection(inp, [invalid_out])
 
     def test_minibatched_random_variable(self):
         inp = pt.tensor(shape=(4, 3, 2))
-        out1 = pt.random.normal(loc=inp)
+        _, out1 = pt.random.normal(loc=inp, rng=pt.random.shared_rng(seed=0), return_next_rng=True)
         out2 = create_minibatch_rv(out1, total_size=(10, 10, 10))
         [dims1] = subgraph_batch_dim_connection(inp, [out2])
         assert dims1 == (0, 1, 2)
@@ -174,7 +189,9 @@ class TestSubgraphBatchDimConnection:
         # Test univariate
         out = CustomDist.dist(
             inp,
-            dist=lambda mu, size: pt.random.normal(loc=mu, size=size),
+            dist=lambda mu, size: pt.random.normal(
+                loc=mu, size=size, rng=pt.random.shared_rng(seed=0), return_next_rng=True
+            )[1],
         )
         [dims] = subgraph_batch_dim_connection(inp, [out])
         assert dims == (0, 1, 2)
@@ -183,7 +200,13 @@ class TestSubgraphBatchDimConnection:
         def dist(mu, size):
             if isinstance(size.type, NoneTypeT):
                 size = mu.shape
-            return pt.random.normal(loc=mu[..., None], size=(*size, 2))
+            _, rv = pt.random.normal(
+                loc=mu[..., None],
+                size=(*size, 2),
+                rng=pt.random.shared_rng(seed=0),
+                return_next_rng=True,
+            )
+            return rv
 
         out = CustomDist.dist(inp, dist=dist, size=(4, 3, 2), signature="()->(2)")
         [dims] = subgraph_batch_dim_connection(inp, [out])

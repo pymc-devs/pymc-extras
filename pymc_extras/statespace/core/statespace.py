@@ -10,15 +10,16 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 
-from arviz import InferenceData
 from pymc.model import modelcontext
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import RandomState
-from pytensor import Variable, graph_replace
+from pytensor.graph.basic import Variable
+from pytensor.graph.replace import graph_replace
 from pytensor.graph.traversal import explicit_graph_inputs
 from rich.box import SIMPLE_HEAD
 from rich.console import Console
 from rich.table import Table
+from xarray import DataTree
 
 from pymc_extras.statespace.core.properties import (
     Coord,
@@ -60,7 +61,6 @@ from pymc_extras.statespace.utils.constants import (
     SHOCK_DIM,
     SHORT_NAME_TO_LONG,
     TIME_DIM,
-    VECTOR_VALUED,
 )
 from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
 
@@ -967,15 +967,15 @@ class PyMCStateSpace:
 
         pm_mod = modelcontext(None)
         matrices = self.unpack_statespace()
+        time_varying_names = self.ssm.time_varying_names
 
         registered_matrices = []
         for i, (matrix, name) in enumerate(zip(matrices, MATRIX_NAMES)):
-            time_varying_ndim = 2 if name in VECTOR_VALUED else 3
             if not getattr(pm_mod, name, None):
                 shape, dims = self._get_matrix_shape_and_dims(name)
                 has_dims = dims is not None
 
-                if matrix.ndim == time_varying_ndim and has_dims:
+                if SHORT_NAME_TO_LONG[name] in time_varying_names and has_dims:
                     dims = (TIME_DIM, *dims)
 
                 x = pm.Deterministic(name, matrix, dims=dims)
@@ -1116,6 +1116,7 @@ class PyMCStateSpace:
             *self.unpack_statespace(),
             missing_fill_value=missing_fill_value,
             cov_jitter=cov_jitter,
+            time_varying_names=self.ssm.time_varying_names,
         )
 
         logp = filter_outputs.pop(-1)
@@ -1188,7 +1189,13 @@ class PyMCStateSpace:
             *_, T, Z, R, H, Q = matrices
 
             smooth_states, smooth_covariances = self.kalman_smoother.build_graph(
-                T, R, Q, filtered_states, filtered_covariances, cov_jitter=cov_jitter
+                T,
+                R,
+                Q,
+                filtered_states,
+                filtered_covariances,
+                cov_jitter=cov_jitter,
+                time_varying_names=self.ssm.time_varying_names,
             )
             smooth_states.name = "smooth_states"
             smooth_covariances.name = "smooth_covariances"
@@ -1311,6 +1318,7 @@ class PyMCStateSpace:
             R,
             H,
             Q,
+            time_varying_names=self.ssm.time_varying_names,
         )
 
         filter_outputs.pop(-1)
@@ -1320,7 +1328,12 @@ class PyMCStateSpace:
         filtered_covariances, predicted_covariances, _ = covariances
 
         [smoothed_states, smoothed_covariances] = self.kalman_smoother.build_graph(
-            T, R, Q, filtered_states, filtered_covariances
+            T,
+            R,
+            Q,
+            filtered_states,
+            filtered_covariances,
+            time_varying_names=self.ssm.time_varying_names,
         )
 
         grouped_outputs = [
@@ -1333,7 +1346,7 @@ class PyMCStateSpace:
 
     def _sample_conditional(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         group: str,
         random_seed: RandomState | None = None,
         data: pt.TensorLike | None = None,
@@ -1346,11 +1359,11 @@ class PyMCStateSpace:
 
         Parameters
         ----------
-        idata : InferenceData
-            An Arviz InferenceData object containing the posterior distribution over model parameters.
+        idata : DataTree
+            A DataTree object containing the posterior distribution over model parameters.
 
         group : str
-            InferenceData group from which to draw samples. Should be one of "prior" or "posterior".
+            DataTree group from which to draw samples. Should be one of "prior" or "posterior".
 
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
@@ -1372,8 +1385,8 @@ class PyMCStateSpace:
 
         Returns
         -------
-        InferenceData
-            An Arviz InferenceData object containing sampled trajectories from the requested conditional distribution,
+        DataTree
+            A DataTree object containing sampled trajectories from the requested conditional distribution,
             with data variables "filtered_{group}", "predicted_{group}", and "smoothed_{group}".
         """
         if data is None and self._fit_data is None:
@@ -1459,7 +1472,7 @@ class PyMCStateSpace:
 
     def _sample_unconditional(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         group: str,
         steps: int | None = None,
         use_data_time_dim: bool = False,
@@ -1477,8 +1490,8 @@ class PyMCStateSpace:
 
         Parameters
         ----------
-        idata : InferenceData
-            An Arviz InferenceData object with a posterior group containing samples from the
+        idata : DataTree
+            A DataTree object with a posterior group containing samples from the
             posterior distribution over model parameters.
 
         steps : Optional[int], default=None
@@ -1507,7 +1520,7 @@ class PyMCStateSpace:
 
         Returns
         -------
-        InferenceData
+        DataTree
             An Arviz InfereceData with two groups, posterior_latent and posterior_observed
 
             - posterior_latent represents the latent state trajectories `X[t]`, which follows the dynamics:
@@ -1553,9 +1566,7 @@ class PyMCStateSpace:
             x0, P0, c, d, T, Z, R, H, Q = matrices
 
             if not self.measurement_error:
-                H_jittered = pm.Deterministic(
-                    "H_jittered", pt.specify_shape(stabilize(H), (self.k_endog, self.k_endog))
-                )
+                H_jittered = pm.Deterministic("H_jittered", stabilize(H))
                 matrices = [x0, P0, c, d, T, Z, R, H_jittered, Q]
 
             LinearGaussianStateSpace(
@@ -1587,11 +1598,11 @@ class PyMCStateSpace:
 
     def sample_conditional_prior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Sample from the conditional prior; that is, given parameter draws from the prior distribution,
         compute Kalman filtered trajectories. Trajectories are drawn from a single multivariate normal with mean and
@@ -1599,8 +1610,8 @@ class PyMCStateSpace:
 
         Parameters
         ----------
-        idata : InferenceData
-            Arviz InferenceData with prior samples for state space matrices x0, P0, c, d, T, Z, R, H, Q.
+        idata : DataTree
+            DataTree with prior samples for state space matrices x0, P0, c, d, T, Z, R, H, Q.
             Obtained from `pm.sample_prior_predictive` after calling PyMCStateSpace.build_statespace_graph().
 
         random_seed : int, RandomState or Generator, optional
@@ -1619,8 +1630,8 @@ class PyMCStateSpace:
 
         Returns
         -------
-        InferenceData
-            An Arviz InferenceData object containing sampled trajectories from the conditional prior.
+        DataTree
+            A DataTree object containing sampled trajectories from the conditional prior.
             The trajectories are stored in the posterior_predictive group with names "filtered_prior",
              "predicted_prior", and "smoothed_prior".
         """
@@ -1635,7 +1646,7 @@ class PyMCStateSpace:
 
     def sample_conditional_posterior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
@@ -1647,8 +1658,8 @@ class PyMCStateSpace:
 
         Parameters
         ----------
-        idata : InferenceData
-            An Arviz InferenceData object containing the posterior distribution over model parameters.
+        idata : DataTree
+            A DataTree object containing the posterior distribution over model parameters.
 
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
@@ -1666,8 +1677,8 @@ class PyMCStateSpace:
 
         Returns
         -------
-        InferenceData
-            An Arviz InferenceData object containing sampled trajectories from the conditional posterior.
+        DataTree
+            A DataTree object containing sampled trajectories from the conditional posterior.
             The trajectories are stored in the posterior_predictive group with names "filtered_posterior",
              "predicted_posterior", and "smoothed_posterior".
         """
@@ -1682,13 +1693,13 @@ class PyMCStateSpace:
 
     def sample_unconditional_prior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Draw unconditional sample trajectories according to state space dynamics, using random samples from the prior
         distribution over model parameters. The state space update equations are:
@@ -1698,8 +1709,8 @@ class PyMCStateSpace:
 
         Parameters
         ----------
-        idata: InferenceData
-            Arviz InferenceData with prior samples for state space matrices x0, P0, c, d, T, Z, R, H, Q.
+        idata: DataTree
+            DataTree with prior samples for state space matrices x0, P0, c, d, T, Z, R, H, Q.
             Obtained from `pm.sample_prior_predictive` after calling PyMCStateSpace.build_statespace_graph().
 
         steps : Optional[int], default=None
@@ -1728,7 +1739,7 @@ class PyMCStateSpace:
 
         Returns
         -------
-        InferenceData
+        DataTree
             An Arviz InfereceData with two data variables, prior_latent and prior_observed
 
             - prior_latent represents the latent state trajectories `X[t]`, which follows the dynamics:
@@ -1750,13 +1761,13 @@ class PyMCStateSpace:
 
     def sample_unconditional_posterior(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         steps: int | None = None,
         use_data_time_dim: bool = False,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Draw unconditional sample trajectories according to state space dynamics, using random samples from the
         posterior distribution over model parameters. The state space update equations are:
@@ -1767,8 +1778,8 @@ class PyMCStateSpace:
 
         Parameters
         ----------
-        idata : InferenceData
-            An Arviz InferenceData object with a posterior group containing samples from the
+        idata : DataTree
+            A DataTree object with a posterior group containing samples from the
             posterior distribution over model parameters.
 
         steps : Optional[int], default=None
@@ -1794,7 +1805,7 @@ class PyMCStateSpace:
 
         Returns
         -------
-        InferenceData
+        DataTree
             An Arviz InfereceData with two groups, posterior_latent and posterior_observed
 
             - posterior_latent represents the latent state trajectories `X[t]`, which follows the dynamics:
@@ -1826,8 +1837,8 @@ class PyMCStateSpace:
             Statespace matrices to be sampled. Valid names are short names: x0, P0, c, d, T, Z, R, H, Q, or
              "formal" names: initial_state, initial_state_cov, state_intercept, obs_intercept, transition, design,
                              selection, obs_cov, state_cov
-        idata: az.InferenceData
-            InferenceData from which to sample
+        idata: DataTree
+            DataTree from which to sample
 
         group: str, one of "posterior" or "prior"
             Whether to sample from priors or posteriors
@@ -1872,7 +1883,7 @@ class PyMCStateSpace:
         frozen_model = freeze_dims_and_data(forward_model)
         with frozen_model:
             matrix_idata = pm.sample_posterior_predictive(
-                idata if group == "posterior" else idata.prior,
+                idata if group == "posterior" else idata["prior"],
                 var_names=matrix_names,
                 extend_inferencedata=False,
                 compile_kwargs=compile_kwargs,
@@ -1937,10 +1948,16 @@ class PyMCStateSpace:
                 R,
                 H,
                 Q,
+                time_varying_names=self.ssm.time_varying_names,
             )
 
             smoother_outputs = self.kalman_smoother.build_graph(
-                T, R, Q, filter_outputs[0], filter_outputs[3]
+                T,
+                R,
+                Q,
+                filter_outputs[0],
+                filter_outputs[3],
+                time_varying_names=self.ssm.time_varying_names,
             )
 
             filter_outputs = filter_outputs[:-1] + list(smoother_outputs)
@@ -1951,7 +1968,7 @@ class PyMCStateSpace:
 
         with freeze_dims_and_data(m):
             return pm.sample_posterior_predictive(
-                idata if group == "posterior" else idata.prior,
+                idata if group == "posterior" else idata["prior"],
                 var_names=filter_output_names,
                 compile_kwargs=compile_kwargs,
                 **kwargs,
@@ -2409,8 +2426,9 @@ class PyMCStateSpace:
                     )
 
             forecast_names = MATRIX_NAMES[2:]  # c, d, T, Z, R, H, Q
+            time_varying_names = self.ssm.time_varying_names
             forecast_matrices = [
-                m[n_train:] if m.ndim == (2 if name in VECTOR_VALUED else 3) else m
+                m[n_train:] if SHORT_NAME_TO_LONG[name] in time_varying_names else m
                 for m, name in zip(forecast_matrices, forecast_names)
             ]
 
@@ -2431,7 +2449,7 @@ class PyMCStateSpace:
 
     def forecast(
         self,
-        idata: InferenceData,
+        idata: DataTree,
         start: int | pd.Timestamp | None = None,
         periods: int | None = None,
         end: int | pd.Timestamp = None,
@@ -2442,7 +2460,7 @@ class PyMCStateSpace:
         verbose: bool = True,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         **kwargs,
-    ) -> InferenceData:
+    ) -> DataTree:
         """
         Generate forecasts of state space model trajectories into the future.
 
@@ -2452,8 +2470,8 @@ class PyMCStateSpace:
 
         Parameters
         ----------
-        idata : InferenceData
-            An Arviz InferenceData object containing the posterior distribution over model parameters.
+        idata : DataTree
+            A DataTree object containing the posterior distribution over model parameters.
 
         start : int or pd.Timestamp, optional
             The starting date index or time step from which to generate the forecasts. If the data provided to
@@ -2510,8 +2528,8 @@ class PyMCStateSpace:
 
         Returns
         -------
-        InferenceData
-            An Arviz InferenceData object containing forecast samples for the latent and observed state
+        DataTree
+            A DataTree object containing forecast samples for the latent and observed state
             trajectories of the state space model, named  "forecast_latent" and "forecast_observed".
 
                 - forecast_latent represents the latent state trajectories `X[t]`, which follows the dynamics:
@@ -2621,8 +2639,8 @@ class PyMCStateSpace:
 
         Parameters
         ----------
-        idata : az.InferenceData
-            An Arviz InferenceData object containing the posterior distribution over model parameters.
+        idata : DataTree
+            A DataTree object containing the posterior distribution over model parameters.
 
         n_steps: int
             The number of time steps to calculate the impulse response. Default is 40.
@@ -2674,8 +2692,8 @@ class PyMCStateSpace:
 
         Returns
         -------
-        pm.InferenceData
-            An Arviz InferenceData object containing impulse response function in a variable named "irf".
+        DataTree
+            A DataTree object containing impulse response function in a variable named "irf".
 
         Notes
         -----
@@ -2751,7 +2769,7 @@ class PyMCStateSpace:
             else:
                 shock_trajectory = pt.as_tensor_variable(shock_trajectory)
 
-            time_varying_T = T.ndim == 3
+            time_varying_T = "transition" in self.ssm.time_varying_names
 
             def irf_step(*args):
                 if time_varying_T:
@@ -2785,7 +2803,7 @@ class PyMCStateSpace:
                 **kwargs,
             )
 
-            return irf_idata.posterior_predictive
+            return irf_idata["posterior_predictive"]
 
     def _sort_obs_inputs_by_time_varying(self, d, Z):
         seqs = []

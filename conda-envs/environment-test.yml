@@ -3,10 +3,8 @@ channels:
 - conda-forge
 - nodefaults
 dependencies:
-  - pymc>=5.27.1
-  - pytensor>=3.0.0
   - scikit-learn
-  - better-optimize>=0.1.5
+  - better-optimize>=0.3.2
   - dask<2025.1.1
   - xhistogram
   - statsmodels
@@ -14,8 +12,10 @@ dependencies:
   - pytest
   - pytest-cov
   - pydantic>=2.0.0
-  - preliz>=0.22.0
+  - h5netcdf
   - pip
   - pip:
       - jax
-      - blackjax>=0.12
+      - blackjax
+      - pymc @ git+https://github.com/pymc-devs/pymc.git
+      - preliz @ git+https://github.com/arviz-devs/preliz.git

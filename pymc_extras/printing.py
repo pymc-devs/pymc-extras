@@ -2,7 +2,7 @@ import numpy as np
 
 from pymc import Model
 from pymc.printing import str_for_dist, str_for_potential_or_deterministic
-from pytensor import Mode
+from pytensor.compile.mode import Mode
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.type import Constant, Variable
 from rich.box import SIMPLE_HEAD
@@ -19,7 +19,7 @@ def variable_expression(
         var_expr = "Data"
     elif var in model.deterministics:
         str_repr = str_for_potential_or_deterministic(var, dist_name="")
-        _, var_expr = str_repr.split(" ~ ")
+        _, var_expr = str_repr.split(" = ")
         var_expr = var_expr[1:-1]  # Remove outer parentheses (f(...))
         if truncate_deterministic is not None and len(var_expr) > truncate_deterministic:
             contents = var_expr[2:-1].split(", ")

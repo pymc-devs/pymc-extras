@@ -45,7 +45,7 @@ def test_model_table():
      global_intercept ~  Normal(0, 1)
     intercept_subject ~  Normal(0, 1)                    [20, 1]
          beta_subject ~  Normal(mu, sigma)               subject[20]
-                noise ~  Exponential(f())
+                noise ~  Exponential(<constant>)
                                                          Parameter count = 44
 
              mu_trial =  f(intercept_subject,            trial[6] × subject[20]
@@ -54,7 +54,9 @@ def test_model_table():
 
  beta_subject_penalty =  Potential(f(beta_subject))      subject[20]
 
-                    y ~  Normal(mu_trial, noise)         trial[6] × subject[20]
+                    y ~  Normal(f(intercept_subject,     trial[6] × subject[20]
+                         beta_subject,
+                         global_intercept), noise)
 """
     assert [s.strip() for s in table_txt.splitlines()] == [s.strip() for s in expected.splitlines()]
 
@@ -71,8 +73,10 @@ def test_model_table():
              mu_trial =  f(intercept_subject,            trial[6] × subject[20]
                          beta_subject,
                          global_intercept)
-                noise ~  Exponential(f())
-                    y ~  Normal(mu_trial, noise)         trial[6] × subject[20]
+                noise ~  Exponential(<constant>)
+                    y ~  Normal(f(intercept_subject,     trial[6] × subject[20]
+                         beta_subject,
+                         global_intercept), noise)
  beta_subject_penalty =  Potential(f(beta_subject))      subject[20]
                                                          Parameter count = 44
 """
@@ -81,18 +85,20 @@ def test_model_table():
     table_txt = get_text(
         model_table(model, split_groups=False, truncate_deterministic=30, parameter_count=False)
     )
-    expected = """               Variable  Expression                  Dimensions
-────────────────────────────────────────────────────────────────────────────
-               x_data =  Data                        trial[6] × subject[20]
-               y_data =  Data                        trial[6] × subject[20]
+    expected = """               Variable  Expression                      Dimensions
+────────────────────────────────────────────────────────────────────────────────
+               x_data =  Data                            trial[6] × subject[20]
+               y_data =  Data                            trial[6] × subject[20]
                    mu ~  Normal(0, 1)
                 sigma ~  HalfNormal(0, 1)
      global_intercept ~  Normal(0, 1)
-    intercept_subject ~  Normal(0, 1)                [20, 1]
-         beta_subject ~  Normal(mu, sigma)           subject[20]
-             mu_trial =  f(intercept_subject, ...)   trial[6] × subject[20]
-                noise ~  Exponential(f())
-                    y ~  Normal(mu_trial, noise)     trial[6] × subject[20]
- beta_subject_penalty =  Potential(f(beta_subject))  subject[20]
+    intercept_subject ~  Normal(0, 1)                    [20, 1]
+         beta_subject ~  Normal(mu, sigma)               subject[20]
+             mu_trial =  f(intercept_subject, ...)       trial[6] × subject[20]
+                noise ~  Exponential(<constant>)
+                    y ~  Normal(f(intercept_subject,     trial[6] × subject[20]
+                         beta_subject,
+                         global_intercept), noise)
+ beta_subject_penalty =  Potential(f(beta_subject))      subject[20]
 """
     assert [s.strip() for s in table_txt.splitlines()] == [s.strip() for s in expected.splitlines()]

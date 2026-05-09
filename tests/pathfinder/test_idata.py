@@ -1,4 +1,4 @@
-"""Tests for pathfinder InferenceData integration."""
+"""Tests for pathfinder DataTree integration."""
 
 from collections import Counter
 from dataclasses import dataclass
@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 import xarray as xr
+
+from xarray import DataTree
 
 # Mock objects for testing without full dependencies
 from pymc_extras.inference.pathfinder.lbfgs import LBFGSStatus
@@ -299,20 +301,18 @@ class TestMultiPathfinderResultToXarray:
         assert ds_with_diag["diagnostics_samples_full"].shape == (3, 100, 2)
 
 
-class TestAddPathfinderToInferenceData:
-    """Tests for adding pathfinder results to InferenceData."""
+class TestAddPathfinderToDataTree:
+    """Tests for adding pathfinder results to DataTree."""
 
     def test_add_to_inference_data(self):
-        """Test adding pathfinder results to InferenceData object."""
+        """Test adding pathfinder results to DataTree object."""
         pytest.importorskip("arviz")
-
-        import arviz as az
 
         from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
 
-        # Create mock InferenceData
+        # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = az.InferenceData(posterior=posterior)
+        idata = DataTree.from_dict({"/posterior": posterior})
 
         # Create mock result with proper single-path status values
         # (Note: MockMultiPathfinderResult isn't a real MultiPathfinderResult,
@@ -331,7 +331,7 @@ class TestAddPathfinderToInferenceData:
         # Check groups were added
         # Note: Since MockMultiPathfinderResult is not a real MultiPathfinderResult,
         # it gets treated as a single-path result, so only 'sample_stats' group is added
-        groups = list(idata_updated.groups())
+        groups = list(idata_updated.children)
         assert "posterior" in groups
         assert "sample_stats" in groups
         # pathfinder_paths is only created for true MultiPathfinderResult instances
@@ -344,14 +344,12 @@ class TestDiagnosticsAndConfigGroups:
         """Test that config data is integrated into consolidated pathfinder group."""
         pytest.importorskip("arviz")
 
-        import arviz as az
-
         from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
         from pymc_extras.inference.pathfinder.pathfinder import PathfinderConfig
 
-        # Create mock InferenceData
+        # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = az.InferenceData(posterior=posterior)
+        idata = DataTree.from_dict({"/posterior": posterior})
 
         # Create mock config
         config = PathfinderConfig(
@@ -379,7 +377,7 @@ class TestDiagnosticsAndConfigGroups:
         idata_updated = add_pathfinder_to_inference_data(idata, result, model=None)
 
         # Check that we only have one pathfinder group
-        groups = list(idata_updated.groups())
+        groups = list(idata_updated.children)
         assert "sample_stats" in groups
         assert "pathfinder_config" not in groups  # No separate config group
 
@@ -394,13 +392,11 @@ class TestDiagnosticsAndConfigGroups:
         """Test that diagnostics data is integrated into consolidated pathfinder group."""
         pytest.importorskip("arviz")
 
-        import arviz as az
-
         from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
 
-        # Create mock InferenceData
+        # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = az.InferenceData(posterior=posterior)
+        idata = DataTree.from_dict({"/posterior": posterior})
 
         # Create mock result with diagnostic data
         result = MockMultiPathfinderResult(
@@ -420,7 +416,7 @@ class TestDiagnosticsAndConfigGroups:
         )
 
         # Check that we only have one pathfinder group
-        groups = list(idata_updated.groups())
+        groups = list(idata_updated.children)
         assert "sample_stats" in groups
         assert "pathfinder_diagnostics" not in groups  # No separate diagnostics group
 
@@ -437,13 +433,11 @@ class TestDiagnosticsAndConfigGroups:
         """Test that diagnostics group is NOT created when store_diagnostics=False."""
         pytest.importorskip("arviz")
 
-        import arviz as az
-
         from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
 
-        # Create mock InferenceData
+        # Create mock DataTree
         posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
-        idata = az.InferenceData(posterior=posterior)
+        idata = DataTree.from_dict({"/posterior": posterior})
 
         # Create mock result with diagnostic data
         result = MockMultiPathfinderResult(
@@ -459,7 +453,7 @@ class TestDiagnosticsAndConfigGroups:
         )
 
         # Check diagnostics group was NOT added
-        groups = list(idata_updated.groups())
+        groups = list(idata_updated.children)
         assert "pathfinder_diagnostics" not in groups
 
 

@@ -590,6 +590,7 @@ class TimeSeasonality(Component):
         T = self._build_transition_matrix()
         if T.ndim == 3:
             self.ssm["transition"] = T
+            self.ssm.declare_time_varying("transition")
         else:
             self.ssm["transition", :, :] = T
 

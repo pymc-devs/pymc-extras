@@ -4,8 +4,9 @@ import warnings as _warnings
 from dataclasses import dataclass, field
 from typing import Literal
 
-import arviz as az
+import arviz_stats.accessors  # noqa: F401 - registers .azstats accessor
 import numpy as np
+import xarray as xr
 
 from numpy.typing import NDArray
 from scipy.special import logsumexp
@@ -101,10 +102,14 @@ def importance_sampling(
             match method:
                 case "psis":
                     replace = False
-                    logiw, pareto_k = az.psislw(logiw)
+                    logiw_da = xr.DataArray(-logiw, dims=["sample"])
+                    logiw_da, pareto_k = logiw_da.azstats.psislw(dim="sample")
+                    logiw, pareto_k = logiw_da.values, float(pareto_k)
                 case "psir":
                     replace = True
-                    logiw, pareto_k = az.psislw(logiw)
+                    logiw_da = xr.DataArray(-logiw, dims=["sample"])
+                    logiw_da, pareto_k = logiw_da.azstats.psislw(dim="sample")
+                    logiw, pareto_k = logiw_da.values, float(pareto_k)
                 case "identity":
                     replace = False
                     pareto_k = None

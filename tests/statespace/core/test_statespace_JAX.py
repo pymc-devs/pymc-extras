@@ -87,7 +87,7 @@ def idata(pymc_mod, rng, mock_pymc_sample):
                 samples=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
             )
 
-    idata.extend(idata_prior)
+    idata.update(idata_prior)
     return idata
 
 
@@ -111,7 +111,7 @@ def idata_exog(exog_pymc_mod, rng, mock_pymc_sample):
                 samples=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
             )
 
-    idata.extend(idata_prior)
+    idata.update(idata_prior)
     return idata
 
 

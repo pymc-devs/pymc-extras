@@ -1,41 +1,34 @@
+from collections.abc import Iterable
+
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, NEVER_TIME_VARYING, VECTOR_VALUED
+from pymc_extras.statespace.utils.constants import JITTER_DEFAULT
 
 
-def decide_if_x_time_varies(x, name):
-    if name in NEVER_TIME_VARYING:
-        return False
+def split_vars_into_seq_and_nonseq(params, param_names, time_varying_names: Iterable[str]):
+    """Split filter inputs into scan sequences and non-sequences.
 
-    ndim = x.ndim
+    Parameters
+    ----------
+    params : sequence of TensorVariable
+        Filter input matrices in the order given by ``param_names``.
+    param_names : sequence of str
+        Long names of the matrices in ``params``.
+    time_varying_names : iterable of str
+        Names of matrices the model declared as time-varying. Anything in this set is
+        treated as a scan sequence; everything else is a non-sequence.
 
-    if name in VECTOR_VALUED:
-        if ndim not in [1, 2]:
-            raise ValueError(
-                f"Vector {name} has {ndim} dimensions; it should have either 1 (static),"
-                f" or 2 (time varying )"
-            )
-
-        return ndim == 2
-
-    if ndim not in [2, 3]:
-        raise ValueError(
-            f"Matrix {name} has {ndim} dimensions; it should have either"
-            f" 2 (static), or 3 (time varying)."
-        )
-
-    return ndim == 3
-
-
-def split_vars_into_seq_and_nonseq(params, param_names):
+    Returns
+    -------
+    sequences, non_sequences, seq_names, non_seq_names : four lists
+        The split inputs and their names.
     """
-    Split inputs into those that are time varying and those that are not. This division is required by scan.
-    """
+    time_varying_names = frozenset(time_varying_names)
     sequences, non_sequences = [], []
     seq_names, non_seq_names = [], []
 
     for param, name in zip(params, param_names):
-        if decide_if_x_time_varies(param, name):
+        if name in time_varying_names:
             sequences.append(param)
             seq_names.append(name)
         else:

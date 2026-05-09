@@ -6,9 +6,9 @@ import pytensor.tensor as pt
 from pymc.distributions import Normal
 from pymc.logprob.basic import conditional_logp
 from pymc.model.core import Deterministic, Model
-from pytensor import graph_replace
 from pytensor.gradient import disconnected_grad
 from pytensor.graph.basic import Variable
+from pytensor.graph.replace import graph_replace
 
 from pymc_extras.inference.advi.pytensorf import get_symbolic_rv_shapes
 
@@ -87,7 +87,14 @@ def AutoDiagonalNormal(model: Model) -> AutoGuideModel:
             loc = pt.tensor(f"{rv.name}_loc", shape=rv.type.shape)
             scale = pt.tensor(f"{rv.name}_scale", shape=rv.type.shape)
             # TODO: Make these customizable
-            params_init_values[loc] = pt.random.uniform(-1, 1, size=free_rv_shapes[rv]).eval()
+            _, loc_init = pt.random.uniform(
+                -1,
+                1,
+                size=free_rv_shapes[rv],
+                rng=pt.random.shared_rng(seed=0),
+                return_next_rng=True,
+            )
+            params_init_values[loc] = loc_init.eval()
             params_init_values[scale] = pt.full(free_rv_shapes[rv], 0.1).eval()
 
             z = Normal(

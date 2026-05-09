@@ -13,11 +13,11 @@
 #   limitations under the License.
 
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import pytest
 
+from arviz_base import from_dict
 from pymc.distributions import transforms
 
 import pymc_extras as pmx
@@ -98,13 +98,13 @@ def idata(transformed_data, param_cfg):
             var = orig
         assert not np.isnan(var).any()
         vars[k] = var
-    return az.convert_to_inference_data(vars)
+    return from_dict({"posterior": vars})
 
 
 def test_idata_for_tests(idata, param_cfg):
-    assert set(idata.posterior.keys()) == set(param_cfg)
-    assert len(idata.posterior.coords["chain"]) == 4
-    assert len(idata.posterior.coords["draw"]) == 100
+    assert set(idata["posterior"].keys()) == set(param_cfg)
+    assert len(idata["posterior"].coords["chain"]) == 4
+    assert len(idata["posterior"].coords["draw"]) == 100
 
 
 def test_args_compose():

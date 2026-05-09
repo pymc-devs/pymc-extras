@@ -26,13 +26,11 @@ class BasicFunctionality(unittest.TestCase):
     def setUp(self):
         self.rng = np.random.default_rng(TEST_SEED)
 
-    def test_numpy_to_pytensor(self):
+    def test_assign_numpy_matrix(self):
         ssm = PytensorRepresentation(k_endog=3, k_states=5, k_posdef=1)
-        X = np.eye(5)
-        X_pt = ssm._numpy_to_pytensor("transition", X)
-        self.assertTrue(isinstance(X_pt, pt.TensorVariable))
-        assert_allclose(ssm["transition"].type.shape, X.shape)
-
+        ssm["transition"] = np.eye(5)
+        assert isinstance(ssm["transition"], pt.TensorVariable)
+        assert_allclose(ssm["transition"].type.shape, (5, 5))
         assert ssm["transition"].name == "transition"
 
     def test_default_shapes_full_rank(self):
@@ -131,7 +129,7 @@ class BasicFunctionality(unittest.TestCase):
         with self.assertRaises(IndexError) as e:
             X = ssm["invalid_key"]
         msg = str(e.exception)
-        self.assertEqual(msg, "invalid_key is an invalid state space matrix name")
+        self.assertEqual(msg, "'invalid_key' is an invalid state space matrix name")
 
     def test_non_string_key_raises(self):
         ssm = PytensorRepresentation(k_endog=3, k_states=5, k_posdef=1)
@@ -166,9 +164,7 @@ class BasicFunctionality(unittest.TestCase):
         with self.assertRaises(ValueError) as e:
             ssm["transition"] = T
         msg = str(e.exception)
-        self.assertEqual(
-            msg, "The last two dimensions of transition must be (5, 5), found (10, 10)"
-        )
+        self.assertEqual(msg, "Trailing dims of transition are (10, 10), expected (5, 5)")
 
 
 if __name__ == "__main__":

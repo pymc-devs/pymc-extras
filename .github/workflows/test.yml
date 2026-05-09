@@ -26,7 +26,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         linker: [cvm, numba]
-        python-version: ["3.11"]
+        python-version: ["3.12"]
         test-subset:
           - tests/model
           - tests/statespace/core/test_statespace.py
@@ -54,7 +54,8 @@ jobs:
           cache-environment: true
       - name: Install pymc-extras
         run: |
-          pip install -e ".[dev]"
+          pip install -e ".[dev]" --no-deps
+
           python --version
           pip check
       - name: Run tests
@@ -100,7 +101,8 @@ jobs:
           cache-environment: true
       - name: Install pymc-extras
         run: |
-          pip install -e ".[dev]"
+          pip install -e ".[dev]" --no-deps
+
           python --version
       - name: Run tests
         # This job uses a cmd shell, therefore the environment variable syntax is different!

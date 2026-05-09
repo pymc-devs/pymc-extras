@@ -18,14 +18,13 @@ import logging
 from collections.abc import Callable
 from typing import Literal
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import xarray as xr
 
-from arviz import dict_to_dataset
+from arviz_base import dict_to_dataset
 from better_optimize.constants import minimize_method
 from numpy.typing import ArrayLike
 from pymc import Model
@@ -36,7 +35,7 @@ from pymc.util import get_untransformed_name, is_transformed_name
 from pytensor.graph import vectorize_graph
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.optimize import minimize
-from xarray import Dataset
+from xarray import Dataset, DataTree
 
 from pymc_extras.inference.laplace_approx.find_map import (
     _compute_inverse_hessian,
@@ -275,7 +274,9 @@ def draws_from_laplace_approx(
             zip(var_names, output_buffers, strict=not return_unconstrained)
         )
     }
-    posterior_dataset = dict_to_dataset(posterior, coords=model_coords, dims=model_dims, library=pm)
+    posterior_dataset = dict_to_dataset(
+        posterior, coords=model_coords, dims=model_dims, inference_library=pm
+    )
     unconstrained_posterior_dataset = None
 
     if return_unconstrained:
@@ -312,7 +313,7 @@ def draws_from_laplace_approx(
             unconstrained_posterior,
             coords=model_coords,
             dims=model_dims,
-            library=pm,
+            inference_library=pm,
         )
 
     return posterior_dataset, unconstrained_posterior_dataset
@@ -337,7 +338,7 @@ def fit_laplace(
     vectorize_draws: bool = True,
     optimizer_kwargs: dict | None = None,
     compile_kwargs: dict | None = None,
-) -> az.InferenceData:
+) -> DataTree:
     """
     Create a Laplace (quadratic) approximation for a posterior distribution.
 
@@ -374,7 +375,7 @@ def fit_laplace(
         Whether to display a progress bar during optimization. Defaults to True.
     include_transformed: bool, default True
         Whether to include transformed variables in the output. If True, transformed variables will be included in the
-        output InferenceData object. If False, only the original variables will be included.
+        output DataTree object. If False, only the original variables will be included.
     freeze_model: bool, optional
         If True, freeze_dims_and_data will be called on the model before compiling the loss functions. This is
         sometimes necessary for JAX, and can sometimes improve performance by allowing constant folding. Defaults to
@@ -394,8 +395,8 @@ def fit_laplace(
 
     Returns
     -------
-    :class:`~arviz.InferenceData`
-        An InferenceData object containing the approximated posterior samples.
+    DataTree
+        A DataTree object containing the approximated posterior samples.
 
     Examples
     --------
@@ -485,7 +486,7 @@ def fit_laplace(
         )
 
     # We override the posterior/unconstrained_posterior from find_MAP
-    idata.posterior, unconstrained_posterior = draws_from_laplace_approx(
+    idata["posterior"], unconstrained_posterior = draws_from_laplace_approx(
         mean=idata.fit["mean_vector"].values,
         covariance=idata.fit["covariance_matrix"].values,
         draws=draws,

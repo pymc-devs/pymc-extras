@@ -1,5 +1,5 @@
 from pymc import Model
-from pytensor import graph_replace
+from pytensor.graph.replace import graph_replace
 from pytensor.tensor import TensorVariable
 
 from pymc_extras.inference.advi.autoguide import AutoGuideModel

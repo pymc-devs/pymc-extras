@@ -26,12 +26,12 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum, auto
 from typing import Any, Literal, Self, TypeAlias
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 
+from arviz_base import from_dict
 from numpy.typing import NDArray
 from packaging import version
 from pymc import Model
@@ -49,7 +49,7 @@ from pymc.util import (
     _get_seeds_per_chain,
     get_default_varnames,
 )
-from pytensor.compile.function.types import Function
+from pytensor.compile.executor import Function
 from pytensor.compile.mode import FAST_COMPILE, Mode
 from pytensor.graph import clone_replace, vectorize_graph
 from pytensor.tensor import TensorVariable
@@ -60,6 +60,7 @@ from rich.progress import TextColumn, TimeElapsedColumn
 from rich.table import Column, Table
 from rich.text import Text
 from threadpoolctl import threadpool_limits
+from xarray import DataTree
 
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 from pymc_extras.inference.pathfinder.importance_sampling import (
@@ -210,8 +211,8 @@ def convert_flat_trace_to_idata(
     inference_backend: Literal["pymc", "blackjax"] = "pymc",
     model: Model | None = None,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
-) -> az.InferenceData:
-    """convert flattened samples to arviz InferenceData format.
+) -> DataTree:
+    """convert flattened samples to DataTree format.
 
     Parameters
     ----------
@@ -230,7 +231,7 @@ def convert_flat_trace_to_idata(
 
     Returns
     -------
-    InferenceData
+    DataTree
         arviz inference data object
     """
 
@@ -291,7 +292,7 @@ def convert_flat_trace_to_idata(
 
     trace = {v.name: r for v, r in zip(vars_to_sample, result)}
     coords, dims = coords_and_dims_for_inferencedata(model)
-    idata = az.from_dict(trace, dims=dims, coords=coords)
+    idata = from_dict({"posterior": trace}, dims=dims, coords=coords)
 
     return idata
 
@@ -1849,7 +1850,7 @@ def fit_pathfinder(
     add_pathfinder_groups: bool = True,
     display_summary: bool | Literal["auto"] = "auto",
     store_diagnostics: bool = False,
-) -> az.InferenceData:
+) -> DataTree:
     """
     Fit the Pathfinder Variational Inference algorithm.
 
@@ -1929,7 +1930,7 @@ def fit_pathfinder(
         Initial values for the model parameters, as str:ndarray key-value pairs. Paritial initialization is permitted.
         If None, the model's default initial values are used.
     add_pathfinder_groups : bool, optional
-        Whether to add pathfinder results as additional groups to the InferenceData (default is True).
+        Whether to add pathfinder results as additional groups to the DataTree (default is True).
         When True, adds pathfinder and pathfinder_paths groups with optimization diagnostics.
     display_summary : bool or "auto", optional
         Whether to display the pathfinder results summary (default is "auto").
@@ -1941,7 +1942,7 @@ def fit_pathfinder(
 
     Returns
     -------
-    :class:`~arviz.InferenceData`
+    DataTree
         The inference data containing the results of the Pathfinder algorithm.
 
     References
@@ -2054,7 +2055,7 @@ def fit_pathfinder(
 
     idata = add_data_to_inference_data(idata, progressbar, model, compile_kwargs)
 
-    # Add pathfinder results to InferenceData if requested
+    # Add pathfinder results to DataTree if requested
     if add_pathfinder_groups:
         if inference_backend == "pymc":
             from pymc_extras.inference.pathfinder.idata import add_pathfinder_to_inference_data
@@ -2069,7 +2070,7 @@ def fit_pathfinder(
             warnings.warn(
                 f"Pathfinder diagnostic groups are only supported with the PyMC backend. "
                 f"Current backend is '{inference_backend}', which does not support adding "
-                "pathfinder diagnostics to InferenceData. The InferenceData will only contain "
+                "pathfinder diagnostics to DataTree. The DataTree will only contain "
                 "posterior samples. To add diagnostic groups, use inference_backend='pymc', "
                 "or set add_pathfinder_groups=False to suppress this warning.",
                 UserWarning,

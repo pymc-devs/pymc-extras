@@ -219,7 +219,7 @@ def find_MAP(
         Which backend to use to compute gradients. Must be one of "pytensor" or "jax".
     compute_hessian: bool
         If True, the inverse Hessian matrix at the optimum will be computed and included in the returned
-        InferenceData object. This is needed for the Laplace approximation, but can be computationally expensive for
+        DataTree object. This is needed for the Laplace approximation, but can be computationally expensive for
         high-dimensional problems. Defaults to False.
     compile_kwargs: dict, optional
         Additional options to pass to the ``pytensor.function`` function when compiling loss functions.
@@ -230,7 +230,7 @@ def find_MAP(
 
     Returns
     -------
-    map_result: az.InferenceData
+    map_result: DataTree
         Results of Maximum A Posteriori (MAP) estimation, including the optimized point, inverse Hessian, transformed
         latent variables, and optimizer results.
     """

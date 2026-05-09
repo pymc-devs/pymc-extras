@@ -12,7 +12,6 @@ from pytensor.tensor import TensorType, TensorVariable
 from pytensor.tensor.blockwise import Blockwise
 from pytensor.tensor.elemwise import CAReduce, DimShuffle, Elemwise
 from pytensor.tensor.random.op import RandomVariable
-from pytensor.tensor.rewriting.subtensor import is_full_slice
 from pytensor.tensor.shape import Shape
 from pytensor.tensor.subtensor import AdvancedSubtensor, Subtensor, get_idx_list
 from pytensor.tensor.type_other import NoneTypeT
@@ -67,6 +66,10 @@ def get_support_axes(op) -> tuple[tuple[int, ...], ...]:
         return (tuple(range(-op.ndim_supp, 0)),)
 
 
+def _is_tensor_idx(idx) -> bool:
+    return isinstance(idx, Variable) and isinstance(idx.type, TensorType)
+
+
 def _advanced_indexing_axis_and_ndim(idxs) -> tuple[int, int]:
     """Find the output axis and dimensionality of the advanced indexing group (i.e., array indexing).
 
@@ -78,7 +81,7 @@ def _advanced_indexing_axis_and_ndim(idxs) -> tuple[int, int]:
     adv_group_axis = None
     simple_group_after_adv = False
     for axis, idx in enumerate(idxs):
-        if isinstance(idx.type, TensorType):
+        if _is_tensor_idx(idx):
             if simple_group_after_adv:
                 # Special non-consecutive case
                 adv_group_axis = 0
@@ -89,7 +92,7 @@ def _advanced_indexing_axis_and_ndim(idxs) -> tuple[int, int]:
             # Special non-consecutive case
             simple_group_after_adv = True
 
-    adv_group_ndim = max(idx.type.ndim for idx in idxs if isinstance(idx.type, TensorType))
+    adv_group_ndim = max(idx.type.ndim for idx in idxs if _is_tensor_idx(idx))
     return adv_group_axis, adv_group_ndim
 
 
@@ -268,7 +271,8 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
                     f"Simultaneous use of known dimensions in indexed and indexing variables in node {node} not supported."
                 )
 
-            adv_group_axis, adv_group_ndim = _advanced_indexing_axis_and_ndim(keys)
+            full_keys = get_idx_list(node.inputs, node.op.idx_list)
+            adv_group_axis, adv_group_ndim = _advanced_indexing_axis_and_ndim(full_keys)
 
             if any(dim is not None for dim in value_dims):
                 # Indexed variable has known dimensions
@@ -280,8 +284,8 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
                     )
 
                 non_adv_dims = []
-                for value_dim, idx in zip_longest(value_dims, keys, fillvalue=slice(None)):
-                    if is_full_slice(idx):
+                for value_dim, idx in zip_longest(value_dims, full_keys, fillvalue=slice(None)):
+                    if idx == slice(None):
                         non_adv_dims.append(value_dim)
                     elif value_dim is not None:
                         # We are trying to partially slice or index a known dimension

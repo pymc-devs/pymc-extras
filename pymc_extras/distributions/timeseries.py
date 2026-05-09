@@ -25,7 +25,7 @@ from pymc.step_methods.arraystep import ArrayStep
 from pymc.step_methods.compound import Competence
 from pymc.step_methods.metropolis import CategoricalGibbsMetropolis
 from pymc.util import check_dist_not_registered, get_value_vars_from_user_vars
-from pytensor import Mode
+from pytensor.compile.mode import Mode
 from pytensor.graph.basic import Node
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.random.op import RandomVariable
@@ -198,7 +198,7 @@ class DiscreteMarkovChain(Distribution):
         def transition(*args):
             old_rng, *states, transition_probs = args
             p = transition_probs[tuple(states)]
-            next_rng, next_state = pm.Categorical.dist(p=p, rng=old_rng).owner.outputs
+            next_rng, next_state = pm.Categorical.dist(p=p, rng=old_rng, return_next_rng=True)
             return next_rng, next_state
 
         state_next_rng, markov_chain = pytensor.scan(

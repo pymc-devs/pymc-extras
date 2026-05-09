@@ -173,7 +173,7 @@ def test_save_load(fitted_model_instance):
     temp = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False)
     fitted_model_instance.save(temp.name)
     test_builder2 = test_ModelBuilder.load(temp.name)
-    assert fitted_model_instance.idata.groups() == test_builder2.idata.groups()
+    assert fitted_model_instance.idata.children == test_builder2.idata.children
     assert fitted_model_instance.id == test_builder2.id
     x_pred = np.random.uniform(low=0, high=1, size=100)
     prediction_data = pd.DataFrame({"input": x_pred})
@@ -186,7 +186,7 @@ def test_save_load(fitted_model_instance):
 def test_initial_build_and_fit(fitted_model_instance, check_idata=True) -> ModelBuilder:
     if check_idata:
         assert fitted_model_instance.idata is not None
-        assert "posterior" in fitted_model_instance.idata.groups()
+        assert "posterior" in fitted_model_instance.idata.children
 
 
 def test_save_without_fit_raises_runtime_error():
@@ -200,7 +200,7 @@ def test_empty_sampler_config_fit(toy_X, toy_y):
     model_builder = test_ModelBuilder(sampler_config=sampler_config)
     model_builder.idata = model_builder.fit(X=toy_X, y=toy_y)
     assert model_builder.idata is not None
-    assert "posterior" in model_builder.idata.groups()
+    assert "posterior" in model_builder.idata.children
 
 
 def test_fit(fitted_model_instance):
@@ -217,7 +217,7 @@ def test_fit_no_y(toy_X):
     model_builder.idata = model_builder.fit(X=toy_X, chains=1, tune=1, draws=1)
     assert model_builder.model is not None
     assert model_builder.idata is not None
-    assert "posterior" in model_builder.idata.groups()
+    assert "posterior" in model_builder.idata.children
 
 
 def test_predict(fitted_model_instance):
@@ -237,8 +237,8 @@ def test_sample_posterior_predictive(fitted_model_instance, combined):
     pred = fitted_model_instance.sample_posterior_predictive(
         prediction_data["input"], combined=combined, extend_idata=True
     )
-    chains = fitted_model_instance.idata.sample_stats.sizes["chain"]
-    draws = fitted_model_instance.idata.sample_stats.sizes["draw"]
+    chains = fitted_model_instance.idata["sample_stats"].sizes["chain"]
+    draws = fitted_model_instance.idata["sample_stats"].sizes["draw"]
     expected_shape = (n_pred, chains * draws) if combined else (chains, draws, n_pred)
     assert pred[fitted_model_instance.output_var].shape == expected_shape
     assert np.issubdtype(pred[fitted_model_instance.output_var].dtype, np.floating)

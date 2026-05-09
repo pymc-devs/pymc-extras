@@ -16,9 +16,6 @@ FACTOR_DIM = "factor"
 ERROR_AR_PARAM_DIM = "error_lag_ar"
 EXOG_STATE_DIM = "exogenous"
 
-NEVER_TIME_VARYING = ["initial_state", "initial_state_cov", "a0", "P0"]
-VECTOR_VALUED = ["initial_state", "state_intercept", "obs_intercept", "a0", "c", "d"]
-
 MISSING_FILL = -9999.0
 JITTER_DEFAULT = 1e-8 if pytensor.config.floatX.endswith("64") else 1e-6
 

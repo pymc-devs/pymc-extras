@@ -241,15 +241,14 @@ class Regression(Component):
         self.ssm["selection", :, :] = pt.eye(self.k_states)
 
         if self.share_states:
-            self.ssm["design"] = pt.specify_shape(
-                pt.join(1, *[pt.expand_dims(regression_data, 1) for _ in range(k_endog)]),
-                (None, k_endog, self.k_states),
+            self.ssm["design"] = pt.join(
+                1, *[pt.expand_dims(regression_data, 1) for _ in range(k_endog)]
             )
         else:
-            Z = pt.linalg.block_diag(*[pt.expand_dims(regression_data, 1) for _ in range(k_endog)])
-            self.ssm["design"] = pt.specify_shape(
-                Z, (None, k_endog, regression_data.type.shape[1] * k_endog)
+            self.ssm["design"] = pt.linalg.block_diag(
+                *[pt.expand_dims(regression_data, 1) for _ in range(k_endog)]
             )
+        self.ssm.declare_time_varying("design")
 
         if self.innovations:
             sigma_beta = self.make_and_register_variable(

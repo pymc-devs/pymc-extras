@@ -1,11 +1,11 @@
 from contextlib import contextmanager
 
-import arviz as az
 import numpy as np
 import pymc as pm
 import pytest
 import xarray as xr
 
+from arviz_base import from_dict
 from pymc.blocking import RaveledVars
 from scipy.optimize import OptimizeResult
 from scipy.sparse.linalg import LinearOperator
@@ -68,9 +68,9 @@ def hierarchical_model(rng):
     return model, mu_val, H_inv, test_point
 
 
-class TestFittoInferenceData:
+class TestFittoDataTree:
     def check_idata(self, idata, var_names, n_vars):
-        assert "fit" in idata.groups()
+        assert "/fit" in idata.groups
 
         fit = idata.fit
         assert "mean_vector" in fit
@@ -85,8 +85,8 @@ class TestFittoInferenceData:
     @pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
     def test_add_fit_to_inferencedata(self, use_context, simple_model, rng):
         model, mu_val, H_inv, test_point = simple_model
-        idata = az.from_dict(
-            posterior={"mu": rng.normal(size=()), "sigma_log__": rng.normal(size=())}
+        idata = from_dict(
+            {"posterior": {"mu": rng.normal(size=(1, 1)), "sigma_log__": rng.normal(size=(1, 1))}}
         )
 
         context = model if use_context else no_op()
@@ -100,12 +100,14 @@ class TestFittoInferenceData:
     @pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
     def test_add_fit_with_coords_to_inferencedata(self, use_context, hierarchical_model, rng):
         model, mu_val, H_inv, test_point = hierarchical_model
-        idata = az.from_dict(
-            posterior={
-                "mu_loc": rng.normal(size=()),
-                "mu_scale_log__": rng.normal(size=()),
-                "mu": rng.normal(size=(5,)),
-                "sigma_log__": rng.normal(size=()),
+        idata = from_dict(
+            {
+                "posterior": {
+                    "mu_loc": rng.normal(size=(1, 1)),
+                    "mu_scale_log__": rng.normal(size=(1, 1)),
+                    "mu": rng.normal(size=(1, 1, 5)),
+                    "sigma_log__": rng.normal(size=(1, 1)),
+                }
             }
         )
 
@@ -135,8 +137,13 @@ class TestFittoInferenceData:
 def test_add_data_to_inferencedata(use_context, simple_model, rng):
     model, *_ = simple_model
 
-    idata = az.from_dict(
-        posterior={"mu": rng.standard_normal((1, 1)), "sigma_log__": rng.standard_normal((1, 1))}
+    idata = from_dict(
+        {
+            "posterior": {
+                "mu": rng.standard_normal((1, 1)),
+                "sigma_log__": rng.standard_normal((1, 1)),
+            }
+        }
     )
 
     context = model if use_context else no_op()
@@ -145,8 +152,8 @@ def test_add_data_to_inferencedata(use_context, simple_model, rng):
     with context:
         idata2 = add_data_to_inference_data(idata, model=model_arg)
 
-    assert "observed_data" in idata2.groups()
-    assert "constant_data" in idata2.groups()
+    assert "observed_data" in idata2.children
+    assert "constant_data" in idata2.children
     assert "obs" in idata2.observed_data
 
 

@@ -145,7 +145,7 @@ class VIP:
         )
         self.set_lambda(**config)
 
-    def fit(self, *args, **kwargs) -> pm.Approximation:
+    def fit(self, *args, **kwargs) -> pm.variational.Approximation:
         r"""Set :math:`\lambda_k` using Variational Inference.
 
         Examples

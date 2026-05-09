@@ -4,155 +4,148 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.utils.constants import (
-    NEVER_TIME_VARYING,
-    VECTOR_VALUED,
-)
-
 floatX = pytensor.config.floatX
 KeyLike = tuple[str | int, ...] | str
+
+# Number of trailing dims that define each matrix's "core" shape (1 for vectors, 2 for
+# matrices). Anything to the left is a time and/or batch dim; downstream consumers
+# distinguish them by consulting ``Representation.time_varying_names``.
+_CORE_NDIM: dict[str, int] = {
+    "design": 2,
+    "obs_intercept": 1,
+    "obs_cov": 2,
+    "transition": 2,
+    "state_intercept": 1,
+    "selection": 2,
+    "state_cov": 2,
+    "initial_state": 1,
+    "initial_state_cov": 2,
+}
 
 
 class PytensorRepresentation:
     r"""
-    Core class to hold all objects required by linear gaussian statespace models
+    Container for the nine state-space matrices of a linear Gaussian model.
 
-    Notation for the linear statespace model is taken from [1], while the specific implementation is adapted from
-    the statsmodels implementation: https://github.com/statsmodels/statsmodels/blob/main/statsmodels/tsa/statespace/representation.py
-    described in [2].
+    Each matrix is stored in its *natural* shape: ``core_shape`` if static, or
+    ``(time, *core_shape)`` if time-varying. Optional leading batch dims are accepted and
+    propagate untouched -- use ``vectorize_graph`` if a downstream consumer needs to lift
+    over them.
 
     Parameters
     ----------
-    k_endog: int
-        Number of observed states (called "endogeous states" in statsmodels)
-    k_states: int
-        Number of hidden states
-    k_posdef: int
-        Number of states that have exogenous shocks; also the rank of the selection matrix R.
-    design: ArrayLike, optional
-        Design matrix, denoted 'Z' in [1].
-    obs_intercept: ArrayLike, optional
-        Constant vector in the observation equation, denoted 'd' in [1]. Currently
-        not used.
-    obs_cov: ArrayLike, optional
-        Covariance matrix for multivariate-normal errors in the observation equation. Denoted 'H' in
-        [1].
-    transition: ArrayLike, optional
-        Transition equation that updates the hidden state between time-steps. Denoted 'T' in [1].
-    state_intercept: ArrayLike, optional
-        Constant vector for the observation equation, denoted 'c' in [1]. Currently not used.
-    selection: ArrayLike, optional
-        Selection matrix that matches shocks to hidden states, denoted 'R' in [1]. This is the identity
-        matrix when k_posdef = k_states.
-    state_cov: ArrayLike, optional
-        Covariance matrix for state equations, denoted 'Q' in [1]. Null matrix when there is no observation
-        noise.
-    initial_state: ArrayLike, optional
-        Experimental setting to allow for Bayesian estimation of the initial state, denoted `alpha_0` in [1]. Default
-        It should potentially be removed in favor of the closed-form diffuse initialization.
-    initial_state_cov: ArrayLike, optional
-        Experimental setting to allow for Bayesian estimation of the initial state, denoted `P_0` in [1]. Default
-        It should potentially be removed in favor of the closed-form diffuse initialization.
+    k_endog : int
+        Number of observed states.
+    k_states : int
+        Number of hidden states.
+    k_posdef : int, optional
+        Rank of the selection matrix :math:`R`; also the number of stochastic shocks. Default
+        ``k_states``.
+    design : array_like, optional
+        Initial value for the design matrix :math:`Z`.
+    obs_intercept : array_like, optional
+        Initial value for :math:`d`.
+    obs_cov : array_like, optional
+        Initial value for the observation noise covariance :math:`H`.
+    transition : array_like, optional
+        Initial value for the transition matrix :math:`T`.
+    state_intercept : array_like, optional
+        Initial value for :math:`c`.
+    selection : array_like, optional
+        Initial value for the selection matrix :math:`R`.
+    state_cov : array_like, optional
+        Initial value for the state innovation covariance :math:`Q`.
+    initial_state : array_like, optional
+        Initial value for :math:`\bar x_0`.
+    initial_state_cov : array_like, optional
+        Initial value for :math:`P_0`.
 
     Notes
     -----
-    A linear statespace system is defined by two equations:
+    A linear state-space system has
 
     .. math::
         \begin{align}
-            x_t &= A_t x_{t-1} + c_t + R_t \varepsilon_t \tag{1} \\
-            y_t &= Z_t x_t + d_t + \eta_t \tag{2} \\
+            x_t &= T_t x_{t-1} + c_t + R_t \varepsilon_t \\
+            y_t &= Z_t x_t + d_t + \eta_t \\
+            \varepsilon_t &\sim N(0, Q_t) \\
+            \eta_t &\sim N(0, H_t) \\
+            x_0 &\sim N(\bar x_0, P_0)
         \end{align}
 
-    Where :math:`\{x_t\}_{t=0}^T` is a trajectory of hidden states, and :math:`\{y_t\}_{t=0}^T` is a trajectory of
-    observable states. Equation 1 is known as the "state transition equation", while describes how the system evolves
-    over time. Equation 2 is the "observation equation", and maps the latent state processes to observed data.
-    The system is Gaussian when the innovations, :math:`\varepsilon_t`, and the measurement errors, :math:`\eta_t`,
-    are normally distributed. The definition is completed by specification of these distributions, as
-    well as an initial state distribution:
+    with hidden state size :math:`m = k_{\text{states}}`, observed size :math:`p = k_{\text{endog}}`,
+    and shock rank :math:`r = k_{\text{posdef}}`. The natural per-matrix shapes are
 
-    .. math::
-        \begin{align}
-            \varepsilon_t &\sim N(0, Q_t) \tag{3} \\
-            \eta_t &\sim N(0, H_t) \tag{4} \\
-            x_0 &\sim N(\bar{x}_0, P_0) \tag{5}
-        \end{align}
+    +---------------------+-------------------------+
+    | Matrix              | Natural shape           |
+    +=====================+=========================+
+    | ``initial_state``   | ``(m,)``                |
+    +---------------------+-------------------------+
+    | ``initial_state_cov`` | ``(m, m)``            |
+    +---------------------+-------------------------+
+    | ``state_intercept`` | ``(m,)``                |
+    +---------------------+-------------------------+
+    | ``obs_intercept``   | ``(p,)``                |
+    +---------------------+-------------------------+
+    | ``transition``      | ``(m, m)``              |
+    +---------------------+-------------------------+
+    | ``design``          | ``(p, m)``              |
+    +---------------------+-------------------------+
+    | ``selection``       | ``(m, r)``              |
+    +---------------------+-------------------------+
+    | ``obs_cov``         | ``(p, p)``              |
+    +---------------------+-------------------------+
+    | ``state_cov``       | ``(r, r)``              |
+    +---------------------+-------------------------+
 
-    The 9 matrices that form equations 1 to 5 are summarized in the table below. We call :math:`N` the number of
-    observations, :math:`m` the number of hidden states, :math:`p` the number of observed states, and :math:`r` the
-    number of innovations.
+    Any matrix may carry a leading dim of length ``n`` (the number of observations) to
+    make it time-varying. The model is responsible for declaring which matrices vary over
+    time via :meth:`declare_time_varying`; downstream consumers (filter, smoother, etc.)
+    read :attr:`time_varying_names` to dispatch.
 
-    +-----------------------------------+-------------------+-----------------------+
-    | Name                              | Symbol            | Shape                 |
-    +===================================+===================+=======================+
-    | Initial hidden state mean         | :math:`x_0`       | :math:`m \times 1`    |
-    +-----------------------------------+-------------------+-----------------------+
-    | Initial hidden state covariance   | :math:`P_0`       | :math:`m \times m`    |
-    +-----------------------------------+-------------------+-----------------------+
-    | Hidden state vector intercept     | :math:`c_t`       | :math:`m \times 1`    |
-    +-----------------------------------+-------------------+-----------------------+
-    | Observed state vector intercept   | :math:`d_t`       | :math:`p \times 1`    |
-    +-----------------------------------+-------------------+-----------------------+
-    | Transition matrix                 | :math:`T_t`       | :math:`m \times m`    |
-    +-----------------------------------+-------------------+-----------------------+
-    | Design matrix                     | :math:`Z_t`       | :math:`p \times m`    |
-    +-----------------------------------+-------------------+-----------------------+
-    | Selection matrix                  | :math:`R_t`       | :math:`m \times r`    |
-    +-----------------------------------+-------------------+-----------------------+
-    | Observation noise covariance      | :math:`H_t`       | :math:`p \times p`    |
-    +-----------------------------------+-------------------+-----------------------+
-    | Hidden state innovation covariance| :math:`Q_t`       | :math:`r \times r`    |
-    +-----------------------------------+-------------------+-----------------------+
+    .. warning::
 
-    The shapes listed above are the core shapes, but in the general case all of these matrices (except for :math:`x_0`
-    and :math:`P_0`) can be time varying. In this case, a time dimension of shape :math:`n`, equal to the number of
-    observations, can be added.
-
-    .. warning:: The time dimension is used as a batch dimension during kalman filtering, and must thus **always**
-                 be the **leftmost** dimension.
-
-    The purpose of this class is to store these matrices, as well as to allow users to easily index into them. Matrices
-    are stored as pytensor ``TensorVariables`` of known shape. Shapes are always accessible via the ``.type.shape``
-    method, which should never return ``None``. Matrices can be accessed via normal numpy array slicing after first
-    indexing by the name of the desired array. The time dimension is stored on the far left, and is automatically
-    sliced away unless specifically requested by the user. See the examples for details.
+        The time dim must always be the **leftmost** axis of a time-varying matrix. The
+        Kalman filter scan iterates over axis 0, ``pm.Deterministic`` registration prepends
+        a ``TIME_DIM`` coord to the dim list, and forecast slicing reads ``matrix[n_train:]``
+        — all of these assume the time axis sits in front of the core dims. Optional batch
+        dims may sit even further left (``(*batch, time, *core)``).
 
     Examples
     --------
+    Store and retrieve a transition matrix:
+
     .. code:: python
 
         from pymc_extras.statespace.core.representation import PytensorRepresentation
         ssm = PytensorRepresentation(k_endog=1, k_states=3, k_posdef=1)
+        ssm["transition"].type.shape
+        # (3, 3)
 
-        # Access matrices by their names
-        print(ssm['transition'].type.shape)
-        >>> (3, 3)
+    Set individual entries:
 
-        # Slice a matrices
-        print(ssm['observation_cov', 0, 0].eval())
-        >>> 0.0
+    .. code:: python
 
-        # Set elements in a slice of a matrix
-        ssm['design', 0, 0] = 1
-        print(ssm['design'].eval())
-        >>> np.array([[1, 0, 0]])
+        ssm["design", 0, 0] = 1.0
 
-        # Setting an entire matrix is also permitted. If you set a time dimension, it must be the first dimension, and
-        # the "core" dimensions must agree with those set when the ssm object was instantiated.
-        ssm['obs_intercept'] = np.arange(10).reshape(10, 1) # 10 timesteps
-        print(ssm['obs_intercept'].eval())
-        >>> np.array([[1.], [2.], [3.], [4.], [5.], [6.], [7.], [8.], [9.]])
+    Replace an entire matrix, optionally with a time dim:
+
+    .. code:: python
+
+        import numpy as np
+        ssm["obs_intercept"] = np.arange(10)[:, None]    # 10 timesteps, k_endog=1
+        ssm["obs_intercept"].type.shape
+        # (10, 1)
 
     References
     ----------
     .. [1] Durbin, James, and Siem Jan Koopman. 2012.
-        Time Series Analysis by State Space Methods: Second Edition.
-        Oxford University Press.
-    .. [2] Fulton, Chad. "Estimating time series models by state space methods in Python: Statsmodels." (2015).
-           http://www.chadfulton.com/files/fulton_statsmodels_2017_v1.pdf
+       Time Series Analysis by State Space Methods: Second Edition.
+       Oxford University Press.
     """
 
     __slots__ = (
+        "_time_varying_names",
         "design",
         "initial_state",
         "initial_state_cov",
@@ -162,7 +155,6 @@ class PytensorRepresentation:
         "obs_cov",
         "obs_intercept",
         "selection",
-        "shapes",
         "state_cov",
         "state_intercept",
         "transition",
@@ -172,267 +164,147 @@ class PytensorRepresentation:
         self,
         k_endog: int,
         k_states: int,
-        k_posdef: int,
-        design: np.ndarray | None = None,
-        obs_intercept: np.ndarray | None = None,
-        obs_cov=None,
-        transition=None,
-        state_intercept=None,
-        selection=None,
-        state_cov=None,
-        initial_state=None,
-        initial_state_cov=None,
+        k_posdef: int | None = None,
+        design: np.ndarray | pt.TensorVariable | None = None,
+        obs_intercept: np.ndarray | pt.TensorVariable | None = None,
+        obs_cov: np.ndarray | pt.TensorVariable | None = None,
+        transition: np.ndarray | pt.TensorVariable | None = None,
+        state_intercept: np.ndarray | pt.TensorVariable | None = None,
+        selection: np.ndarray | pt.TensorVariable | None = None,
+        state_cov: np.ndarray | pt.TensorVariable | None = None,
+        initial_state: np.ndarray | pt.TensorVariable | None = None,
+        initial_state_cov: np.ndarray | pt.TensorVariable | None = None,
     ) -> None:
-        self.k_states = k_states
         self.k_endog = k_endog
+        self.k_states = k_states
         self.k_posdef = k_posdef if k_posdef is not None else k_states
 
-        # The first dimension is for time varying matrices; it could be n_obs. Not thinking about that now.
-        self.shapes = {
-            "design": (1, self.k_endog, self.k_states),
-            "obs_intercept": (1, self.k_endog),
-            "obs_cov": (1, self.k_endog, self.k_endog),
-            "transition": (1, self.k_states, self.k_states),
-            "state_intercept": (1, self.k_states),
-            "selection": (1, self.k_states, self.k_posdef),
-            "state_cov": (1, self.k_posdef, self.k_posdef),
-            # These are never time varying, so they don't have a dummy first dimension
-            "initial_state": (self.k_states,),
-            "initial_state_cov": (self.k_states, self.k_states),
+        provided = {
+            "design": design,
+            "obs_intercept": obs_intercept,
+            "obs_cov": obs_cov,
+            "transition": transition,
+            "state_intercept": state_intercept,
+            "selection": selection,
+            "state_cov": state_cov,
+            "initial_state": initial_state,
+            "initial_state_cov": initial_state_cov,
         }
 
-        # Initialize the representation matrices
-        scope = locals()
-        for name, shape in self.shapes.items():
-            if scope[name] is not None:
-                matrix = scope[name]
-                if isinstance(matrix, np.ndarray):
-                    matrix = self._numpy_to_pytensor(name, matrix)
-                else:
-                    matrix = self._check_provided_tensor(name, matrix)
-                setattr(self, name, matrix)
+        self._time_varying_names: set[str] = set()
 
-            else:
-                matrix = pt.as_tensor_variable(
-                    np.zeros(shape, dtype=floatX), name=name, ndim=len(shape)
+        for name in _CORE_NDIM:
+            value = provided[name]
+            if value is None:
+                tensor = pt.as_tensor_variable(
+                    np.zeros(self._core_shape(name), dtype=floatX), name=name
                 )
-                setattr(self, name, matrix)
+            else:
+                tensor = self._coerce(name, value)
+            setattr(self, name, tensor)
 
-    def _validate_key(self, key: KeyLike) -> None:
-        if key not in self.shapes:
-            raise IndexError(f"{key} is an invalid state space matrix name")
+    def _core_shape(self, name: str) -> tuple[int, ...]:
+        k_endog, k_states, k_posdef = self.k_endog, self.k_states, self.k_posdef
+        return {
+            "design": (k_endog, k_states),
+            "obs_intercept": (k_endog,),
+            "obs_cov": (k_endog, k_endog),
+            "transition": (k_states, k_states),
+            "state_intercept": (k_states,),
+            "selection": (k_states, k_posdef),
+            "state_cov": (k_posdef, k_posdef),
+            "initial_state": (k_states,),
+            "initial_state_cov": (k_states, k_states),
+        }[name]
 
-    def _update_shape(self, key: KeyLike, value: np.ndarray | pt.Variable) -> None:
-        if isinstance(value, pt.TensorConstant | pt.TensorVariable):
-            shape = value.type.shape
+    def _validate_name(self, name: str) -> None:
+        if name not in _CORE_NDIM:
+            raise IndexError(f"{name!r} is an invalid state space matrix name")
+
+    def _coerce(
+        self, name: str, value: np.ndarray | pt.TensorVariable | float | int
+    ) -> pt.TensorVariable:
+        """Wrap ``value`` as a named TensorVariable after validating the trailing core dims.
+
+        Anything to the left of the core dims is accepted unchanged -- ``core``,
+        ``(time, *core)``, ``(*batch, *core)``, and ``(*batch, time, *core)`` are all valid.
+        Whether a leading dim is "time" or "batch" is the model's decision, recorded via
+        ``declare_time_varying``; the rep itself does not guess.
+        """
+        core_ndim = _CORE_NDIM[name]
+        core_shape = self._core_shape(name)
+
+        if isinstance(value, np.ndarray):
+            tensor = pt.as_tensor_variable(value.astype(floatX), name=name)
+        elif isinstance(value, int | float):
+            tensor = pt.as_tensor_variable(np.asarray(value, dtype=floatX), name=name)
         else:
-            shape = value.shape
+            tensor = pt.as_tensor_variable(value)
+            tensor.name = name
 
-        old_shape = self.shapes[key]
-        ndim_core = 1 if key in VECTOR_VALUED else 2
-        if not all([a == b for a, b in zip(shape[-ndim_core:], old_shape[-ndim_core:])]):
+        if tensor.ndim < core_ndim:
             raise ValueError(
-                f"The last two dimensions of {key} must be {old_shape[-ndim_core:]}, found {shape[-ndim_core:]}"
+                f"{name} must have at least {core_ndim} dimension(s); got ndim={tensor.ndim}"
             )
 
-        # Add time dimension dummy if none present
-        if key not in NEVER_TIME_VARYING:
-            if len(shape) == 2 and key not in VECTOR_VALUED:
-                shape = (1, *shape)
-            elif len(shape) == 1:
-                shape = (1, *shape)
+        trailing = tensor.type.shape[-core_ndim:]
+        for got, want in zip(trailing, core_shape, strict=True):
+            # A None entry in ``tensor.type.shape`` is a runtime-only dim (pytensor doesn't
+            # know its size at graph time). Skip; let it fail at runtime if wrong.
+            if got is not None and got != want:
+                raise ValueError(f"Trailing dims of {name} are {trailing}, expected {core_shape}")
 
-        self.shapes[key] = shape
+        return tensor
 
-    def _add_time_dim_to_slice(
-        self, name: str, slice_: list[int] | tuple[int], n_dim: int
-    ) -> tuple[int | slice, ...]:
-        # Case 1: There is never a time dim. No changes needed.
-        if name in NEVER_TIME_VARYING:
-            return slice_
+    @property
+    def time_varying_names(self) -> frozenset[str]:
+        """Names of matrices the model declared as time-varying.
 
-        # Case 2: The matrix has a time dim, and it was requested. No changes needed.
-        if len(slice_) == n_dim:
-            return slice_
+        The Kalman filter iterates over the leading dim of these tensors at scan time;
+        all other matrices are passed in as scan non-sequences (i.e. used unchanged at
+        every step).
+        """
+        return frozenset(self._time_varying_names)
 
-        # Case 3: There's no time dim on the matrix, and none requested. Slice away the dummy dim.
-        if len(slice_) < n_dim:
-            empty_slice = (slice(None, None, None),)
-            n_omitted = n_dim - len(slice_) - 1
-            return (0,) + tuple(slice_) + empty_slice * n_omitted
-
-    @staticmethod
-    def _validate_key_and_get_type(key: KeyLike) -> type[str]:
-        if isinstance(key, tuple) and not isinstance(key[0], str):
-            raise IndexError("First index must the name of a valid state space matrix.")
-
-        return type(key)
-
-    def _validate_matrix_shape(self, name: str, X: np.ndarray | pt.TensorVariable) -> None:
-        time_dim, *expected_shape = self.shapes[name]
-        expected_shape = tuple(expected_shape)
-        shape = X.shape if isinstance(X, np.ndarray) else X.type.shape
-
-        is_vector = name in VECTOR_VALUED
-        not_time_varying = name in NEVER_TIME_VARYING
-
-        if not_time_varying:
-            if is_vector:
-                if X.ndim != 1:
-                    raise ValueError(
-                        f"Array provided for {name} has {X.ndim} dimensions, but it must have exactly 1."
-                    )
-
-            else:
-                if X.ndim != 2:
-                    raise ValueError(
-                        f"Array provided for {name} has {X.ndim} dimensions, but it must have exactly 2."
-                    )
-
-        else:
-            if is_vector:
-                if X.ndim not in [1, 2]:
-                    raise ValueError(
-                        f"Array provided for {name} has {X.ndim} dimensions, "
-                        f"expecting 1 (static) or 2 (time-varying)"
-                    )
-
-                # Time varying vector case, check only the static shapes
-                if X.ndim == 2 and X.shape[1:] != expected_shape:
-                    raise ValueError(
-                        f"Last dimension of array provided for {name} has shape {X.shape[1]}, "
-                        f"expected {expected_shape}"
-                    )
-
-            else:
-                if X.ndim not in [2, 3]:
-                    raise ValueError(
-                        f"Array provided for {name} has {X.ndim} dimensions, "
-                        f"expecting 2 (static) or 3 (time-varying)"
-                    )
-
-                # Time varying matrix case, check only the static shapes
-                if X.ndim == 3 and shape[1:] != expected_shape:
-                    raise ValueError(
-                        f"Last two dimensions of array provided for {name} have shapes {X.shape[1:]}, "
-                        f"expected {expected_shape}"
-                    )
-
-            # TODO: Think of another way to validate shapes of time-varying matrices if we don't know the data
-            #   when the PytensorRepresentation is recreated
-            # if X.shape[-1] != self.data.shape[0]:
-            #     raise ValueError(
-            #         f"Last dimension (time dimension) of array provided for {name} has shape "
-            #         f"{X.shape[-1]}, expected {self.data.shape[0]} (equal to the first dimension of the "
-            #         f"provided data)"
-            #     )
-
-    def _check_provided_tensor(self, name: str, X: pt.TensorVariable) -> pt.TensorVariable:
-        self._validate_matrix_shape(name, X)
-        if name not in NEVER_TIME_VARYING:
-            if X.ndim == 1 and name in VECTOR_VALUED:
-                X = pt.expand_dims(X, (0,))
-                X = pt.specify_shape(X, self.shapes[name])
-
-            elif X.ndim == 2:
-                X = pt.expand_dims(X, (0,))
-                X = pt.specify_shape(X, self.shapes[name])
-
-        return X
-
-    def _numpy_to_pytensor(self, name: str, X: np.ndarray) -> pt.TensorVariable:
-        X = X.copy()
-        self._validate_matrix_shape(name, X)
-
-        # Add a time dimension if one isn't provided
-        if name not in NEVER_TIME_VARYING:
-            if X.ndim == 1 and name in VECTOR_VALUED:
-                X = X[None, ...]
-            elif X.ndim == 2 and name not in VECTOR_VALUED:
-                X = X[None, ...]
-
-        X_pt = pt.as_tensor(X, name=name, dtype=floatX)
-        return X_pt
+    def declare_time_varying(self, *names: str) -> None:
+        """Mark matrices as time-varying. The filter will iterate over the leading dim."""
+        for name in names:
+            self._validate_name(name)
+            self._time_varying_names.add(name)
 
     def __getitem__(self, key: KeyLike) -> pt.TensorVariable:
-        _type = self._validate_key_and_get_type(key)
+        if isinstance(key, str):
+            self._validate_name(key)
+            return getattr(self, key)
 
-        # Case 1: user asked for an entire matrix by name
-        if _type is str:
-            self._validate_key(key)
-            matrix = getattr(self, key)
+        if isinstance(key, tuple) and isinstance(key[0], str):
+            name, *idx = key
+            self._validate_name(name)
+            tensor = getattr(self, name)
+            if not idx:
+                return tensor
+            return tensor[tuple(idx)]
 
-            # Slice away the time dimension if it's a dummy
-            if (matrix.type.shape[0] == 1) and (key not in NEVER_TIME_VARYING):
-                X = matrix[(0,) + (slice(None),) * (matrix.ndim - 1)]
-                X = pt.specify_shape(X, self.shapes[key][1:])
-                X.name = key
+        raise IndexError("First index must the name of a valid state space matrix.")
 
-                return X
+    def __setitem__(
+        self, key: KeyLike, value: float | int | np.ndarray | pt.TensorVariable
+    ) -> None:
+        if isinstance(key, str):
+            self._validate_name(key)
+            setattr(self, key, self._coerce(key, value))
+            return
 
-            # If it's never time varying, return everything
-            elif key in NEVER_TIME_VARYING:
-                return matrix
+        if isinstance(key, tuple) and isinstance(key[0], str):
+            name, *idx = key
+            self._validate_name(name)
+            existing = getattr(self, name)
+            updated = pt.set_subtensor(existing[tuple(idx)], value)
+            updated.name = name
+            setattr(self, name, updated)
+            return
 
-            # Last possibility is that it's time varying -- also return everything (for now, might need some processing)
-            else:
-                return matrix
+        raise IndexError("First index must the name of a valid state space matrix.")
 
-        # Case 2: user asked for a particular matrix and some slices of it
-        elif _type is tuple:
-            name, *slice_ = key
-            slice_ = tuple(slice_)
-            self._validate_key(name)
-
-            matrix = getattr(self, name)
-            # Case 2a: The user asked for the whole matrix, with time dummies. Return the whole thing
-            # without slicing anything away
-            if slice_ == (slice(None, None, None),) * matrix.ndim:
-                return matrix
-
-            # Case 2b: The user asked for the whole matrix except time dummies. Ignore the slice and act like we're in
-            # case 1.
-            elif slice_ == (slice(None, None, None),) * (matrix.ndim - 1):
-                X = matrix[(0,) + (slice(None),) * (matrix.ndim - 1)]
-                X = pt.specify_shape(X, self.shapes[name][1:])
-                X.name = name
-                return X
-
-            # Case 3b: User asked for an arbitrary sub-matrix. Give it back -- nothing else to be done
-            slice_ = self._add_time_dim_to_slice(name, slice_, matrix.ndim)
-            return matrix[slice_]
-
-        # Case 3: There is only one slice index, but it's not a string
-        else:
-            raise IndexError("First index must the name of a valid state space matrix.")
-
-    def __setitem__(self, key: KeyLike, value: float | int | np.ndarray | pt.Variable) -> None:
-        _type = type(key)
-
-        # Case 1: key is a string: we are setting an entire matrix.
-        if _type is str:
-            self._validate_key(key)
-            if isinstance(value, np.ndarray):
-                value = self._numpy_to_pytensor(key, value)
-            else:
-                value.name = key
-
-            setattr(self, key, value)
-            self._update_shape(key, value)
-
-        # Case 2: key is a string plus a slice: we are setting a subset of a matrix
-        elif _type is tuple:
-            name, *slice_ = key
-            self._validate_key(name)
-
-            matrix = getattr(self, name)
-
-            slice_ = self._add_time_dim_to_slice(name, slice_, matrix.ndim)
-            matrix = pt.set_subtensor(matrix[slice_], value)
-            matrix = pt.specify_shape(matrix, self.shapes[name])
-            matrix.name = name
-
-            setattr(self, name, matrix)
-
-    def copy(self):
+    def copy(self) -> "PytensorRepresentation":
         return copy.copy(self)

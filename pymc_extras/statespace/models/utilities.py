@@ -6,12 +6,6 @@ import pytensor.tensor as pt
 
 from pytensor.tensor import TensorVariable
 
-from pymc_extras.statespace.utils.constants import (
-    LONG_MATRIX_NAMES,
-    MATRIX_NAMES,
-    VECTOR_VALUED,
-)
-
 
 def cleanup_states(states: list[str]) -> list[str]:
     """
@@ -301,60 +295,37 @@ def make_SARIMA_transition_matrix(
 
 def conform_time_varying_and_time_invariant_matrices(A, B):
     """
-    Adjust either A or B to conform to the other in the time dimension
+    Conform two statespace matrices to a common ndim by lifting the static one to the time
+    length of the time-varying one.
 
-    In the context of building a structural model from components, it might be the case that one component has
-    time-varying statespace matrices, while the other does not. In this case, it is not possible to concatenate
-    or block diagonalize the pair of matrices A and B without first expanding the time-invariant matrix to have a
-    time dimension. This function checks if exactly one of the two time varies, and adjusts the other accordingly if
-    need be.
+    Combining components from a structural model can pair a time-varying matrix against a
+    static one. ``concatenate`` and ``block_diag`` need both to have the same ndim, so the
+    static side is broadcast over the missing leading axis. If neither or both sides carry
+    a time dim, both are returned unchanged.
 
     Parameters
     ----------
-    A: pt.TensorVariable
-        An anonymous statespace matrix
-    B: pt.TensorVariable
-        An anonymous statespace matrix
+    A : TensorVariable
+        First statespace matrix.
+    B : TensorVariable
+        Second statespace matrix.
 
     Returns
     -------
-    (A, B): Tuple of pt.TensorVariable
-        A and B, with one or neither expanded to have a time dimension.
+    A_out, B_out : tuple of TensorVariable
+        ``(A, B)`` with at most one side broadcast over a new leading axis.
     """
 
-    if A.name == B.name:
-        name = A.name
-    else:
-        if all([X.name not in MATRIX_NAMES + LONG_MATRIX_NAMES for X in [A, B]]):
-            raise ValueError(
-                "At least one matrix passed to conform_time_varying_and_time_invariant_matrices should be a "
-                "statespace matrix"
-            )
-        name = A.name if A.name in MATRIX_NAMES + LONG_MATRIX_NAMES else B.name
-
-    time_varying_ndim = 3 - int(name in VECTOR_VALUED)
-
-    if not all([x.ndim == time_varying_ndim for x in [A, B]]):
-        return A, B
-
-    T_A, *A_dims = A.type.shape
-    T_B, *B_dims = B.type.shape
-
-    if T_A == T_B:
-        return A, B
-
-    if T_A == 1:
-        A_out = pt.repeat(A, B.shape[0], axis=0)
-        A_out = pt.specify_shape(A_out, (T_B, *tuple(A_dims)))
+    # If only one side has a leading time dim, broadcast the static side along the missing
+    # axis to match the time length of the other.
+    if A.ndim < B.ndim:
+        A_out = pt.broadcast_to(A[None], (B.shape[0], *A.type.shape))
         A_out.name = A.name
-
         return A_out, B
 
-    if T_B == 1:
-        B_out = pt.repeat(B, A.shape[0], axis=0)
-        B_out = pt.specify_shape(B_out, (T_A, *tuple(B_dims)))
+    if B.ndim < A.ndim:
+        B_out = pt.broadcast_to(B[None], (A.shape[0], *B.type.shape))
         B_out.name = B.name
-
         return A, B_out
 
     return A, B
@@ -410,8 +381,7 @@ def reorder_from_labels(
     if indices.tolist() != list(range(n_out)):
         for axis in labeled_axis:
             idx = np.s_[tuple([slice(None, None) if i != axis else indices for i in range(x.ndim)])]
-            shape = x.type.shape
-            x = pt.specify_shape(x[idx], shape)
+            x = x[idx]
 
     return x
 
@@ -609,43 +579,25 @@ def join_tensors_by_dim_labels(
     # Check for no overlap first. In this case, do a block_diagonal join, which implicitly results in padding zeros
     # everywhere they are needed -- no other sorting or padding necessary
     if combined_labels == [*labels, *other_labels]:
-        res = pt.linalg.block_diag(tensor, other_tensor)
-        new_shape = [
-            shape_1 + shape_2 if (shape_1 is not None and shape_2 is not None) else None
-            for shape_1, shape_2 in zip(tensor.type.shape, other_tensor.type.shape)
-        ]
-        return pt.specify_shape(res, new_shape)
+        return pt.linalg.block_diag(tensor, other_tensor)
 
     # Otherwise there is either total overlap or partial overlap. Let the padding and reordering function figure it out.
     tensor = ndim_pad_and_reorder(tensor, labels, combined_labels, labeled_axis)
     other_tensor = ndim_pad_and_reorder(other_tensor, other_labels, combined_labels, labeled_axis)
 
     if block_diag_join:
-        new_shape = [
-            shape_1 + shape_2 if (shape_1 is not None and shape_2 is not None) else None
-            for shape_1, shape_2 in zip(tensor.type.shape, other_tensor.type.shape)
-        ]
         res = pt.linalg.block_diag(tensor, other_tensor)
     else:
-        new_shape = []
-        join_axis_norm = normalize_axis(tensor, join_axis)
-        for i, (shape_1, shape_2) in enumerate(zip(tensor.type.shape, other_tensor.type.shape)):
-            if i == join_axis_norm:
-                new_shape.append(
-                    shape_1 + shape_2 if (shape_1 is not None and shape_2 is not None) else None
-                )
-            else:
-                new_shape.append(shape_1 if shape_1 is not None else shape_2)
         res = pt.concatenate([tensor, other_tensor], axis=join_axis)
 
-    return pt.specify_shape(res, new_shape)
+    return res
 
 
 def get_exog_dims_from_idata(exog_name, idata):
-    if exog_name in idata.posterior.data_vars:
-        exog_dims = idata.posterior[exog_name].dims[2:]
+    if exog_name in idata["posterior"].data_vars:
+        exog_dims = idata["posterior"][exog_name].dims[2:]
     elif exog_name in getattr(idata, "constant_data", []):
-        exog_dims = idata.constant_data[exog_name].dims
+        exog_dims = idata["constant_data"][exog_name].dims
     elif exog_name in getattr(idata, "mutable_data", []):
         exog_dims = idata.mutable_data[exog_name].dims
     else:

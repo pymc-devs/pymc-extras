@@ -2,12 +2,11 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 
-from pymc import intX
 from pymc.distributions.dist_math import check_parameters
 from pymc.distributions.distribution import Continuous, SymbolicRandomVariable
 from pymc.distributions.shape_utils import get_support_shape_1d
 from pymc.logprob.abstract import _logprob
-from pymc.pytensorf import normalize_rng_param
+from pymc.pytensorf import intX, normalize_rng_param
 from pytensor.graph.basic import Node
 from pytensor.tensor.random import multivariate_normal
 
@@ -173,44 +172,46 @@ class _LinearGaussianStateSpace(Continuous):
         H_.name = "H"
         Q_.name = "Q"
 
-        sequences = [
-            x
-            for x, name in zip([c_, d_, T_, Z_, R_, H_, Q_], ["c", "d", "T", "Z", "R", "H", "Q"])
-            if name in sequence_names
-        ]
-        non_sequences = [x for x in [c_, d_, T_, Z_, R_, H_, Q_] if x not in sequences]
+        # Partition the seven matrices into scan sequences and non-sequences while remembering
+        # each one's canonical position. The inner step rebuilds the canonical (c, d, T, Z, R, H, Q)
+        # ordering by index, so it never has to introspect names inside the scan body.
+        canonical = ["c", "d", "T", "Z", "R", "H", "Q"]
+        all_inputs = [c_, d_, T_, Z_, R_, H_, Q_]
+
+        sequences: list = []
+        non_sequences: list = []
+        seq_positions: list[int] = []
+        non_seq_positions: list[int] = []
+        for i, (x, name) in enumerate(zip(all_inputs, canonical, strict=True)):
+            if name in sequence_names:
+                sequences.append(x)
+                seq_positions.append(i)
+            else:
+                non_sequences.append(x)
+                non_seq_positions.append(i)
 
         rng = normalize_rng_param(rng)
 
-        def sort_args(args):
-            sorted_args = []
-
-            # Inside the scan, outputs_info variables get a time step appended to their name
-            # e.g. x -> x[t]. Remove this so we can identify variables by name.
-            arg_names = [x.name.replace("[t]", "") for x in args]
-
-            # c, d ,T, Z, R, H, Q is the "canonical" ordering
-            for name in ["c", "d", "T", "Z", "R", "H", "Q"]:
-                idx = arg_names.index(name)
-                sorted_args.append(args[idx])
-
-            return sorted_args
-
-        n_seq = len(sequence_names)
+        n_seq = len(sequences)
 
         def step_fn(*args):
             seqs, (rng, state, *non_seqs) = args[:n_seq], args[n_seq:]
 
-            c, d, T, Z, R, H, Q = sort_args((*seqs, *non_seqs))
+            ordered: list = [None] * len(canonical)
+            for src_idx, dst_idx in enumerate(seq_positions):
+                ordered[dst_idx] = seqs[src_idx]
+            for src_idx, dst_idx in enumerate(non_seq_positions):
+                ordered[dst_idx] = non_seqs[src_idx]
+            c, d, T, Z, R, H, Q = ordered
             k = T.shape[0]
             a = state[:k]
 
             middle_rng, a_innovation = pm.MvNormal.dist(
-                mu=0, cov=Q, rng=rng, method=method
-            ).owner.outputs
+                mu=0, cov=Q, rng=rng, method=method, return_next_rng=True
+            )
             next_rng, y_innovation = pm.MvNormal.dist(
-                mu=0, cov=H, rng=middle_rng, method=method
-            ).owner.outputs
+                mu=0, cov=H, rng=middle_rng, method=method, return_next_rng=True
+            )
 
             a_mu = c + T @ a
             a_next = a_mu + R @ a_innovation
@@ -379,8 +380,8 @@ class SequenceMvNormal(Continuous):
 
         mus_, covs_ = mus.type(), covs.type()
         seq_mvn_rng, mvn_seq = multivariate_normal(
-            mean=mus_, cov=covs_, rng=rng, method=method
-        ).owner.outputs
+            mean=mus_, cov=covs_, rng=rng, method=method, return_next_rng=True
+        )
 
         mvn_seq_op = KalmanFilterRV(
             inputs=[mus_, covs_, logp_, rng], outputs=[seq_mvn_rng, mvn_seq], ndim_supp=2
