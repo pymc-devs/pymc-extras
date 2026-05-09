@@ -7,6 +7,8 @@ from pytensor.tensor import TensorLike, TensorVariable, as_tensor
 
 from pymc_extras.model.marginal.marginal_model import marginalize
 
+from xarray import DataTree
+
 
 def fit_INLA(
     x: TensorVariable,
@@ -16,7 +18,7 @@ def fit_INLA(
     minimizer_kwargs: dict = {"method": "L-BFGS-B", "optimizer_kwargs": {"tol": 1e-8}},
     return_latent_posteriors: bool = False,
     **sampler_kwargs,
-) -> az.InferenceData:
+) -> DataTree:
     r"""
     Performs inference over a linear mixed model using Integrated Nested Laplace Approximations (INLA). Assumes a model of the form:
 
@@ -47,8 +49,8 @@ def fit_INLA(
 
     Returns
     -------
-    idata: az.InferenceData
-        Standard PyMC InferenceData instance.
+    DataTree
+        The inference data containing the results of the INLA algorithm.
 
     Examples
     --------
