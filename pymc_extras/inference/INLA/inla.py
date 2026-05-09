@@ -1,13 +1,11 @@
 import warnings
 
-import arviz as az
 import pymc as pm
 
 from pytensor.tensor import TensorLike, TensorVariable, as_tensor
+from xarray import DataTree
 
 from pymc_extras.model.marginal.marginal_model import marginalize
-
-from xarray import DataTree
 
 
 def fit_INLA(

@@ -525,7 +525,7 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs_and_Q, **kwa
         x=marginalized_vv,
         x0_init=x0_init,
         Q=Q,
-        minimizer_kwargs=op.minimizer_kwargs
+        minimizer_kwargs=op.minimizer_kwargs,
     )
 
     # logp(y | params) = logp(y | x, params) + logp(x | params) - logp(x | y, params)
