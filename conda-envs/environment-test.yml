@@ -18,4 +18,5 @@ dependencies:
       - jax
       - blackjax
       - pymc @ git+https://github.com/pymc-devs/pymc.git
+      - pytensor @ git+https://github.com/pymc-devs/pytensor.git
       - preliz @ git+https://github.com/arviz-devs/preliz.git
