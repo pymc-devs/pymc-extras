@@ -298,17 +298,20 @@ class BaseFilter(ABC):
         return filter_results
 
     def handle_missing_values(
-        self, y, Z, H
-    ) -> tuple[TensorVariable, TensorVariable, TensorVariable, float]:
+        self, y, Z, H, d
+    ) -> tuple[TensorVariable, TensorVariable, TensorVariable, TensorVariable, float]:
         """
-        Handle missing values in the observation data `y`
+        Handle missing values in the observation data ``y``.
 
-        Adjusts the design matrix `Z` and the observation noise covariance matrix `H` by removing rows and/or columns
-        associated with the data that is not observed at this iteration. Missing values are replaced with zeros to prevent
-        propagating NaNs through the computation.
+        Adjust the design matrix ``Z``, the observation noise covariance matrix ``H``, and the observation
+        intercept ``d`` by zeroing the rows associated with observations that are missing at this iteration.
+        The missing entries of ``y`` are replaced with zeros to prevent propagating NaNs through the
+        computation. With ``y``, ``Z @ a``, and ``d`` all zero on the missing rows, the innovation
+        :math:`v = y - (Z a + d)` is exactly zero there, so missing observations contribute nothing to the
+        state update.
 
-        Return a binary flag tensor `all_nan_flag`,indicating if all values in the observation data are missing. This
-        flag is used for numerical adjustments in the update method.
+        Return a binary flag tensor ``all_nan_flag`` indicating whether every component of the observation
+        is missing. This flag is used for numerical adjustments in the update method.
 
         Parameters
         ----------
@@ -318,21 +321,28 @@ class BaseFilter(ABC):
             The design matrix.
         H : TensorVariable
             The observation noise covariance matrix.
+        d : TensorVariable
+            The observation intercept.
 
         Returns
         -------
         y_masked : TensorVariable
             Observation vector with missing values replaced by zeros.
 
-        Z_masked: TensorVariable
-            Design matrix adjusted to exclude the missing states from the information set of observed variables in the
-            update step
+        Z_masked : TensorVariable
+            Design matrix with the rows corresponding to missing observations zeroed out.
 
-        H_masked: TensorVariable
-            Noise covariance matrix, adjusted to exclude the missing states
+        H_masked : TensorVariable
+            Observation noise covariance matrix with the rows *and columns* corresponding to missing
+            observations zeroed out, so the result remains symmetric.
 
-        all_nan_flag: float
-            1 if the entire state vector is missing
+        d_masked : TensorVariable
+            Observation intercept with the entries corresponding to missing observations zeroed out. Without
+            this masking, missing rows of the innovation become :math:`-d`, injecting a fake observation
+            into the state update and inflating the log-likelihood by :math:`d^2 / \\text{jitter}`.
+
+        all_nan_flag : float
+            1 if every component of the observation is missing.
 
         References
         ----------
@@ -344,10 +354,11 @@ class BaseFilter(ABC):
         W = pt.diag(pt.bitwise_not(nan_mask).astype(pytensor.config.floatX))
 
         Z_masked = W.dot(Z)
-        H_masked = W.dot(H)
+        H_masked = W.dot(H).dot(W.mT)
+        d_masked = W.dot(d)
         y_masked = pt.set_subtensor(y[nan_mask], 0.0)
 
-        return y_masked, Z_masked, H_masked, all_nan_flag
+        return y_masked, Z_masked, H_masked, d_masked, all_nan_flag
 
     @staticmethod
     def predict(a, P, c, T, R, Q) -> tuple[TensorVariable, TensorVariable]:
@@ -517,10 +528,12 @@ class BaseFilter(ABC):
                2nd ed, Oxford University Press, 2012.
         """
         y, a, P, c, d, T, Z, R, H, Q = self.unpack_args(args)
-        y_masked, Z_masked, H_masked, all_nan_flag = self.handle_missing_values(y, Z, H)
+        y_masked, Z_masked, H_masked, d_masked, all_nan_flag = self.handle_missing_values(
+            y, Z, H, d
+        )
 
         a_filtered, P_filtered, obs_mu, obs_cov, ll = self.update(
-            y=y_masked, a=a, d=d, P=P, Z=Z_masked, H=H_masked, all_nan_flag=all_nan_flag
+            y=y_masked, a=a, d=d_masked, P=P, Z=Z_masked, H=H_masked, all_nan_flag=all_nan_flag
         )
 
         P_filtered = stabilize(P_filtered, self.cov_jitter)
@@ -787,11 +800,13 @@ class UnivariateFilter(BaseFilter):
         y, a, P, c, d, T, Z, R, H, Q = self.unpack_args(args)
 
         nan_mask = pt.or_(pt.isnan(y), pt.eq(y, self.missing_fill_value))
-        y_masked, Z_masked, H_masked, all_nan_flag = self.handle_missing_values(y, Z, H)
+        y_masked, Z_masked, H_masked, d_masked, all_nan_flag = self.handle_missing_values(
+            y, Z, H, d
+        )
 
         result = pytensor.scan(
             self._univariate_inner_filter_step,
-            sequences=[y_masked, Z_masked, d, pt.diag(H_masked), nan_mask],
+            sequences=[y_masked, Z_masked, d_masked, pt.diag(H_masked), nan_mask],
             outputs_info=[a, P, None, None, None],
             name="univariate_inner_scan",
             return_updates=False,
