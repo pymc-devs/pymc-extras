@@ -90,7 +90,7 @@ from collections.abc import Callable, Sequence
 from functools import partial
 from inspect import signature
 from numbers import Number
-from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
 import pymc as pm
@@ -111,7 +111,7 @@ if TYPE_CHECKING:
     from pytensor.tensor import TensorLike
     from pytensor.xtensor.type import XTensorVariable
 
-    XTensorLike: TypeAlias = TensorLike | DataArray
+    type XTensorLike = TensorLike | DataArray
 
 
 class UnsupportedShapeError(Exception):
