@@ -70,7 +70,7 @@ jobs:
   windows:
     strategy:
       matrix:
-        os: [windows-latest]
+        os: [windows-2022]
         linker: [cvm, numba]
         python-version: ["3.12"]
         test-subset:
