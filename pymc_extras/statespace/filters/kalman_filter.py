@@ -589,8 +589,9 @@ class StandardFilter(BaseFilter):
 
         F_chol = pt.linalg.cholesky(F, lower=True)
 
-        K_T = solve_triangular(F_chol.mT, solve_triangular(F_chol, PZT.mT, lower=True), lower=False)
-        K = K_T.mT
+        K = solve_triangular(
+            F_chol.mT, solve_triangular(F_chol, PZT.mT, lower=True), lower=False
+        ).mT
         I_KZ = pt.eye(self.n_states) - K.dot(Z)
 
         a_filtered = a + K @ v
