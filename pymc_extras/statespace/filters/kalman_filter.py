@@ -665,10 +665,7 @@ class SquareRootFilter(BaseFilter):
 
         y_hat = Z.dot(a) + d
         v = y - y_hat
-
-        H_chol = pytensor.ifelse(
-            pt.all(pt.eq(H, 0.0)), H, pt.linalg.cholesky(H, lower=True, on_error="nan")
-        )
+        H_chol = pt.linalg.cholesky(stabilize(H, self.cov_jitter), lower=True)
 
         # The following notation comes from https://ipnpr.jpl.nasa.gov/progress_report/42-233/42-233A.pdf
         # Construct upper-triangular block matrix A = [[chol(H), Z @ L_pred],
