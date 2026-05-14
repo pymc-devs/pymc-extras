@@ -589,17 +589,14 @@ class StandardFilter(BaseFilter):
 
         F_chol = pt.linalg.cholesky(F, lower=True)
 
-        K = solve_triangular(
-            F_chol.mT, solve_triangular(F_chol, PZT.mT, lower=True), lower=False
-        ).mT
+        K = pt.linalg.cho_solve((F_chol, True), PZT.mT).mT
         I_KZ = pt.eye(self.n_states) - K.dot(Z)
 
         a_filtered = a + K @ v
         P_filtered = quad_form_sym(I_KZ, P) + quad_form_sym(K, H)
 
-        # Whitened residual: w = L^-1 v, so v^T F^-1 v = w^T w.
-        w = solve_triangular(F_chol, v, lower=True)
-        inner_term = w.T @ w
+        F_inv_v = pt.linalg.cho_solve((F_chol, True), v)
+        inner_term = v.T @ F_inv_v
 
         F_logdet = 2 * pt.log(pt.diag(F_chol)).sum()
 
