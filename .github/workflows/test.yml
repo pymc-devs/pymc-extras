@@ -70,7 +70,7 @@ jobs:
   windows:
     strategy:
       matrix:
-        os: [windows-2022]
+        os: [windows-latest]
         linker: [cvm, numba]
         python-version: ["3.12"]
         test-subset:
@@ -93,7 +93,9 @@ jobs:
       - uses: mamba-org/setup-micromamba@d7c9bd84e824b79d2af72a2d4196c7f4300d3476  # v3.0.0
         with:
           environment-file: conda-envs/environment-test.yml
-          micromamba-version: "latest"
+          # Pinned: micromamba 2.6.1-0 ships a Windows binary with a missing DLL
+          # dependency that breaks GitHub-hosted runners (STATUS_DLL_NOT_FOUND).
+          micromamba-version: "2.6.0-0"
           create-args: >-
             python=${{matrix.python-version}}
           environment-name: pymc-extras-test
