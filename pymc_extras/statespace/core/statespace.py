@@ -14,7 +14,7 @@ from pymc.model import modelcontext
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import RandomState
 from pytensor.graph.basic import Variable
-from pytensor.graph.replace import graph_replace
+from pytensor.graph.replace import graph_replace, vectorize_graph
 from pytensor.graph.traversal import explicit_graph_inputs
 from rich.box import SIMPLE_HEAD
 from rich.console import Console
@@ -52,6 +52,7 @@ from pymc_extras.statespace.filters.utilities import stabilize
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
+    BATCH_DIM,
     FILTER_OUTPUT_DIMS,
     FILTER_OUTPUT_TYPES,
     JITTER_DEFAULT,
@@ -873,8 +874,18 @@ class PyMCStateSpace:
 
         matrices = list(self._unpack_statespace_with_placeholders())
 
-        replacement_dict = {var: pymc_model[name] for name, var in self._name_to_variable.items()}
-        self.subbed_ssm = graph_replace(matrices, replace=replacement_dict, strict=True)
+        if pymc_model["x0"].type.ndim > 1:
+            self.batch_dims = pymc_model["x0"].type.shape[0]
+            replacement_dict = {
+                var: pymc_model[name] for name, var in self._name_to_variable.items()
+            }
+            self.subbed_ssm = vectorize_graph(matrices, replace=replacement_dict)
+        else:
+            self.batch_dims = None
+            replacement_dict = {
+                var: pymc_model[name] for name, var in self._name_to_variable.items()
+            }
+            self.subbed_ssm = graph_replace(matrices, replace=replacement_dict)
 
     def _insert_data_variables(self):
         """
@@ -1011,6 +1022,115 @@ class PyMCStateSpace:
                 dims = tuple([dim if dim in coords.keys() else None for dim in dim_names])
                 pm.Deterministic(name, var, dims=dims)
 
+    def make_vectorized_filter(
+        self,
+        missing_fill_value,
+        cov_jitter,
+        time_varying_names,
+    ):
+        def maybe_tv(name, base_sig):
+            """
+            Add leading time dimension if matrix is time varying.
+            """
+            if name in time_varying_names:
+                return f"(t,{base_sig})"
+            return f"({base_sig})"
+
+        def vectorize_filter(data, x0, P0, c, d, T, Z, R, H, Q):
+            return self.kalman_filter.build_graph(
+                data,
+                x0,
+                P0,
+                c,
+                d,
+                T,
+                Z,
+                R,
+                H,
+                Q,
+                missing_fill_value,
+                cov_jitter,
+                time_varying_names,
+            )
+
+        input_signature = ",".join(
+            [
+                "(t,o)",  # data
+                "(k)",  # Initial state
+                "(k,k)",  # Initial cov
+                maybe_tv("c", "k"),  # state eq. intercept
+                maybe_tv("d", "o"),  # observation eq. intercept
+                maybe_tv("T", "k,k"),  # transition
+                maybe_tv("Z", "o,k"),  # design
+                maybe_tv("R", "k,r"),  # selection
+                maybe_tv("H", "o,o"),  # observation cov
+                maybe_tv("Q", "r,r"),  # process cov
+            ]
+        )
+
+        output_signature = ",".join(
+            [
+                "(t,k)",  # filtered states
+                "(t,k)",  # predicted states
+                "(t,o)",  # forecasts
+                "(t,k,k)",  # filtered covs
+                "(t,k,k)",  # predicted covs
+                "(t,o,o)",  # forecast covs
+                "(t)",  # loglikelihoods
+            ]
+        )
+
+        signature = f"{input_signature}->{output_signature}"
+
+        return pt.vectorize(
+            vectorize_filter,
+            signature=signature,
+        )
+
+    def make_vectorized_smoother(self, cov_jitter, time_varying_names):
+        def maybe_tv(name, base_sig):
+            """
+            Add leading time dimension if matrix is time varying.
+            """
+            if name in time_varying_names:
+                return f"(t,{base_sig})"
+            return f"({base_sig})"
+
+        def vectorize_smoother(T, R, Q, filtered_states, filtered_covariances):
+            return self.kalman_smoother.build_graph(
+                T,
+                R,
+                Q,
+                filtered_states,
+                filtered_covariances,
+                cov_jitter,
+                time_varying_names,
+            )
+
+        input_signature = ",".join(
+            [
+                maybe_tv("T", "k,k"),  # transition
+                maybe_tv("R", "k,r"),  # selection
+                maybe_tv("Q", "r,r"),  # process cov
+                "(t, k)",  # filtered_states
+                "(t, k, k)",  # filtered_covariances
+            ]
+        )
+
+        output_signature = ",".join(
+            [
+                "(t,k)",  # smoothed states
+                "(t,k,k)",  # smoothed covs
+            ]
+        )
+
+        signature = f"{input_signature}->{output_signature}"
+
+        return pt.vectorize(
+            vectorize_smoother,
+            signature=signature,
+        )
+
     def build_statespace_graph(
         self,
         data: np.ndarray | pd.DataFrame | pt.TensorVariable,
@@ -1092,7 +1212,6 @@ class PyMCStateSpace:
             self.mode = mode
 
         pm_mod = modelcontext(None)
-
         self._insert_random_variables()
         self._save_exogenous_data_info()
         self._insert_data_variables()
@@ -1100,24 +1219,41 @@ class PyMCStateSpace:
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
         self._fit_data = data
 
+        data_dims = None
+
+        if data.ndim > 2:
+            data_dims = (BATCH_DIM, TIME_DIM, OBS_STATE_DIM)
+
         data, nan_mask = register_data_with_pymc(
             data,
             n_obs=self.ssm.k_endog,
             obs_coords=obs_coords,
             register_data=register_data,
             missing_fill_value=missing_fill_value,
+            data_dims=data_dims,
         )
 
         # Order is important here: only call _insert_data_shape_into_n_timesteps after data has been registered.
         self._insert_data_shape_into_n_timesteps(data)
 
-        filter_outputs = self.kalman_filter.build_graph(
-            pt.as_tensor_variable(data),
-            *self.unpack_statespace(),
-            missing_fill_value=missing_fill_value,
-            cov_jitter=cov_jitter,
-            time_varying_names=self.ssm.time_varying_names,
-        )
+        if data_dims and BATCH_DIM in data_dims:
+            vectorized_filter = self.make_vectorized_filter(
+                missing_fill_value=missing_fill_value,
+                cov_jitter=cov_jitter,
+                time_varying_names=self.ssm.time_varying_names,
+            )
+
+            filter_outputs = vectorized_filter(
+                pt.as_tensor_variable(data), *self.unpack_statespace()
+            )
+        else:
+            filter_outputs = self.kalman_filter.build_graph(
+                pt.as_tensor_variable(data),
+                *self.unpack_statespace(),
+                missing_fill_value=missing_fill_value,
+                cov_jitter=cov_jitter,
+                time_varying_names=self.ssm.time_varying_names,
+            )
 
         logp = filter_outputs.pop(-1)
         states, covs = filter_outputs[:3], filter_outputs[3:]
@@ -1132,6 +1268,9 @@ class PyMCStateSpace:
 
         obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_states"]
         obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
+
+        if data_dims and BATCH_DIM in data_dims:
+            obs_dims = (BATCH_DIM, *obs_dims)
 
         SequenceMvNormal(
             "obs",
@@ -1216,6 +1355,8 @@ class PyMCStateSpace:
 
         def infer_variable_shape(name):
             shape = self._name_to_variable[name].type.shape
+            if self.batch_dims:
+                shape = (self.batch_dims, *shape)
             if not any(dim is None for dim in shape):
                 return shape
 
@@ -1299,6 +1440,9 @@ class PyMCStateSpace:
 
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
 
+        if data.ndim > 2:
+            data_dims = (BATCH_DIM, TIME_DIM, OBS_STATE_DIM)
+
         data, nan_mask = register_data_with_pymc(
             data,
             n_obs=self.ssm.k_endog,
@@ -1307,19 +1451,37 @@ class PyMCStateSpace:
             register_data=True,
         )
 
-        filter_outputs = self.kalman_filter.build_graph(
-            data,
-            x0,
-            P0,
-            c,
-            d,
-            T,
-            Z,
-            R,
-            H,
-            Q,
-            time_varying_names=self.ssm.time_varying_names,
-        )
+        if data_dims and BATCH_DIM in data_dims:
+            vectorized_filter = self.make_vectorized_filter(
+                None, None, time_varying_names=self.ssm.time_varying_names
+            )
+
+            filter_outputs = vectorized_filter(
+                data,
+                x0,
+                P0,
+                c,
+                d,
+                T,
+                Z,
+                R,
+                H,
+                Q,
+            )
+        else:
+            filter_outputs = self.kalman_filter.build_graph(
+                data,
+                x0,
+                P0,
+                c,
+                d,
+                T,
+                Z,
+                R,
+                H,
+                Q,
+                time_varying_names=self.ssm.time_varying_names,
+            )
 
         filter_outputs.pop(-1)
         states, covariances = filter_outputs[:3], filter_outputs[3:]
@@ -1327,14 +1489,24 @@ class PyMCStateSpace:
         filtered_states, predicted_states, _ = states
         filtered_covariances, predicted_covariances, _ = covariances
 
-        [smoothed_states, smoothed_covariances] = self.kalman_smoother.build_graph(
-            T,
-            R,
-            Q,
-            filtered_states,
-            filtered_covariances,
-            time_varying_names=self.ssm.time_varying_names,
-        )
+        if data_dims and BATCH_DIM in data_dims:
+            vectorized_smoother = self.make_vectorized_smoother(1e-8, self.ssm.time_varying_names)
+            [smoothed_states, smoothed_covariances] = vectorized_smoother(
+                T,
+                R,
+                Q,
+                filtered_states,
+                filtered_covariances,
+            )
+        else:
+            [smoothed_states, smoothed_covariances] = self.kalman_smoother.build_graph(
+                T,
+                R,
+                Q,
+                filtered_states,
+                filtered_covariances,
+                time_varying_names=self.ssm.time_varying_names,
+            )
 
         grouped_outputs = [
             (filtered_states, filtered_covariances),
@@ -1417,16 +1589,38 @@ class PyMCStateSpace:
             for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs):
                 dummy_ll = pt.zeros_like(mu)
 
-                state_dims = (
-                    (TIME_DIM, ALL_STATE_DIM)
-                    if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM]])
-                    else (None, None)
-                )
-                obs_dims = (
-                    (TIME_DIM, OBS_STATE_DIM)
-                    if all([dim in self._fit_coords for dim in [TIME_DIM, OBS_STATE_DIM]])
-                    else (None, None)
-                )
+                if self.batch_dims:
+                    state_dims = (
+                        (BATCH_DIM, TIME_DIM, ALL_STATE_DIM)
+                        if all(
+                            [
+                                dim in self._fit_coords
+                                for dim in [BATCH_DIM, TIME_DIM, ALL_STATE_DIM]
+                            ]
+                        )
+                        else (None, None, None)
+                    )
+                    obs_dims = (
+                        (BATCH_DIM, TIME_DIM, OBS_STATE_DIM)
+                        if all(
+                            [
+                                dim in self._fit_coords
+                                for dim in [BATCH_DIM, TIME_DIM, OBS_STATE_DIM]
+                            ]
+                        )
+                        else (None, None, None)
+                    )
+                else:
+                    state_dims = (
+                        (TIME_DIM, ALL_STATE_DIM)
+                        if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM]])
+                        else (None, None)
+                    )
+                    obs_dims = (
+                        (TIME_DIM, OBS_STATE_DIM)
+                        if all([dim in self._fit_coords for dim in [TIME_DIM, OBS_STATE_DIM]])
+                        else (None, None)
+                    )
 
                 SequenceMvNormal(
                     f"{name}_{group}",
@@ -1551,8 +1745,18 @@ class PyMCStateSpace:
         else:
             steps = len(temp_coords[TIME_DIM]) - 1
 
-        if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]]):
-            dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+        if self.batch_dims:
+            if all(
+                [
+                    dim in self._fit_coords
+                    for dim in [BATCH_DIM, TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+                ]
+            ):
+                dims = [BATCH_DIM, TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+
+        else:
+            if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]]):
+                dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
 
         with pm.Model(coords=temp_coords if dims is not None else None) as forward_model:
             self._build_dummy_graph()

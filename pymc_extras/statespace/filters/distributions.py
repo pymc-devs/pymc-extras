@@ -157,6 +157,9 @@ class _LinearGaussianStateSpace(Continuous):
         append_x0=True,
         method="svd",
     ):
+        def bmv(A, x):
+            return pt.matmul(A, x[..., None])[..., 0]
+
         if sequence_names is None:
             sequence_names = []
 
@@ -203,8 +206,8 @@ class _LinearGaussianStateSpace(Continuous):
             for src_idx, dst_idx in enumerate(non_seq_positions):
                 ordered[dst_idx] = non_seqs[src_idx]
             c, d, T, Z, R, H, Q = ordered
-            k = T.shape[0]
-            a = state[:k]
+            k = T.shape[-1]
+            a = state[..., :k]
 
             middle_rng, a_innovation = pm.MvNormal.dist(
                 mu=0, cov=Q, rng=rng, method=method, return_next_rng=True
@@ -213,13 +216,13 @@ class _LinearGaussianStateSpace(Continuous):
                 mu=0, cov=H, rng=middle_rng, method=method, return_next_rng=True
             )
 
-            a_mu = c + T @ a
-            a_next = a_mu + R @ a_innovation
+            a_mu = c + bmv(T, a)
+            a_next = a_mu + bmv(R, a_innovation)
 
-            y_mu = d + Z @ a_next
+            y_mu = d + bmv(Z, a_next)
             y_next = y_mu + y_innovation
 
-            next_state = pt.concatenate([a_next, y_next], axis=0)
+            next_state = pt.concatenate([a_next, y_next], axis=-1)
 
             return next_rng, next_state
 
@@ -227,9 +230,9 @@ class _LinearGaussianStateSpace(Continuous):
         H_init = H_ if H_ in non_sequences else H_[0]
 
         init_x_ = pm.MvNormal.dist(a0_, P0_, rng=rng, method=method)
-        init_y_ = pm.MvNormal.dist(Z_init @ init_x_, H_init, rng=rng, method=method)
+        init_y_ = pm.MvNormal.dist(bmv(Z_init, init_x_), H_init, rng=rng, method=method)
 
-        init_dist_ = pt.concatenate([init_x_, init_y_], axis=0)
+        init_dist_ = pt.concatenate([init_x_, init_y_], axis=-1)
 
         ss_rng, statespace = pytensor.scan(
             step_fn,
@@ -242,11 +245,12 @@ class _LinearGaussianStateSpace(Continuous):
         )
 
         if append_x0:
-            statespace_ = pt.concatenate([init_dist_[None], statespace], axis=0)
-            statespace_ = pt.specify_shape(statespace_, (steps + 1, None))
+            init_dist_expanded = pt.expand_dims(init_dist_, axis=0)
+            statespace_ = pt.concatenate([init_dist_expanded, statespace], axis=0)
+            # statespace_ = pt.specify_shape(statespace_, (steps + 1, None))
         else:
             statespace_ = statespace
-            statespace_ = pt.specify_shape(statespace_, (steps, None))
+            # statespace_ = pt.specify_shape(statespace_, (steps, None))
 
         linear_gaussian_ss_op = LinearGaussianStateSpaceRV(
             inputs=[a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_, steps, rng],
@@ -287,7 +291,15 @@ class LinearGaussianStateSpace(Continuous):
         dims = kwargs.pop("dims", None)
         latent_dims = None
         obs_dims = None
-        if dims is not None:
+        if dims is not None and len(dims) > 3:
+            # if len(dims) != 3:
+            #     ValueError(
+            #         "LinearGaussianStateSpace expects 3 dims: time, all_states, and observed_states"
+            #     )
+            batch_dim, time_dim, state_dim, obs_dim = dims
+            latent_dims = [time_dim, batch_dim, state_dim]
+            obs_dims = [time_dim, batch_dim, obs_dim]
+        elif dims is not None:
             if len(dims) != 3:
                 ValueError(
                     "LinearGaussianStateSpace expects 3 dims: time, all_states, and observed_states"
@@ -313,7 +325,7 @@ class LinearGaussianStateSpace(Continuous):
             method=method,
             **kwargs,
         )
-        latent_obs_combined = pt.specify_shape(latent_obs_combined, (steps + int(append_x0), None))
+        # latent_obs_combined = pt.specify_shape(latent_obs_combined, (steps + int(append_x0), None))
         if k_endog is None:
             k_endog = cls._get_k_endog(H)
         latent_slice = slice(None, -k_endog)
