@@ -127,10 +127,11 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
 
 def add_data_to_active_model(values, index, data_dims=None, batched=False):
     pymc_mod = modelcontext(None)
-    if data_dims is None and not batched:
-        data_dims = [TIME_DIM, OBS_STATE_DIM]
-    else:
-        data_dims = [BATCH_DIM, TIME_DIM, OBS_STATE_DIM]
+    if data_dims is None:
+        if not batched:
+            data_dims = [TIME_DIM, OBS_STATE_DIM]
+        else:
+            data_dims = [BATCH_DIM, TIME_DIM, OBS_STATE_DIM]
 
     time_dim = data_dims[0] if not batched else data_dims[1]
 

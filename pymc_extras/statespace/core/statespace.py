@@ -259,6 +259,7 @@ class PyMCStateSpace:
         k_endog: int,
         k_states: int,
         k_posdef: int,
+        batch_size: int | None = None,
         filter_type: str = "standard",
         verbose: bool = True,
         measurement_error: bool = False,
@@ -279,6 +280,7 @@ class PyMCStateSpace:
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
         self.mode = mode
+        self.batch_size = batch_size
 
         self._populate_properties()
 
@@ -874,14 +876,12 @@ class PyMCStateSpace:
 
         matrices = list(self._unpack_statespace_with_placeholders())
 
-        if pymc_model["x0"].type.ndim > 1:
-            self.batch_dims = pymc_model["x0"].type.shape[0]
+        if self.batch_size:
             replacement_dict = {
                 var: pymc_model[name] for name, var in self._name_to_variable.items()
             }
             self.subbed_ssm = vectorize_graph(matrices, replace=replacement_dict)
         else:
-            self.batch_dims = None
             replacement_dict = {
                 var: pymc_model[name] for name, var in self._name_to_variable.items()
             }
@@ -1221,7 +1221,7 @@ class PyMCStateSpace:
 
         data_dims = None
 
-        if data.ndim > 2:
+        if self.batch_size:
             data_dims = (BATCH_DIM, TIME_DIM, OBS_STATE_DIM)
 
         data, nan_mask = register_data_with_pymc(
@@ -1355,8 +1355,8 @@ class PyMCStateSpace:
 
         def infer_variable_shape(name):
             shape = self._name_to_variable[name].type.shape
-            if self.batch_dims:
-                shape = (self.batch_dims, *shape)
+            if self.batch_size:
+                shape = (self.batch_size, *shape)
             if not any(dim is None for dim in shape):
                 return shape
 
@@ -1440,7 +1440,7 @@ class PyMCStateSpace:
 
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
 
-        if data.ndim > 2:
+        if self.batch_size:
             data_dims = (BATCH_DIM, TIME_DIM, OBS_STATE_DIM)
 
         data, nan_mask = register_data_with_pymc(
@@ -1589,7 +1589,7 @@ class PyMCStateSpace:
             for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs):
                 dummy_ll = pt.zeros_like(mu)
 
-                if self.batch_dims:
+                if self.batch_size:
                     state_dims = (
                         (BATCH_DIM, TIME_DIM, ALL_STATE_DIM)
                         if all(
@@ -1745,7 +1745,7 @@ class PyMCStateSpace:
         else:
             steps = len(temp_coords[TIME_DIM]) - 1
 
-        if self.batch_dims:
+        if self.batch_size:
             if all(
                 [
                     dim in self._fit_coords
