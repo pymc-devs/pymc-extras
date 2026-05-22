@@ -1440,7 +1440,7 @@ class PyMCStateSpace:
 
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
 
-        if self.batch_size:
+        if self.batch_size and data_dims is None:
             data_dims = (BATCH_DIM, TIME_DIM, OBS_STATE_DIM)
 
         data, nan_mask = register_data_with_pymc(
@@ -2553,23 +2553,38 @@ class PyMCStateSpace:
         filter_time_dim = TIME_DIM
         temp_coords = self._fit_coords.copy()
 
-        dims = None
-        if all([dim in temp_coords for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]]):
-            dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
-
         t0_idx = np.flatnonzero(time_index == t0)[0]
 
         temp_coords["data_time"] = time_index
         temp_coords[TIME_DIM] = forecast_index
 
-        mu_dims, cov_dims = None, None
-        if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]]):
-            mu_dims = ["data_time", ALL_STATE_DIM]
-            cov_dims = ["data_time", ALL_STATE_DIM, ALL_STATE_AUX_DIM]
+        dims, mu_dims, cov_dims = None, None, None
+
+        if self.batch_size:
+            data_dims = [BATCH_DIM, "data_time", OBS_STATE_DIM]
+            if all([dim in temp_coords for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]]):
+                dims = [BATCH_DIM, TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+            if all(
+                [
+                    dim in self._fit_coords
+                    for dim in [BATCH_DIM, TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]
+                ]
+            ):
+                mu_dims = [BATCH_DIM, ALL_STATE_DIM]
+                cov_dims = [BATCH_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]
+        else:
+            data_dims = ["data_time", OBS_STATE_DIM]
+            if all([dim in temp_coords for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]]):
+                dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+            if all(
+                [dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]]
+            ):
+                mu_dims = [ALL_STATE_DIM]
+                cov_dims = [ALL_STATE_DIM, ALL_STATE_AUX_DIM]
 
         with pm.Model(coords=temp_coords) as forecast_model:
             _, grouped_outputs = self._kalman_filter_outputs_from_dummy_graph(
-                data_dims=["data_time", OBS_STATE_DIM],
+                data_dims=data_dims,
             )
 
             group_idx = FILTER_OUTPUT_TYPES.index(filter_output)
@@ -2588,12 +2603,24 @@ class PyMCStateSpace:
 
             mu_frozen, cov_frozen = graph_replace([mu, cov], replace=sub_dict, strict=True)
 
-            x0 = pm.Deterministic(
-                "x0_slice", mu_frozen[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
-            )
-            P0 = pm.Deterministic(
-                "P0_slice", cov_frozen[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
-            )
+            if self.batch_size:
+                x0 = pm.Deterministic(
+                    "x0_slice",
+                    mu_frozen[:, t0_idx, :],
+                    dims=mu_dims if mu_dims is not None else None,
+                )
+                P0 = pm.Deterministic(
+                    "P0_slice",
+                    cov_frozen[:, t0_idx, :, :],
+                    dims=cov_dims if cov_dims is not None else None,
+                )
+            else:
+                x0 = pm.Deterministic(
+                    "x0_slice", mu_frozen[t0_idx], dims=mu_dims if mu_dims is not None else None
+                )
+                P0 = pm.Deterministic(
+                    "P0_slice", cov_frozen[t0_idx], dims=cov_dims if cov_dims is not None else None
+                )
 
             # Get fresh matrices with n_timesteps placeholder still intact.
             # Build for the full timeline (training + forecast) so that time-varying matrices
