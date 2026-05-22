@@ -2119,6 +2119,10 @@ class PyMCStateSpace:
         compile_kwargs = kwargs.pop("compile_kwargs", {})
         compile_kwargs.setdefault("mode", self.mode)
 
+        data_dims = None
+        if self.batch_size:
+            data_dims = (BATCH_DIM, TIME_DIM, OBS_STATE_DIM)
+
         with pm.Model(coords=self.coords) as m:
             self._build_dummy_graph()
             self._insert_random_variables()
@@ -2139,35 +2143,85 @@ class PyMCStateSpace:
                 n_obs=self.ssm.k_endog,
                 obs_coords=obs_coords,
                 register_data=True,
+                data_dims=data_dims,
             )
 
-            filter_outputs = self.kalman_filter.build_graph(
-                data,
-                x0,
-                P0,
-                c,
-                d,
-                T,
-                Z,
-                R,
-                H,
-                Q,
-                time_varying_names=self.ssm.time_varying_names,
-            )
+            if data_dims and BATCH_DIM in data_dims:
+                vectorized_filter = self.make_vectorized_filter(
+                    None, None, time_varying_names=self.ssm.time_varying_names
+                )
 
-            smoother_outputs = self.kalman_smoother.build_graph(
-                T,
-                R,
-                Q,
-                filter_outputs[0],
-                filter_outputs[3],
-                time_varying_names=self.ssm.time_varying_names,
-            )
+                filter_outputs = vectorized_filter(
+                    data,
+                    x0,
+                    P0,
+                    c,
+                    d,
+                    T,
+                    Z,
+                    R,
+                    H,
+                    Q,
+                )
+            else:
+                filter_outputs = self.kalman_filter.build_graph(
+                    data,
+                    x0,
+                    P0,
+                    c,
+                    d,
+                    T,
+                    Z,
+                    R,
+                    H,
+                    Q,
+                    time_varying_names=self.ssm.time_varying_names,
+                )
+
+            if data_dims and BATCH_DIM in data_dims:
+                vectorized_smoother = self.make_vectorized_smoother(
+                    1e-8, self.ssm.time_varying_names
+                )
+                smoother_outputs = vectorized_smoother(
+                    T,
+                    R,
+                    Q,
+                    filter_outputs[0],
+                    filter_outputs[3],
+                )
+            else:
+                smoother_outputs = self.kalman_smoother.build_graph(
+                    T,
+                    R,
+                    Q,
+                    filter_outputs[0],
+                    filter_outputs[3],
+                    time_varying_names=self.ssm.time_varying_names,
+                )
 
             filter_outputs = filter_outputs[:-1] + list(smoother_outputs)
+
+            if self.batch_size:
+                ordered_filter_output_names = [
+                    "filtered_states",
+                    "predicted_states",
+                    "predicted_observed_states",
+                    "filtered_covariances",
+                    "predicted_covariances",
+                    "predicted_observed_covariances",
+                    "smoothed_states",
+                    "smoothed_covariances",
+                ]
+                # Names disappear when we vectorize need to reassign names
+                for output, name in zip(filter_outputs, ordered_filter_output_names):
+                    output.name = name
+
             for output in filter_outputs:
                 if output.name in filter_output_names:
-                    dims = FILTER_OUTPUT_DIMS[output.name]
+                    if self.batch_size:
+                        dims = (BATCH_DIM, *FILTER_OUTPUT_DIMS[output.name])
+                    else:
+                        dims = FILTER_OUTPUT_DIMS[output.name]
                     pm.Deterministic(output.name, output, dims=dims)
 
         with freeze_dims_and_data(m):
