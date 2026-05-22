@@ -2077,7 +2077,15 @@ class PyMCStateSpace:
                 long_name = SHORT_NAME_TO_LONG[short_name]
                 if (long_name in matrix_names) or (short_name in matrix_names):
                     name = long_name if long_name in matrix_names else short_name
-                    dims = [x if x in self._fit_coords else None for x in MATRIX_DIMS[short_name]]
+                    if self.batch_size:
+                        dims = [
+                            x if x in self._fit_coords else None for x in MATRIX_DIMS[short_name]
+                        ]
+                        dims = [BATCH_DIM, *dims]
+                    else:
+                        dims = [
+                            x if x in self._fit_coords else None for x in MATRIX_DIMS[short_name]
+                        ]
                     pm.Deterministic(name, matrix, dims=dims)
 
         # TODO: Remove this after pm.Flat has its initial_value fixed
