@@ -3034,7 +3034,14 @@ class PyMCStateSpace:
 
             matrices = self._insert_constant_timestep(self.unpack_statespace(), step=n_steps)
             P0, _, c, d, T, Z, R, H, post_Q = matrices
-            x0 = pm.Deterministic("x0_new", pt.zeros(self.k_states), dims=[ALL_STATE_DIM])
+            if self.batch_size:
+                x0 = pm.Deterministic(
+                    "x0_new",
+                    pt.zeros((self.batch_size, self.k_states)),
+                    dims=[BATCH_DIM, ALL_STATE_DIM],
+                )
+            else:
+                x0 = pm.Deterministic("x0_new", pt.zeros(self.k_states), dims=[ALL_STATE_DIM])
 
             if use_posterior_cov:
                 Q = post_Q
@@ -3046,23 +3053,51 @@ class PyMCStateSpace:
                     Q = pt.linalg.cholesky(Q) / pt.diag(Q)
 
             if shock_trajectory is None:
-                shock_trajectory = pt.zeros((n_steps, self.k_posdef))
-                if Q is not None:
-                    init_shock = pm.MvNormal(
-                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
-                    )
+                if self.batch_size:
+                    shock_trajectory = pt.zeros((self.batch_size, n_steps, self.k_posdef))
                 else:
-                    init_shock = pm.Deterministic(
-                        "initial_shock",
-                        pt.as_tensor_variable(np.atleast_1d(shock_size)),
-                        dims=[SHOCK_DIM],
-                    )
-                shock_trajectory = pt.set_subtensor(shock_trajectory[0], init_shock)
+                    shock_trajectory = pt.zeros((n_steps, self.k_posdef))
+                if Q is not None:
+                    if self.batch_size:
+                        init_shock = pm.MvNormal(
+                            "initial_shock",
+                            mu=0,
+                            cov=Q,
+                            dims=[BATCH_DIM, SHOCK_DIM],
+                            method=mvn_method,
+                        )
+                    else:
+                        init_shock = pm.MvNormal(
+                            "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
+                        )
+                else:
+                    if self.batch_size:
+                        init_shock = pm.Deterministic(
+                            "initial_shock",
+                            pt.as_tensor_variable(np.atleast_1d(shock_size)),
+                            dims=[BATCH_DIM, SHOCK_DIM],
+                        )
+                    else:
+                        init_shock = pm.Deterministic(
+                            "initial_shock",
+                            pt.as_tensor_variable(np.atleast_1d(shock_size)),
+                            dims=[SHOCK_DIM],
+                        )
+                if self.batch_size:
+                    shock_trajectory = pt.set_subtensor(shock_trajectory[:, 0], init_shock)
+                else:
+                    shock_trajectory = pt.set_subtensor(shock_trajectory[0], init_shock)
 
             else:
                 shock_trajectory = pt.as_tensor_variable(shock_trajectory)
 
             time_varying_T = "transition" in self.ssm.time_varying_names
+
+            if self.batch_size:
+                shock_trajectory = shock_trajectory.swapaxes(0, 1)
+
+            def bmv(A, x):
+                return pt.matmul(A, x[..., None])[..., 0]
 
             def irf_step(*args):
                 if time_varying_T:
@@ -3070,7 +3105,7 @@ class PyMCStateSpace:
                 else:
                     shock, x, c, T, R = args
 
-                next_x = c + T @ x + R @ shock
+                next_x = c + bmv(T, x) + bmv(R, shock)
                 return next_x
 
             sequences = [shock_trajectory, T] if time_varying_T else [shock_trajectory]
@@ -3086,7 +3121,13 @@ class PyMCStateSpace:
                 return_updates=False,
             )
 
-            pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])
+            if self.batch_size:
+                irf = irf.swapaxes(0, 1)
+
+            if self.batch_size:
+                pm.Deterministic("irf", irf, dims=[BATCH_DIM, TIME_DIM, ALL_STATE_DIM])
+            else:
+                pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])
 
             irf_idata = pm.sample_posterior_predictive(
                 idata,
