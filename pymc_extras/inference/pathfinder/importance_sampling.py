@@ -32,48 +32,55 @@ def importance_sampling(
     method: Literal["psis", "psir", "identity"] | None,
     random_seed: int | None = None,
 ) -> ImportanceSamplingResult:
-    """Pareto Smoothed Importance Resampling (PSIR)
-    This implements the Pareto Smooth Importance Resampling (PSIR) method, as described in Algorithm 5 of Zhang et al. (2022). The PSIR follows a similar approach to Algorithm 1 PSIS diagnostic from Yao et al., (2018). However, before computing the the importance ratio r_s, the logP and logQ are adjusted to account for the number multiple estimators (or paths). The process involves resampling from the original sample with replacement, with probabilities proportional to the computed importance weights from PSIS.
+    """Pareto Smoothed Importance Resampling (PSIR).
+
+    Implements the PSIR method from Algorithm 5 of Zhang et al. (2022), which follows the
+    Algorithm 1 PSIS diagnostic of Yao et al. (2018). Before computing the importance ratio
+    :math:`r_s`, logP and logQ are adjusted to account for the number of estimators (paths).
+    Resampling then draws from the original samples with replacement, with probabilities
+    proportional to the PSIS importance weights.
 
     Parameters
     ----------
     samples : NDArray
-        samples from proposal distribution, shape (L, M, N)
+        Samples from the proposal distribution, shape (L, M, N).
     logP : NDArray
-        log probability values of target distribution, shape (L, M)
+        Log-probability values of the target distribution, shape (L, M).
     logQ : NDArray
-        log probability values of proposal distribution, shape (L, M)
+        Log-probability values of the proposal distribution, shape (L, M).
     num_draws : int
-        number of draws to return where num_draws <= samples.shape[0]
-    method : str, None, optional
-        Method to apply sampling based on log importance weights (logP - logQ).
-        Options are:
-        "psis" : Pareto Smoothed Importance Sampling (default)
-                Recommended for more stable results.
-        "psir" : Pareto Smoothed Importance Resampling
-                Less stable than PSIS.
-        "identity" : Applies log importance weights directly without resampling.
-        None : No importance sampling weights. Returns raw samples of size (num_paths, num_draws_per_path, N) where N is number of model parameters. Other methods return samples of size (num_draws, N).
-    random_seed : int | None
+        Number of draws to return, where num_draws <= samples.shape[0].
+    method : str or None, optional
+        Method to apply based on log importance weights (logP - logQ):
+
+        - "psis" : Pareto Smoothed Importance Sampling; usually most stable.
+        - "psir" : Pareto Smoothed Importance Resampling; less stable than PSIS.
+        - "identity" : apply log importance weights directly without resampling.
+        - None : no importance sampling; return raw samples of shape
+          (num_paths, num_draws_per_path, N). The other methods return shape (num_draws, N).
+    random_seed : int, optional
+        Random seed for the resampling RNG. Default None.
 
     Returns
     -------
     ImportanceSamplingResult
-        importance sampled draws and other info based on the specified method
+        Importance-sampled draws and related diagnostics for the chosen method.
 
-    Future work!
-    ----------
-    - Implement the 3 sampling approaches and 5 weighting functions from Elvira et al. (2019)
-    - Implement Algorithm 2 VSBC marginal diagnostics from Yao et al. (2018)
-    - Incorporate these various diagnostics, sampling approaches and weighting functions into VI algorithms.
+    Notes
+    -----
+    Possible future extensions: the three sampling approaches and five weighting functions of
+    Elvira et al. (2019), and the Algorithm 2 VSBC marginal diagnostics of Yao et al. (2018).
 
     References
     ----------
-    Elvira, V., Martino, L., Luengo, D., & Bugallo, M. F. (2019). Generalized Multiple Importance Sampling. Statistical Science, 34(1), 129-155. https://doi.org/10.1214/18-STS668
+    Elvira, V., Martino, L., Luengo, D., & Bugallo, M. F. (2019). Generalized Multiple
+    Importance Sampling. Statistical Science, 34(1), 129-155. https://doi.org/10.1214/18-STS668
 
-    Yao, Y., Vehtari, A., Simpson, D., & Gelman, A. (2018). Yes, but Did It Work?: Evaluating Variational Inference. arXiv:1802.02538 [Stat]. http://arxiv.org/abs/1802.02538
+    Yao, Y., Vehtari, A., Simpson, D., & Gelman, A. (2018). Yes, but Did It Work?: Evaluating
+    Variational Inference. arXiv:1802.02538 [Stat]. http://arxiv.org/abs/1802.02538
 
-    Zhang, L., Carpenter, B., Gelman, A., & Vehtari, A. (2022). Pathfinder: Parallel quasi-Newton variational inference. Journal of Machine Learning Research, 23(306), 1-49.
+    Zhang, L., Carpenter, B., Gelman, A., & Vehtari, A. (2022). Pathfinder: Parallel
+    quasi-Newton variational inference. Journal of Machine Learning Research, 23(306), 1-49.
     """
 
     warnings = []
@@ -81,7 +88,9 @@ def importance_sampling(
 
     if method is None:
         warnings.append(
-            "Importance sampling is disabled. The samples are returned as is which may include samples from failed paths with non-finite logP or logQ values. It is recommended to use importance_sampling='psis' for better stability."
+            "Importance sampling is disabled. The samples are returned as is which may "
+            "include samples from failed paths with non-finite logP or logQ values. It is "
+            "recommended to use importance_sampling='psis' for better stability."
         )
         return ImportanceSamplingResult(samples=samples, warnings=warnings, method=method)
     else:
@@ -114,8 +123,8 @@ def importance_sampling(
                     replace = False
                     pareto_k = None
 
-    # NOTE: Pareto k is normally bad for Pathfinder even when the posterior is close to the NUTS posterior or closer to NUTS than ADVI.
-    # Pareto k may not be a good diagnostic for Pathfinder.
+    # NOTE: Pareto k is normally bad for Pathfinder even when the posterior is close to the NUTS
+    # posterior, or closer to NUTS than ADVI, so it may not be a good diagnostic here.
     # TODO: Find replacement diagnostics for Pathfinder.
 
     p = np.exp(logiw - logsumexp(logiw))
@@ -130,7 +139,8 @@ def importance_sampling(
         if "Fewer non-zero entries in p than size" in str(e1):
             num_nonzero = np.where(np.nonzero(p)[0], 1, 0).sum()
             warnings.append(
-                f"Not enough valid samples: {num_nonzero} available out of {num_draws} requested. Switching to psir importance sampling."
+                f"Not enough valid samples: {num_nonzero} available out of {num_draws} "
+                "requested. Switching to psir importance sampling."
             )
             try:
                 resampled = rng.choice(
