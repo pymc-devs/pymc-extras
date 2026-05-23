@@ -204,9 +204,7 @@ def make_single_pathfinder_fn(
                     final_rng = np.random.default_rng(final_seed)
                     u_final = final_rng.standard_normal((num_draws, N))
                     if progress_callback is not None:
-                        progress_callback(
-                            {"status": "sampling", "current_elbo": None, "step_size": None}
-                        )
+                        progress_callback({"status": "sampling"})
 
                     sample_out = local_sample_logp(
                         best_state["x"],
@@ -270,9 +268,7 @@ def make_single_pathfinder_fn(
                 status_str = (
                     "elbo@0" if result.path_status == PathStatus.ELBO_ARGMAX_AT_ZERO else "ok"
                 )
-                progress_callback(
-                    {"status": status_str, "lbfgs_steps": int(lbfgs_niter), "best_ind": elbo_argmax}
-                )
+                progress_callback({"status": status_str, "lbfgs_steps": int(lbfgs_niter)})
             return result
 
         except LBFGSException as e:

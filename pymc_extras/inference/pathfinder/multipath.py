@@ -20,7 +20,7 @@ from pymc.sampling.parallel import (
 )
 from pymc.util import RandomSeed, _get_seeds_per_chain
 from rich.console import Console
-from rich.progress import TaskID, TextColumn, TimeElapsedColumn
+from rich.progress import BarColumn, MofNCompleteColumn, TaskID, TextColumn, TimeElapsedColumn
 from rich.table import Column
 from threadpoolctl import threadpool_limits
 
@@ -155,10 +155,8 @@ def multipath_pathfinder(
 
     compute_start = time.time()
 
-    # Per-path progress bar (one row per path, updated in real time)
+    # One progress row per path, updated in real time.
     progress = _make_multipath_progress(progressbar)
-
-    # Create one task per path and build per-path progress callbacks
     task_ids: list[TaskID] = []
     path_callbacks: list[Callable | None] = []
     with progress:
@@ -166,19 +164,16 @@ def multipath_pathfinder(
             tid = progress.add_task(
                 f"Path {i + 1}",
                 status="queued",
-                lbfgs_steps=0,
-                steps_per_sec="—",
-                best_elbo="—",
-                best_ind="—",
-                current_elbo="—",
-                step_size="—",
-                total=None,
+                elbo="—",
+                speed=0.0,
+                speed_unit="it/s",
+                total=lbfgs_config.maxiter,
+                completed=0,
             )
             task_ids.append(tid)
             path_callbacks.append(_make_progress_callback(progress, tid))
 
-        # parallel=True gives true parallelism via separate worker processes
-        # parallel=False is serial.
+        # parallel=True runs each path in its own worker process; parallel=False is serial.
         generator = make_generator(
             parallel=parallel,
             fn=single_pathfinder_fn,
@@ -383,31 +378,20 @@ def make_generator(
 
 
 def _make_multipath_progress(progressbar: bool) -> CustomProgress:
+    # Per-path lifecycle status, an L-BFGS progress bar, and the best ELBO seen so far -- the value
+    # pathfinder actually selects on.
     return CustomProgress(
-        TextColumn("{task.description}", table_column=Column("Path", min_width=7, no_wrap=True)),
+        BarColumn(bar_width=20, table_column=Column("Progress")),
         TextColumn(
             "{task.fields[status]}", table_column=Column("Status", min_width=10, no_wrap=True)
         ),
+        MofNCompleteColumn(table_column=Column("Iter", min_width=9, no_wrap=True)),
         TextColumn(
-            "{task.fields[lbfgs_steps]}", table_column=Column("Steps", min_width=6, no_wrap=True)
+            "{task.fields[speed]:0.2f} {task.fields[speed_unit]}",
+            table_column=Column("Speed", min_width=10, no_wrap=True),
         ),
         TextColumn(
-            "{task.fields[steps_per_sec]}",
-            table_column=Column("Steps/s", min_width=8, no_wrap=True),
-        ),
-        TextColumn(
-            "{task.fields[best_ind]}", table_column=Column("Best step", min_width=9, no_wrap=True)
-        ),
-        TextColumn(
-            "{task.fields[best_elbo]}", table_column=Column("Best ELBO", min_width=12, no_wrap=True)
-        ),
-        TextColumn(
-            "{task.fields[current_elbo]}",
-            table_column=Column("Cur ELBO", min_width=12, no_wrap=True),
-        ),
-        TextColumn(
-            "{task.fields[step_size]}",
-            table_column=Column("Step size", min_width=10, no_wrap=True),
+            "{task.fields[elbo]}", table_column=Column("Best ELBO", min_width=11, no_wrap=True)
         ),
         TimeElapsedColumn(table_column=Column("Elapsed", min_width=8, no_wrap=True)),
         include_headers=True,
@@ -419,38 +403,31 @@ def _make_multipath_progress(progressbar: bool) -> CustomProgress:
 def _make_progress_callback(progress: CustomProgress, task_id: TaskID) -> Callable[[dict], None]:
     def cb(info: dict) -> None:
         fields: dict[str, Any] = {}
-        if "status" in info and info["status"] is not None:
+        update_kwargs: dict[str, Any] = {}
+        if info.get("status") is not None:
             fields["status"] = info["status"]
-        if "lbfgs_steps" in info:
-            fields["lbfgs_steps"] = info["lbfgs_steps"]
+        if "iteration" in info:
+            completed = int(info["iteration"])
+            update_kwargs["completed"] = completed
+            # Step pace off rich's task clock, flipping to s/step when slower than 1/s (pymc style).
+            elapsed = progress.tasks[task_id].elapsed or 0.0
+            if elapsed > 0.25:
+                speed = completed / elapsed
+                if speed >= 1.0:
+                    fields["speed"], fields["speed_unit"] = speed, "it/s"
+                else:
+                    fields["speed"], fields["speed_unit"] = 1.0 / speed, "s/it"
         if "best_elbo" in info:
             val = info["best_elbo"]
-            fields["best_elbo"] = (
-                f"{val:.3f}" if val is not None and np.isfinite(float(val)) else "—"
-            )
-        if "best_ind" in info:
-            val = info["best_ind"]
-            fields["best_ind"] = (
-                str(int(val)) if val is not None and np.isfinite(float(val)) else "—"
-            )
-        if "current_elbo" in info:
-            val = info["current_elbo"]
-            fields["current_elbo"] = (
-                f"{val:.3f}" if val is not None and np.isfinite(float(val)) else "—"
-            )
-        if "step_size" in info:
-            val = info["step_size"]
-            fields["step_size"] = (
-                f"{val:.2e}" if val is not None and np.isfinite(float(val)) else "—"
-            )
-        if "steps_per_sec" in info:
-            val = info["steps_per_sec"]
-            fields["steps_per_sec"] = (
-                f"{val:.1f}/s" if val is not None and np.isfinite(float(val)) else "—"
-            )
-        if fields:
-            progress.update(task_id, **fields)
+            fields["elbo"] = format(val, ".3f") if val is not None and np.isfinite(val) else "—"
+        if fields or update_kwargs:
+            progress.update(task_id, **update_kwargs, **fields)
         if info.get("status") in ("ok", "elbo@0"):
+            # L-BFGS converges well short of maxiter, so snap the bar to the achieved step count
+            # (as better_optimize does) instead of leaving it stuck near empty.
+            if "lbfgs_steps" in info:
+                n = int(info["lbfgs_steps"])
+                progress.update(task_id, total=n, completed=n)
             progress.stop_task(task_id)
 
     return cb

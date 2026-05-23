@@ -1,5 +1,4 @@
 import logging
-import time
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -8,8 +7,8 @@ from typing import Self
 
 import numpy as np
 
+from better_optimize import minimize
 from numpy.typing import NDArray
-from scipy.optimize import minimize
 
 from pymc_extras.inference.pathfinder.bfgs_sample import alpha_step_numpy
 
@@ -130,16 +129,6 @@ class LBFGS:
         self.maxls = maxls
         self.epsilon = epsilon
 
-    @property
-    def _scipy_options(self) -> dict:
-        return {
-            "maxcor": self.maxcor,
-            "maxiter": self.maxiter,
-            "ftol": self.ftol,
-            "gtol": self.gtol,
-            "maxls": self.maxls,
-        }
-
     def _classify_status(self, result, update_count: int) -> LBFGSStatus:
         """Classify the LBFGS termination status.
 
@@ -174,8 +163,8 @@ class LBFGS:
         Parameters
         ----------
         callback : object
-            Exposes ``value_grad_fn``, the ``(x) -> (value, grad)`` objective passed to scipy,
-            and a ``step_count`` it updates on each accepted step.
+            Exposes ``value_grad_fn``, the fused ``(x) -> (value, grad)`` objective, and a
+            ``step_count`` it updates on each accepted step.
         x0 : array_like
             Initial position.
 
@@ -187,13 +176,19 @@ class LBFGS:
             The classified termination status.
         """
         x0 = np.array(x0, dtype=np.float64)
+        # better_optimize detects the fused (value, grad) objective and promotes maxcor/maxiter/...
+        # to scipy's options dict itself, so they pass straight through as keyword arguments.
         result = minimize(
             callback.value_grad_fn,
             x0,
             method="L-BFGS-B",
-            jac=True,
             callback=callback,
-            options=self._scipy_options,
+            progressbar=False,
+            maxcor=self.maxcor,
+            maxiter=self.maxiter,
+            ftol=self.ftol,
+            gtol=self.gtol,
+            maxls=self.maxls,
         )
         step_count = callback.step_count
         return step_count, self._classify_status(result, step_count + 1)
@@ -268,12 +263,22 @@ class LBFGSStreamingCallback:
         self.step_count: int = 0
         self.any_valid: bool = False
         self.current_elbo: float | None = None
-        self._start_time: float = time.time()
 
-    def __call__(self, x: NDArray) -> float | None:
+    def __call__(self, intermediate) -> float | None:
         """Process one accepted L-BFGS step and return its ELBO, or None if the step is skipped
-        (non-finite value/gradient, or curvature condition not met)."""
-        value, g = self.value_grad_fn(x)
+        (non-finite value/gradient, or curvature condition not met).
+
+        ``intermediate`` is a scipy/better_optimize ``OptimizeResult`` (carrying ``.x``, ``.fun``,
+        and ``.jac``) or, for a classic scipy callback, the raw position array.
+        """
+        if hasattr(intermediate, "x"):
+            x = np.asarray(intermediate.x, dtype=np.float64)
+            value = float(intermediate.fun)
+            g = getattr(intermediate, "jac", None)
+            g = self.value_grad_fn(x)[1] if g is None else np.asarray(g, dtype=np.float64)
+        else:
+            x = np.asarray(intermediate, dtype=np.float64)
+            value, g = self.value_grad_fn(x)
 
         s = x - self.x_prev
         z = g - self.g_prev
@@ -333,20 +338,6 @@ class LBFGSStreamingCallback:
         self.current_elbo = elbo if np.isfinite(elbo) else None
 
         if self.progress_callback is not None:
-            best_elbo = self.best_elbo if np.isfinite(self.best_elbo) else None
-            current_elbo = self.current_elbo
-            elapsed = time.time() - self._start_time
-            steps_per_sec = self.step_count / elapsed if elapsed > 0 else None
-            step_size = float(np.linalg.norm(s))
-            self.progress_callback(
-                {
-                    "lbfgs_steps": self.step_count,
-                    "best_elbo": best_elbo,
-                    "best_ind": self.best_step_idx,
-                    "current_elbo": current_elbo,
-                    "step_size": step_size,
-                    "steps_per_sec": steps_per_sec,
-                }
-            )
+            self.progress_callback({"iteration": self.step_count, "best_elbo": self.best_elbo})
 
         return elbo
