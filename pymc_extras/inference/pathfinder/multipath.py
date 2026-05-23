@@ -4,14 +4,20 @@ import multiprocessing as mp
 import time
 
 from collections.abc import Callable, Iterator
+from multiprocessing.connection import wait
 from typing import Any, Literal
 
+import cloudpickle
 import numpy as np
 
 from pymc import Model
 from pymc.progress_bar import CustomProgress, default_progress_theme
 from pymc.sampling.mcmc import setup_cores_blas_cores
-from pymc.sampling.parallel import _cpu_count, _initialize_multiprocessing_context
+from pymc.sampling.parallel import (
+    ExceptionWithTraceback,
+    _cpu_count,
+    _initialize_multiprocessing_context,
+)
 from pymc.util import RandomSeed, _get_seeds_per_chain
 from rich.console import Console
 from rich.progress import TextColumn, TimeElapsedColumn
@@ -185,19 +191,7 @@ def multipath_pathfinder(
             )
 
             for result in generator:
-                try:
-                    if isinstance(result, Exception):
-                        raise result
-                    else:
-                        results.append(result)
-                except Exception as e:
-                    logger.warning("Unexpected error in a path: %s", str(e))
-                    results.append(
-                        PathfinderResult(
-                            path_status=PathStatus.PATH_FAILED,
-                            lbfgs_status=LBFGSStatus.LBFGS_FAILED,
-                        )
-                    )
+                results.append(result)
     except (KeyboardInterrupt, StopIteration) as e:
         # The user may abort early; MultiPathfinderResult still keeps the results gathered so far.
         if isinstance(e, StopIteration):
@@ -245,51 +239,45 @@ def _default_cores(num_paths: int, cores: int | None) -> int:
     return min(4, _cpu_count(), num_paths)
 
 
-class _PipeCallback:
-    """Picklable progress callback that relays updates through a multiprocessing Pipe."""
-
-    def __init__(self, conn: Any, idx: int) -> None:
-        self.conn = conn
-        self.idx = idx
-
-    def __call__(self, info: dict) -> None:
-        # Progress relay is best-effort: a closed or broken pipe must not crash the worker.
-        try:
-            self.conn.send((self.idx, info))
-        except Exception:
-            pass
-
-
-def _run_path(
-    fn_pickled: bytes,
+def _run_pathfinder_process(
+    msg_pipe: Any,
+    fn: "SinglePathfinderFn | bytes",
+    fn_is_pickled: bool,
     seed: int,
-    path_id: int,
-    progress_conn: Any,
-    blas_cores: int | None,
     mp_start_method: str,
-) -> PathfinderResult:
-    """Worker: unpickle fn, run with threadpool_limits when blas_cores set (non-fork)."""
-    import cloudpickle
+    blas_cores: int | None,
+) -> None:
+    """Worker entry point: run one path, relaying progress and the result over ``msg_pipe``.
 
-    from pytensor.compile.compilelock import lock_ctx
-
+    ``fn`` is the live single-path function (fork) or cloudpickled bytes (spawn).
+    """
     ctx = (
         threadpool_limits(limits=blas_cores)
         if mp_start_method != "fork" and blas_cores is not None
         else contextlib.nullcontext()
     )
     with ctx:
-        with lock_ctx(timeout=-1):
-            fn = cloudpickle.loads(fn_pickled)
-        cb = _PipeCallback(progress_conn, path_id)
         try:
-            return fn(seed, cb)
-        finally:
-            # Best-effort sentinel so the listener can stop; a broken pipe here is harmless.
+            if fn_is_pickled:
+                fn = cloudpickle.loads(fn)
+
+            def progress_callback(info: dict) -> None:
+                # Best-effort: a closed pipe (parent gone) must not crash the worker.
+                try:
+                    msg_pipe.send(("progress", info))
+                except Exception:
+                    pass
+
+            msg_pipe.send(("done", fn(seed, progress_callback)))
+        except KeyboardInterrupt:
+            pass
+        except BaseException as e:
             try:
-                progress_conn.send((path_id, None))  # sentinel
+                msg_pipe.send(("error", ExceptionWithTraceback(e, e.__traceback__)))
             except Exception:
                 pass
+        finally:
+            msg_pipe.close()
 
 
 def _execute_concurrently(
@@ -300,99 +288,78 @@ def _execute_concurrently(
     progress_callbacks: list[Callable | None] | None = None,
     mp_ctx: mp.context.BaseContext | str | None = None,
 ) -> Iterator[PathfinderResult]:
-    """Execute pathfinder runs concurrently via ProcessPoolExecutor.
+    """Run paths in worker processes, at most ``cores`` alive at once.
 
-    Uses Pipe instead of Manager().Queue() to avoid spawn bootstrapping issues
-    when mp_ctx is 'spawn' and the main module is still loading.
+    Workers are spawned as slots free, so the process count never exceeds ``cores`` regardless of
+    the number of paths. A worker that errors or dies yields a failed PathfinderResult rather than
+    aborting the whole fit.
     """
-    import threading
+    ctx = _initialize_multiprocessing_context(mp_ctx, quiet=True)
+    start_method = ctx.get_start_method()
+    # Fork inherits the fn via memory; non-fork ships it pickled once, shared by all workers.
+    fn_is_pickled = start_method != "fork"
+    fn_payload = cloudpickle.dumps(fn, protocol=-1) if fn_is_pickled else fn
 
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    pending = list(enumerate(seeds))  # (chain, seed), oldest first
+    active: dict[Any, tuple[int, Any]] = {}  # parent_conn -> (chain, process)
 
-    import cloudpickle
+    def _spawn(chain: int, seed: int) -> None:
+        parent_conn, child_conn = ctx.Pipe()
+        proc = ctx.Process(
+            daemon=True,
+            name=f"pathfinder_path_{chain}",
+            target=_run_pathfinder_process,
+            args=(child_conn, fn_payload, fn_is_pickled, seed, start_method, blas_cores),
+        )
+        proc.start()
+        child_conn.close()  # the parent keeps only its end of the pipe
+        active[parent_conn] = (chain, proc)
 
-    mp_ctx = _initialize_multiprocessing_context(mp_ctx, quiet=True)
-    fn_pickled = cloudpickle.dumps(fn, protocol=-1)
+    def _fill() -> None:
+        while pending and len(active) < cores:
+            chain, seed = pending.pop(0)
+            _spawn(chain, seed)
 
-    # One pipe per worker; avoids Manager() which spawns a process and triggers
-    # "An attempt has been made to start a new process before bootstrapping" when
-    # the main module is still loading (e.g. script run without if __name__ guard).
-    n_workers = len(seeds)
-    parent_conns = []
-    child_conns = []
-    for _ in range(n_workers):
-        parent, child = mp_ctx.Pipe(duplex=False)
-        parent_conns.append(parent)
-        child_conns.append(child)
-
-    sentinel_count: list[int] = [0]
-    sentinel_lock = threading.Lock()
-
-    def _listener() -> None:
-        from multiprocessing.connection import wait
-
-        while True:
-            ready = wait(parent_conns, timeout=0.1)
-            for conn in ready:
-                try:
-                    idx, info = conn.recv()
-                except EOFError:
-                    # Worker closed its end before the sentinel; nothing left to read here.
-                    continue
-                if info is None:
-                    with sentinel_lock:
-                        sentinel_count[0] += 1
-                    if sentinel_count[0] >= n_workers:
-                        return
-                    continue
-                if (
-                    progress_callbacks
-                    and idx < len(progress_callbacks)
-                    and progress_callbacks[idx] is not None
-                ):
-                    progress_callbacks[idx](info)
-
-    listener = threading.Thread(target=_listener, daemon=True)
-    listener.start()
-
-    def _run_executor():
-        with ProcessPoolExecutor(max_workers=cores, mp_context=mp_ctx) as executor:
-            futures = {
-                executor.submit(
-                    _run_path,
-                    fn_pickled,
-                    seed,
-                    i,
-                    child_conns[i],
-                    blas_cores,
-                    mp_ctx.get_start_method(),
-                ): i
-                for i, seed in enumerate(seeds)
-            }
-            for f in as_completed(futures):
-                yield f.result()
+    def _failed_path() -> PathfinderResult:
+        return PathfinderResult(
+            path_status=PathStatus.PATH_FAILED, lbfgs_status=LBFGSStatus.LBFGS_FAILED
+        )
 
     try:
-        yield from _run_executor()
-    except RuntimeError as e:
-        if "bootstrapping" in str(e) and mp_ctx.get_start_method() == "spawn":
-            raise RuntimeError(
-                "Pathfinder with mp_ctx='spawn' requires the entry point to be "
-                "guarded with `if __name__ == '__main__':`. When using spawn, "
-                "wrap your fit_pathfinder call (or the function that contains it) "
-                "in that block. See: "
-                "https://docs.python.org/3/library/multiprocessing.html"
-                "#the-spawn-and-forkserver-start-methods"
-            ) from e
-        raise
+        _fill()
+        while active:
+            for conn in wait(list(active)):
+                chain, proc = active[conn]
+                try:
+                    kind, payload = conn.recv()
+                except EOFError:
+                    # Worker died without a message (e.g. a hard crash); count it as a failure.
+                    kind, payload = "error", None
+
+                if kind == "progress":
+                    if progress_callbacks and progress_callbacks[chain] is not None:
+                        progress_callbacks[chain](payload)
+                    continue
+
+                # Terminal message: finalize this worker and start a replacement before yielding.
+                del active[conn]
+                conn.close()
+                proc.join()
+                _fill()
+
+                if kind == "done":
+                    yield payload
+                else:
+                    if payload is not None:
+                        logger.warning("Pathfinder path %d failed: %s", chain, payload)
+                    yield _failed_path()
     finally:
-        for c in child_conns:
-            # Best-effort cleanup; a pipe already closed by its worker is fine.
-            try:
-                c.close()
-            except Exception:
-                pass
-        listener.join(timeout=5)
+        for conn, (_, proc) in active.items():
+            with contextlib.suppress(Exception):
+                conn.close()
+            if proc.is_alive():
+                proc.terminate()
+            proc.join()
 
 
 def _execute_serially(
