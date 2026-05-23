@@ -87,65 +87,59 @@ def _pathfinder_dataset(
     param_coords = get_param_coords(model, n_params) if n_params is not None else None
 
     data_vars: dict = {}
-    coords: dict = {}
+    coords: dict = {"param": param_coords} if param_coords is not None else {}
     attrs: dict = {}
 
-    if param_coords is not None:
-        coords["param"] = param_coords
+    def include_if(name: str, value) -> None:
+        if value is not None:
+            data_vars[name] = xr.DataArray(value)
 
-    if result.num_paths is not None:
-        data_vars["num_paths"] = xr.DataArray(result.num_paths)
-    if result.num_draws is not None:
-        data_vars["num_draws"] = xr.DataArray(result.num_draws)
+    def include_stats(prefix: str, arr, *, with_max: bool = True) -> None:
+        if arr is None:
+            return
+        data_vars[f"{prefix}_mean"] = xr.DataArray(np.mean(arr))
+        data_vars[f"{prefix}_std"] = xr.DataArray(np.std(arr))
+        if with_max:
+            data_vars[f"{prefix}_max"] = xr.DataArray(np.max(arr))
+
+    # Top-level summary
+    include_if("num_paths", result.num_paths)
+    include_if("num_draws", result.num_draws)
     data_vars["all_paths_failed"] = xr.DataArray(result.all_paths_failed)
-    if not result.all_paths_failed and result.samples is not None:
-        data_vars["num_successful_paths"] = xr.DataArray(result.samples.shape[0])
 
-    if result.compile_time is not None:
-        data_vars["compile_time"] = xr.DataArray(result.compile_time)
-    if result.compute_time is not None:
-        data_vars["compute_time"] = xr.DataArray(result.compute_time)
-        if result.compile_time is not None:
-            data_vars["total_time"] = xr.DataArray(result.compile_time + result.compute_time)
+    include_if("compile_time", result.compile_time)
+    include_if("compute_time", result.compute_time)
+    if result.compile_time is not None and result.compute_time is not None:
+        data_vars["total_time"] = xr.DataArray(result.compile_time + result.compute_time)
 
     data_vars["importance_sampling_method"] = xr.DataArray(result.importance_sampling or "none")
-    if result.pareto_k is not None:
-        data_vars["pareto_k"] = xr.DataArray(result.pareto_k)
+    include_if("pareto_k", result.pareto_k)
 
     if result.path_status:
         data_vars["path_status_counts"] = _status_counter_to_dataarray(
             result.path_status, PathStatus
         )
 
-    if result.elbo_argmax is not None:
-        data_vars["elbo_argmax_mean"] = xr.DataArray(np.mean(result.elbo_argmax))
-        data_vars["elbo_argmax_std"] = xr.DataArray(np.std(result.elbo_argmax))
+    include_stats("elbo_argmax", result.elbo_argmax, with_max=False)
+    include_stats("logP", result.logP)
+    include_stats("logQ", result.logQ)
 
-    if result.logP is not None:
-        data_vars["logP_mean"] = xr.DataArray(np.mean(result.logP))
-        data_vars["logP_std"] = xr.DataArray(np.std(result.logP))
-        data_vars["logP_max"] = xr.DataArray(np.max(result.logP))
-
-    if result.logQ is not None:
-        data_vars["logQ_mean"] = xr.DataArray(np.mean(result.logQ))
-        data_vars["logQ_std"] = xr.DataArray(np.std(result.logQ))
-        data_vars["logQ_max"] = xr.DataArray(np.max(result.logQ))
-
+    # Per-path arrays (only when at least one path succeeded)
     if not result.all_paths_failed and result.samples is not None:
-        n_paths = _determine_num_paths(result)
-        coords["path"] = list(range(n_paths))
+        data_vars["num_successful_paths"] = xr.DataArray(result.samples.shape[0])
+        coords["path"] = list(range(_determine_num_paths(result)))
 
-        def _scalar(name: str, data):
+        def include_path(name: str, data) -> None:
             if data is not None:
                 data_vars[name] = xr.DataArray(data, dims=["path"], coords={"path": coords["path"]})
 
-        _scalar("elbo_argmax", result.elbo_argmax)
+        include_path("elbo_argmax", result.elbo_argmax)
         if result.logP is not None:
-            _scalar("paths_logP_mean", np.mean(result.logP, axis=1))
-            _scalar("paths_logP_max", np.max(result.logP, axis=1))
+            include_path("paths_logP_mean", np.mean(result.logP, axis=1))
+            include_path("paths_logP_max", np.max(result.logP, axis=1))
         if result.logQ is not None:
-            _scalar("paths_logQ_mean", np.mean(result.logQ, axis=1))
-            _scalar("paths_logQ_max", np.max(result.logQ, axis=1))
+            include_path("paths_logQ_mean", np.mean(result.logQ, axis=1))
+            include_path("paths_logQ_max", np.max(result.logQ, axis=1))
 
         if n_params is not None and result.inv_hessian_diag is not None:
             data_vars["inv_hessian_diag"] = xr.DataArray(
@@ -153,7 +147,6 @@ def _pathfinder_dataset(
                 dims=["path", "param"],
                 coords={"path": coords["path"], "param": coords["param"]},
             )
-
         if n_params is not None and result.samples.ndim >= 3:
             data_vars["final_sample"] = xr.DataArray(
                 result.samples[:, -1, :],
@@ -162,9 +155,10 @@ def _pathfinder_dataset(
             )
 
     if result.pathfinder_config is not None:
-        data_vars["num_draws_per_path"] = xr.DataArray(result.pathfinder_config.num_draws)
-        data_vars["num_elbo_draws"] = xr.DataArray(result.pathfinder_config.num_elbo_draws)
-        data_vars["jitter"] = xr.DataArray(result.pathfinder_config.jitter)
+        cfg = result.pathfinder_config
+        data_vars["num_draws_per_path"] = xr.DataArray(cfg.num_draws)
+        data_vars["num_elbo_draws"] = xr.DataArray(cfg.num_elbo_draws)
+        data_vars["jitter"] = xr.DataArray(cfg.jitter)
 
     if result.warnings:
         attrs["warnings"] = list(result.warnings)
@@ -190,12 +184,8 @@ def _lbfgs_dataset(result: MultiPathfinderResult) -> xr.Dataset:
 
     if result.pathfinder_config is not None:
         cfg = result.pathfinder_config
-        data_vars["maxcor"] = xr.DataArray(cfg.maxcor)
-        data_vars["maxiter"] = xr.DataArray(cfg.maxiter)
-        data_vars["ftol"] = xr.DataArray(cfg.ftol)
-        data_vars["gtol"] = xr.DataArray(cfg.gtol)
-        data_vars["maxls"] = xr.DataArray(cfg.maxls)
-        data_vars["epsilon"] = xr.DataArray(cfg.epsilon)
+        for name in ("maxcor", "maxiter", "ftol", "gtol", "maxls", "epsilon"):
+            data_vars[name] = xr.DataArray(getattr(cfg, name))
 
     return xr.Dataset(data_vars, coords=coords)
 
@@ -323,6 +313,7 @@ def convert_flat_trace_to_idata(
     model = modelcontext(model)
     ip = model.initial_point()
     ip_point_map_info = DictToArrayBijection.map(ip).point_map_info
+
     trace = collections.defaultdict(list)
     for sample in samples:
         raveld_vars = RaveledVars(sample, ip_point_map_info)
@@ -387,33 +378,27 @@ def pathfinder_report(idata: xr.DataTree, *, console: Console | None = None) -> 
     table.add_column("Description")
     table.add_column("Value")
 
+    def row_if(container, key: str, label: str, fmt: str = "{}") -> None:
+        if container is not None and key in container:
+            table.add_row(label, fmt.format(container[key].item()))
+
     if "param" in pf.dims:
         table.add_row("")
         table.add_row("No. model parameters", str(pf.sizes["param"]))
 
-    # Pathfinder-side config
+    # Configuration: pathfinder draws/jitter and L-BFGS settings
     if "num_draws_per_path" in pf or "num_elbo_draws" in pf or "jitter" in pf or lb is not None:
         table.add_row("")
         table.add_row("Configuration:")
-        if "num_draws_per_path" in pf:
-            table.add_row("num_draws_per_path", str(pf["num_draws_per_path"].item()))
-        if lb is not None:
-            if "maxcor" in lb:
-                table.add_row("history size (maxcor)", str(lb["maxcor"].item()))
-            if "maxiter" in lb:
-                table.add_row("max iterations", str(lb["maxiter"].item()))
-            if "ftol" in lb:
-                table.add_row("ftol", f"{lb['ftol'].item():.2e}")
-            if "gtol" in lb:
-                table.add_row("gtol", f"{lb['gtol'].item():.2e}")
-            if "maxls" in lb:
-                table.add_row("max line search", str(lb["maxls"].item()))
-            if "epsilon" in lb:
-                table.add_row("epsilon", f"{lb['epsilon'].item():.2e}")
-        if "jitter" in pf:
-            table.add_row("jitter", f"{pf['jitter'].item()}")
-        if "num_elbo_draws" in pf:
-            table.add_row("ELBO draws", str(pf["num_elbo_draws"].item()))
+        row_if(pf, "num_draws_per_path", "num_draws_per_path")
+        row_if(lb, "maxcor", "history size (maxcor)")
+        row_if(lb, "maxiter", "max iterations")
+        row_if(lb, "ftol", "ftol", "{:.2e}")
+        row_if(lb, "gtol", "gtol", "{:.2e}")
+        row_if(lb, "maxls", "max line search")
+        row_if(lb, "epsilon", "epsilon", "{:.2e}")
+        row_if(pf, "jitter", "jitter")
+        row_if(pf, "num_elbo_draws", "ELBO draws")
 
     # L-BFGS status + iter
     if lb is not None and "status_counts" in lb:
@@ -423,6 +408,7 @@ def pathfinder_report(idata: xr.DataTree, *, console: Console | None = None) -> 
             count = int(lb["status_counts"].sel(status=status_name).item())
             if count:
                 table.add_row(str(status_name), str(count))
+
         if "niter_mean" in lb:
             table.add_row(
                 "L-BFGS iterations",
@@ -437,6 +423,7 @@ def pathfinder_report(idata: xr.DataTree, *, console: Console | None = None) -> 
             count = int(pf["path_status_counts"].sel(status=status_name).item())
             if count:
                 table.add_row(str(status_name), str(count))
+
         if "elbo_argmax_mean" in pf:
             table.add_row(
                 "ELBO argmax",
@@ -449,18 +436,15 @@ def pathfinder_report(idata: xr.DataTree, *, console: Console | None = None) -> 
         table.add_row("")
         table.add_row("Importance Sampling:")
         table.add_row("Method", str(pf["importance_sampling_method"].item()))
-        if "pareto_k" in pf:
-            table.add_row("Pareto k", f"{pf['pareto_k'].item():.2f}")
+        row_if(pf, "pareto_k", "Pareto k", "{:.2f}")
 
     # Timing
     if "compile_time" in pf:
         table.add_row("")
         table.add_row("Timing (seconds):")
-        table.add_row("Compile", f"{pf['compile_time'].item():.2f}")
-    if "compute_time" in pf:
-        table.add_row("Compute", f"{pf['compute_time'].item():.2f}")
-    if "total_time" in pf:
-        table.add_row("Total", f"{pf['total_time'].item():.2f}")
+    row_if(pf, "compile_time", "Compile", "{:.2f}")
+    row_if(pf, "compute_time", "Compute", "{:.2f}")
+    row_if(pf, "total_time", "Total", "{:.2f}")
 
     console = console or Console()
     warnings_attr = pf.attrs.get("warnings")
