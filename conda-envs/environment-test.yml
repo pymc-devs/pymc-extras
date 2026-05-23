@@ -4,7 +4,7 @@ channels:
 - nodefaults
 dependencies:
   - scikit-learn
-  - better-optimize>=0.4.1
+  - better-optimize>=0.4.2
   - dask<2025.1.1
   - xhistogram
   - statsmodels
@@ -14,8 +14,8 @@ dependencies:
   - pydantic>=2.0.0
   - h5netcdf
   - pymc>=6.0,<7.0
+  - preliz>=0.25
   - pip
   - pip:
       - jax
       - blackjax
-      - preliz>=0.25
