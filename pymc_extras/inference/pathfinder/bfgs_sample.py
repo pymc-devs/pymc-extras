@@ -189,7 +189,10 @@ def make_pathfinder_sample_fn(
 
     outputs = [phi_sym, logQ_sym, batched_logP_sym, inv_hessian_diag_sym]
 
-    fn = pytensor.function(
+    # Compile via pm.compile (not raw pytensor.function) so the logP graph's CheckParameterValue
+    # ops become Switches to -inf rather than raising: a Gaussian draw landing outside the model's
+    # support is a zero-density point, scored -inf and handled by the ELBO's finite mask.
+    fn = compile(
         [
             pytensor.In(x_sym, borrow=True),
             pytensor.In(g_sym, borrow=True),
