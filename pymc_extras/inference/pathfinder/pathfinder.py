@@ -182,6 +182,7 @@ def fit_pathfinder(
         model=model,
         importance_sampling=importance_sampling,
         vectorize=vectorize_postprocessing,
+        compile_kwargs=compile_kwargs,
     )
 
     idata = add_data_to_inference_data(idata, progressbar, model, compile_kwargs)

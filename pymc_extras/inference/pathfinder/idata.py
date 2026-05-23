@@ -16,7 +16,6 @@ from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.blocking import DictToArrayBijection, RaveledVars
 from pymc.model import modelcontext
 from pymc.util import get_default_varnames
-from pytensor.compile.mode import FAST_COMPILE
 from pytensor.graph import clone_replace, vectorize_graph
 from rich.console import Console, Group
 from rich.padding import Padding
@@ -94,7 +93,6 @@ def _pathfinder_dataset(
     if param_coords is not None:
         coords["param"] = param_coords
 
-    # --- top-level pathfinder summary ---
     if result.num_paths is not None:
         data_vars["num_paths"] = xr.DataArray(result.num_paths)
     if result.num_draws is not None:
@@ -133,7 +131,6 @@ def _pathfinder_dataset(
         data_vars["logQ_std"] = xr.DataArray(np.std(result.logQ))
         data_vars["logQ_max"] = xr.DataArray(np.max(result.logQ))
 
-    # --- per-path arrays ---
     if not result.all_paths_failed and result.samples is not None:
         n_paths = _determine_num_paths(result)
         coords["path"] = list(range(n_paths))
@@ -164,7 +161,6 @@ def _pathfinder_dataset(
                 coords={"path": coords["path"], "param": coords["param"]},
             )
 
-    # --- pathfinder-side config (jitter, num_elbo_draws, num_draws_per_path) ---
     if result.pathfinder_config is not None:
         data_vars["num_draws_per_path"] = xr.DataArray(result.pathfinder_config.num_draws)
         data_vars["num_elbo_draws"] = xr.DataArray(result.pathfinder_config.num_elbo_draws)
@@ -230,6 +226,53 @@ def add_pathfinder_to_inference_data(
     return idata
 
 
+def _transform_draws_vectorized(model, vars_to_sample, trace, compile_kwargs: dict) -> list:
+    # Add a (chain, draw) batch dim across the Deterministic subgraph in one shot.
+    new_shapes = [v.ndim * (None,) for v in trace.values()]
+    replace = {
+        var: pt.tensor(dtype="float64", shape=new_shapes[i])
+        for i, var in enumerate(model.value_vars)
+    }
+    outputs = vectorize_graph(vars_to_sample, replace=replace)
+    fn = pytensor.function(
+        inputs=list(replace.values()),
+        outputs=outputs,
+        **{"on_unused_input": "ignore", **compile_kwargs},
+    )
+    fn.trust_input = True
+    result = fn(*list(trace.values()))
+    return result if isinstance(result, list) else [result]
+
+
+def _transform_draws_scan(model, vars_to_sample, trace, compile_kwargs: dict) -> list:
+    batched_inputs = [
+        pt.tensor(name=f"{v.name}_samples", dtype=v.dtype, shape=(None, *v.type.shape))
+        for v in model.value_vars
+    ]
+
+    def step(*single_sample_values):
+        replace = dict(zip(model.value_vars, single_sample_values, strict=True))
+        return clone_replace(vars_to_sample, replace=replace)
+
+    scan_outputs = pytensor.scan(fn=step, sequences=batched_inputs, return_updates=False)
+    if not isinstance(scan_outputs, list):
+        scan_outputs = [scan_outputs]
+
+    fn = pytensor.function(
+        inputs=batched_inputs,
+        outputs=scan_outputs,
+        **{"on_unused_input": "ignore", **compile_kwargs},
+    )
+    fn.trust_input = True
+
+    # trace values carry a leading chain=1 dim; scan iterates draws, so we squeeze it on the way
+    # in and add it back on the way out.
+    result = fn(*[trace[v.name][0] for v in model.value_vars])
+    if not isinstance(result, list):
+        result = [result]
+    return [r[None, ...] for r in result]
+
+
 def convert_flat_trace_to_idata(
     samples: NDArray,
     include_transformed: bool = False,
@@ -238,6 +281,7 @@ def convert_flat_trace_to_idata(
     model: Model | None = None,
     importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
     vectorize: bool = True,
+    compile_kwargs: dict | None = None,
 ) -> xr.DataTree:
     """convert flattened samples to xarray DataTree format.
 
@@ -259,12 +303,17 @@ def convert_flat_trace_to_idata(
         If True (default), use ``vectorize_graph`` to batch the Deterministic subgraph across
         all draws in one call. If False, iterate draws with ``pytensor.scan``. Set to False when
         memory is a concern, for example, when your model has large intermediate computations.
+    compile_kwargs : dict, optional
+        Additional keyword arguments for the PyTensor compiler, used when transforming the draws
+        (e.g. ``mode="JAX"``). Ignored by the blackjax backend, which transforms via JAX. Default
+        None.
 
     Returns
     -------
     InferenceData
         arviz inference data object
     """
+    compile_kwargs = compile_kwargs or {}
 
     if importance_sampling is None:
         # samples.ndim == 3 in this case, otherwise ndim == 2
@@ -289,56 +338,9 @@ def convert_flat_trace_to_idata(
 
     if inference_backend == "pymc":
         if vectorize:
-            # Add a (chain, draw) batch dim across the Deterministic subgraph in one shot.
-            new_shapes = [v.ndim * (None,) for v in trace.values()]
-            replace = {
-                var: pt.tensor(dtype="float64", shape=new_shapes[i])
-                for i, var in enumerate(model.value_vars)
-            }
-            outputs = vectorize_graph(vars_to_sample, replace=replace)
-
-            fn = pytensor.function(
-                inputs=[*list(replace.values())],
-                outputs=outputs,
-                mode=FAST_COMPILE,
-                on_unused_input="ignore",
-            )
-            fn.trust_input = True
-            result = fn(*list(trace.values()))
-            if not isinstance(result, list):
-                result = [result]
+            result = _transform_draws_vectorized(model, vars_to_sample, trace, compile_kwargs)
         else:
-            batched_inputs = [
-                pt.tensor(name=f"{v.name}_samples", dtype=v.dtype, shape=(None, *v.type.shape))
-                for v in model.value_vars
-            ]
-
-            def step(*single_sample_values):
-                replace = dict(zip(model.value_vars, single_sample_values, strict=True))
-                return clone_replace(vars_to_sample, replace=replace)
-
-            scan_outputs = pytensor.scan(
-                fn=step,
-                sequences=batched_inputs,
-                return_updates=False,
-            )
-            if not isinstance(scan_outputs, list):
-                scan_outputs = [scan_outputs]
-
-            fn = pytensor.function(
-                inputs=batched_inputs,
-                outputs=scan_outputs,
-                mode=FAST_COMPILE,
-                on_unused_input="ignore",
-            )
-            fn.trust_input = True
-
-            # trace values carry a leading chain=1 dim; scan iterates draws, so we squeeze it
-            # on the way in and add it back on the way out.
-            result = fn(*[trace[v.name][0] for v in model.value_vars])
-            if not isinstance(result, list):
-                result = [result]
-            result = [r[None, ...] for r in result]
+            result = _transform_draws_scan(model, vars_to_sample, trace, compile_kwargs)
 
         if importance_sampling is None:
             result = [res.reshape(num_paths, num_pdraws, *res.shape[2:]) for res in result]
