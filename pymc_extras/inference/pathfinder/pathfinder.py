@@ -40,7 +40,7 @@ def fit_pathfinder(
     jacobian_correction: bool = True,
     vectorize_logp: bool = True,
     vectorize_postprocessing: bool = True,
-    compile_kwargs: dict[str, Any] = {},
+    compile_kwargs: dict[str, Any] | None = None,
     initvals: dict[str, Any] | None = None,
 ) -> xr.DataTree:
     """Fit Pathfinder variational inference (multi-path, PyMC/PyTensor backend).
@@ -110,8 +110,7 @@ def fit_pathfinder(
         across all draws in one call; if False, iterate draws with ``pytensor.scan``. Set to
         False when memory is a concern, e.g. with large intermediate computations. Default True.
     compile_kwargs : dict, optional
-        Additional keyword arguments for the PyTensor compiler. If not provided, a performant
-        default is used.
+        Additional keyword arguments for the PyTensor compiler. Default None.
     initvals : dict, optional
         Initial values for the model parameters, as name-to-ndarray pairs. Partial
         initialization is permitted. If None, the model's default initial values are used.
@@ -129,6 +128,7 @@ def fit_pathfinder(
     """
 
     model = modelcontext(model)
+    compile_kwargs = compile_kwargs or {}
 
     if initvals is not None:
         model = pm.model.fgraph.clone_model(model)  # Create a clone of the model

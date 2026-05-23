@@ -57,7 +57,7 @@ def multipath_pathfinder(
     max_init_retries: int = 10,
     jacobian_correction: bool = True,
     vectorize_logp: bool = True,
-    compile_kwargs: dict[str, Any] = {},
+    compile_kwargs: dict[str, Any] | None = None,
 ) -> MultiPathfinderResult:
     """Fit Pathfinder variational inference with multiple paths on the PyMC/PyTensor backend.
 
@@ -116,14 +116,15 @@ def multipath_pathfinder(
         trades high memory with parallel compute (True) against low memory with sequential
         compute (False); prefer True unless the model is memory bound. Default True.
     compile_kwargs : dict, optional
-        Additional keyword arguments for the PyTensor compiler. If not provided, a performant
-        default is used.
+        Additional keyword arguments for the PyTensor compiler. Default None.
 
     Returns
     -------
     MultiPathfinderResult
         Samples and other information from the multi-path Pathfinder run.
     """
+
+    compile_kwargs = compile_kwargs or {}
 
     *path_seeds, choice_seed = _get_seeds_per_chain(random_seed, num_paths + 1)
 

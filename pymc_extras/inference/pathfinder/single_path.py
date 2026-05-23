@@ -46,7 +46,7 @@ def make_single_pathfinder_fn(
     max_init_retries: int = 10,
     jacobian_correction: bool = True,
     vectorize_logp: bool = True,
-    compile_kwargs: dict[str, Any] = {},
+    compile_kwargs: dict[str, Any] | None = None,
 ) -> SinglePathfinderFn:
     """Build a seedable single-path pathfinder function.
 
@@ -81,13 +81,15 @@ def make_single_pathfinder_fn(
         trades high memory with parallel compute (True) against low memory with sequential
         compute (False); prefer True unless the model is memory bound. Default True.
     compile_kwargs : dict, optional
-        Additional keyword arguments for the PyTensor compiler.
+        Additional keyword arguments for the PyTensor compiler. Default None.
 
     Returns
     -------
     callable
         A seedable single-path function accepting ``(random_seed, progress_callback=None)``.
     """
+
+    compile_kwargs = compile_kwargs or {}
 
     maxcor = lbfgs_config.maxcor
     maxiter = lbfgs_config.maxiter
