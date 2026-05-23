@@ -1,5 +1,5 @@
 import logging
-import warnings as _warnings
+import warnings
 
 from dataclasses import dataclass, field
 from typing import Literal
@@ -9,7 +9,7 @@ import numpy as np
 import xarray as xr
 
 from numpy.typing import NDArray
-from scipy.special import logsumexp
+from scipy.special import softmax
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ class ImportanceSamplingResult:
     samples: NDArray
     pareto_k: float | None = None
     warnings: list[str] = field(default_factory=list)
-    method: str = "psis"
+    method: Literal["psis", "psir", "identity"] | None = "psis"
 
 
 def importance_sampling(
@@ -83,16 +83,16 @@ def importance_sampling(
     quasi-Newton variational inference. Journal of Machine Learning Research, 23(306), 1-49.
     """
 
-    warnings = []
+    result_warnings = []
     num_paths, _, N = samples.shape
 
     if method is None:
-        warnings.append(
+        result_warnings.append(
             "Importance sampling is disabled. The samples are returned as is which may "
             "include samples from failed paths with non-finite logP or logQ values. It is "
             "recommended to use importance_sampling='psis' for better stability."
         )
-        return ImportanceSamplingResult(samples=samples, warnings=warnings, method=method)
+        return ImportanceSamplingResult(samples=samples, warnings=result_warnings, method=method)
     else:
         samples = samples.reshape(-1, N)
         logP = logP.ravel()
@@ -104,41 +104,54 @@ def importance_sampling(
         logQ -= log_I
         logiw = logP - logQ
 
-        with _warnings.catch_warnings():
-            _warnings.filterwarnings(
+        # Filter failed or degenerate paths out of the Pareto fit and give them zero resampling weight
+        finite = np.isfinite(logiw)
+        if not finite.any():
+            raise ValueError(
+                "All Pathfinder importance weights are non-finite; the approximation is "
+                "degenerate. Consider decreasing the jitter or reparameterizing the model."
+            )
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
                 "ignore", category=RuntimeWarning, message="overflow encountered in exp"
             )
             match method:
-                case "psis":
-                    replace = False
-                    logiw_da = xr.DataArray(-logiw, dims=["sample"])
+                case "psis" | "psir":
+                    replace = method == "psir"
+                    smoothed = np.full(logiw.shape, -np.inf)
+                    logiw_da = xr.DataArray(-logiw[finite], dims=["sample"])
                     logiw_da, pareto_k = logiw_da.azstats.psislw(dim="sample")
-                    logiw, pareto_k = logiw_da.values, float(pareto_k)
-                case "psir":
-                    replace = True
-                    logiw_da = xr.DataArray(-logiw, dims=["sample"])
-                    logiw_da, pareto_k = logiw_da.azstats.psislw(dim="sample")
-                    logiw, pareto_k = logiw_da.values, float(pareto_k)
+                    smoothed[finite] = logiw_da.values
+                    logiw, pareto_k = smoothed, float(pareto_k)
                 case "identity":
                     replace = False
                     pareto_k = None
+                    logiw = np.where(finite, logiw, -np.inf)
 
     # NOTE: Pareto k is normally bad for Pathfinder even when the posterior is close to the NUTS
     # posterior, or closer to NUTS than ADVI, so it may not be a good diagnostic here.
     # TODO: Find replacement diagnostics for Pathfinder.
 
-    p = np.exp(logiw - logsumexp(logiw))
+    p = softmax(logiw)
+    p = np.where(np.isfinite(p), p, 0.0)  # guard against any residual nan/inf from the smoothing
+    if not (p_sum := p.sum()) > 0:
+        raise ValueError(
+            "All Pathfinder importance weights collapsed to zero; the approximation is "
+            "degenerate."
+        )
+    p = p / p_sum
     rng = np.random.default_rng(random_seed)
 
     try:
         resampled = rng.choice(samples, size=num_draws, replace=replace, p=p, shuffle=False, axis=0)
         return ImportanceSamplingResult(
-            samples=resampled, pareto_k=pareto_k, warnings=warnings, method=method
+            samples=resampled, pareto_k=pareto_k, warnings=result_warnings, method=method
         )
     except ValueError as e1:
         if "Fewer non-zero entries in p than size" in str(e1):
             num_nonzero = np.where(np.nonzero(p)[0], 1, 0).sum()
-            warnings.append(
+            result_warnings.append(
                 f"Not enough valid samples: {num_nonzero} available out of {num_draws} "
                 "requested. Switching to psir importance sampling."
             )
@@ -147,7 +160,7 @@ def importance_sampling(
                     samples, size=num_draws, replace=True, p=p, shuffle=False, axis=0
                 )
                 return ImportanceSamplingResult(
-                    samples=resampled, pareto_k=pareto_k, warnings=warnings, method=method
+                    samples=resampled, pareto_k=pareto_k, warnings=result_warnings, method=method
                 )
             except ValueError as e2:
                 logger.error(

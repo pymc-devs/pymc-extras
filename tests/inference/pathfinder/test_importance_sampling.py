@@ -50,3 +50,31 @@ def test_importance_sampling_falls_back_to_replacement(rng):
 
     assert result.samples.shape == (10, N)
     assert any("psir" in w.lower() for w in result.warnings)
+
+
+@pytest.mark.parametrize("method", ["psis", "psir"])
+def test_importance_sampling_handles_nonfinite_weights(rng, method):
+    # Out-of-support draws score logP = -inf and degenerate Gaussian logdets give non-finite logQ.
+    # Both used to poison the Pareto fit (-logiw = +inf) and yield NaN resampling probabilities,
+    # crashing rng.choice. They must instead get zero weight and leave a valid resample.
+    num_paths, M, N = 2, 100, 3
+    samples = rng.normal(size=(num_paths, M, N))
+    logP = rng.normal(size=(num_paths, M))
+    logQ = rng.normal(size=(num_paths, M))
+    logP[0, :30] = -np.inf  # out-of-support draws
+    logQ[1, :10] = np.nan  # degenerate proposal density
+    logQ[1, 10:20] = -np.inf
+
+    result = importance_sampling(samples, logP, logQ, num_draws=50, method=method, random_seed=1)
+
+    assert result.samples.shape == (50, N)
+    assert np.isfinite(result.samples).all()
+
+
+def test_importance_sampling_all_nonfinite_raises(rng):
+    samples = rng.normal(size=(2, 50, 3))
+    logP = np.full((2, 50), -np.inf)
+    logQ = rng.normal(size=(2, 50))
+
+    with pytest.raises(ValueError, match="non-finite"):
+        importance_sampling(samples, logP, logQ, num_draws=10, method="psis")
