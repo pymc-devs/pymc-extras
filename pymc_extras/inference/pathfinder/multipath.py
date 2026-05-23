@@ -153,81 +153,59 @@ def multipath_pathfinder(
     )
     compile_end = time.time()
 
-    results = []
     compute_start = time.time()
-    try:
-        # Per-path progress bar (one row per path, updated in real time)
-        progress = _make_multipath_progress(progressbar)
 
-        # Create one task per path and build per-path progress callbacks
-        task_ids: list[TaskID] = []
-        path_callbacks: list[Callable | None] = []
-        with progress:
-            for i in range(num_paths):
-                tid = progress.add_task(
-                    f"Path {i + 1}",
-                    status="queued",
-                    lbfgs_steps=0,
-                    steps_per_sec="—",
-                    best_elbo="—",
-                    best_ind="—",
-                    current_elbo="—",
-                    step_size="—",
-                    total=None,
-                )
-                task_ids.append(tid)
-                path_callbacks.append(_make_progress_callback(progress, tid))
+    # Per-path progress bar (one row per path, updated in real time)
+    progress = _make_multipath_progress(progressbar)
 
-            # parallel=True gives true parallelism via separate worker processes
-            # parallel=False is serial.
-            generator = make_generator(
-                parallel=parallel,
-                fn=single_pathfinder_fn,
-                seeds=path_seeds,
-                cores=cores,
-                blas_cores=blas_cores,
-                progress_callbacks=path_callbacks,
-                mp_ctx=mp_ctx,
+    # Create one task per path and build per-path progress callbacks
+    task_ids: list[TaskID] = []
+    path_callbacks: list[Callable | None] = []
+    with progress:
+        for i in range(num_paths):
+            tid = progress.add_task(
+                f"Path {i + 1}",
+                status="queued",
+                lbfgs_steps=0,
+                steps_per_sec="—",
+                best_elbo="—",
+                best_ind="—",
+                current_elbo="—",
+                step_size="—",
+                total=None,
             )
+            task_ids.append(tid)
+            path_callbacks.append(_make_progress_callback(progress, tid))
 
-            for result in generator:
-                results.append(result)
-    except (KeyboardInterrupt, StopIteration) as e:
-        # The user may abort early; MultiPathfinderResult still keeps the results gathered so far.
-        if isinstance(e, StopIteration):
-            logger.info(str(e))
-    finally:
-        compute_end = time.time()
-        if results:
-            mpr = (
-                MultiPathfinderResult.from_path_results(results)
-                .with_pathfinder_config(config=pathfinder_config)
-                .with_importance_sampling(
-                    num_draws=num_draws, method=importance_sampling, random_seed=choice_seed
-                )
-                .with_timing(
-                    compile_time=compile_end - compile_start,
-                    compute_time=compute_end - compute_start,
-                )
-            )
-            if mpr.all_paths_failed:
-                raise ValueError(
-                    "All paths failed. Consider decreasing the jitter or reparameterizing "
-                    "the model."
-                )
-        else:
-            raise ValueError(
-                "BUG: Failed to iterate!"
-                "Please report this issue at: "
-                "https://github.com/pymc-devs/pymc-extras/issues "
-                "with your code to reproduce the issue and the following details:\n"
-                f"pathfinder_config: \n{pathfinder_config}\n"
-                f"compile_kwargs: {compile_kwargs}\n"
-                f"jacobian_correction: {jacobian_correction}\n"
-                f"vectorize_logp: {vectorize_logp}\n"
-                f"num_paths: {num_paths}\n"
-                f"num_draws: {num_draws}\n"
-            )
+        # parallel=True gives true parallelism via separate worker processes
+        # parallel=False is serial.
+        generator = make_generator(
+            parallel=parallel,
+            fn=single_pathfinder_fn,
+            seeds=path_seeds,
+            cores=cores,
+            blas_cores=blas_cores,
+            progress_callbacks=path_callbacks,
+            mp_ctx=mp_ctx,
+        )
+        results = list(generator)
+    compute_end = time.time()
+
+    mpr = (
+        MultiPathfinderResult.from_path_results(results)
+        .with_pathfinder_config(config=pathfinder_config)
+        .with_importance_sampling(
+            num_draws=num_draws, method=importance_sampling, random_seed=choice_seed
+        )
+        .with_timing(
+            compile_time=compile_end - compile_start,
+            compute_time=compute_end - compute_start,
+        )
+    )
+    if mpr.all_paths_failed:
+        raise ValueError(
+            "All paths failed. Consider decreasing the jitter or reparameterizing the model."
+        )
 
     return mpr
 
