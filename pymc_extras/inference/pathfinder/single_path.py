@@ -9,7 +9,6 @@ from pymc.blocking import DictToArrayBijection
 from pymc.initial_point import make_initial_point_fn
 from pymc.model.core import Point
 from pymc.util import _get_seeds_per_chain
-from pytensor.tensor.optimize import LRUCache1
 
 from pymc_extras.inference.pathfinder.bfgs_sample import (
     get_neg_logp_dlogp_of_ravel_inputs,
@@ -115,9 +114,9 @@ def make_single_pathfinder_fn(
     N = x_base.shape[0]
 
     sample_logp_func = make_pathfinder_sample_fn(
-        model,
-        N,
-        maxcor,
+        model=model,
+        N=N,
+        J=maxcor,
         jacobian=jacobian_correction,
         compile_kwargs=compile_kwargs,
         vectorize=vectorize_logp,
@@ -152,15 +151,9 @@ def make_single_pathfinder_fn(
         if progress_callback is not None:
             progress_callback({"status": "running"})
 
-        # Per-path independent copies of compiled functions for process safety.
-        local_neg_logp_dlogp = neg_logp_dlogp_func.copy(share_memory=False)
-        cached_fn = LRUCache1(local_neg_logp_dlogp, copy_x=True)
-
-        local_lbfgs = LBFGS(cached_fn, maxcor, maxiter, ftol, gtol, maxls, epsilon)
-
-        local_sample_logp = sample_logp_func.copy(share_memory=False)
-
+        local_lbfgs = LBFGS(neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
         lbfgs_status = LBFGSStatus.LBFGS_FAILED  # default before LBFGS runs
+
         try:
             # Derive base seeds once from random_seed. init_seed is an int so we can
             # safely offset it per retry attempt (avoids Generator arithmetic issues).
@@ -176,12 +169,11 @@ def make_single_pathfinder_fn(
                     # Fresh NumPy RNG each attempt → reproducible regardless
                     # of how many ELBO steps the previous attempt took.
                     elbo_rng = np.random.default_rng(elbo_seed + attempt)
-                    cached_fn.clear_cache()
 
                     streaming_cb = LBFGSStreamingCallback(
-                        value_grad_fn=cached_fn,
+                        value_grad_fn=neg_logp_dlogp_func,
                         x0=x0,
-                        sample_logp_fn=local_sample_logp,
+                        sample_logp_fn=sample_logp_func,
                         num_elbo_draws=num_elbo_draws,
                         rng=elbo_rng,
                         J=maxcor,
@@ -206,7 +198,7 @@ def make_single_pathfinder_fn(
                     if progress_callback is not None:
                         progress_callback({"status": "sampling"})
 
-                    sample_out = local_sample_logp(
+                    sample_out = sample_logp_func(
                         best_state["x"],
                         best_state["g"],
                         best_state["alpha"],
@@ -256,13 +248,13 @@ def make_single_pathfinder_fn(
                         )
 
             result = _make_result(
-                psi,
-                logP_psi,
-                logQ_psi,
-                lbfgs_niter,
-                elbo_argmax,
-                inv_hessian_diag,
-                lbfgs_status,
+                psi=psi,
+                logP_psi=logP_psi,
+                logQ_psi=logQ_psi,
+                lbfgs_niter=lbfgs_niter,
+                elbo_argmax=elbo_argmax,
+                inv_hessian_diag=inv_hessian_diag,
+                lbfgs_status=lbfgs_status,
             )
             if progress_callback is not None:
                 status_str = (
