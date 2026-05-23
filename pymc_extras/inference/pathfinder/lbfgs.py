@@ -306,23 +306,18 @@ class LBFGSStreamingCallback:
 
         # Sample + logP in a single compiled call. Pass s_win/z_win as inputs.
         u = self._rng.standard_normal((self.num_elbo_draws, self._N))
-        try:
-            sample_out = self.sample_logp_fn(x, g, alpha, self.s_win, self.z_win, u)
-            _, logQ, logP, _ = sample_out
-            logP = np.asarray(logP)
-            logQ = np.asarray(logQ)
-            finite = np.isfinite(logP)
-            if not np.any(finite):
-                elbo = -np.inf
-            else:
-                logP_safe = np.where(finite, logP, -np.inf)
-                elbo = float(np.mean(logP_safe - logQ))
-                if not np.isfinite(elbo):
-                    elbo = -np.inf
-        except Exception:
-            # A bad step (e.g. singular sample covariance or non-finite draws) must not abort
-            # the path; record it as worthless so optimization continues.
+        sample_out = self.sample_logp_fn(x, g, alpha, self.s_win, self.z_win, u)
+        _, logQ, logP, _ = sample_out
+        logP = np.asarray(logP)
+        logQ = np.asarray(logQ)
+        finite = np.isfinite(logP)
+        if not np.any(finite):
             elbo = -np.inf
+        else:
+            logP_safe = np.where(finite, logP, -np.inf)
+            elbo = float(np.mean(logP_safe - logQ))
+            if not np.isfinite(elbo):
+                elbo = -np.inf
 
         if np.isfinite(elbo):
             self.any_valid = True

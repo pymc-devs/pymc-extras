@@ -18,7 +18,6 @@ from pymc_extras.inference.pathfinder.lbfgs import (
     LBFGSStreamingCallback,
     _check_lbfgs_curvature_condition,
 )
-from pymc_extras.inference.pathfinder.results import PathInvalidLogP
 from tests.inference.pathfinder.conftest import (
     JITTER,
     MAXCOR,
@@ -99,7 +98,7 @@ def test_elbo_call_count(vectorize):
 
 
 def test_infinite_logp_step_tolerance():
-    """A step where sample_logp_fn raises is silently skipped; the path still succeeds."""
+    """A step that yields non-finite logP is scored as -inf and skipped; the path succeeds."""
     model = make_ard_regression()
     neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True)
     N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
@@ -112,9 +111,11 @@ def test_infinite_logp_step_tolerance():
     def failing_fn(x, g, alpha, s_win, z_win, u):
         idx = call_count[0]
         call_count[0] += 1
+        phi, logQ, logP, diag = sample_logp_fn(x, g, alpha, s_win, z_win, u)
         if idx == fail_at_step[0]:
-            raise PathInvalidLogP("synthetic failure for test")
-        return sample_logp_fn(x, g, alpha, s_win, z_win, u)
+            # Mimic a degenerate step: the linalg ops return NaN logP on failure, never raise.
+            logP = np.full_like(np.asarray(logP), np.nan)
+        return phi, logQ, logP, diag
 
     ipfn = make_initial_point_fn(model=model)
     ip = Point(ipfn(None), model=model)
