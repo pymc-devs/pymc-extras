@@ -1,7 +1,7 @@
 import logging
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -34,7 +34,11 @@ from pymc_extras.inference.pathfinder.results import (
 
 logger = logging.getLogger(__name__)
 
-type SinglePathfinderFn = Callable[[int], PathfinderResult]
+
+class SinglePathfinderFn(Protocol):
+    def __call__(
+        self, random_seed: int, progress_callback: Callable | None = None
+    ) -> PathfinderResult: ...
 
 
 def make_single_pathfinder_fn(

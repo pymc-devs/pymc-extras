@@ -20,7 +20,7 @@ from pymc.sampling.parallel import (
 )
 from pymc.util import RandomSeed, _get_seeds_per_chain
 from rich.console import Console
-from rich.progress import TextColumn, TimeElapsedColumn
+from rich.progress import TaskID, TextColumn, TimeElapsedColumn
 from rich.table import Column
 from threadpoolctl import threadpool_limits
 
@@ -160,7 +160,7 @@ def multipath_pathfinder(
         progress = _make_multipath_progress(progressbar)
 
         # Create one task per path and build per-path progress callbacks
-        task_ids = []
+        task_ids: list[TaskID] = []
         path_callbacks: list[Callable | None] = []
         with progress:
             for i in range(num_paths):
@@ -438,7 +438,7 @@ def _make_multipath_progress(progressbar: bool) -> CustomProgress:
     )
 
 
-def _make_progress_callback(progress: CustomProgress, task_id: int) -> Callable[[dict], None]:
+def _make_progress_callback(progress: CustomProgress, task_id: TaskID) -> Callable[[dict], None]:
     def cb(info: dict) -> None:
         fields: dict[str, Any] = {}
         if "status" in info and info["status"] is not None:
