@@ -115,7 +115,6 @@ def make_single_pathfinder_fn(
         jacobian=jacobian_correction,
         compile_kwargs=compile_kwargs,
         vectorize=vectorize_logp,
-        return_inv_hessian_diag=True,
     )
 
     def _check_lbfgs_status(status):

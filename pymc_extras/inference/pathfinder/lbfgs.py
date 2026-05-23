@@ -308,7 +308,7 @@ class LBFGSStreamingCallback:
         u = self._rng.standard_normal((self.num_elbo_draws, self._N))
         try:
             sample_out = self.sample_logp_fn(x, g, alpha, self.s_win, self.z_win, u)
-            _, logQ, logP = sample_out[:3]
+            _, logQ, logP, _ = sample_out
             logP = np.asarray(logP)
             logQ = np.asarray(logQ)
             finite = np.isfinite(logP)

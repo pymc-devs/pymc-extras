@@ -154,7 +154,6 @@ def test_inv_hessian_diag_matches_sample_scales():
         MAXCOR,
         jacobian=True,
         vectorize=False,
-        return_inv_hessian_diag=True,
     )
 
     cb, rng, _ = run_streaming_lbfgs(model, sample_logp_fn, seed=20260301)

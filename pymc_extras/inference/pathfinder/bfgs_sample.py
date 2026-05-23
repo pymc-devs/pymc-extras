@@ -134,7 +134,6 @@ def make_pathfinder_sample_fn(
     jacobian: bool,
     compile_kwargs: dict | None = None,
     vectorize: bool = False,
-    return_inv_hessian_diag: bool = False,
 ) -> Function:
     """Compile a single PyTensor function covering bfgs sample + batched logP evaluation.
 
@@ -153,13 +152,11 @@ def make_pathfinder_sample_fn(
     compile_kwargs : dict, optional
     vectorize : bool, optional
         If True, use vectorize_graph instead of pytensor.map. Default False.
-    return_inv_hessian_diag : bool, optional
-        If True, include inverse-Hessian diagonal as 4th output.
 
     Returns
     -------
     fn : Function
-        Compiled: (x, g, alpha, s_win, z_win, u) → (phi, logQ, logP[, inv_hessian_diag])
+        Compiled: (x, g, alpha, s_win, z_win, u) → (phi, logQ, logP, inv_hessian_diag)
         where s_win, z_win are (N, J), u is (M, N), and M is a dynamic dimension.
     """
     compile_kwargs = compile_kwargs or {}
@@ -190,9 +187,7 @@ def make_pathfinder_sample_fn(
             return_updates=False,
         )
 
-    outputs = [phi_sym, logQ_sym, batched_logP_sym]
-    if return_inv_hessian_diag:
-        outputs.append(inv_hessian_diag_sym)
+    outputs = [phi_sym, logQ_sym, batched_logP_sym, inv_hessian_diag_sym]
 
     fn = pytensor.function(
         [
