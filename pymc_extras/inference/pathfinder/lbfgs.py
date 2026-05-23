@@ -92,24 +92,24 @@ class LBFGSInitFailed(LBFGSException):
 
 
 class LBFGS:
-    """L-BFGS optimizer wrapper around scipy's implementation.
+    """L-BFGS optimizer wrapping ``scipy.optimize.minimize(method="L-BFGS-B")``.
 
     Parameters
     ----------
-    value_grad_fn : Callable
-        function that returns tuple of (value, gradient) given input x
+    value_grad_fn : callable
+        Returns ``(value, gradient)`` for a position.
     maxcor : int
-        maximum number of variable metric corrections
-    maxiter : int
-        maximum number of iterations, defaults to 1000
-    ftol : float
-        function tolerance for convergence, defaults to 1e-5
-    gtol : float
-        gradient tolerance for convergence, defaults to 1e-8
-    maxls : int
-        maximum number of line search steps, defaults to 1000
-    epsilon : float
-        tolerance for lbfgs update, defaults to 1e-8
+        Number of variable-metric corrections.
+    maxiter : int, optional
+        Maximum number of iterations. Default 1000.
+    ftol : float, optional
+        Function-value tolerance for convergence. Default 1e-5.
+    gtol : float, optional
+        Gradient-norm tolerance for convergence. Default 1e-8.
+    maxls : int, optional
+        Maximum line-search steps per iteration. Default 1000.
+    epsilon : float, optional
+        Curvature-condition threshold for accepting a step. Default 1e-12.
     """
 
     def __init__(
@@ -148,9 +148,7 @@ class LBFGS:
         result : OptimizeResult
             scipy result object.
         update_count : int
-            Number of accepted history entries **including the initial point**.
-            For non-streaming this is ``history.count``; for streaming it is
-            ``step_count + 1``.
+            Number of accepted history entries, including the initial point (``step_count + 1``).
         """
         low_update_threshold = 3
         if update_count <= 1:  # triggers LBFGSInitFailed
@@ -171,32 +169,22 @@ class LBFGS:
             return LBFGSStatus.CONVERGED
 
     def minimize_streaming(self, callback, x0) -> tuple[int, LBFGSStatus]:
-        """Minimize objective using a streaming callback that processes each step.
-
-        Unlike :meth:`minimize`, no position/gradient history is accumulated.
-        The ``callback`` is responsible for maintaining whatever per-step state
-        it needs (e.g. ring buffers, best-ELBO tracking).
-
-        ``callback.value_grad_fn`` is used as the scipy objective so that a
-        single-entry cache (e.g. :class:`pytensor.tensor.optimize.LRUCache1`) eliminates the
-        duplicate evaluation that would otherwise occur on each accepted step.
+        """Minimize the objective, invoking ``callback`` after each accepted step.
 
         Parameters
         ----------
         callback : object
-            Must expose:
-            - ``value_grad_fn``: callable ``(x) -> (value, grad)`` passed to scipy
-              as the objective.  Wrap with :class:`pytensor.tensor.optimize.LRUCache1`
-              before constructing the callback to avoid duplicate evaluations.
-            - ``step_count``: int, updated by ``__call__`` for each accepted step.
+            Exposes ``value_grad_fn``, the ``(x) -> (value, grad)`` objective passed to scipy,
+            and a ``step_count`` it updates on each accepted step.
         x0 : array_like
             Initial position.
 
         Returns
         -------
         step_count : int
-            Number of accepted callback steps (does not count the initial point).
+            Number of accepted steps, excluding the initial point.
         lbfgs_status : LBFGSStatus
+            The classified termination status.
         """
         x0 = np.array(x0, dtype=np.float64)
         result = minimize(
@@ -212,33 +200,32 @@ class LBFGS:
 
 
 class LBFGSStreamingCallback:
-    """Streaming LBFGS callback: computes ELBO at each accepted step, O(J*N + M*N) peak memory.
+    """Scipy L-BFGS callback that scores the Gaussian approximation at each accepted step.
 
-    Instead of collecting the full (L+1, N) history, it processes each accepted step
-    immediately and tracks only the best state seen so far.
+    On each accepted step it updates the inverse-Hessian estimate, draws from the resulting
+    Gaussian to estimate its ELBO, and keeps the best-scoring state for downstream sampling.
 
     Parameters
     ----------
-    value_grad_fn : Callable
-        Single-entry cached value/gradient function (e.g. LRUCache1 from pytensor.tensor.optimize).
-    x0 : NDArray
+    value_grad_fn : callable
+        Single-entry cached ``(x) -> (value, gradient)`` function.
+    x0 : ndarray
         Initial position, shape (N,).
-    sample_logp_fn : Callable
-        Compiled PyTensor function (x, g, alpha, s_win, z_win, u) → (phi, logQ, logP).
-        Built by make_pathfinder_sample_fn.
+    sample_logp_fn : callable
+        Function ``(x, g, alpha, s_win, z_win, u) -> (phi, logQ, logP, inv_hessian_diag)`` from
+        :func:`make_pathfinder_sample_fn`.
     num_elbo_draws : int
         Number of draws per step for ELBO estimation.
-    rng : np.random.Generator
-        Random number generator for draw generation.
+    rng : numpy Generator
+        Random generator for draws.
     J : int
-        L-BFGS history size (maxcor).
+        L-BFGS history size (``maxcor``).
     epsilon : float
-        Tolerance for the LBFGS update condition.
-    progress_callback : Callable | None
-        Optional progress reporting.
-    on_step_callback : Callable | None
-        If set, called after each accepted step with (x, g, alpha, s_win, z_win, elbo).
-        Used by fixture generation to record per-step state.
+        Curvature-condition threshold for accepting a step.
+    progress_callback : callable, optional
+        Called with a progress dict after each step. Default None.
+    on_step_callback : callable, optional
+        Called after each accepted step with ``(x, g, alpha, s_win, z_win, elbo)``. Default None.
     """
 
     def __init__(
@@ -284,7 +271,8 @@ class LBFGSStreamingCallback:
         self._start_time: float = time.time()
 
     def __call__(self, x: NDArray) -> float | None:
-        """Process one accepted LBFGS step. Returns current_elbo for testability."""
+        """Process one accepted L-BFGS step and return its ELBO, or None if the step is skipped
+        (non-finite value/gradient, or curvature condition not met)."""
         value, g = self.value_grad_fn(x)
 
         s = x - self.x_prev

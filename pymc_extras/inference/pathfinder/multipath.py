@@ -65,21 +65,20 @@ def multipath_pathfinder(
     ----------
     model : pymc.Model
         The PyMC model to fit the Pathfinder algorithm to.
-    num_paths : int, optional
+    num_paths : int
         Number of independent paths to run. Increase this when increasing the jitter value.
-        Default 4.
-    num_draws : int, optional
-        Total number of samples to draw from the fitted approximation. Default 1000.
-    num_draws_per_path : int, optional
-        Number of samples to draw per path. Default 1000.
-    num_elbo_draws : int, optional
-        Number of draws for the Evidence Lower Bound (ELBO) estimation. Default 10.
-    jitter : float, optional
+    num_draws : int
+        Total number of samples to draw from the fitted approximation.
+    num_draws_per_path : int
+        Number of samples to draw per path.
+    num_elbo_draws : int
+        Number of draws for the Evidence Lower Bound (ELBO) estimation.
+    jitter : float
         Amount of jitter to apply to initial points. Pathfinder can be highly sensitive to this
-        value; increase num_paths when increasing it. Default 2.0.
+        value; increase num_paths when increasing it.
     lbfgs_config : LBFGSConfig
         L-BFGS configuration. For details, including default arguments, see :class:`LBFGSConfig`.
-    importance_sampling : str or None, optional
+    importance_sampling : str or None
         Method to apply based on log importance weights (logP - logQ):
 
         - "psis" : Pareto Smoothed Importance Sampling; usually most stable.
@@ -87,13 +86,8 @@ def multipath_pathfinder(
         - "identity" : apply log importance weights directly without resampling.
         - None : no importance sampling; return raw samples of shape
           (num_paths, num_draws_per_path, N). The other methods return shape (num_draws, N).
-
-        Default "psis".
-    progressbar : bool, optional
+    progressbar : bool
         Whether to display a progress bar. Enabling it likely increases computation time.
-        Default False.
-    random_seed : RandomSeed, optional
-        Random seed for reproducibility.
     parallel : bool, optional
         If True, spawn a separate worker process per path for true parallelism. If False, run
         paths serially in the main process. Default True.
@@ -103,6 +97,11 @@ def multipath_pathfinder(
     blas_cores : int or "auto" or None, optional
         Total number of threads BLAS/OpenMP should use per worker. "auto" matches the total to
         ``cores``; None keeps default BLAS behavior. Default "auto".
+    mp_ctx : str or multiprocessing.Context, optional
+        Multiprocessing context for parallel path execution (e.g. ``"spawn"``, ``"fork"``).
+        Default None.
+    random_seed : RandomSeed, optional
+        Random seed for reproducibility. Default None.
     max_init_retries : int, optional
         Maximum number of re-jitter retries per path when LBFGSInitFailed is raised. Default 10.
     jacobian_correction : bool, optional
