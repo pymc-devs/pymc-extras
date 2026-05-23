@@ -16,6 +16,7 @@ from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.blocking import DictToArrayBijection, RaveledVars
 from pymc.model import modelcontext
 from pymc.util import get_default_varnames
+from pytensor.compile.mode import FAST_COMPILE
 from pytensor.graph import clone_replace, vectorize_graph
 from rich.console import Console, Group
 from rich.padding import Padding
@@ -224,10 +225,13 @@ def _transform_draws_vectorized(model, vars_to_sample, trace, compile_kwargs: di
         for i, var in enumerate(model.value_vars)
     }
     outputs = vectorize_graph(vars_to_sample, replace=replace)
+    # The transform graph is compiled once and run once, so skip the rewrite phase (FAST_COMPILE)
+    # by default — full FAST_RUN rewrites cost far more than they save on a single-use graph. A
+    # caller-supplied ``mode`` in compile_kwargs overrides this.
     fn = pytensor.function(
         inputs=list(replace.values()),
         outputs=outputs,
-        **{"on_unused_input": "ignore", **compile_kwargs},
+        **{"mode": FAST_COMPILE, "on_unused_input": "ignore", **compile_kwargs},
     )
     fn.trust_input = True
     result = fn(*list(trace.values()))
@@ -251,7 +255,7 @@ def _transform_draws_scan(model, vars_to_sample, trace, compile_kwargs: dict) ->
     fn = pytensor.function(
         inputs=batched_inputs,
         outputs=scan_outputs,
-        **{"on_unused_input": "ignore", **compile_kwargs},
+        **{"mode": FAST_COMPILE, "on_unused_input": "ignore", **compile_kwargs},
     )
     fn.trust_input = True
 
