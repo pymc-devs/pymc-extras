@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
 from pymc.blocking import DictToArrayBijection
@@ -107,6 +108,43 @@ def test_progress_callback_retry():
     assert len(retry_statuses) == fail_k
     terminal_statuses = [s for s in status_updates if s in ("ok", "elbo@0")]
     assert len(terminal_statuses) >= 1
+
+
+def test_shared_single_fn_is_leak_free():
+    """A path's result must not depend on what other seeds ran on the same compiled fn.
+
+    Paths share one ``single_pathfinder_fn`` (the per-path ``.copy(share_memory=False)`` of the
+    compiled functions was removed, since paths run either serially or in isolated processes). The
+    compiled functions and their I/O containers must therefore carry no cross-path state: reusing
+    one fn for several seeds must yield bit-identical results to running each seed alone on its own
+    freshly built fn. This is the correctness guarantee that replaces the removed copies — if
+    serial reuse is leak-free, process-isolated parallel execution is safe a fortiori.
+    """
+    model = make_ard_regression()
+    seeds = [3, 7, 11, 19]
+
+    # Reference: each seed as the sole call on its own freshly built fn.
+    refs = {s: make_single_fn(model)(s) for s in seeds}
+
+    # Reuse one fn across all seeds, in reverse order, so any retained state from an earlier
+    # seed would perturb a later one.
+    shared = make_single_fn(model)
+    out = {s: shared(s) for s in reversed(seeds)}
+
+    compared = 0
+    for s in seeds:
+        r, ref = out[s], refs[s]
+        assert r.path_status == ref.path_status
+        if ref.samples is None:
+            assert r.samples is None
+            continue
+        np.testing.assert_array_equal(r.samples, ref.samples)
+        np.testing.assert_array_equal(r.logP, ref.logP)
+        np.testing.assert_array_equal(r.logQ, ref.logQ)
+        np.testing.assert_array_equal(r.lbfgs_niter, ref.lbfgs_niter)
+        np.testing.assert_array_equal(r.inv_hessian_diag, ref.inv_hessian_diag)
+        compared += 1
+    assert compared >= 2, "need >=2 successful paths to meaningfully exercise fn reuse"
 
 
 @pytest.mark.parametrize("model_name", ["ard_regression", "bpca_small"])

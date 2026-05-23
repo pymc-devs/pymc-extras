@@ -6,6 +6,7 @@ from pymc_extras.inference.pathfinder.multipath import (
     _make_multipath_progress,
     _make_progress_callback,
 )
+from tests.inference.pathfinder.equivalence_models import make_ard_regression
 
 
 def test_concurrent_results(eight_schools_model):
@@ -27,6 +28,56 @@ def test_concurrent_results(eight_schools_model):
         idata_serial.posterior.tau.data.mean(),
         idata_parallel.posterior.tau.data.mean(),
         atol=0.4,
+    )
+
+
+def _per_path_means(posterior):
+    """Stack each path's (chain's) per-variable posterior means into one row per path, then
+    sort the rows by a content key so the two execution modes can be aligned despite differing
+    path completion order."""
+    rows = []
+    for c in range(posterior.sizes["chain"]):
+        rows.append(
+            np.concatenate(
+                [
+                    np.atleast_1d(posterior[v].values[c].mean(axis=0).ravel())
+                    for v in sorted(posterior.data_vars)
+                ]
+            )
+        )
+    rows = np.asarray(rows)
+    return rows[np.argsort(rows[:, 0])]
+
+
+def test_parallel_paths_match_serial_per_path():
+    """Process-isolated parallel paths, sharing the now-uncopied compiled functions, must produce
+    the same per-path approximations as serial execution — not merely finite output.
+
+    With ``importance_sampling=None`` each path is a separate ``chain``, so we compare per-path
+    posterior means between modes (aligned by content, since parallel paths complete out of order).
+    Cross-path state corruption from dropping the per-path copies would make a path's approximation
+    depend on its co-runners, diverging between serial and parallel; identical seeds otherwise pin
+    each path's result, so the two modes must agree tightly.
+    """
+    model = make_ard_regression()
+    kw = dict(
+        method="pathfinder",
+        num_paths=4,
+        num_draws=80,
+        num_draws_per_path=80,
+        num_elbo_draws=8,
+        jitter=2.0,
+        random_seed=13,
+        importance_sampling=None,
+        progressbar=False,
+    )
+    with model:
+        serial = pmx.fit(parallel=False, **kw).posterior
+        parallel = pmx.fit(parallel=True, **kw).posterior
+
+    assert serial.sizes["chain"] == parallel.sizes["chain"] == kw["num_paths"]
+    np.testing.assert_allclose(
+        _per_path_means(serial), _per_path_means(parallel), rtol=1e-3, atol=1e-3
     )
 
 
