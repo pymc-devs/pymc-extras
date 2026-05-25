@@ -12,9 +12,9 @@ classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "License :: OSI Approved :: Apache Software License",
   "Intended Audience :: Science/Research",
   "Topic :: Scientific/Engineering",
@@ -34,12 +34,12 @@ keywords = [
 license = {file = "LICENSE"}
 dynamic = ["version"]  # specify the version in the __init__.py file
 dependencies = [
-  "pymc@git+https://github.com/pymc-devs/pymc.git",
+  "pymc>=6.0,<7.0",
   "pytensor@git+https://github.com/pymc-devs/pytensor.git",
-  "scikit-learn",
-  "better-optimize>=0.3.1",
+  "arviz>=1.1",
+  "better-optimize>=0.4.1,<1.0",
   "pydantic>=2.0.0",
-  "preliz>=0.20.0",
+  "preliz>=0.25.0",
 ]
 
 [project.optional-dependencies]
@@ -132,7 +132,7 @@ exclude_lines = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.format]
 docstring-code-format = true

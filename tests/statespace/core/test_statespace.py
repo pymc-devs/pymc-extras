@@ -36,7 +36,7 @@ from tests.statespace.test_utilities import (
 floatX = pytensor.config.floatX
 nile = load_nile_test_data()
 ALL_SAMPLE_OUTPUTS = MATRIX_NAMES + FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES
-mock_pymc_sample = pytest.fixture(scope="session")(mock_sample_setup_and_teardown)
+mock_pymc_sample = pytest.fixture(scope="module")(mock_sample_setup_and_teardown)
 
 
 def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False, data_info=None):
@@ -393,7 +393,7 @@ def pymc_mod_time_varying(ss_mod_time_varying, rng):
     return m
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def idata(pymc_mod, rng, mock_pymc_sample):
     with pymc_mod:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
@@ -403,7 +403,7 @@ def idata(pymc_mod, rng, mock_pymc_sample):
     return idata
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def idata_exog(exog_pymc_mod, rng, mock_pymc_sample):
     with exog_pymc_mod:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
@@ -412,7 +412,7 @@ def idata_exog(exog_pymc_mod, rng, mock_pymc_sample):
     return idata
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def idata_exog_mv(exog_pymc_mod_mv, rng, mock_pymc_sample):
     with exog_pymc_mod_mv:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
@@ -421,7 +421,7 @@ def idata_exog_mv(exog_pymc_mod_mv, rng, mock_pymc_sample):
     return idata
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def idata_no_exog(pymc_mod_no_exog, rng, mock_pymc_sample):
     with pymc_mod_no_exog:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
@@ -430,7 +430,7 @@ def idata_no_exog(pymc_mod_no_exog, rng, mock_pymc_sample):
     return idata
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def idata_no_exog_mv(pymc_mod_no_exog_mv, rng, mock_pymc_sample):
     with pymc_mod_no_exog_mv:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
@@ -439,7 +439,7 @@ def idata_no_exog_mv(pymc_mod_no_exog_mv, rng, mock_pymc_sample):
     return idata
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def idata_no_exog_mv_dt(pymc_mod_no_exog_mv_dt, rng, mock_pymc_sample):
     with pymc_mod_no_exog_mv_dt:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
@@ -448,7 +448,7 @@ def idata_no_exog_mv_dt(pymc_mod_no_exog_mv_dt, rng, mock_pymc_sample):
     return idata
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def idata_no_exog_dt(pymc_mod_no_exog_dt, rng, mock_pymc_sample):
     with pymc_mod_no_exog_dt:
         idata = pm.sample(draws=10, tune=0, chains=1, random_seed=rng)
@@ -457,7 +457,7 @@ def idata_no_exog_dt(pymc_mod_no_exog_dt, rng, mock_pymc_sample):
     return idata
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def idata_time_varying(pymc_mod_time_varying, rng, mock_pymc_sample):
     """Inference data for time-varying model."""
     with pymc_mod_time_varying:

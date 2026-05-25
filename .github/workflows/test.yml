@@ -43,8 +43,8 @@ jobs:
       run:
         shell: bash -leo pipefail {0}
     steps:
-      - uses: actions/checkout@v4
-      - uses: mamba-org/setup-micromamba@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: mamba-org/setup-micromamba@d7c9bd84e824b79d2af72a2d4196c7f4300d3476  # v3.0.0
         with:
           environment-file: conda-envs/environment-test.yml
           create-args: >-
@@ -62,7 +62,7 @@ jobs:
         run: |
           python -m pytest --color=yes -vv --cov=pymc_extras --cov-append --cov-report=xml --cov-report term --durations=50 $TEST_SUBSET
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v2
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v6.0.0
         with:
           env_vars: TEST_SUBSET
           name: ${{ matrix.os }}
@@ -89,11 +89,13 @@ jobs:
       run:
         shell: cmd /C call {0}
     steps:
-      - uses: actions/checkout@v4
-      - uses: mamba-org/setup-micromamba@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: mamba-org/setup-micromamba@d7c9bd84e824b79d2af72a2d4196c7f4300d3476  # v3.0.0
         with:
           environment-file: conda-envs/environment-test.yml
-          micromamba-version: "latest"
+          # Pinned: micromamba 2.6.1-0 ships a Windows binary with a missing DLL
+          # dependency that breaks GitHub-hosted runners (STATUS_DLL_NOT_FOUND).
+          micromamba-version: "2.6.0-0"
           create-args: >-
             python=${{matrix.python-version}}
           environment-name: pymc-extras-test
@@ -110,7 +112,7 @@ jobs:
         run: >-
           python -m pytest --color=yes -vv --cov=pymc_extras --cov-append --cov-report=xml --cov-report term --durations=50 %TEST_SUBSET%
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v2
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v6.0.0
         with:
           env_vars: TEST_SUBSET
           name: ${{ matrix.os }}

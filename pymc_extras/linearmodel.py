@@ -2,7 +2,16 @@ import numpy as np
 import pandas as pd
 import pymc as pm
 
-from sklearn.base import BaseEstimator
+# If scikit-learn is available, inherit from BaseEstimator for sklearn-pipeline interop
+# (Pipeline, TransformedTargetRegressor, get_params). Without it, fall back to a stub
+# so LinearModel still works as a standalone Bayesian model.
+try:
+    from sklearn.base import BaseEstimator
+except ImportError:
+
+    class BaseEstimator:
+        pass
+
 
 from pymc_extras.model_builder import ModelBuilder
 

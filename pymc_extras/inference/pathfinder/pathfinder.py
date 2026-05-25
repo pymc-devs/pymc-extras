@@ -24,7 +24,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum, auto
-from typing import Any, Literal, Self, TypeAlias
+from typing import Any, Literal, Self
 
 import numpy as np
 import pymc as pm
@@ -79,7 +79,7 @@ logger = logging.getLogger(__name__)
 REGULARISATION_TERM = 1e-8
 DEFAULT_LINKER = "cvm_nogc"
 
-SinglePathfinderFn: TypeAlias = Callable[[int], "PathfinderResult"]
+type SinglePathfinderFn = Callable[[int], "PathfinderResult"]
 
 
 def get_jaxified_logp_of_ravel_inputs(model: Model, jacobian: bool = True) -> Callable:

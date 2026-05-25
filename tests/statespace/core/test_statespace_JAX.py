@@ -31,7 +31,7 @@ floatX = pytensor.config.floatX
 nile = load_nile_test_data()
 ALL_SAMPLE_OUTPUTS = MATRIX_NAMES + FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES
 
-mock_pymc_sample = pytest.fixture(scope="session")(mock_sample_setup_and_teardown)
+mock_pymc_sample = pytest.fixture(scope="module")(mock_sample_setup_and_teardown)
 
 
 @pytest.fixture(scope="session")
@@ -68,7 +68,7 @@ def exog_pymc_mod(exog_ss_mod, rng):
     return m
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def idata(pymc_mod, rng, mock_pymc_sample):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -91,7 +91,7 @@ def idata(pymc_mod, rng, mock_pymc_sample):
     return idata
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def idata_exog(exog_pymc_mod, rng, mock_pymc_sample):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

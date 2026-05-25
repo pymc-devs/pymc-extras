@@ -4,7 +4,7 @@ channels:
 - nodefaults
 dependencies:
   - scikit-learn
-  - better-optimize>=0.3.2
+  - better-optimize>=0.4.1
   - dask<2025.1.1
   - xhistogram
   - statsmodels
@@ -13,10 +13,10 @@ dependencies:
   - pytest-cov
   - pydantic>=2.0.0
   - h5netcdf
+  - pymc>=6.0,<7.0
   - pip
   - pip:
       - jax
       - blackjax
-      - pymc @ git+https://github.com/pymc-devs/pymc.git
       - pytensor @ git+https://github.com/pymc-devs/pytensor.git
-      - preliz @ git+https://github.com/arviz-devs/preliz.git
+      - preliz>=0.25
