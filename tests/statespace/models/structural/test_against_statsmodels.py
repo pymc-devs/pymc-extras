@@ -6,9 +6,10 @@ from collections import defaultdict
 import numpy as np
 import pytensor
 import pytest
-import statsmodels.api as sm
 
 from numpy.testing import assert_allclose
+
+import statsmodels.api as sm
 
 from pymc_extras.statespace import structural as st
 from pymc_extras.statespace.utils.constants import (

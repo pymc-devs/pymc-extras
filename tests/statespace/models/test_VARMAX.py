@@ -6,11 +6,12 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import pytest
-import statsmodels.api as sm
 
 from numpy.testing import assert_allclose, assert_array_less
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.testing import mock_sample_setup_and_teardown
+
+import statsmodels.api as sm
 
 from pymc_extras.statespace import BayesianVARMAX
 from pymc_extras.statespace.utils.constants import SHORT_NAME_TO_LONG

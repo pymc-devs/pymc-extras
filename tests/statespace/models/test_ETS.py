@@ -2,12 +2,13 @@ import numpy as np
 import pymc as pm
 import pytensor
 import pytest
-import statsmodels.api as sm
 
 from numpy.testing import assert_allclose
 from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
+
+import statsmodels.api as sm
 
 from pymc_extras.statespace.models.ETS import BayesianETS
 from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES

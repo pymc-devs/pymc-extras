@@ -9,12 +9,13 @@ import numpy as np
 import pandas as pd
 import pytensor
 import pytensor.tensor as pt
-import statsmodels.api as sm
 
 from numpy.testing import assert_allclose
 from pymc import modelcontext
 from pytensor.graph.replace import graph_replace
 from pytensor.graph.traversal import explicit_graph_inputs
+
+import statsmodels.api as sm
 
 from pymc_extras.statespace.filters.kalman_smoother import KalmanSmoother
 from pymc_extras.statespace.utils.constants import (
