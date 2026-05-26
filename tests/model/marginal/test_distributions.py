@@ -87,6 +87,7 @@ def test_marginalized_hmm_categorical_emission(categorical_emission):
     np.testing.assert_allclose(logp_fn({"emission": test_value}), expected_logp)
 
 
+@pytest.mark.filterwarnings("ignore:invalid value encountered in multiply:RuntimeWarning")
 @pytest.mark.parametrize("batch_chain", (False, True))
 @pytest.mark.parametrize("batch_emission1", (False, True))
 @pytest.mark.parametrize("batch_emission2", (False, True))
