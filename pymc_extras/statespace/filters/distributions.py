@@ -10,6 +10,8 @@ from pymc.pytensorf import intX, normalize_rng_param
 from pytensor.graph.basic import Node
 from pytensor.tensor.random import multivariate_normal
 
+from pymc_extras.statespace.utils.batch_tools import bmv
+
 floatX = pytensor.config.floatX
 COV_ZERO_TOL = 0
 
@@ -157,9 +159,6 @@ class _LinearGaussianStateSpace(Continuous):
         append_x0=True,
         method="svd",
     ):
-        def bmv(A, x):
-            return pt.matmul(A, x[..., None])[..., 0]
-
         if sequence_names is None:
             sequence_names = []
 

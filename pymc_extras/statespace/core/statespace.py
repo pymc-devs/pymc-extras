@@ -49,6 +49,7 @@ from pymc_extras.statespace.filters.distributions import (
     SequenceMvNormal,
 )
 from pymc_extras.statespace.filters.utilities import stabilize
+from pymc_extras.statespace.utils.batch_tools import bmv
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
@@ -280,7 +281,8 @@ class PyMCStateSpace:
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
         self.mode = mode
-        self.batch_size = batch_size
+
+        self.batch_size = (batch_size,) if batch_size is not None else ()
 
         self._populate_properties()
 
@@ -1022,20 +1024,42 @@ class PyMCStateSpace:
                 dims = tuple([dim if dim in coords.keys() else None for dim in dim_names])
                 pm.Deterministic(name, var, dims=dims)
 
+    def _maybe_tv(self, name, base_sig, time_varying_names):
+        """Add leading time dimension if matrix is time varying."""
+        if name in time_varying_names:
+            return f"(t,{base_sig})"
+        return f"({base_sig})"
+
+    def _build_signature(self, inputs, outputs, time_varying_names):
+        def resolve(spec):
+            name, base_sig = spec
+
+            # Non-time-varying literal signature
+            if name is None:
+                return f"({base_sig})"
+
+            return self._maybe_tv(name, base_sig, time_varying_names)
+
+        input_sig = ",".join(resolve(spec) for spec in inputs)
+        output_sig = ",".join(f"({sig})" for sig in outputs)
+
+        return f"{input_sig}->{output_sig}"
+
+    def _vectorize(self, fn, inputs, outputs, time_varying_names):
+        signature = self._build_signature(
+            inputs,
+            outputs,
+            time_varying_names,
+        )
+
+        return pt.vectorize(fn, signature=signature)
+
     def make_vectorized_filter(
         self,
         missing_fill_value,
         cov_jitter,
         time_varying_names,
     ):
-        def maybe_tv(name, base_sig):
-            """
-            Add leading time dimension if matrix is time varying.
-            """
-            if name in time_varying_names:
-                return f"(t,{base_sig})"
-            return f"({base_sig})"
-
         def vectorize_filter(data, x0, P0, c, d, T, Z, R, H, Q):
             return self.kalman_filter.build_graph(
                 data,
@@ -1053,49 +1077,37 @@ class PyMCStateSpace:
                 time_varying_names,
             )
 
-        input_signature = ",".join(
-            [
-                "(t,o)",  # data
-                "(k)",  # Initial state
-                "(k,k)",  # Initial cov
-                maybe_tv("c", "k"),  # state eq. intercept
-                maybe_tv("d", "o"),  # observation eq. intercept
-                maybe_tv("T", "k,k"),  # transition
-                maybe_tv("Z", "o,k"),  # design
-                maybe_tv("R", "k,r"),  # selection
-                maybe_tv("H", "o,o"),  # observation cov
-                maybe_tv("Q", "r,r"),  # process cov
-            ]
-        )
+        inputs = [
+            (None, "t,o"),  # data
+            (None, "k"),  # x0
+            (None, "k,k"),  # P0
+            ("c", "k"),
+            ("d", "o"),
+            ("T", "k,k"),
+            ("Z", "o,k"),
+            ("R", "k,r"),
+            ("H", "o,o"),
+            ("Q", "r,r"),
+        ]
 
-        output_signature = ",".join(
-            [
-                "(t,k)",  # filtered states
-                "(t,k)",  # predicted states
-                "(t,o)",  # forecasts
-                "(t,k,k)",  # filtered covs
-                "(t,k,k)",  # predicted covs
-                "(t,o,o)",  # forecast covs
-                "(t)",  # loglikelihoods
-            ]
-        )
+        outputs = [
+            "t,k",
+            "t,k",
+            "t,o",
+            "t,k,k",
+            "t,k,k",
+            "t,o,o",
+            "t",
+        ]
 
-        signature = f"{input_signature}->{output_signature}"
-
-        return pt.vectorize(
+        return self._vectorize(
             vectorize_filter,
-            signature=signature,
+            inputs,
+            outputs,
+            time_varying_names,
         )
 
     def make_vectorized_smoother(self, cov_jitter, time_varying_names):
-        def maybe_tv(name, base_sig):
-            """
-            Add leading time dimension if matrix is time varying.
-            """
-            if name in time_varying_names:
-                return f"(t,{base_sig})"
-            return f"({base_sig})"
-
         def vectorize_smoother(T, R, Q, filtered_states, filtered_covariances):
             return self.kalman_smoother.build_graph(
                 T,
@@ -1107,28 +1119,24 @@ class PyMCStateSpace:
                 time_varying_names,
             )
 
-        input_signature = ",".join(
-            [
-                maybe_tv("T", "k,k"),  # transition
-                maybe_tv("R", "k,r"),  # selection
-                maybe_tv("Q", "r,r"),  # process cov
-                "(t, k)",  # filtered_states
-                "(t, k, k)",  # filtered_covariances
-            ]
-        )
+        inputs = [
+            ("T", "k,k"),
+            ("R", "k,r"),
+            ("Q", "r,r"),
+            (None, "t,k"),
+            (None, "t,k,k"),
+        ]
 
-        output_signature = ",".join(
-            [
-                "(t,k)",  # smoothed states
-                "(t,k,k)",  # smoothed covs
-            ]
-        )
+        outputs = [
+            "t,k",
+            "t,k,k",
+        ]
 
-        signature = f"{input_signature}->{output_signature}"
-
-        return pt.vectorize(
+        return self._vectorize(
             vectorize_smoother,
-            signature=signature,
+            inputs,
+            outputs,
+            time_varying_names,
         )
 
     def build_statespace_graph(
@@ -1355,8 +1363,8 @@ class PyMCStateSpace:
 
         def infer_variable_shape(name):
             shape = self._name_to_variable[name].type.shape
-            if self.batch_size:
-                shape = (self.batch_size, *shape)
+            shape = (*self.batch_size, *shape)
+
             if not any(dim is None for dim in shape):
                 return shape
 
@@ -2616,6 +2624,7 @@ class PyMCStateSpace:
         temp_coords = self._fit_coords.copy()
 
         t0_idx = np.flatnonzero(time_index == t0)[0]
+        idx = (slice(None), t0_idx) if self.batch_size else (t0_idx,)
 
         temp_coords["data_time"] = time_index
         temp_coords[TIME_DIM] = forecast_index
@@ -2665,24 +2674,12 @@ class PyMCStateSpace:
 
             mu_frozen, cov_frozen = graph_replace([mu, cov], replace=sub_dict, strict=True)
 
-            if self.batch_size:
-                x0 = pm.Deterministic(
-                    "x0_slice",
-                    mu_frozen[:, t0_idx, :],
-                    dims=mu_dims if mu_dims is not None else None,
-                )
-                P0 = pm.Deterministic(
-                    "P0_slice",
-                    cov_frozen[:, t0_idx, :, :],
-                    dims=cov_dims if cov_dims is not None else None,
-                )
-            else:
-                x0 = pm.Deterministic(
-                    "x0_slice", mu_frozen[t0_idx], dims=mu_dims if mu_dims is not None else None
-                )
-                P0 = pm.Deterministic(
-                    "P0_slice", cov_frozen[t0_idx], dims=cov_dims if cov_dims is not None else None
-                )
+            x0 = pm.Deterministic(
+                "x0_slice", mu_frozen[idx], dims=mu_dims if mu_dims is not None else None
+            )
+            P0 = pm.Deterministic(
+                "P0_slice", cov_frozen[idx], dims=cov_dims if cov_dims is not None else None
+            )
 
             # Get fresh matrices with n_timesteps placeholder still intact.
             # Build for the full timeline (training + forecast) so that time-varying matrices
@@ -3037,7 +3034,7 @@ class PyMCStateSpace:
             if self.batch_size:
                 x0 = pm.Deterministic(
                     "x0_new",
-                    pt.zeros((self.batch_size, self.k_states)),
+                    pt.zeros((*self.batch_size, self.k_states)),
                     dims=[BATCH_DIM, ALL_STATE_DIM],
                 )
             else:
@@ -3053,10 +3050,7 @@ class PyMCStateSpace:
                     Q = pt.linalg.cholesky(Q) / pt.diag(Q)
 
             if shock_trajectory is None:
-                if self.batch_size:
-                    shock_trajectory = pt.zeros((self.batch_size, n_steps, self.k_posdef))
-                else:
-                    shock_trajectory = pt.zeros((n_steps, self.k_posdef))
+                shock_trajectory = pt.zeros((*self.batch_size, n_steps, self.k_posdef))
                 if Q is not None:
                     if self.batch_size:
                         init_shock = pm.MvNormal(
@@ -3095,9 +3089,6 @@ class PyMCStateSpace:
 
             if self.batch_size:
                 shock_trajectory = shock_trajectory.swapaxes(0, 1)
-
-            def bmv(A, x):
-                return pt.matmul(A, x[..., None])[..., 0]
 
             def irf_step(*args):
                 if time_varying_T:
