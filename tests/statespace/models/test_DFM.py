@@ -6,12 +6,12 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import pytest
+import statsmodels.api as sm
 
 from numpy.testing import assert_allclose
 from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.graph.traversal import explicit_graph_inputs
-
-import statsmodels.api as sm
+from statsmodels.tsa.statespace.dynamic_factor import DynamicFactor
 
 from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
 from pymc_extras.statespace.utils.constants import (
@@ -27,7 +27,6 @@ from pymc_extras.statespace.utils.constants import (
     OBS_STATE_DIM,
     SHORT_NAME_TO_LONG,
 )
-from statsmodels.tsa.statespace.dynamic_factor import DynamicFactor
 from tests.statespace.shared_fixtures import rng
 
 mock_sample = pytest.fixture(scope="function")(mock_sample_setup_and_teardown)

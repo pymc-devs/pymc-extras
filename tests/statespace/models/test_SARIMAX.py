@@ -6,11 +6,10 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import pytest
+import statsmodels.api as sm
 
 from numpy.testing import assert_allclose, assert_array_less
 from pymc.testing import mock_sample_setup_and_teardown
-
-import statsmodels.api as sm
 
 from pymc_extras.statespace import BayesianSARIMAX
 from pymc_extras.statespace.models.utilities import (
