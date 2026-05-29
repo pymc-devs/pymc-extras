@@ -96,11 +96,8 @@ def _small_serial_fit(model, **overrides):
 
 
 def test_compile_mode_threaded_to_mp_context(monkeypatch):
-    """The compile ``mode`` must reach ``_initialize_multiprocessing_context`` so a JAX backend
-    forces a non-fork start method -- fork + JAX can deadlock, which pymc.sample guards against the
-    same way. Resolution happens once, unconditionally, so a serial fit exercises the threading
-    without spawning workers.
-    """
+    """The compile ``mode`` must reach the multiprocessing-context resolver so a JAX backend can
+    dodge a fork+JAX deadlock; resolution is unconditional, so a serial fit exercises it."""
     seen = []
     real = multipath_mod._initialize_multiprocessing_context
 
@@ -116,10 +113,8 @@ def test_compile_mode_threaded_to_mp_context(monkeypatch):
 
 
 def test_blas_limiter_wraps_path_execution(monkeypatch):
-    """Paths must run inside ``joined_blas_limiter()``, as pymc.sample / pymc.smc do. A recording
-    limiter is substituted so the wrap is observable even on fork (where the real limiter is a
-    no-op); a serial fit suffices since the limiter wraps both modes.
-    """
+    """Paths must run inside ``joined_blas_limiter()``; a recording limiter makes the wrap
+    observable even on fork, where the real limiter is a no-op."""
     entered = []
     real = multipath_mod.setup_cores_blas_cores
 
@@ -141,10 +136,7 @@ def test_blas_limiter_wraps_path_execution(monkeypatch):
 
 
 def test_interrupt_keeps_completed_paths(monkeypatch):
-    """A Ctrl-C mid-run keeps the paths that already finished rather than discarding them all,
-    mirroring pymc.sample. The generator yields one real path, then raises KeyboardInterrupt as if
-    the user interrupted; the fit must still return, carrying only that completed path.
-    """
+    """A Ctrl-C mid-run keeps the paths that already finished instead of discarding them all."""
     real_make_generator = multipath_mod.make_generator
 
     def interrupt_after_one(*args, **kwargs):
@@ -162,8 +154,8 @@ def test_interrupt_keeps_completed_paths(monkeypatch):
 
 
 def test_interrupt_before_any_path_propagates(monkeypatch):
-    """An interrupt before any path completes has nothing to salvage, so it aborts the run instead
-    of fabricating an empty result."""
+    """An interrupt before any path completes aborts the run rather than fabricating an empty
+    result."""
 
     def interrupt_immediately(*args, **kwargs):
         # Must be a generator: the raise has to fire during iteration (inside the drain's
