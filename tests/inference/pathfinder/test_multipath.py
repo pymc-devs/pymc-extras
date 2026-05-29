@@ -36,9 +36,8 @@ def test_concurrent_results(eight_schools_model):
 
 
 def _per_path_means(posterior):
-    """Stack each path's (chain's) per-variable posterior means into one row per path, then
-    sort the rows by a content key so the two execution modes can be aligned despite differing
-    path completion order."""
+    """Stack each path's (chain's) per-variable posterior means into one row per path, in chain
+    order."""
     rows = []
     for c in range(posterior.sizes["chain"]):
         rows.append(
@@ -49,21 +48,13 @@ def _per_path_means(posterior):
                 ]
             )
         )
-    rows = np.asarray(rows)
-    return rows[np.argsort(rows[:, 0])]
+    return np.asarray(rows)
 
 
 def test_parallel_paths_match_serial_per_path():
-    """Process-isolated parallel paths must produce the same per-path approximations as serial
-    execution — not merely finite output.
-
-    With ``importance_sampling=None`` each path is a separate ``chain``, so we compare per-path
-    posterior means between modes (aligned by content, since parallel paths complete out of order).
-    The paths share one set of compiled functions, so any state leaking across paths through those
-    functions would make a path's approximation depend on its co-runners, diverging between serial
-    and parallel; identical seeds otherwise pin each path's result, so the two modes must agree
-    tightly.
-    """
+    """Each chain gets the same per-path approximation under parallel and serial execution (same
+    seed, within cross-process BLAS noise) -- guarding against state leaking across the shared
+    compiled functions."""
     model = make_ard_regression()
     kw = dict(
         method="pathfinder",
@@ -185,6 +176,25 @@ def test_interrupt_before_any_path_propagates(monkeypatch):
 
     with pytest.raises(KeyboardInterrupt):
         _small_serial_fit(make_ard_regression())
+
+
+def test_parallel_path_order_is_deterministic(monkeypatch):
+    """A fixed seed gives identical output regardless of path completion order: results are
+    reassembled by chain index, not arrival order."""
+    real = multipath_mod.make_generator
+
+    def run(reorder):
+        def patched(*args, **kwargs):
+            yield from reorder(list(real(*args, **kwargs)))
+
+        monkeypatch.setattr(multipath_mod, "make_generator", patched)
+        return _small_serial_fit(make_ard_regression(), num_paths=4, importance_sampling=None)
+
+    forward = run(lambda pairs: pairs).posterior
+    backward = run(lambda pairs: pairs[::-1]).posterior
+
+    for var in forward.data_vars:
+        np.testing.assert_array_equal(forward[var].values, backward[var].values)
 
 
 def _new_task():

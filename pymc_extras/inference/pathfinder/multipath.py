@@ -196,19 +196,22 @@ def multipath_pathfinder(
             progress_callbacks=path_callbacks,
             mp_ctx=mp_ctx,
         )
-        results: list[PathfinderResult] = []
+        collected: list[tuple[int, PathfinderResult]] = []
         with joined_blas_limiter():
             try:
-                for result in generator:
-                    results.append(result)
+                for chain_result in generator:
+                    collected.append(chain_result)
             except KeyboardInterrupt:
-                if not results:
+                if not collected:
                     raise  # no completed paths to keep -- let the interrupt abort the run
                 logger.warning(
                     "Interrupted after %d of %d paths; continuing with the completed paths.",
-                    len(results),
+                    len(collected),
                     num_paths,
                 )
+    # Workers finish in nondeterministic order; reassemble by chain index so a fixed seed gives
+    # identical output.
+    results = [result for _, result in sorted(collected, key=lambda item: item[0])]
     compute_end = time.time()
 
     mpr = (
@@ -285,7 +288,7 @@ def _execute_concurrently(
     blas_cores: int | None,
     progress_callbacks: list[Callable | None] | None = None,
     mp_ctx: mp.context.BaseContext | str | None = None,
-) -> Iterator[PathfinderResult]:
+) -> Iterator[tuple[int, PathfinderResult]]:
     """Run paths in worker processes, at most ``cores`` alive at once.
 
     Workers are spawned as slots free, so the process count never exceeds ``cores`` regardless of
@@ -346,11 +349,11 @@ def _execute_concurrently(
                 _fill()
 
                 if kind == "done":
-                    yield payload
+                    yield chain, payload
                 else:
                     if payload is not None:
                         logger.warning("Pathfinder path %d failed: %s", chain, payload)
-                    yield _failed_path()
+                    yield chain, _failed_path()
     finally:
         for conn, (_, proc) in active.items():
             with contextlib.suppress(Exception):
@@ -364,11 +367,11 @@ def _execute_serially(
     fn: SinglePathfinderFn,
     seeds: list[int],
     progress_callbacks: list[Callable | None] | None = None,
-) -> Iterator[PathfinderResult]:
+) -> Iterator[tuple[int, PathfinderResult]]:
     """Execute pathfinder runs serially."""
     callbacks = progress_callbacks or [None] * len(seeds)
-    for seed, cb in zip(seeds, callbacks):
-        yield fn(seed, cb)
+    for chain, (seed, cb) in enumerate(zip(seeds, callbacks)):
+        yield chain, fn(seed, cb)
 
 
 def make_generator(
@@ -379,9 +382,10 @@ def make_generator(
     blas_cores: int | None = None,
     progress_callbacks: list[Callable | None] | None = None,
     mp_ctx: mp.context.BaseContext | None = None,
-) -> Iterator[PathfinderResult]:
-    """Generator for executing pathfinder runs concurrently or serially.
+) -> Iterator[tuple[int, PathfinderResult]]:
+    """Generator yielding ``(chain, result)`` pairs from pathfinder runs, concurrently or serially.
 
+    Parallel paths complete in nondeterministic order, so the caller must reorder by ``chain``.
     ``cores``, the per-worker ``blas_cores``, and ``mp_ctx`` must be pre-resolved by the caller via
     ``setup_cores_blas_cores`` and ``_initialize_multiprocessing_context``.
     """
