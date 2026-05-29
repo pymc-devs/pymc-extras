@@ -104,6 +104,62 @@ def _validate_property(props, property_name, expected_type):
         )
 
 
+def _infer_batch_dimensions(
+    core_matrices: list[pt.TensorVariable],
+    subbed_matrices: list[pt.TensorVariable],
+) -> tuple[int | None, ...]:
+    inferred_batch_dims = ()
+
+    for core_matrix, sub_matrix in zip(core_matrices, subbed_matrices):
+        core_shape = core_matrix.type.shape
+        sub_shape = sub_matrix.type.shape
+
+        if len(sub_shape) < len(core_shape):
+            raise ValueError(
+                f"Subbed matrix has fewer dims than core matrix: " f"{sub_shape} vs {core_shape}"
+            )
+
+        # Verify trailing/core dimensions match
+        trailing_shape = sub_shape[-len(core_shape) :]
+
+        for core_dim, sub_dim in zip(core_shape, trailing_shape):
+            if core_dim is not None and sub_dim is not None and core_dim != sub_dim:
+                raise ValueError(f"Core dimension mismatch: " f"{core_shape} vs {sub_shape}")
+
+        batch_dims = sub_shape[: -len(core_shape)]
+
+        # Skip matrices with no batch dimensions
+        if len(batch_dims) == 0:
+            continue
+
+        # First batched tensor establishes the batch shape
+        if len(inferred_batch_dims) == 0:
+            inferred_batch_dims = batch_dims
+            continue
+
+        # Validate consistency
+        if len(batch_dims) != len(inferred_batch_dims):
+            raise ValueError(f"Inconsistent batch rank: " f"{batch_dims} vs {inferred_batch_dims}")
+
+        merged_dims = []
+
+        for inferred_dim, new_dim in zip(inferred_batch_dims, batch_dims):
+            if inferred_dim is None:
+                merged_dims.append(new_dim)
+            elif new_dim is None:
+                merged_dims.append(inferred_dim)
+            elif inferred_dim == new_dim:
+                merged_dims.append(inferred_dim)
+            else:
+                raise ValueError(
+                    f"Inconsistent batch dimensions: " f"{batch_dims} vs {inferred_batch_dims}"
+                )
+
+        inferred_batch_dims = tuple(merged_dims)
+
+    return inferred_batch_dims
+
+
 class PyMCStateSpace:
     r"""
     Base class for Linear Gaussian Statespace models in PyMC.
@@ -260,7 +316,6 @@ class PyMCStateSpace:
         k_endog: int,
         k_states: int,
         k_posdef: int,
-        batch_size: int | None = None,
         filter_type: str = "standard",
         verbose: bool = True,
         measurement_error: bool = False,
@@ -281,8 +336,6 @@ class PyMCStateSpace:
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
         self.mode = mode
-
-        self.batch_size = (batch_size,) if batch_size is not None else ()
 
         self._populate_properties()
 
@@ -878,16 +931,8 @@ class PyMCStateSpace:
 
         matrices = list(self._unpack_statespace_with_placeholders())
 
-        if self.batch_size:
-            replacement_dict = {
-                var: pymc_model[name] for name, var in self._name_to_variable.items()
-            }
-            self.subbed_ssm = vectorize_graph(matrices, replace=replacement_dict)
-        else:
-            replacement_dict = {
-                var: pymc_model[name] for name, var in self._name_to_variable.items()
-            }
-            self.subbed_ssm = graph_replace(matrices, replace=replacement_dict)
+        replacement_dict = {var: pymc_model[name] for name, var in self._name_to_variable.items()}
+        self.subbed_ssm = vectorize_graph(matrices, replace=replacement_dict)
 
     def _insert_data_variables(self):
         """
@@ -1223,6 +1268,11 @@ class PyMCStateSpace:
         self._insert_random_variables()
         self._save_exogenous_data_info()
         self._insert_data_variables()
+
+        self.batch_size = _infer_batch_dimensions(
+            core_matrices=self._unpack_statespace_with_placeholders(),
+            subbed_matrices=self.unpack_statespace(),
+        )
 
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
         self._fit_data = data
