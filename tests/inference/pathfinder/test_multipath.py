@@ -53,14 +53,15 @@ def _per_path_means(posterior):
 
 
 def test_parallel_paths_match_serial_per_path():
-    """Process-isolated parallel paths, sharing the now-uncopied compiled functions, must produce
-    the same per-path approximations as serial execution — not merely finite output.
+    """Process-isolated parallel paths must produce the same per-path approximations as serial
+    execution — not merely finite output.
 
     With ``importance_sampling=None`` each path is a separate ``chain``, so we compare per-path
     posterior means between modes (aligned by content, since parallel paths complete out of order).
-    Cross-path state corruption from dropping the per-path copies would make a path's approximation
-    depend on its co-runners, diverging between serial and parallel; identical seeds otherwise pin
-    each path's result, so the two modes must agree tightly.
+    The paths share one set of compiled functions, so any state leaking across paths through those
+    functions would make a path's approximation depend on its co-runners, diverging between serial
+    and parallel; identical seeds otherwise pin each path's result, so the two modes must agree
+    tightly.
     """
     model = make_ard_regression()
     kw = dict(
