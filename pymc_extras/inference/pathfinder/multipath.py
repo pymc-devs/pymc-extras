@@ -155,6 +155,12 @@ def multipath_pathfinder(
 
     compute_start = time.time()
 
+    # Resolve the multiprocessing context once, threading the compile mode through so a JAX backend
+    # forces a non-fork start method -- fork + JAX can deadlock. Mirrors pymc.sample.
+    mp_ctx = _initialize_multiprocessing_context(
+        mp_ctx, mode=compile_kwargs.get("mode"), quiet=True
+    )
+
     # One progress row per path, updated in real time.
     progress = _make_multipath_progress(progressbar)
     task_ids: list[TaskID] = []
@@ -267,8 +273,8 @@ def _execute_concurrently(
     the number of paths. A worker that errors or dies yields a failed PathfinderResult rather than
     aborting the whole fit.
     """
-    ctx = _initialize_multiprocessing_context(mp_ctx, quiet=True)
-    start_method = ctx.get_start_method()
+    # mp_ctx is already resolved (mode-aware, JAX fork-safe) by multipath_pathfinder.
+    start_method = mp_ctx.get_start_method()
     # Fork inherits the fn via memory; non-fork ships it pickled once, shared by all workers.
     fn_is_pickled = start_method != "fork"
     fn_payload = cloudpickle.dumps(fn, protocol=-1) if fn_is_pickled else fn
@@ -277,8 +283,8 @@ def _execute_concurrently(
     active: dict[Any, tuple[int, Any]] = {}  # parent_conn -> (chain, process)
 
     def _spawn(chain: int, seed: int) -> None:
-        parent_conn, child_conn = ctx.Pipe()
-        proc = ctx.Process(
+        parent_conn, child_conn = mp_ctx.Pipe()
+        proc = mp_ctx.Process(
             daemon=True,
             name=f"pathfinder_path_{chain}",
             target=_run_pathfinder_process,
@@ -363,7 +369,7 @@ def make_generator(
             blas_cores,
             num_paths,
             effective_cores,
-            _initialize_multiprocessing_context(mp_ctx, quiet=True),
+            mp_ctx,
         )
         yield from _execute_concurrently(
             fn,

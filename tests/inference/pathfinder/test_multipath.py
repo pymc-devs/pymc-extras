@@ -2,6 +2,7 @@ import numpy as np
 
 import pymc_extras as pmx
 
+from pymc_extras.inference.pathfinder import multipath as multipath_mod
 from pymc_extras.inference.pathfinder.multipath import (
     _make_multipath_progress,
     _make_progress_callback,
@@ -79,6 +80,38 @@ def test_parallel_paths_match_serial_per_path():
     np.testing.assert_allclose(
         _per_path_means(serial), _per_path_means(parallel), rtol=1e-3, atol=1e-3
     )
+
+
+def test_compile_mode_threaded_to_mp_context(monkeypatch):
+    """The compile ``mode`` must reach ``_initialize_multiprocessing_context`` so a JAX backend
+    forces a non-fork start method -- fork + JAX can deadlock, which pymc.sample guards against the
+    same way. Resolution happens once, unconditionally, so a serial fit exercises the threading
+    without spawning workers.
+    """
+    seen = []
+    real = multipath_mod._initialize_multiprocessing_context
+
+    def spy(mp_ctx, *, mode=None, quiet=False):
+        seen.append(mode)
+        return real(mp_ctx, mode=mode, quiet=quiet)
+
+    monkeypatch.setattr(multipath_mod, "_initialize_multiprocessing_context", spy)
+
+    model = make_ard_regression()
+    with model:
+        pmx.fit(
+            method="pathfinder",
+            parallel=False,
+            num_paths=2,
+            num_draws=20,
+            num_draws_per_path=20,
+            num_elbo_draws=4,
+            random_seed=1,
+            compile_kwargs={"mode": "NUMBA"},
+            progressbar=False,
+        )
+
+    assert seen == ["NUMBA"]
 
 
 def _new_task():
