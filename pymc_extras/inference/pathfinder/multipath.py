@@ -160,6 +160,13 @@ def multipath_pathfinder(
     mp_ctx = _initialize_multiprocessing_context(
         mp_ctx, mode=compile_kwargs.get("mode"), quiet=True
     )
+    # Split the BLAS thread budget across workers and get a parent-side limiter, as pymc.sample and
+    # pymc.smc do. joined_blas_limiter caps BLAS threads in this process while paths run (a no-op
+    # for fork or blas_cores=None); num_blas_per_worker is each worker's share.
+    effective_cores = _default_cores(num_paths, cores)
+    joined_blas_limiter, effective_cores, num_blas_per_worker = setup_cores_blas_cores(
+        blas_cores, num_paths, effective_cores, mp_ctx
+    )
 
     # One progress row per path, updated in real time.
     progress = _make_multipath_progress(progressbar)
@@ -184,12 +191,13 @@ def multipath_pathfinder(
             parallel=parallel,
             fn=single_pathfinder_fn,
             seeds=path_seeds,
-            cores=cores,
-            blas_cores=blas_cores,
+            cores=effective_cores,
+            blas_cores=num_blas_per_worker,
             progress_callbacks=path_callbacks,
             mp_ctx=mp_ctx,
         )
-        results = list(generator)
+        with joined_blas_limiter():
+            results = list(generator)
     compute_end = time.time()
 
     mpr = (
@@ -356,26 +364,22 @@ def make_generator(
     parallel: bool,
     fn: SinglePathfinderFn,
     seeds: list[int],
-    cores: int | None = None,
-    blas_cores: int | None | Literal["auto"] = "auto",
+    cores: int,
+    blas_cores: int | None = None,
     progress_callbacks: list[Callable | None] | None = None,
-    mp_ctx: mp.context.BaseContext | str | None = None,
+    mp_ctx: mp.context.BaseContext | None = None,
 ) -> Iterator[PathfinderResult]:
-    """Generator for executing pathfinder runs concurrently or serially."""
+    """Generator for executing pathfinder runs concurrently or serially.
+
+    ``cores``, the per-worker ``blas_cores``, and ``mp_ctx`` must be pre-resolved by the caller via
+    ``setup_cores_blas_cores`` and ``_initialize_multiprocessing_context``.
+    """
     if parallel:
-        num_paths = len(seeds)
-        effective_cores = _default_cores(num_paths, cores)
-        _, _, num_blas_per_worker = setup_cores_blas_cores(
-            blas_cores,
-            num_paths,
-            effective_cores,
-            mp_ctx,
-        )
         yield from _execute_concurrently(
             fn,
             seeds,
-            cores=effective_cores,
-            blas_cores=num_blas_per_worker,
+            cores=cores,
+            blas_cores=blas_cores,
             progress_callbacks=progress_callbacks,
             mp_ctx=mp_ctx,
         )

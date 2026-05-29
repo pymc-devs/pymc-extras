@@ -1,3 +1,5 @@
+import contextlib
+
 import numpy as np
 
 import pymc_extras as pmx
@@ -112,6 +114,42 @@ def test_compile_mode_threaded_to_mp_context(monkeypatch):
         )
 
     assert seen == ["NUMBA"]
+
+
+def test_blas_limiter_wraps_path_execution(monkeypatch):
+    """Paths must run inside ``joined_blas_limiter()``, as pymc.sample / pymc.smc do. A recording
+    limiter is substituted so the wrap is observable even on fork (where the real limiter is a
+    no-op); a serial fit suffices since the limiter wraps both modes.
+    """
+    entered = []
+    real = multipath_mod.setup_cores_blas_cores
+
+    @contextlib.contextmanager
+    def recording_limiter():
+        entered.append("enter")
+        yield
+        entered.append("exit")
+
+    def patched(blas_cores, chains, cores, mp_ctx):
+        _, eff_cores, per_worker = real(blas_cores, chains, cores, mp_ctx)
+        return recording_limiter, eff_cores, per_worker
+
+    monkeypatch.setattr(multipath_mod, "setup_cores_blas_cores", patched)
+
+    model = make_ard_regression()
+    with model:
+        pmx.fit(
+            method="pathfinder",
+            parallel=False,
+            num_paths=2,
+            num_draws=20,
+            num_draws_per_path=20,
+            num_elbo_draws=4,
+            random_seed=1,
+            progressbar=False,
+        )
+
+    assert entered == ["enter", "exit"]
 
 
 def _new_task():
