@@ -1,6 +1,7 @@
 import contextlib
 
 import numpy as np
+import pytest
 
 import pymc_extras as pmx
 
@@ -85,6 +86,24 @@ def test_parallel_paths_match_serial_per_path():
     )
 
 
+def _small_serial_fit(model, **overrides):
+    """Run a small serial pathfinder fit on ``model``, with per-test ``overrides`` applied to the
+    shared config below."""
+    kwargs = dict(
+        method="pathfinder",
+        parallel=False,
+        num_paths=2,
+        num_draws=20,
+        num_draws_per_path=20,
+        num_elbo_draws=4,
+        random_seed=1,
+        progressbar=False,
+    )
+    kwargs.update(overrides)
+    with model:
+        return pmx.fit(**kwargs)
+
+
 def test_compile_mode_threaded_to_mp_context(monkeypatch):
     """The compile ``mode`` must reach ``_initialize_multiprocessing_context`` so a JAX backend
     forces a non-fork start method -- fork + JAX can deadlock, which pymc.sample guards against the
@@ -100,19 +119,7 @@ def test_compile_mode_threaded_to_mp_context(monkeypatch):
 
     monkeypatch.setattr(multipath_mod, "_initialize_multiprocessing_context", spy)
 
-    model = make_ard_regression()
-    with model:
-        pmx.fit(
-            method="pathfinder",
-            parallel=False,
-            num_paths=2,
-            num_draws=20,
-            num_draws_per_path=20,
-            num_elbo_draws=4,
-            random_seed=1,
-            compile_kwargs={"mode": "NUMBA"},
-            progressbar=False,
-        )
+    _small_serial_fit(make_ard_regression(), compile_kwargs={"mode": "NUMBA"})
 
     assert seen == ["NUMBA"]
 
@@ -137,20 +144,47 @@ def test_blas_limiter_wraps_path_execution(monkeypatch):
 
     monkeypatch.setattr(multipath_mod, "setup_cores_blas_cores", patched)
 
-    model = make_ard_regression()
-    with model:
-        pmx.fit(
-            method="pathfinder",
-            parallel=False,
-            num_paths=2,
-            num_draws=20,
-            num_draws_per_path=20,
-            num_elbo_draws=4,
-            random_seed=1,
-            progressbar=False,
-        )
+    _small_serial_fit(make_ard_regression())
 
     assert entered == ["enter", "exit"]
+
+
+def test_interrupt_keeps_completed_paths(monkeypatch):
+    """A Ctrl-C mid-run keeps the paths that already finished rather than discarding them all,
+    mirroring pymc.sample. The generator yields one real path, then raises KeyboardInterrupt as if
+    the user interrupted; the fit must still return, carrying only that completed path.
+    """
+    real_make_generator = multipath_mod.make_generator
+
+    def interrupt_after_one(*args, **kwargs):
+        gen = real_make_generator(*args, **kwargs)
+        yield next(gen)
+        gen.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(multipath_mod, "make_generator", interrupt_after_one)
+
+    idata = _small_serial_fit(make_ard_regression(), num_paths=3, importance_sampling=None)
+
+    # importance_sampling=None makes each completed path its own chain; only one finished.
+    assert idata.posterior.sizes["chain"] == 1
+
+
+def test_interrupt_before_any_path_propagates(monkeypatch):
+    """An interrupt before any path completes has nothing to salvage, so it aborts the run instead
+    of fabricating an empty result."""
+
+    def interrupt_immediately(*args, **kwargs):
+        # Must be a generator: the raise has to fire during iteration (inside the drain's
+        # try/except), not at the make_generator() call site, or the empty-results re-raise
+        # branch isn't the thing under test.
+        raise KeyboardInterrupt
+        yield
+
+    monkeypatch.setattr(multipath_mod, "make_generator", interrupt_immediately)
+
+    with pytest.raises(KeyboardInterrupt):
+        _small_serial_fit(make_ard_regression())
 
 
 def _new_task():

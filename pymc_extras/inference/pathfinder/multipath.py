@@ -196,8 +196,19 @@ def multipath_pathfinder(
             progress_callbacks=path_callbacks,
             mp_ctx=mp_ctx,
         )
+        results: list[PathfinderResult] = []
         with joined_blas_limiter():
-            results = list(generator)
+            try:
+                for result in generator:
+                    results.append(result)
+            except KeyboardInterrupt:
+                if not results:
+                    raise  # no completed paths to keep -- let the interrupt abort the run
+                logger.warning(
+                    "Interrupted after %d of %d paths; continuing with the completed paths.",
+                    len(results),
+                    num_paths,
+                )
     compute_end = time.time()
 
     mpr = (
