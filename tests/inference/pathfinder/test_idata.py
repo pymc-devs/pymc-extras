@@ -126,6 +126,35 @@ def test_pathfinder_dataset_basic():
         assert key not in ds.data_vars
 
 
+def test_num_successful_paths_counts_paths_not_draws():
+    pytest.importorskip("arviz")
+    from pymc_extras.inference.pathfinder.idata import _pathfinder_dataset
+
+    # After importance sampling, samples collapse to (num_draws, N), so samples.shape[0] is the
+    # draw count. num_successful_paths must report the path count instead.
+    num_paths, num_draws, n_params = 4, 1000, 2
+    result = make_result(
+        samples=np.zeros((num_draws, n_params)),
+        logP=np.zeros((num_paths, 50)),
+        logQ=np.zeros((num_paths, 50)),
+        lbfgs_niter=np.arange(num_paths),
+        elbo_argmax=np.arange(num_paths),
+        inv_hessian_diag=np.ones((num_paths, n_params)),
+    )
+
+    ds = _pathfinder_dataset(result, model=None)
+
+    assert int(ds["num_successful_paths"]) == num_paths
+    assert ds.sizes["path"] == num_paths
+
+
+def test_idata_reports_requested_counts(reference_idata):
+    # num_paths/num_draws are populated on the result, so a real fit's idata group exposes them.
+    pf = reference_idata.pathfinder
+    assert int(pf["num_paths"]) == 10
+    assert int(pf["num_draws"]) > 0
+
+
 def test_lbfgs_dataset():
     pytest.importorskip("arviz")
     from pymc_extras.inference.pathfinder.idata import _lbfgs_dataset

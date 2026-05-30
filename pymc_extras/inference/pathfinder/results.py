@@ -229,6 +229,10 @@ class MultiPathfinderResult:
         """Add pathfinder configuration."""
         return replace(self, pathfinder_config=config)
 
+    def with_counts(self, num_paths: int, num_draws: int) -> Self:
+        """Record the requested number of paths and total draws."""
+        return replace(self, num_paths=num_paths, num_draws=num_draws)
+
     def with_importance_sampling(
         self,
         num_draws: int,

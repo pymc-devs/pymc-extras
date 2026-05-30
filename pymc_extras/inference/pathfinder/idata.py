@@ -120,7 +120,7 @@ def _pathfinder_dataset(
 
     # Per-path arrays (only when at least one path succeeded)
     if not result.all_paths_failed and result.samples is not None:
-        data_vars["num_successful_paths"] = xr.DataArray(result.samples.shape[0])
+        data_vars["num_successful_paths"] = xr.DataArray(_determine_num_paths(result))
         coords["path"] = list(range(_determine_num_paths(result)))
 
         def include_path(name: str, data) -> None:

@@ -216,6 +216,7 @@ def multipath_pathfinder(
 
     mpr = (
         MultiPathfinderResult.from_path_results(results)
+        .with_counts(num_paths=num_paths, num_draws=num_draws)
         .with_pathfinder_config(config=pathfinder_config)
         .with_importance_sampling(
             num_draws=num_draws, method=importance_sampling, random_seed=choice_seed
