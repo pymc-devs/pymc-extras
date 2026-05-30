@@ -78,3 +78,34 @@ def test_importance_sampling_all_nonfinite_raises(rng):
 
     with pytest.raises(ValueError, match="non-finite"):
         importance_sampling(samples, logP, logQ, num_draws=10, method="psis")
+
+
+def test_importance_sampling_does_not_mutate_inputs(rng):
+    # The num_paths mixture adjustment must not mutate the caller's logP/logQ in place -- those
+    # arrays remain the result's user-facing diagnostics.
+    num_paths, M, N = 3, 40, 2
+    samples = rng.normal(size=(num_paths, M, N))
+    logP = rng.normal(size=(num_paths, M))
+    logQ = rng.normal(size=(num_paths, M))
+    logP_before, logQ_before = logP.copy(), logQ.copy()
+
+    importance_sampling(samples, logP, logQ, num_draws=50, method="psis", random_seed=1)
+
+    np.testing.assert_array_equal(logP, logP_before)
+    np.testing.assert_array_equal(logQ, logQ_before)
+
+
+def test_importance_sampling_oversized_num_draws_falls_back(rng):
+    # num_draws exceeds the pooled population, so replace=False cannot draw that many distinct rows
+    # and numpy raises "larger sample than population"; the fallback must retry with replacement.
+    num_paths, M, N = 1, 5, 2
+    samples = rng.normal(size=(num_paths, M, N))
+    logP = rng.normal(size=(num_paths, M))
+    logQ = rng.normal(size=(num_paths, M))
+
+    result = importance_sampling(
+        samples, logP, logQ, num_draws=20, method="identity", random_seed=1
+    )
+
+    assert result.samples.shape == (20, N)  # pool is only 5 -> required the replacement fallback
+    assert any("psir" in w.lower() for w in result.warnings)

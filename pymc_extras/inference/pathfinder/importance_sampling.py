@@ -95,13 +95,12 @@ def importance_sampling(
         return ImportanceSamplingResult(samples=samples, warnings=result_warnings, method=method)
     else:
         samples = samples.reshape(-1, N)
-        logP = logP.ravel()
-        logQ = logQ.ravel()
 
-        # adjust log densities
+        # Adjust log densities for the num_paths-way mixture. Subtract on a fresh array (``ravel``
+        # returns a view) so the caller's logP/logQ are not mutated in place.
         log_I = np.log(num_paths)
-        logP -= log_I
-        logQ -= log_I
+        logP = logP.ravel() - log_I
+        logQ = logQ.ravel() - log_I
         logiw = logP - logQ
 
         # Filter failed or degenerate paths out of the Pareto fit and give them zero resampling weight
@@ -149,8 +148,14 @@ def importance_sampling(
             samples=resampled, pareto_k=pareto_k, warnings=result_warnings, method=method
         )
     except ValueError as e1:
-        if "Fewer non-zero entries in p than size" in str(e1):
-            num_nonzero = np.where(np.nonzero(p)[0], 1, 0).sum()
+        msg = str(e1)
+        # Both messages mean we cannot draw num_draws distinct samples under replace=False (too few
+        # non-zero weights, or num_draws exceeds the pooled population); retry with replacement.
+        cannot_draw_distinct = (
+            "Fewer non-zero entries in p than size" in msg or "larger sample than population" in msg
+        )
+        if cannot_draw_distinct:
+            num_nonzero = np.count_nonzero(p)
             result_warnings.append(
                 f"Not enough valid samples: {num_nonzero} available out of {num_draws} "
                 "requested. Switching to psir importance sampling."
