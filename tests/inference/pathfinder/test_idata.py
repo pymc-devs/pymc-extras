@@ -41,6 +41,18 @@ def test_get_param_coords_from_model():
     assert get_param_coords(model, 3) == ["x", "y[0]", "y[1]"]
 
 
+def test_get_param_coords_uses_model_dims():
+    pytest.importorskip("pymc")
+    import pymc as pm
+
+    from pymc_extras.inference.pathfinder.idata import get_param_coords
+
+    with pm.Model(coords={"feature": ["a", "b"]}) as model:
+        pm.Normal("beta", 0, 1, dims="feature")
+
+    assert get_param_coords(model, 2) == ["beta[a]", "beta[b]"]
+
+
 def test_status_counter_to_dataarray():
     pytest.importorskip("arviz")
     from pymc_extras.inference.pathfinder.idata import _status_counter_to_dataarray

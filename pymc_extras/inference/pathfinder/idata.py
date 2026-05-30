@@ -23,6 +23,7 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
+from pymc_extras.inference.idata_utils import make_unpacked_variable_names
 from pymc_extras.inference.pathfinder.lbfgs import LBFGSStatus
 from pymc_extras.inference.pathfinder.results import MultiPathfinderResult, PathStatus
 
@@ -30,21 +31,13 @@ logger = logging.getLogger(__name__)
 
 
 def get_param_coords(model: pm.Model | None, n_params: int) -> list[str]:
-    """Return parameter coordinate labels from a PyMC model, or numeric indices if None."""
+    """Return coordinate-aware labels for the raveled parameter vector, or numeric indices when no
+    model is available."""
     if model is None:
         return [str(i) for i in range(n_params)]
 
-    ip = model.initial_point()
-    bij = DictToArrayBijection.map(ip)
-
-    coords = []
-    for var_name, shape, size, _ in bij.point_map_info:
-        if size == 1:
-            coords.append(var_name)
-        else:
-            for i in range(size):
-                coords.append(f"{var_name}[{i}]")
-    return coords
+    names = [name for name, *_ in DictToArrayBijection.map(model.initial_point()).point_map_info]
+    return make_unpacked_variable_names(names, model)
 
 
 def _status_counter_to_dataarray(counter, status_enum_cls) -> xr.DataArray:
