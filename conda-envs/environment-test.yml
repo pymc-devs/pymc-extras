@@ -18,5 +18,5 @@ dependencies:
   - pip:
       - jax
       - blackjax
-      - pytensor @ git+https://github.com/pymc-devs/pytensor.git
+      - pytensor@git+https://github.com/pymc-devs/pytensor.git
       - preliz>=0.25
