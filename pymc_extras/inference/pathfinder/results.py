@@ -203,8 +203,12 @@ class MultiPathfinderResult:
 
         if success_results:
             results_arr = [np.asarray(x) for x in zip(*success_results)]
+            numeric_fields = {
+                name: (np.concatenate(arr) if arr.ndim > 1 else arr)
+                for name, arr in zip(NUMERIC_ATTRIBUTES, results_arr)
+            }
             return cls(
-                *[np.concatenate(x) if x.ndim > 1 else x for x in results_arr],
+                **numeric_fields,
                 lbfgs_status=mpr.lbfgs_status,
                 path_status=mpr.path_status,
                 warnings=warnings,
@@ -218,16 +222,12 @@ class MultiPathfinderResult:
             )
 
     def with_timing(self, compile_time: float, compute_time: float) -> Self:
-        """add timing information"""
+        """Add timing information."""
         return replace(self, compile_time=compile_time, compute_time=compute_time)
 
     def with_pathfinder_config(self, config: PathfinderConfig) -> Self:
-        """add pathfinder configuration"""
+        """Add pathfinder configuration."""
         return replace(self, pathfinder_config=config)
-
-    def with_warnings(self, warnings: list[str]) -> Self:
-        """add warnings"""
-        return replace(self, warnings=warnings)
 
     def with_importance_sampling(
         self,
@@ -235,7 +235,7 @@ class MultiPathfinderResult:
         method: Literal["psis", "psir", "identity"] | None,
         random_seed: int | None = None,
     ) -> Self:
-        """perform importance sampling"""
+        """Perform importance sampling."""
         if not self.all_paths_failed:
             isres = _importance_sampling(
                 samples=self.samples,

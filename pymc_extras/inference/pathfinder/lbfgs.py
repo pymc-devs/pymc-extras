@@ -262,7 +262,6 @@ class LBFGSStreamingCallback:
         self.best_step_idx: int = 0
         self.step_count: int = 0
         self.any_valid: bool = False
-        self.current_elbo: float | None = None
 
     def __call__(self, intermediate) -> float | None:
         """Process one accepted L-BFGS step and return its ELBO, or None if the step is skipped
@@ -284,10 +283,8 @@ class LBFGSStreamingCallback:
         z = g - self.g_prev
 
         if not (np.all(np.isfinite(g)) and np.isfinite(value)):
-            self.current_elbo = None
             return None
         if not _check_lbfgs_curvature_condition(s, z, self.epsilon):
-            self.current_elbo = None
             return None
 
         alpha = alpha_step_numpy(self.alpha_prev, s, z)
@@ -324,7 +321,6 @@ class LBFGSStreamingCallback:
                 "alpha": alpha.copy(),
                 "s_win": self.s_win.copy(),
                 "z_win": self.z_win.copy(),
-                "win_idx": self.win_idx,
                 "x": x.copy(),
                 "g": g.copy(),
             }
@@ -334,8 +330,6 @@ class LBFGSStreamingCallback:
         self.x_prev = x.copy()
         self.g_prev = g.copy()
         self.step_count += 1
-
-        self.current_elbo = elbo if np.isfinite(elbo) else None
 
         if self.progress_callback is not None:
             self.progress_callback({"iteration": self.step_count, "best_elbo": self.best_elbo})
