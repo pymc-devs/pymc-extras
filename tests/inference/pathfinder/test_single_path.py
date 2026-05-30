@@ -6,13 +6,24 @@ import pytest
 from pymc.blocking import DictToArrayBijection
 
 from pymc_extras.inference.pathfinder.lbfgs import LBFGSInitFailed, LBFGSStatus
-from pymc_extras.inference.pathfinder.results import FAILED_PATH_STATUS, PathStatus
+from pymc_extras.inference.pathfinder.results import (
+    FAILED_PATH_STATUS,
+    PathInvalidLogP,
+    PathInvalidLogQ,
+    PathStatus,
+)
 from tests.inference.pathfinder.conftest import NUM_DRAWS, make_single_fn
 from tests.inference.pathfinder.equivalence_models import MODEL_FACTORIES, make_ard_regression
 
 
-def _make_failing_lbfgs_patcher(fail_k: int):
-    """Patch LBFGS to raise LBFGSInitFailed for the first fail_k invocations."""
+def _make_failing_lbfgs_patcher(fail_k: int, exc_factory=None):
+    """Patch LBFGS so the first fail_k path attempts raise. ``exc_factory`` builds the exception to
+    raise (default LBFGSInitFailed)."""
+    if exc_factory is None:
+
+        def exc_factory():
+            return LBFGSInitFailed(LBFGSStatus.INIT_FAILED)
+
     call_count = [0]
 
     class PatchedLBFGS:
@@ -24,7 +35,7 @@ def _make_failing_lbfgs_patcher(fail_k: int):
         def minimize_streaming(self, callback, x0):
             call_count[0] += 1
             if call_count[0] <= fail_k:
-                raise LBFGSInitFailed(LBFGSStatus.INIT_FAILED)
+                raise exc_factory()
             return self._real.minimize_streaming(callback, x0)
 
     return patch("pymc_extras.inference.pathfinder.single_path.LBFGS", PatchedLBFGS), call_count
@@ -84,6 +95,31 @@ def test_no_retry_on_non_init_failure():
 
     assert result.path_status == PathStatus.LBFGS_FAILED
     assert call_count[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("exc_factory", "exhausted_status"),
+    [
+        (PathInvalidLogP, PathStatus.INVALID_LOGP),
+        (PathInvalidLogQ, PathStatus.INVALID_LOGQ),
+    ],
+)
+def test_invalid_logpq_is_retried(exc_factory, exhausted_status):
+    """PathInvalidLogP/Q are jitter-sensitive, so they re-jitter like LBFGSInitFailed: a clean run
+    after a few failures succeeds, and exhausting the retries reports the failure's own status."""
+    model = make_ard_regression()
+
+    patcher, call_count = _make_failing_lbfgs_patcher(3, exc_factory=exc_factory)
+    with patcher:
+        result = make_single_fn(model, max_init_retries=5)(42)
+    assert result.path_status not in FAILED_PATH_STATUS
+    assert call_count[0] == 4
+
+    patcher, call_count = _make_failing_lbfgs_patcher(99, exc_factory=exc_factory)
+    with patcher:
+        result = make_single_fn(model, max_init_retries=2)(7)
+    assert result.path_status == exhausted_status
+    assert call_count[0] == 3
 
 
 def test_progress_callback_retry():

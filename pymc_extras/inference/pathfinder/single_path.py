@@ -23,7 +23,6 @@ from pymc_extras.inference.pathfinder.lbfgs import (
     LBFGSStreamingCallback,
 )
 from pymc_extras.inference.pathfinder.results import (
-    PathException,
     PathfinderResult,
     PathInvalidLogP,
     PathInvalidLogQ,
@@ -131,8 +130,6 @@ def make_single_pathfinder_fn(
     def _make_result(
         psi, logP_psi, logQ_psi, lbfgs_niter, elbo_argmax, inv_hessian_diag, lbfgs_status
     ):
-        if np.all(~np.isfinite(logQ_psi)):
-            raise PathInvalidLogQ()
         path_status = PathStatus.ELBO_ARGMAX_AT_ZERO if elbo_argmax == 0 else PathStatus.SUCCESS
         return PathfinderResult(
             samples=psi,
@@ -216,9 +213,17 @@ def make_single_pathfinder_fn(
                     logP_psi = logP_psi_flat[None]  # (1, M)
                     logQ_psi = logQ_psi_flat[None]  # (1, M)
 
+                    if np.all(~np.isfinite(logQ_psi)):
+                        raise PathInvalidLogQ()
+
                     break  # success — exit retry loop
 
-                except (LBFGSInitFailed, SingleStepPathException) as e:
+                except (
+                    LBFGSInitFailed,
+                    SingleStepPathException,
+                    PathInvalidLogP,
+                    PathInvalidLogQ,
+                ) as e:
                     if attempt < max_init_retries:
                         logger.debug(
                             "%s on attempt %d/%d, retrying with different jitter...",
@@ -244,7 +249,7 @@ def make_single_pathfinder_fn(
                             )
                         return PathfinderResult(
                             lbfgs_status=lbfgs_status,
-                            path_status=PathStatus.SINGLE_STEP,
+                            path_status=e.status,
                         )
 
             result = _make_result(
@@ -269,13 +274,6 @@ def make_single_pathfinder_fn(
             return PathfinderResult(
                 lbfgs_status=e.status,
                 path_status=PathStatus.LBFGS_FAILED,
-            )
-        except PathException as e:
-            if progress_callback is not None:
-                progress_callback({"status": "failed"})
-            return PathfinderResult(
-                lbfgs_status=lbfgs_status,
-                path_status=e.status,
             )
 
     return single_pathfinder_fn
