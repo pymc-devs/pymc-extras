@@ -451,9 +451,9 @@ def test_SARIMA_with_exogenous(rng, mock_sample):
     with pm.Model(coords=ss_mod.coords) as pymc_mod:
         pm.Data("exogenous_data", data_val, dims=["time", "exogenous"])
 
-        ar_params = pm.Normal("ar_params", dims=["lag_ar"])
-        ma_params = pm.Normal("ma_params", dims=["lag_ma"])
-        seasonal_ar_params = pm.Normal("seasonal_ar_params", dims=["seasonal_lag_ar"])
+        ar_params = pm.Normal("ar_params", sigma=0.1, dims=["lag_ar"])
+        ma_params = pm.Normal("ma_params", sigma=0.1, dims=["lag_ma"])
+        seasonal_ar_params = pm.Normal("seasonal_ar_params", sigma=0.1, dims=["seasonal_lag_ar"])
 
         beta_exog = pm.Normal("beta_exog", dims=["exogenous"])
 
@@ -482,8 +482,8 @@ def test_sarimax_workflow(mock_sample):
     )
 
     with pm.Model(coords=ss_mod.coords) as m:
-        pm.Normal("ar_params", dims=["lag_ar"])
-        pm.Normal("ma_params", dims=["lag_ma"])
+        pm.Normal("ar_params", sigma=0.1, dims=["lag_ar"])
+        pm.Normal("ma_params", sigma=0.1, dims=["lag_ma"])
         pm.Exponential("sigma_state", 1)
         pm.Exponential("sigma_obs", 1)
 
