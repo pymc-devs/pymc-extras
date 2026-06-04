@@ -20,6 +20,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
   cancel-in-progress: true
 
+# Bump CACHE_NUMBER to force a one-time refresh of the cached conda environments.
+env:
+  CACHE_NUMBER: 1
+
 jobs:
   ubuntu:
     strategy:
@@ -52,6 +56,7 @@ jobs:
           environment-name: pymc-extras-test
           init-shell: bash
           cache-environment: true
+          cache-environment-key: pymc-extras-test-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('conda-envs/environment-test.yml') }}-${{ env.CACHE_NUMBER }}
       - name: Install pymc-extras
         run: |
           pip install -e ".[dev]" --no-deps
@@ -101,6 +106,7 @@ jobs:
           environment-name: pymc-extras-test
           init-shell: cmd.exe
           cache-environment: true
+          cache-environment-key: pymc-extras-test-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('conda-envs/environment-test.yml') }}-${{ env.CACHE_NUMBER }}
       - name: Install pymc-extras
         run: |
           pip install -e ".[dev]" --no-deps
