@@ -3,9 +3,8 @@ import pandas as pd
 import pymc as pm
 import pytest
 
-from model.modular.utilities import at_least_list, encode_categoricals
-
-from pymc_experimental.model.modular.components import Intercept, PoolingType, Regression, Spline
+from pymc_extras.model.modular.components import Intercept, PoolingType, Regression, Spline
+from pymc_extras.model.modular.utilities import at_least_list, encode_categoricals
 
 
 @pytest.fixture(scope="session")
@@ -71,9 +70,11 @@ def test_regression(pooling: PoolingType, prior, feature_columns, model):
 
     if pooling != "complete":
         assert f"Regression({feature_columns})_city_effect" in temp_model.named_vars
-        assert f"Regression({feature_columns})_city_effect_sigma" in temp_model.named_vars
 
+        # An estimated scale and non-centered offset are features of partial pooling only; "none"
+        # estimates each group independently (see make_unpooled_hierarchy).
         if pooling == "partial":
+            assert f"Regression({feature_columns})_city_effect_sigma" in temp_model.named_vars
             assert (
                 f"Regression({feature_columns})_city_effect_offset" in temp_model.named_vars_to_dims
             )

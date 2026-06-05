@@ -89,7 +89,7 @@ def encode_categoricals(df, coords):
         if dtype.name.startswith("float"):
             pass
 
-        elif dtype.name == "object":
+        elif dtype.name in ("object", "str", "string", "category"):
             col_array, labels = pd.factorize(df[col], sort=True)
             df[col] = col_array.astype("float64")
             coords[col] = labels

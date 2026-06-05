@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pymc_experimental.model.modular.likelihood import NormalLikelihood
+from pymc_extras.model.modular.likelihood import NormalLikelihood
 
 
 @pytest.fixture(scope="session")

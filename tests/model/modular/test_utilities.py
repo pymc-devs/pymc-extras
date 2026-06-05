@@ -6,7 +6,7 @@ import pytest
 
 from numpy.testing import assert_allclose
 
-from pymc_experimental.model.modular.utilities import (
+from pymc_extras.model.modular.utilities import (
     encode_categoricals,
     make_level_maps,
     make_next_level_hierarchy_variable,
@@ -89,6 +89,8 @@ def test_select_missing_column_raises(model):
         select_data_columns("D", model, data_name="X")
 
 
+# PyTensor has no C implementation of `Unique` with `axis`, so it falls back to Numba object mode.
+@pytest.mark.filterwarnings("ignore:Numba will use object mode:UserWarning")
 def test_make_level_maps(model, encoded_df_and_coords, df):
     df_encoded, coords = encoded_df_and_coords
     data = pytensor.shared(df_encoded.values)
@@ -171,6 +173,7 @@ def test_make_next_level_no_pooling():
     assert mu.shape.eval() == (10,)
 
 
+@pytest.mark.filterwarnings("ignore:Numba will use object mode:UserWarning")
 @pytest.mark.parametrize(
     "pooling_columns", [["level_0"], ["level_0", "level_1"], ["level_0", "level_1", "level_2"]]
 )

@@ -14,9 +14,9 @@ from pymc.model.fgraph import clone_model
 from pymc.pytensorf import reseed_rngs
 from pytensor.tensor.random.type import RandomType
 
-from pymc_experimental.model.marginal.marginal_model import MarginalModel
-from pymc_experimental.model.modular.utilities import ColumnType, encode_categoricals
-from pymc_experimental.printing import model_table
+from pymc_extras.model.marginal.marginal_model import MarginalModel
+from pymc_extras.model.modular.utilities import ColumnType, encode_categoricals
+from pymc_extras.printing import model_table
 
 LIKELIHOOD_TYPES = Literal["lognormal", "logt", "mixture", "unmarginalized-mixture"]
 valid_likelihoods = get_args(LIKELIHOOD_TYPES)

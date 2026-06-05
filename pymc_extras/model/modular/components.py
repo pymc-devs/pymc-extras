@@ -7,7 +7,7 @@ import pytensor.tensor as pt
 from patsy import dmatrix
 from pytensor.graph import Apply, Op
 
-from pymc_experimental.model.modular.utilities import (
+from pymc_extras.model.modular.utilities import (
     PRIOR_DEFAULT_KWARGS,
     ColumnType,
     PoolingType,
