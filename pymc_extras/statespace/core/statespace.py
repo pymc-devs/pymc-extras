@@ -1690,7 +1690,7 @@ class PyMCStateSpace:
                 )
 
                 obs_mu = d + (Z @ mu[..., None]).squeeze(-1)
-                obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H
+                obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H[..., None, :, :]
 
                 SequenceMvNormal(
                     f"{name}_{group}_observed",
@@ -2140,6 +2140,10 @@ class PyMCStateSpace:
                             x if x in self._fit_coords else None for x in MATRIX_DIMS[short_name]
                         ]
                         dims = [BATCH_DIM, *dims]
+                        if (
+                            matrix.type.ndim != len(dims)
+                        ):  # This is necessary because vectorize_graph() does not add a batch dim to every matrix
+                            matrix = pt.tile(matrix, (*self.batch_size, 1, 1))
                     else:
                         dims = [
                             x if x in self._fit_coords else None for x in MATRIX_DIMS[short_name]
