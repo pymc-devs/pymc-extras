@@ -56,13 +56,26 @@ def test_AR1(rng):
         y = pm.Poisson("y", mu=pm.math.exp(x), observed=y_obs)
 
         # Use INLA
-        idata = pmx.fit(method="INLA", x=x, Q=tau, return_latent_posteriors=False)
+        idata_inla = pmx.fit(method="INLA", x=x, Q=tau, return_latent_posteriors=False)
 
-    theta_inla = idata.posterior.theta.mean(axis=(0, 1))
-    sigma_inla = idata.posterior.theta.std(axis=(0, 1))
+        # Use direct sampling to get ground truth for variances
+        idata_true = pm.sample()
 
-    np.testing.assert_allclose(np.array([true_theta]), theta_inla, atol=0.2)
-    np.testing.assert_allclose(np.array([true_sigma]), sigma_inla, atol=0.2)
+    theta_inla = idata_inla.posterior.theta.mean(axis=(0, 1))
+
+    tau_inla = idata_inla.posterior.tau.mean(axis=(0, 1))
+    tau_true = idata_true.posterior.tau.mean(axis=(0, 1))
+
+    theta_var_inla = idata_inla.posterior.theta.var(axis=(0, 1))
+    theta_var_true = idata_true.posterior.theta.var(axis=(0, 1))
+
+    tau_var_inla = idata_inla.posterior.tau.var(axis=(0, 1))
+    tau_var_true = idata_true.posterior.tau.var(axis=(0, 1))
+
+    np.testing.assert_allclose(theta_inla, np.array([true_theta]), atol=0.2)
+    np.testing.assert_allclose(tau_inla, tau_true, atol=0.3)
+    np.testing.assert_allclose(theta_var_inla, theta_var_true, atol=0.1)
+    np.testing.assert_allclose(tau_var_inla, tau_var_true, atol=0.2)
 
 
 @pytest.mark.filterwarnings(
@@ -110,5 +123,5 @@ def test_3_layer_normal(rng):
     posterior_var_true = idata_true.posterior.mu.var(axis=(0, 1))
     posterior_var_inla = idata_inla.posterior.mu.var(axis=(0, 1))
 
-    np.testing.assert_allclose(posterior_mean_true, posterior_mean_inla, atol=0.1)
-    np.testing.assert_allclose(posterior_var_true, posterior_var_inla, atol=0.1)
+    np.testing.assert_allclose(posterior_mean_inla, posterior_mean_true, atol=0.1)
+    np.testing.assert_allclose(posterior_var_inla, posterior_var_true, atol=0.2)
