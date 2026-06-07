@@ -1,430 +1,57 @@
-#   Copyright 2022 The PyMC Developers
-#
-#   Licensed under the Apache License, Version 2.0 (the "License");
-#   you may not use this file except in compliance with the License.
-#   You may obtain a copy of the License at
-#
-#       http://www.apache.org/licenses/LICENSE-2.0
-#
-#   Unless required by applicable law or agreed to in writing, software
-#   distributed under the License is distributed on an "AS IS" BASIS,
-#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#   See the License for the specific language governing permissions and
-#   limitations under the License.
+import collections
+import logging
 
-"""Utilities for converting Pathfinder results to xarray and adding them to DataTree."""
+from typing import Literal
 
-from __future__ import annotations
-
-import warnings
-
-from dataclasses import asdict
-
+import arviz as az
 import numpy as np
 import pymc as pm
+import pytensor
+import pytensor.tensor as pt
 import xarray as xr
 
-from pymc.blocking import DictToArrayBijection
-from xarray import DataTree
+from numpy.typing import NDArray
+from pymc import Model
+from pymc.backends.arviz import coords_and_dims_for_inferencedata
+from pymc.blocking import DictToArrayBijection, RaveledVars
+from pymc.model import modelcontext
+from pymc.util import get_default_varnames
+from pytensor.compile.mode import FAST_COMPILE
+from pytensor.graph import clone_replace, vectorize_graph
+from rich.console import Console, Group
+from rich.padding import Padding
+from rich.table import Table
+from rich.text import Text
 
+from pymc_extras.inference.idata_utils import make_unpacked_variable_names
 from pymc_extras.inference.pathfinder.lbfgs import LBFGSStatus
-from pymc_extras.inference.pathfinder.pathfinder import (
-    MultiPathfinderResult,
-    PathfinderConfig,
-    PathfinderResult,
-    PathStatus,
-)
+from pymc_extras.inference.pathfinder.results import MultiPathfinderResult, PathStatus
+
+logger = logging.getLogger(__name__)
 
 
 def get_param_coords(model: pm.Model | None, n_params: int) -> list[str]:
-    """
-    Get parameter coordinate labels from PyMC model.
-
-    Parameters
-    ----------
-    model : pm.Model | None
-        PyMC model to extract variable names from. If None, returns numeric indices.
-    n_params : int
-        Number of parameters (for fallback indexing when model is None)
-
-    Returns
-    -------
-    list[str]
-        Parameter coordinate labels
-    """
+    """Return coordinate-aware labels for the raveled parameter vector, or numeric indices when no
+    model is available."""
     if model is None:
         return [str(i) for i in range(n_params)]
 
-    ip = model.initial_point()
-    bij = DictToArrayBijection.map(ip)
-
-    coords = []
-    for var_name, shape, size, _ in bij.point_map_info:
-        if size == 1:
-            coords.append(var_name)
-        else:
-            for i in range(size):
-                coords.append(f"{var_name}[{i}]")
-    return coords
+    names = [name for name, *_ in DictToArrayBijection.map(model.initial_point()).point_map_info]
+    return make_unpacked_variable_names(names, model)
 
 
 def _status_counter_to_dataarray(counter, status_enum_cls) -> xr.DataArray:
     """Convert a Counter of status values to a dense xarray DataArray."""
     all_statuses = list(status_enum_cls)
     status_names = [s.name for s in all_statuses]
-
     counts = np.array([counter.get(status, 0) for status in all_statuses])
-
     return xr.DataArray(
         counts, dims=["status"], coords={"status": status_names}, name="status_counts"
     )
 
 
-def _extract_scalar(value):
-    """Extract scalar from array-like or return as-is."""
-    if hasattr(value, "item"):
-        return value.item()
-    elif hasattr(value, "__len__") and len(value) == 1:
-        return value[0]
-    return value
-
-
-def pathfinder_result_to_xarray(
-    result: PathfinderResult,
-    model: pm.Model | None = None,
-) -> xr.Dataset:
-    """
-    Convert a PathfinderResult to an xarray Dataset.
-
-    Parameters
-    ----------
-    result : PathfinderResult
-        Single pathfinder run result
-    model : pm.Model | None
-        PyMC model for parameter name extraction
-
-    Returns
-    -------
-    xr.Dataset
-        Dataset with pathfinder results
-
-    Examples
-    --------
-    >>> import pymc as pm
-    >>> import pymc_extras as pmx
-    >>>
-    >>> with pm.Model() as model:
-    ...     x = pm.Normal("x", 0, 1)
-    ...     y = pm.Normal("y", x, 1, observed=2.0)
-    >>> # Assuming we have a PathfinderResult from a pathfinder run
-    >>> ds = pathfinder_result_to_xarray(result, model=model)
-    >>> print(ds.data_vars)  # Shows lbfgs_niter, elbo_argmax, status info, etc.
-    >>> print(ds.attrs)  # Shows metadata like lbfgs_status, path_status
-    """
-    data_vars = {}
-    coords = {}
-    attrs = {}
-
-    n_params = None
-    if result.samples is not None:
-        n_params = result.samples.shape[-1]
-    elif hasattr(result, "lbfgs_niter") and result.lbfgs_niter is not None:
-        if model is not None:
-            try:
-                ip = model.initial_point()
-                n_params = len(DictToArrayBijection.map(ip).data)
-            except Exception:
-                pass
-
-    if n_params is not None:
-        coords["param"] = get_param_coords(model, n_params)
-
-    if result.lbfgs_niter is not None:
-        data_vars["lbfgs_niter"] = xr.DataArray(_extract_scalar(result.lbfgs_niter))
-
-    if result.elbo_argmax is not None:
-        data_vars["elbo_argmax"] = xr.DataArray(_extract_scalar(result.elbo_argmax))
-
-    if n_params is not None and result.inv_hessian_diag is not None:
-        data_vars["inv_hessian_diag"] = xr.DataArray(
-            result.inv_hessian_diag[0],
-            dims=["param"],
-            coords={"param": coords["param"]},
-        )
-
-    data_vars["lbfgs_status_code"] = xr.DataArray(result.lbfgs_status.value)
-    data_vars["lbfgs_status_name"] = xr.DataArray(result.lbfgs_status.name)
-    data_vars["path_status_code"] = xr.DataArray(result.path_status.value)
-    data_vars["path_status_name"] = xr.DataArray(result.path_status.name)
-
-    if n_params is not None and result.samples is not None:
-        if result.samples.ndim >= 2:
-            representative_sample = result.samples[0, -1, :]
-            data_vars["final_sample"] = xr.DataArray(
-                representative_sample, dims=["param"], coords={"param": coords["param"]}
-            )
-
-    if result.logP is not None:
-        logP = result.logP.flatten() if hasattr(result.logP, "flatten") else result.logP
-        if hasattr(logP, "__len__") and len(logP) > 0:
-            data_vars["logP_mean"] = xr.DataArray(np.mean(logP))
-            data_vars["logP_std"] = xr.DataArray(np.std(logP))
-            data_vars["logP_max"] = xr.DataArray(np.max(logP))
-
-    if result.logQ is not None:
-        logQ = result.logQ.flatten() if hasattr(result.logQ, "flatten") else result.logQ
-        if hasattr(logQ, "__len__") and len(logQ) > 0:
-            data_vars["logQ_mean"] = xr.DataArray(np.mean(logQ))
-            data_vars["logQ_std"] = xr.DataArray(np.std(logQ))
-            data_vars["logQ_max"] = xr.DataArray(np.max(logQ))
-
-    attrs["lbfgs_status"] = result.lbfgs_status.name
-    attrs["path_status"] = result.path_status.name
-
-    ds = xr.Dataset(data_vars, coords=coords, attrs=attrs)
-
-    return ds
-
-
-def multipathfinder_result_to_xarray(
-    result: MultiPathfinderResult,
-    model: pm.Model | None = None,
-    *,
-    store_diagnostics: bool = False,
-) -> xr.Dataset:
-    """
-    Convert a MultiPathfinderResult to a single consolidated xarray Dataset.
-
-    Parameters
-    ----------
-    result : MultiPathfinderResult
-        Multi-path pathfinder result
-    model : pm.Model | None
-        PyMC model for parameter name extraction
-    store_diagnostics : bool
-        Whether to include potentially large diagnostic arrays
-
-    Returns
-    -------
-    xr.Dataset
-        Single consolidated dataset with all pathfinder results
-
-    Examples
-    --------
-    >>> import pymc as pm
-    >>> import pymc_extras as pmx
-    >>>
-    >>> with pm.Model() as model:
-        ...     x = pm.Normal("x", 0, 1)
-    ...
-    >>> # Assuming we have a MultiPathfinderResult from multiple pathfinder runs
-    >>> ds = multipathfinder_result_to_xarray(result, model=model)
-    >>> print("All data:", ds.data_vars)
-    >>> print(
-    ...     "Summary:",
-    ...     [
-    ...         k
-    ...         for k in ds.data_vars.keys()
-    ...         if not k.startswith(("paths_", "config_", "diagnostics_"))
-    ...     ],
-    ... )
-    >>> print("Per-path:", [k for k in ds.data_vars.keys() if k.startswith("paths_")])
-    >>> print("Config:", [k for k in ds.data_vars.keys() if k.startswith("config_")])
-    """
-    n_params = result.samples.shape[-1] if result.samples is not None else None
-    param_coords = get_param_coords(model, n_params) if n_params is not None else None
-
-    data_vars = {}
-    coords = {}
-    attrs = {}
-
-    # Add parameter coordinates if available
-    if param_coords is not None:
-        coords["param"] = param_coords
-
-    # Build summary-level data (top level)
-    _add_summary_data(result, data_vars, coords, attrs)
-
-    # Build per-path data (with paths_ prefix)
-    if not result.all_paths_failed and result.samples is not None:
-        _add_paths_data(result, data_vars, coords, param_coords, n_params)
-
-    # Build configuration data (with config_ prefix)
-    if result.pathfinder_config is not None:
-        _add_config_data(result.pathfinder_config, data_vars)
-
-    # Build diagnostics data (with diagnostics_ prefix) if requested
-    if store_diagnostics:
-        _add_diagnostics_data(result, data_vars, coords, param_coords)
-
-    return xr.Dataset(data_vars, coords=coords, attrs=attrs)
-
-
-def _add_summary_data(
-    result: MultiPathfinderResult, data_vars: dict, coords: dict, attrs: dict
-) -> None:
-    """Add summary-level statistics to the pathfinder dataset."""
-    if result.num_paths is not None:
-        data_vars["num_paths"] = xr.DataArray(result.num_paths)
-    if result.num_draws is not None:
-        data_vars["num_draws"] = xr.DataArray(result.num_draws)
-
-    if result.compile_time is not None:
-        data_vars["compile_time"] = xr.DataArray(result.compile_time)
-    if result.compute_time is not None:
-        data_vars["compute_time"] = xr.DataArray(result.compute_time)
-        if result.compile_time is not None:
-            data_vars["total_time"] = xr.DataArray(result.compile_time + result.compute_time)
-
-    data_vars["importance_sampling_method"] = xr.DataArray(result.importance_sampling or "none")
-    if result.pareto_k is not None:
-        data_vars["pareto_k"] = xr.DataArray(result.pareto_k)
-
-    if result.lbfgs_status:
-        data_vars["lbfgs_status_counts"] = _status_counter_to_dataarray(
-            result.lbfgs_status, LBFGSStatus
-        )
-    if result.path_status:
-        data_vars["path_status_counts"] = _status_counter_to_dataarray(
-            result.path_status, PathStatus
-        )
-
-    data_vars["all_paths_failed"] = xr.DataArray(result.all_paths_failed)
-    if not result.all_paths_failed and result.samples is not None:
-        data_vars["num_successful_paths"] = xr.DataArray(result.samples.shape[0])
-
-    if result.lbfgs_niter is not None:
-        data_vars["lbfgs_niter_mean"] = xr.DataArray(np.mean(result.lbfgs_niter))
-        data_vars["lbfgs_niter_std"] = xr.DataArray(np.std(result.lbfgs_niter))
-
-    if result.elbo_argmax is not None:
-        data_vars["elbo_argmax_mean"] = xr.DataArray(np.mean(result.elbo_argmax))
-        data_vars["elbo_argmax_std"] = xr.DataArray(np.std(result.elbo_argmax))
-
-    if result.logP is not None:
-        data_vars["logP_mean"] = xr.DataArray(np.mean(result.logP))
-        data_vars["logP_std"] = xr.DataArray(np.std(result.logP))
-        data_vars["logP_max"] = xr.DataArray(np.max(result.logP))
-
-    if result.logQ is not None:
-        data_vars["logQ_mean"] = xr.DataArray(np.mean(result.logQ))
-        data_vars["logQ_std"] = xr.DataArray(np.std(result.logQ))
-        data_vars["logQ_max"] = xr.DataArray(np.max(result.logQ))
-
-    # Add warnings to attributes
-    if result.warnings:
-        attrs["warnings"] = list(result.warnings)
-
-
-def _add_paths_data(
-    result: MultiPathfinderResult,
-    data_vars: dict,
-    coords: dict,
-    param_coords: list[str] | None,
-    n_params: int | None,
-) -> None:
-    """Add per-path diagnostics to the pathfinder dataset with 'paths_' prefix."""
-    n_paths = _determine_num_paths(result)
-
-    # Add path coordinate
-    coords["path"] = list(range(n_paths))
-
-    def _add_path_scalar(name: str, data):
-        """Add a per-path scalar array to data_vars with paths_ prefix."""
-        if data is not None:
-            data_vars[f"paths_{name}"] = xr.DataArray(
-                data, dims=["path"], coords={"path": coords["path"]}
-            )
-
-    _add_path_scalar("lbfgs_niter", result.lbfgs_niter)
-    _add_path_scalar("elbo_argmax", result.elbo_argmax)
-
-    if result.logP is not None:
-        _add_path_scalar("logP_mean", np.mean(result.logP, axis=1))
-        _add_path_scalar("logP_max", np.max(result.logP, axis=1))
-
-    if result.logQ is not None:
-        _add_path_scalar("logQ_mean", np.mean(result.logQ, axis=1))
-        _add_path_scalar("logQ_max", np.max(result.logQ, axis=1))
-
-    if n_params is not None and result.inv_hessian_diag is not None:
-        data_vars["paths_inv_hessian_diag"] = xr.DataArray(
-            result.inv_hessian_diag,
-            dims=["path", "param"],
-            coords={"path": coords["path"], "param": coords["param"]},
-        )
-
-    if n_params is not None and result.samples is not None and result.samples.ndim >= 3:
-        final_samples = result.samples[:, -1, :]  # (S, N)
-        data_vars["paths_final_sample"] = xr.DataArray(
-            final_samples,
-            dims=["path", "param"],
-            coords={"path": coords["path"], "param": coords["param"]},
-        )
-
-
-def _add_config_data(config: PathfinderConfig, data_vars: dict) -> None:
-    """Add configuration parameters to the pathfinder dataset with 'config_' prefix."""
-    config_dict = asdict(config)
-    for key, value in config_dict.items():
-        data_vars[f"config_{key}"] = xr.DataArray(value)
-
-
-def _add_diagnostics_data(
-    result: MultiPathfinderResult, data_vars: dict, coords: dict, param_coords: list[str] | None
-) -> None:
-    """Add detailed diagnostics to the pathfinder dataset with 'diagnostics_' prefix."""
-    if result.logP is not None:
-        n_paths, n_draws_per_path = result.logP.shape
-        if "path" not in coords:
-            coords["path"] = list(range(n_paths))
-        coords["draw_per_path"] = list(range(n_draws_per_path))
-
-        data_vars["diagnostics_logP_full"] = xr.DataArray(
-            result.logP,
-            dims=["path", "draw_per_path"],
-            coords={"path": coords["path"], "draw_per_path": coords["draw_per_path"]},
-        )
-
-    if result.logQ is not None:
-        if "draw_per_path" not in coords:
-            n_paths, n_draws_per_path = result.logQ.shape
-            if "path" not in coords:
-                coords["path"] = list(range(n_paths))
-            coords["draw_per_path"] = list(range(n_draws_per_path))
-
-        data_vars["diagnostics_logQ_full"] = xr.DataArray(
-            result.logQ,
-            dims=["path", "draw_per_path"],
-            coords={"path": coords["path"], "draw_per_path": coords["draw_per_path"]},
-        )
-
-    if result.samples is not None and result.samples.ndim == 3 and param_coords is not None:
-        n_paths, n_draws_per_path, n_params = result.samples.shape
-
-        if "path" not in coords:
-            coords["path"] = list(range(n_paths))
-        if "draw_per_path" not in coords:
-            coords["draw_per_path"] = list(range(n_draws_per_path))
-
-        data_vars["diagnostics_samples_full"] = xr.DataArray(
-            result.samples,
-            dims=["path", "draw_per_path", "param"],
-            coords={
-                "path": coords["path"],
-                "draw_per_path": coords["draw_per_path"],
-                "param": coords["param"],
-            },
-        )
-
-
 def _determine_num_paths(result: MultiPathfinderResult) -> int:
-    """
-    Determine the number of paths from per-path arrays.
-
-    When importance sampling is applied, result.samples may be collapsed,
-    so we use per-path diagnostic arrays to determine the true path count.
-    """
+    """Determine the number of paths from per-path arrays (samples may be collapsed by IS)."""
     if result.lbfgs_niter is not None:
         return len(result.lbfgs_niter)
     elif result.elbo_argmax is not None:
@@ -445,78 +72,391 @@ def _determine_num_paths(result: MultiPathfinderResult) -> int:
     raise ValueError("Cannot determine number of paths from result")
 
 
-def add_pathfinder_to_inference_data(
-    idata: DataTree,
-    result: PathfinderResult | MultiPathfinderResult,
+def _pathfinder_dataset(
+    result: MultiPathfinderResult,
     model: pm.Model | None = None,
-    *,
-    group: str = "sample_stats",
-    store_diagnostics: bool = False,
-) -> DataTree:
-    """
-    Add pathfinder results to an ArviZ DataTree object as a single consolidated group.
+) -> xr.Dataset:
+    """Build the ``pathfinder`` idata group: pathfinder-specific stats and config."""
+    n_params = result.samples.shape[-1] if result.samples is not None else None
+    param_coords = get_param_coords(model, n_params) if n_params is not None else None
 
-    All pathfinder output is now consolidated under a single group with nested structure:
-    - Summary statistics at the top level
-    - Per-path data with 'paths_' prefix
-    - Configuration with 'config_' prefix
-    - Diagnostics with 'diagnostics_' prefix (if store_diagnostics=True)
+    data_vars: dict = {}
+    coords: dict = {"param": param_coords} if param_coords is not None else {}
+    attrs: dict = {}
+
+    def include_if(name: str, value) -> None:
+        if value is not None:
+            data_vars[name] = xr.DataArray(value)
+
+    def include_stats(prefix: str, arr, *, with_max: bool = True) -> None:
+        if arr is None:
+            return
+        data_vars[f"{prefix}_mean"] = xr.DataArray(np.mean(arr))
+        data_vars[f"{prefix}_std"] = xr.DataArray(np.std(arr))
+        if with_max:
+            data_vars[f"{prefix}_max"] = xr.DataArray(np.max(arr))
+
+    # Top-level summary
+    include_if("num_paths", result.num_paths)
+    include_if("num_draws", result.num_draws)
+    data_vars["all_paths_failed"] = xr.DataArray(result.all_paths_failed)
+
+    include_if("compile_time", result.compile_time)
+    include_if("compute_time", result.compute_time)
+    if result.compile_time is not None and result.compute_time is not None:
+        data_vars["total_time"] = xr.DataArray(result.compile_time + result.compute_time)
+
+    data_vars["importance_sampling_method"] = xr.DataArray(result.importance_sampling or "none")
+    include_if("pareto_k", result.pareto_k)
+
+    if result.path_status:
+        data_vars["path_status_counts"] = _status_counter_to_dataarray(
+            result.path_status, PathStatus
+        )
+
+    include_stats("elbo_argmax", result.elbo_argmax, with_max=False)
+    include_stats("logP", result.logP)
+    include_stats("logQ", result.logQ)
+
+    # Per-path arrays (only when at least one path succeeded)
+    if not result.all_paths_failed and result.samples is not None:
+        data_vars["num_successful_paths"] = xr.DataArray(_determine_num_paths(result))
+        coords["path"] = list(range(_determine_num_paths(result)))
+
+        def include_path(name: str, data) -> None:
+            if data is not None:
+                data_vars[name] = xr.DataArray(data, dims=["path"], coords={"path": coords["path"]})
+
+        include_path("elbo_argmax", result.elbo_argmax)
+        if result.logP is not None:
+            include_path("paths_logP_mean", np.mean(result.logP, axis=1))
+            include_path("paths_logP_max", np.max(result.logP, axis=1))
+        if result.logQ is not None:
+            include_path("paths_logQ_mean", np.mean(result.logQ, axis=1))
+            include_path("paths_logQ_max", np.max(result.logQ, axis=1))
+
+        if n_params is not None and result.inv_hessian_diag is not None:
+            data_vars["inv_hessian_diag"] = xr.DataArray(
+                result.inv_hessian_diag,
+                dims=["path", "param"],
+                coords={"path": coords["path"], "param": coords["param"]},
+            )
+        if n_params is not None and result.samples.ndim >= 3:
+            data_vars["final_sample"] = xr.DataArray(
+                result.samples[:, -1, :],
+                dims=["path", "param"],
+                coords={"path": coords["path"], "param": coords["param"]},
+            )
+
+    if result.pathfinder_config is not None:
+        cfg = result.pathfinder_config
+        data_vars["num_draws_per_path"] = xr.DataArray(cfg.num_draws)
+        data_vars["num_elbo_draws"] = xr.DataArray(cfg.num_elbo_draws)
+        data_vars["jitter"] = xr.DataArray(cfg.jitter)
+
+    if result.warnings:
+        attrs["warnings"] = list(result.warnings)
+
+    return xr.Dataset(data_vars, coords=coords, attrs=attrs)
+
+
+def _lbfgs_dataset(result: MultiPathfinderResult) -> xr.Dataset:
+    """Build the ``lbfgs`` idata group: L-BFGS-specific stats and configuration."""
+    data_vars: dict = {}
+    coords: dict = {}
+
+    if result.lbfgs_status:
+        data_vars["status_counts"] = _status_counter_to_dataarray(result.lbfgs_status, LBFGSStatus)
+
+    if result.lbfgs_niter is not None:
+        coords["path"] = list(range(len(result.lbfgs_niter)))
+        data_vars["niter"] = xr.DataArray(
+            result.lbfgs_niter, dims=["path"], coords={"path": coords["path"]}
+        )
+        data_vars["niter_mean"] = xr.DataArray(np.mean(result.lbfgs_niter))
+        data_vars["niter_std"] = xr.DataArray(np.std(result.lbfgs_niter))
+
+    if result.pathfinder_config is not None:
+        cfg = result.pathfinder_config
+        for name in ("maxcor", "maxiter", "ftol", "gtol", "maxls", "epsilon"):
+            data_vars[name] = xr.DataArray(getattr(cfg, name))
+
+    return xr.Dataset(data_vars, coords=coords)
+
+
+def add_pathfinder_to_inference_data(
+    idata: xr.DataTree,
+    result: MultiPathfinderResult,
+    model: pm.Model | None = None,
+) -> xr.DataTree:
+    """Add the ``pathfinder`` and ``lbfgs`` groups to a DataTree.
 
     Parameters
     ----------
-    idata : DataTree
-        DataTree object to modify
-    result : PathfinderResult | MultiPathfinderResult
-        Pathfinder results to add
-    model : pm.Model | None
-        PyMC model for parameter name extraction
-    group : str
-        Name for the pathfinder group (default: "sample_stats")
-    store_diagnostics : bool
-        Whether to include potentially large diagnostic arrays
+    idata : xr.DataTree
+        DataTree to modify in place.
+    result : MultiPathfinderResult
+        Multi-path pathfinder result.
+    model : pm.Model, optional
+        PyMC model used to label parameter coords. If None, integer indices are used.
 
     Returns
     -------
-    DataTree
-        Modified DataTree object with consolidated pathfinder group added
-
-    Examples
-    --------
-    >>> import pymc as pm
-    >>> import pymc_extras as pmx
-    >>>
-    >>> with pm.Model() as model:
-    ...     x = pm.Normal("x", 0, 1)
-    ...     idata = pmx.fit(method="pathfinder", model=model, add_pathfinder_groups=False)
-    >>> # Assuming we have pathfinder results
-    >>> idata = add_pathfinder_to_inference_data(idata, results, model=model)
-    >>> print(list(idata.groups))  # Will show ['posterior', 'sample_stats']
-    >>> # Access nested data:
-    >>> print(
-    ...     [k for k in idata.sample_stats.data_vars.keys() if k.startswith("paths_")]
-    ... )  # Per-path data
-    >>> print(
-    ...     [k for k in idata.sample_stats.data_vars.keys() if k.startswith("config_")]
-    ... )  # Config data
+    xr.DataTree
+        The same idata, with ``pathfinder`` and ``lbfgs`` groups added.
     """
-    # Detect if this is a multi-path result
-    # Use isinstance() as primary check, but fall back to duck typing for compatibility
-    # with mocks and testing (MultiPathfinderResult has Counter-type status fields)
-    is_multipath = isinstance(result, MultiPathfinderResult) or (
-        hasattr(result, "lbfgs_status")
-        and hasattr(result.lbfgs_status, "values")
-        and callable(getattr(result.lbfgs_status, "values"))
-    )
-
-    if is_multipath:
-        consolidated_ds = multipathfinder_result_to_xarray(
-            result, model=model, store_diagnostics=store_diagnostics
-        )
-    else:
-        consolidated_ds = pathfinder_result_to_xarray(result, model=model)
-
-    if group in idata.children:
-        warnings.warn(f"Group '{group}' already exists in DataTree, it will be replaced.")
-
-    idata[group] = DataTree(dataset=consolidated_ds)
+    idata["pathfinder"] = xr.DataTree(_pathfinder_dataset(result, model=model))
+    idata["lbfgs"] = xr.DataTree(_lbfgs_dataset(result))
     return idata
+
+
+def _transform_draws_vectorized(model, vars_to_sample, trace, compile_kwargs: dict) -> list:
+    # Add a (chain, draw) batch dim across the Deterministic subgraph in one shot.
+    new_shapes = [v.ndim * (None,) for v in trace.values()]
+    replace = {
+        var: pt.tensor(dtype="float64", shape=new_shapes[i])
+        for i, var in enumerate(model.value_vars)
+    }
+    outputs = vectorize_graph(vars_to_sample, replace=replace)
+    # The transform graph is compiled once and run once, so skip the rewrite phase (FAST_COMPILE)
+    # by default — full FAST_RUN rewrites cost far more than they save on a single-use graph. A
+    # caller-supplied ``mode`` in compile_kwargs overrides this.
+    fn = pytensor.function(
+        inputs=list(replace.values()),
+        outputs=outputs,
+        **{"mode": FAST_COMPILE, "on_unused_input": "ignore", **compile_kwargs},
+    )
+    fn.trust_input = True
+    result = fn(*list(trace.values()))
+    return result if isinstance(result, list) else [result]
+
+
+def _transform_draws_scan(model, vars_to_sample, trace, compile_kwargs: dict) -> list:
+    batched_inputs = [
+        pt.tensor(name=f"{v.name}_samples", dtype=v.dtype, shape=(None, *v.type.shape))
+        for v in model.value_vars
+    ]
+
+    def step(*single_sample_values):
+        replace = dict(zip(model.value_vars, single_sample_values, strict=True))
+        return clone_replace(vars_to_sample, replace=replace)
+
+    scan_outputs = pytensor.scan(fn=step, sequences=batched_inputs, return_updates=False)
+    if not isinstance(scan_outputs, list):
+        scan_outputs = [scan_outputs]
+
+    fn = pytensor.function(
+        inputs=batched_inputs,
+        outputs=scan_outputs,
+        **{"mode": FAST_COMPILE, "on_unused_input": "ignore", **compile_kwargs},
+    )
+    fn.trust_input = True
+
+    # trace values carry a leading chain=1 dim; scan iterates draws, so we squeeze it on the way
+    # in and add it back on the way out.
+    result = fn(*[trace[v.name][0] for v in model.value_vars])
+    if not isinstance(result, list):
+        result = [result]
+    return [r[None, ...] for r in result]
+
+
+def convert_flat_trace_to_idata(
+    samples: NDArray,
+    include_transformed: bool = False,
+    postprocessing_backend: Literal["cpu", "gpu"] = "cpu",
+    inference_backend: Literal["pymc", "blackjax"] = "pymc",
+    model: Model | None = None,
+    importance_sampling: Literal["psis", "psir", "identity"] | None = "psis",
+    vectorize: bool = True,
+    compile_kwargs: dict | None = None,
+) -> xr.DataTree:
+    """convert flattened samples to xarray DataTree format.
+
+    Parameters
+    ----------
+    samples : NDArray
+        flattened samples
+    include_transformed : bool
+        whether to include transformed variables
+    postprocessing_backend : str
+        backend for postprocessing transformations, either "cpu" or "gpu"
+    inference_backend : str
+        backend for inference, either "pymc" or "blackjax"
+    model : Model | None
+        pymc model for variable transformations
+    importance_sampling : str
+        importance sampling method used, affects input samples shape
+    vectorize : bool, optional
+        If True (default), use ``vectorize_graph`` to batch the Deterministic subgraph across
+        all draws in one call. If False, iterate draws with ``pytensor.scan``. Set to False when
+        memory is a concern, for example, when your model has large intermediate computations.
+    compile_kwargs : dict, optional
+        Additional keyword arguments for the PyTensor compiler, used when transforming the draws
+        (e.g. ``mode="JAX"``). Ignored by the blackjax backend, which transforms via JAX. Default
+        None.
+
+    Returns
+    -------
+    InferenceData
+        arviz inference data object
+    """
+    compile_kwargs = compile_kwargs or {}
+
+    if importance_sampling is None:
+        # samples.ndim == 3 in this case, otherwise ndim == 2
+        num_paths, num_pdraws, N = samples.shape
+        samples = samples.reshape(-1, N)
+
+    model = modelcontext(model)
+    ip = model.initial_point()
+    ip_point_map_info = DictToArrayBijection.map(ip).point_map_info
+
+    trace = collections.defaultdict(list)
+    for sample in samples:
+        raveld_vars = RaveledVars(sample, ip_point_map_info)
+        point = DictToArrayBijection.rmap(raveld_vars, ip)
+        for p, v in point.items():
+            trace[p].append(v.tolist())
+
+    trace = {k: np.asarray(v)[None, ...] for k, v in trace.items()}
+
+    var_names = model.unobserved_value_vars
+    vars_to_sample = list(get_default_varnames(var_names, include_transformed=include_transformed))
+    logger.info("Transforming variables...")
+
+    if inference_backend == "pymc":
+        if vectorize:
+            result = _transform_draws_vectorized(model, vars_to_sample, trace, compile_kwargs)
+        else:
+            result = _transform_draws_scan(model, vars_to_sample, trace, compile_kwargs)
+
+        if importance_sampling is None:
+            result = [res.reshape(num_paths, num_pdraws, *res.shape[2:]) for res in result]
+
+    elif inference_backend == "blackjax":
+        import jax
+
+        from pymc.sampling.jax import get_jaxified_graph
+
+        jax_fn = get_jaxified_graph(inputs=model.value_vars, outputs=vars_to_sample)
+        result = jax.vmap(jax.vmap(jax_fn))(
+            *jax.device_put(list(trace.values()), jax.devices(postprocessing_backend)[0])
+        )
+
+    trace = {v.name: r for v, r in zip(vars_to_sample, result)}
+    coords, dims = coords_and_dims_for_inferencedata(model)
+    idata = az.from_dict({"posterior": trace}, dims=dims, coords=coords)
+
+    return idata
+
+
+def pathfinder_report(idata: xr.DataTree, *, console: Console | None = None) -> None:
+    """Print a rich-table summary built from the ``pathfinder`` and ``lbfgs`` idata groups.
+
+    Both groups are populated automatically by :func:`fit_pathfinder`.
+    """
+    if "/pathfinder" not in idata.groups:
+        raise ValueError(
+            "idata is missing the 'pathfinder' group; this idata was not produced by "
+            "fit_pathfinder."
+        )
+    pf = idata["pathfinder"]
+    lb = idata["lbfgs"] if "/lbfgs" in idata.groups else None
+
+    table = Table(
+        title="Pathfinder Results",
+        title_style="none",
+        title_justify="left",
+        show_header=False,
+        box=None,
+        padding=(0, 2),
+        show_edge=False,
+    )
+    table.add_column("Description")
+    table.add_column("Value")
+
+    def row_if(container, key: str, label: str, fmt: str = "{}") -> None:
+        if container is not None and key in container:
+            table.add_row(label, fmt.format(container[key].item()))
+
+    if "param" in pf.dims:
+        table.add_row("")
+        table.add_row("No. model parameters", str(pf.sizes["param"]))
+
+    # Configuration: pathfinder draws/jitter and L-BFGS settings
+    if "num_draws_per_path" in pf or "num_elbo_draws" in pf or "jitter" in pf or lb is not None:
+        table.add_row("")
+        table.add_row("Configuration:")
+        row_if(pf, "num_draws_per_path", "num_draws_per_path")
+        row_if(lb, "maxcor", "history size (maxcor)")
+        row_if(lb, "maxiter", "max iterations")
+        row_if(lb, "ftol", "ftol", "{:.2e}")
+        row_if(lb, "gtol", "gtol", "{:.2e}")
+        row_if(lb, "maxls", "max line search")
+        row_if(lb, "epsilon", "epsilon", "{:.2e}")
+        row_if(pf, "jitter", "jitter")
+        row_if(pf, "num_elbo_draws", "ELBO draws")
+
+    # L-BFGS status + iter
+    if lb is not None and "status_counts" in lb:
+        table.add_row("")
+        table.add_row("LBFGS Status:")
+        for status_name in lb["status_counts"].coords["status"].values:
+            count = int(lb["status_counts"].sel(status=status_name).item())
+            if count:
+                table.add_row(str(status_name), str(count))
+
+        if "niter_mean" in lb:
+            table.add_row(
+                "L-BFGS iterations",
+                f"mean {lb['niter_mean'].item():.0f} ± std {lb['niter_std'].item():.0f}",
+            )
+
+    # Path status
+    if "path_status_counts" in pf:
+        table.add_row("")
+        table.add_row("Path Status:")
+        for status_name in pf["path_status_counts"].coords["status"].values:
+            count = int(pf["path_status_counts"].sel(status=status_name).item())
+            if count:
+                table.add_row(str(status_name), str(count))
+
+        if "elbo_argmax_mean" in pf:
+            table.add_row(
+                "ELBO argmax",
+                f"mean {pf['elbo_argmax_mean'].item():.0f} ± "
+                f"std {pf['elbo_argmax_std'].item():.0f}",
+            )
+
+    # Importance sampling
+    if not bool(pf["all_paths_failed"].item()) and "importance_sampling_method" in pf:
+        table.add_row("")
+        table.add_row("Importance Sampling:")
+        table.add_row("Method", str(pf["importance_sampling_method"].item()))
+        row_if(pf, "pareto_k", "Pareto k", "{:.2f}")
+
+    # Timing
+    if "compile_time" in pf:
+        table.add_row("")
+        table.add_row("Timing (seconds):")
+    row_if(pf, "compile_time", "Compile", "{:.2f}")
+    row_if(pf, "compute_time", "Compute", "{:.2f}")
+    row_if(pf, "total_time", "Total", "{:.2f}")
+
+    console = console or Console()
+    warnings_attr = pf.attrs.get("warnings")
+    if warnings_attr:
+        warning_text = [
+            Text(),
+            Text("Warnings:"),
+            *(
+                Padding(
+                    Text("- " + w, no_wrap=False).wrap(console, width=console.width - 6),
+                    (0, 0, 0, 2),
+                )
+                for w in warnings_attr
+            ),
+        ]
+        console.print(Group(table, *warning_text))
+    else:
+        console.print(table)

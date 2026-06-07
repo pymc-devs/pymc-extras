@@ -4,9 +4,9 @@ Generate LBFGS-history fixtures for model-equivalence tests.
 
 Run once (from the repo root or any directory):
 
-    python tests/pathfinder/generate_fixtures.py
+    python tests/inference/pathfinder/generate_fixtures.py
 
-Each fixture is saved as  tests/pathfinder/fixtures/<model_name>.npz  and
+Each fixture is saved as  tests/inference/pathfinder/fixtures/<model_name>.npz  and
 contains:
     x_full     – initial point + accepted step positions, shape (L+1, N)
     g_full     – gradients at each row of x_full, shape (L+1, N)
@@ -25,26 +25,20 @@ import numpy as np
 from pymc.blocking import DictToArrayBijection
 from pymc.initial_point import make_initial_point_fn
 from pymc.model.core import Point
-from pytensor.compile.mode import Mode
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../..", ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from pytensor.tensor.optimize import LRUCache1
 
-from pymc_extras.inference.pathfinder.lbfgs import LBFGS, LBFGSStatus
-from pymc_extras.inference.pathfinder.pathfinder import (
-    DEFAULT_LINKER,
-    LBFGSStreamingCallback,
+from pymc_extras.inference.pathfinder.bfgs_sample import (
     get_neg_logp_dlogp_of_ravel_inputs,
     make_pathfinder_sample_fn,
 )
-from tests.pathfinder.equivalence_models import MODEL_FACTORIES
+from pymc_extras.inference.pathfinder.lbfgs import LBFGS, LBFGSStatus, LBFGSStreamingCallback
+from tests.inference.pathfinder.equivalence_models import MODEL_FACTORIES
 
-# ---------------------------------------------------------------------------
-# Parameters - must stay in sync with test_model_equivalence.py
-# ---------------------------------------------------------------------------
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 ELBO_SEED = 12345
 LBFGS_JITTER_SEED = 42
@@ -54,11 +48,10 @@ MAXITER = 100
 NUM_ELBO_DRAWS = 100
 
 
-def generate_fixture(name: str, model_fn) -> None:
+def generate_fixture(name: str, model_fn, **compile_kwargs) -> None:
     print(f"[{name}] building model …")
     model = model_fn()
 
-    compile_kwargs = {"mode": Mode(linker=DEFAULT_LINKER)}
     neg_logp_dlogp_func = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True, **compile_kwargs)
 
     ipfn = make_initial_point_fn(model=model)
