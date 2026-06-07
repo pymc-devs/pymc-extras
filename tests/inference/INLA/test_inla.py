@@ -51,18 +51,16 @@ def test_AR1(rng):
         theta = pm.Normal("theta", 0, 1.0)
         tau = pm.Exponential("tau", 0.5)
 
-        x = pm.AR(
-            "x", rho=theta, tau=tau, steps=T - 1, init_dist=pm.Normal.dist(0, N, shape=(T,))
-        )
+        x = pm.AR("x", rho=theta, tau=tau, steps=T - 1, init_dist=pm.Normal.dist(0, N, shape=(T,)))
 
         y = pm.Poisson("y", mu=pm.math.exp(x), observed=y_obs)
 
         # Use INLA
         idata = pmx.fit(method="INLA", x=x, Q=tau, return_latent_posteriors=False)
 
-    theta_mean = idata.posterior.theta.mean(axis=(0, 1))
+    theta_inla = idata.posterior.theta.mean(axis=(0, 1))
     sigma_inla = idata.posterior.theta.std(axis=(0, 1))
-    
+
     np.testing.assert_allclose(np.array([true_theta]), theta_inla, atol=0.2)
     np.testing.assert_allclose(np.array([true_sigma]), sigma_inla, atol=0.2)
 
