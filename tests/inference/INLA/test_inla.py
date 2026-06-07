@@ -32,6 +32,7 @@ def rng():
 )
 def test_AR1(rng):
     T = 10
+    N = 100
     x = np.zeros((T,))
 
     # true stationarity:
@@ -51,7 +52,7 @@ def test_AR1(rng):
         tau = pm.Exponential("tau", 0.5)
 
         x = pm.AR(
-            "x", rho=theta, tau=tau, steps=T - 1, init_dist=pm.Normal.dist(0, 100, shape=(T,))
+            "x", rho=theta, tau=tau, steps=T - 1, init_dist=pm.Normal.dist(0, N, shape=(T,))
         )
 
         y = pm.Poisson("y", mu=pm.math.exp(x), observed=y_obs)
@@ -59,8 +60,11 @@ def test_AR1(rng):
         # Use INLA
         idata = pmx.fit(method="INLA", x=x, Q=tau, return_latent_posteriors=False)
 
-    theta_inla = idata.posterior.theta.mean(axis=(0, 1))
+    theta_mean = idata.posterior.theta.mean(axis=(0, 1))
+    sigma_inla = idata.posterior.theta.std(axis=(0, 1))
+    
     np.testing.assert_allclose(np.array([true_theta]), theta_inla, atol=0.2)
+    np.testing.assert_allclose(np.array([true_sigma]), sigma_inla, atol=0.2)
 
 
 @pytest.mark.filterwarnings(
@@ -71,19 +75,19 @@ def test_3_layer_normal(rng):
     """
     Test INLA against a simple toy problem:
 
-    mu ~ N(mu_mu, I)
-    x ~ N(mu, I)
-    y ~ N(x, I)
-
-    The mean of the posterior should be the midpoint between mu_mu and mu_true
+    mu ~ N(mu_mu, tau^-1)
+    x ~ N(mu, tau^-1)
+    y ~ N(x, tau^-1)
     """
     n = 10000
     d = 3
 
     mu_mu = 10 * rng.random(d)
     mu_true = rng.random(d)
-    tau = np.identity(d)
+
+    tau = np.diag(rng.random(d))
     cov = np.linalg.inv(tau)
+
     y_obs = rng.multivariate_normal(mean=mu_true, cov=cov, size=n)
 
     with pm.Model() as model:
@@ -91,13 +95,22 @@ def test_3_layer_normal(rng):
         x = pm.MvNormal("x", mu=mu, tau=tau)
         y = pm.MvNormal("y", mu=x, tau=tau, observed=y_obs)
 
-        idata = pmx.fit(
+        # Use INLA
+        idata_inla = pmx.fit(
             method="INLA",
             x=x,
             Q=tau,
             return_latent_posteriors=False,
         )
 
-        posterior_mean_true = (mu_mu + mu_true) / 2
-        posterior_mean_inla = idata.posterior.mu.mean(axis=(0, 1))
-        np.testing.assert_allclose(posterior_mean_true, posterior_mean_inla, atol=0.1)
+        # Compare against direct sampling
+        idata_true = pm.sample()
+
+    posterior_mean_true = idata_true.posterior.mu.mean(axis=(0, 1))
+    posterior_mean_inla = idata_inla.posterior.mu.mean(axis=(0, 1))
+
+    posterior_var_true = idata_true.posterior.mu.var(axis=(0, 1))
+    posterior_var_inla = idata_inla.posterior.mu.var(axis=(0, 1))
+
+    np.testing.assert_allclose(posterior_mean_true, posterior_mean_inla, atol=0.1)
+    np.testing.assert_allclose(posterior_var_true, posterior_var_inla, atol=0.1)
