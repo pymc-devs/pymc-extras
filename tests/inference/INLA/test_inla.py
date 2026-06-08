@@ -31,6 +31,11 @@ def rng():
     r"ignore:Numba will use object mode to run",
 )
 def test_AR1(rng):
+    """
+    Run INLA against an AR-1 model.
+
+    Ground truth values taken from running the same system (BUT WITH LARGER N = 10000) against NUTS (i.e. pm.sample()).
+    """
     T = 10
     N = 100
     x = np.zeros((T,))
@@ -41,6 +46,11 @@ def test_AR1(rng):
     true_sigma = 2.0
     # true process mean:
     true_center = 0.0
+
+    # Additional ground truth values taken from NUTS sampling
+    true_tau = np.array([0.71772424])
+    true_theta_var = np.array([0.0639109])
+    true_tau_var = np.array([0.19040735])
 
     for t in range(1, T):
         x[t] = true_theta * x[t - 1] + rng.normal(loc=true_center, scale=true_sigma)
@@ -56,26 +66,17 @@ def test_AR1(rng):
         y = pm.Poisson("y", mu=pm.math.exp(x), observed=y_obs)
 
         # Use INLA
-        idata_inla = pmx.fit(method="INLA", x=x, Q=tau, return_latent_posteriors=False)
+        idata = pmx.fit(method="INLA", x=x, Q=tau, return_latent_posteriors=False)
 
-        # Use direct sampling to get ground truth for variances
-        idata_true = pm.sample()
-
-    theta_inla = idata_inla.posterior.theta.mean(axis=(0, 1))
-
-    tau_inla = idata_inla.posterior.tau.mean(axis=(0, 1))
-    tau_true = idata_true.posterior.tau.mean(axis=(0, 1))
-
-    theta_var_inla = idata_inla.posterior.theta.var(axis=(0, 1))
-    theta_var_true = idata_true.posterior.theta.var(axis=(0, 1))
-
-    tau_var_inla = idata_inla.posterior.tau.var(axis=(0, 1))
-    tau_var_true = idata_true.posterior.tau.var(axis=(0, 1))
+    theta_inla = idata.posterior.theta.mean(axis=(0, 1))
+    tau_inla = idata.posterior.tau.mean(axis=(0, 1))
+    theta_var_inla = idata.posterior.theta.var(axis=(0, 1))
+    tau_var_inla = idata.posterior.tau.var(axis=(0, 1))
 
     np.testing.assert_allclose(theta_inla, np.array([true_theta]), atol=0.2)
-    np.testing.assert_allclose(tau_inla, tau_true, atol=0.3)
-    np.testing.assert_allclose(theta_var_inla, theta_var_true, atol=0.1)
-    np.testing.assert_allclose(tau_var_inla, tau_var_true, atol=0.2)
+    np.testing.assert_allclose(tau_inla, true_tau, atol=0.3)
+    np.testing.assert_allclose(theta_var_inla, true_theta_var, atol=0.1)
+    np.testing.assert_allclose(tau_var_inla, true_tau_var, atol=0.2)
 
 
 @pytest.mark.filterwarnings(
@@ -89,9 +90,15 @@ def test_3_layer_normal(rng):
     mu ~ N(mu_mu, tau^-1)
     x ~ N(mu, tau^-1)
     y ~ N(x, tau^-1)
+
+    Ground truth values taken from running the same system (n = 10000, d = 3) against NUTS (i.e. pm.sample()).
     """
     n = 10000
     d = 3
+
+    # Ground truths taken from NUTS
+    posterior_mean_true = np.array([2.58401009, 2.35963888, 0.82726089])
+    posterior_var_true = np.array([0.85738604, 1.12081823, 0.59326285])
 
     mu_mu = 10 * rng.random(d)
     mu_true = rng.random(d)
@@ -107,21 +114,15 @@ def test_3_layer_normal(rng):
         y = pm.MvNormal("y", mu=x, tau=tau, observed=y_obs)
 
         # Use INLA
-        idata_inla = pmx.fit(
+        idata = pmx.fit(
             method="INLA",
             x=x,
             Q=tau,
             return_latent_posteriors=False,
         )
 
-        # Compare against direct sampling
-        idata_true = pm.sample()
-
-    posterior_mean_true = idata_true.posterior.mu.mean(axis=(0, 1))
-    posterior_mean_inla = idata_inla.posterior.mu.mean(axis=(0, 1))
-
-    posterior_var_true = idata_true.posterior.mu.var(axis=(0, 1))
-    posterior_var_inla = idata_inla.posterior.mu.var(axis=(0, 1))
+    posterior_mean_inla = idata.posterior.mu.mean(axis=(0, 1))
+    posterior_var_inla = idata.posterior.mu.var(axis=(0, 1))
 
     np.testing.assert_allclose(posterior_mean_inla, posterior_mean_true, atol=0.1)
     np.testing.assert_allclose(posterior_var_inla, posterior_var_true, atol=0.2)
