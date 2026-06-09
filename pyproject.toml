@@ -105,9 +105,6 @@ filterwarnings =[
     # OpenMP library warning on windows CI
     'ignore::RuntimeWarning:threadpoolctl',
 
-    # ArviZ warning related to 1.0 release
-    'ignore:\nArviZ is undergoing a major refactor.*:FutureWarning',
-
     # Numba warnings that are filtered by PyTensor but re-introduced by pytest
     'ignore::numba.core.errors.NumbaPerformanceWarning',
     'ignore:.*Cannot cache compiled function.*:numba.core.errors.NumbaWarning',
