@@ -38,7 +38,7 @@ dependencies = [
   "arviz>=1.1",
   "better-optimize>=0.4.2,<1.0",
   "pydantic>=2.0.0",
-  "preliz>=0.25.0",
+  "preliz>=0.26.0,<0.27.0",
 ]
 
 [project.optional-dependencies]
