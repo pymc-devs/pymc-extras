@@ -1402,7 +1402,7 @@ class TestTimeVaryingTransition:
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:No start date provided")
 @pytest.mark.parametrize("batch_dims", [(2,), (5,), (7,)])
-def test_batch_ssm(batch_dims: tuple[int], rng, mock_pymc_sample) -> pm.Model:
+def test_batch_ssm(batch_dims: tuple[int], rng) -> pm.Model:
     mod = st.LevelTrend(order=2, innovations_order=[0, 1])
     mod += st.Autoregressive(name="ar", order=1)
     mod += st.MeasurementError(name="obs")
