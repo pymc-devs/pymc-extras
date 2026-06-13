@@ -640,9 +640,9 @@ def test_convergent_filter_local_level_matches_standard(rng):
 
 
 def test_convergent_filter_k_equals_n_gradient_matches_standard(rng):
-    """With tol=0 the until clause never fires, so k == n and the post-convergence tail is empty.
-    The forward reduces to a plain Kalman pass and the gradient (an empty tail backward plus the
-    autodiff pre-convergence backward) must still match StandardFilter."""
+    """With tol=0 the until clause never fires, so the Riccati never converges. The split is then
+    capped at n-1 (a one-step tail -- a single tail step is exactly the Kalman step), and the
+    gradient of this degenerate no-convergence case must still match StandardFilter."""
     m, p, n_shocks, n = 4, 2, 4, 40
     vals = _make_stationary_system(m, p, n_shocks, n, rng)
 

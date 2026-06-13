@@ -974,8 +974,10 @@ class ConvergentFilter(StandardFilter):
             data, a0, P0, c, d, T, Z, R, H, Q, stop_early=True
         )
 
-        k = a_filt_tr.shape[0]
-        a_star, P_star = a_hat_tr[-1], P_hat_tr[-1]
+        # Cap the split one step short of the series so the post-convergence tail always has at least
+        # one step.
+        k = pt.minimum(a_filt_tr.shape[0], n - 1)
+        a_star, P_star = a_hat_tr[k - 1], P_hat_tr[k - 1]
 
         # Tail constants from P*. Computed once here to make the tail function prettier.
         F_star = Z @ P_star @ Z.mT + stabilize(H, self.cov_jitter)
@@ -1017,13 +1019,13 @@ class ConvergentFilter(StandardFilter):
             return pt.concatenate([a, b], axis=0)
 
         return (
-            cat(a_filt_tr, a_filt_fx),
-            cat(a_hat_tr, a_hat_fx),
-            cat(y_hat_tr, y_hat_fx),
-            cat(P_filt_tr, P_filt_fx),
-            cat(P_hat_tr, P_hat_fx),
-            cat(F_tr, F_fx),
-            cat(ll_tr, ll_fx),
+            cat(a_filt_tr[:k], a_filt_fx),
+            cat(a_hat_tr[:k], a_hat_fx),
+            cat(y_hat_tr[:k], y_hat_fx),
+            cat(P_filt_tr[:k], P_filt_fx),
+            cat(P_hat_tr[:k], P_hat_fx),
+            cat(F_tr[:k], F_fx),
+            cat(ll_tr[:k], ll_fx),
             k,
         )
 
