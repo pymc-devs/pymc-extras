@@ -879,10 +879,11 @@ class ConvergentFilter(StandardFilter):
 
     - All model matrices (``c, d, T, Z, R, H, Q``) must be time-invariant. Time-varying inputs raise
       :class:`ValueError`; Riccati convergence is not meaningful for a non-stationary system.
-    - ``data`` must contain no ``NaN`` values. A masked observation changes the effective ``Z_t`` (and so
-      ``K_t`` and ``F_t``), breaking the cached-``K_star`` assumption. For :class:`SharedVariable` or
-      :class:`TensorConstant` data the check runs at build time; fully symbolic data gets an
-      :class:`~pytensor.raise_op.Assert` that fires at runtime.
+    - ``data`` must contain no missing values. A masked observation changes the effective ``Z_t`` (and
+      so ``K_t`` and ``F_t``), breaking the cached-``K_star`` assumption. The statespace core replaces
+      ``NaN`` with ``missing_fill_value`` before the filter runs, so both ``NaN`` and that sentinel are
+      rejected. For :class:`SharedVariable` or :class:`TensorConstant` data the check runs at build
+      time; fully symbolic data gets an :class:`~pytensor.raise_op.Assert` that fires at runtime.
 
     Only ``d loglike_obs`` is supported as an upstream gradient; other output adjoints are treated as
     disconnected. For gradients of other filter outputs, use :class:`StandardFilter`.
@@ -894,9 +895,9 @@ class ConvergentFilter(StandardFilter):
         scan. The scan stops the first time this drops below ``tol``. Default ``1e-10``.
     """
 
-    _NAN_MSG = (
-        "ConvergentFilter does not support missing data (NaN) in the observation "
-        "series. Use StandardFilter for data with missing values."
+    _MISSING_DATA_MSG = (
+        "ConvergentFilter does not support missing data in the observation series. "
+        "Use StandardFilter for data with missing values."
     )
 
     def __init__(self, tol: float = 1e-10):
@@ -904,16 +905,20 @@ class ConvergentFilter(StandardFilter):
         self.tol = tol
 
     def _check_data(self, data):
-        """Reject NaN at build time for concrete data; insert an Assert op otherwise."""
-        if isinstance(data, SharedVariable):
-            if np.isnan(data.get_value()).any():
-                raise ValueError(self._NAN_MSG)
+        """Reject data containing NaN or the missing-value sentinel.
+
+        The statespace core replaces NaN with ``missing_fill_value`` before the filter runs, so the
+        sentinel must be rejected alongside NaN. Concrete data (shared/constant) is checked at build
+        time; fully symbolic data gets a runtime :class:`~pytensor.raise_op.Assert`.
+        """
+        sentinel = self.missing_fill_value
+        if isinstance(data, SharedVariable | TensorConstant):
+            arr = data.get_value() if isinstance(data, SharedVariable) else data.data
+            if np.isnan(arr).any() or (arr == sentinel).any():
+                raise ValueError(self._MISSING_DATA_MSG)
             return data
-        if isinstance(data, TensorConstant):
-            if np.isnan(data.data).any():
-                raise ValueError(self._NAN_MSG)
-            return data
-        return Assert(self._NAN_MSG)(data, pt.all(pt.bitwise_not(pt.isnan(data))))
+        missing = pt.or_(pt.isnan(data), pt.eq(data, sentinel))
+        return Assert(self._MISSING_DATA_MSG)(data, pt.all(pt.bitwise_not(missing)))
 
     def _kalman_step(self, y, a, P, c, d, T, Z, R, H, Q):
         a_filt, P_filt, y_hat, F, ll = self.update(

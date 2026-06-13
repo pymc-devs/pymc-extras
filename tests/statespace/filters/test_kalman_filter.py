@@ -15,6 +15,7 @@ from pymc_extras.statespace.filters import (
     UnivariateFilter,
 )
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter
+from pymc_extras.statespace.utils.constants import MISSING_FILL
 from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
     rng,
 )
@@ -552,3 +553,20 @@ def test_convergent_filter_asserts_nan_symbolic_data(rng):
     # The Assert op raises AssertionError at evaluation time
     with pytest.raises(AssertionError):
         fn(*vals)
+
+
+def test_convergent_filter_rejects_missing_fill_sentinel(rng):
+    """The statespace core replaces NaN with missing_fill_value before the filter runs, so the
+    sentinel -- not just NaN -- must be rejected. This mirrors the real PyMC path, where data is a
+    shared variable holding the pre-filled values."""
+    m, p, n_shocks, n = 3, 2, 3, 30
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+    data_np = vals[0].copy()
+    data_np[5, 0] = MISSING_FILL  # a missing observation, pre-filled by the statespace core
+    shared_data = pytensor.shared(data_np, name="data")
+
+    _, a0, P0, c, d, T, Z, R, H, Q = (pt.as_tensor_variable(v) for v in vals)
+    with pytest.raises(ValueError, match="missing data"):
+        ConvergentFilter().build_graph(
+            pt.as_tensor_variable(shared_data), a0, P0, c, d, T, Z, R, H, Q
+        )
