@@ -870,7 +870,7 @@ class ConvergentFilter(StandardFilter):
 
     2. **Speed.** In the post-convergence tail, per-step Cholesky and the full Joseph-form backward are
        unnecessary because ``K``, ``F``, and ``P`` are constant. The custom pullback hoists
-       ``F^{-1}, H^{-1}, A = T (I - K_star Z), I - K_star Z`` out of the scan body and the per-step
+       ``F^{-1}, A = T (I - K_star Z), I - K_star Z`` out of the scan body and the per-step
        backward reduces to matvec and outer products. On typical state-space cells
        (m=10..50, p=3..10, n=2000..10000) this gives a ~1.8--2.9x speedup on ``logp + grad``
        versus :class:`StandardFilter` autodiff, on top of a ~7--12x forward speedup.
@@ -884,6 +884,9 @@ class ConvergentFilter(StandardFilter):
       ``NaN`` with ``missing_fill_value`` before the filter runs, so both ``NaN`` and that sentinel are
       rejected. For :class:`SharedVariable` or :class:`TensorConstant` data the check runs at build
       time; fully symbolic data gets an :class:`~pytensor.raise_op.Assert` that fires at runtime.
+
+    Measurement-error-free models (singular or zero ``H``) are fully supported, gradients included;
+    the tail backward avoids forming ``H^{-1}``.
 
     Only ``d loglike_obs`` is supported as an upstream gradient; other output adjoints are treated as
     disconnected. For gradients of other filter outputs, use :class:`StandardFilter`.
@@ -1026,7 +1029,6 @@ class ConvergentFilter(StandardFilter):
         d,
         T,
         Z,
-        H,
         K_star,
         F_star,
         F_chol_star,
@@ -1035,7 +1037,7 @@ class ConvergentFilter(StandardFilter):
     ):
         """Analytic backward pass over the post-convergence segment.
 
-        Runs a backward scan on the post-convergence data with ``F_inv, H_inv, A = T (I - K_star Z),
+        Runs a backward scan on the post-convergence data with ``F_inv, A = T (I - K_star Z),
         I - K_star Z`` hoisted out as non-sequences. Each step is closed-form (no Cholesky or solve in
         the body; only matvecs and outer products). Returns:
 
@@ -1062,9 +1064,8 @@ class ConvergentFilter(StandardFilter):
         I_KZ = pt.eye(m) - K_star @ Z
         A = T @ I_KZ
         F_inv = pt.linalg.cho_solve((F_chol_star, True), pt.eye(p_dim))
-        H_inv = pt.linalg.inv(stabilize(H, self.cov_jitter))
 
-        def bwd(y, a_prev, r_next, P_hat_next, c_, d_, T_, Z_, K_, F_inv_, H_inv_, A_, I_KZ_):
+        def bwd(y, a_prev, r_next, P_hat_next, c_, d_, T_, Z_, K_, F_inv_, A_, I_KZ_):
             v = y - Z_ @ a_prev - d_
             Finv_v = F_inv_ @ v
             a_filt = a_prev + K_ @ v
@@ -1078,11 +1079,13 @@ class ConvergentFilter(StandardFilter):
             # length grows it converges to the solution of the Lyapunov equation X = A^T X A + C, which
             # is the steady-state P-adjoint. Because A is constant in the post-convergence segment,
             # we can hoist it; the per-step work is the two correction terms (cross_a and direct_C)
-            # which still depend on y_t and a_prev.
-            row = (v[None, :] @ H_inv_) @ Z_
-            M = I_KZ_.T @ (T_r_next[:, None] @ row) @ I_KZ_
-            cross_a = 0.5 * (M + M.T)
-            Zt_Finv_v = (Z_.T @ Finv_v)[:, None]
+            # which still depend on y_t and a_prev. cross_a uses the identity Z(I - K Z) = H F^{-1} Z
+            # to express what is naturally an H^{-1} term through F^{-1} instead, which stays finite for
+            # singular H (a measurement-error-free model).
+            u = I_KZ_.T @ T_r_next
+            w = Z_.T @ Finv_v
+            cross_a = 0.5 * (pt.outer(u, w) + pt.outer(w, u))
+            Zt_Finv_v = w[:, None]
             direct_C = Z_.T @ (F_inv_ @ Z_) - Zt_Finv_v @ Zt_Finv_v.T
             d_P_prev = A_.T @ P_hat_next @ A_ + cross_a + direct_C
 
@@ -1109,7 +1112,7 @@ class ConvergentFilter(StandardFilter):
                 None,
                 None,
             ],
-            non_sequences=[c, d, T, Z, K_star, F_inv, H_inv, A, I_KZ],
+            non_sequences=[c, d, T, Z, K_star, F_inv, A, I_KZ],
             go_backwards=True,
             strict=False,
             return_updates=False,
@@ -1252,7 +1255,6 @@ class ConvergentFilter(StandardFilter):
                 d_,
                 T_,
                 Z_,
-                H_,
                 K_star,
                 F_star,
                 F_chol,
@@ -1343,6 +1345,9 @@ class ConvergentFilter(StandardFilter):
                 dQ_tr + d_Q_P,
             ]
 
+        # inline=True folds the forward into the surrounding graph, but the custom pullback still
+        # wins: pt.grad builds the gradient graph before the inline rewrite runs, so the analytic
+        # backward is what gets differentiated.
         return OpFromGraph(
             inputs=inputs_s,
             outputs=outputs,

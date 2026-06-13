@@ -570,3 +570,30 @@ def test_convergent_filter_rejects_missing_fill_sentinel(rng):
         ConvergentFilter().build_graph(
             pt.as_tensor_variable(shared_data), a0, P0, c, d, T, Z, R, H, Q
         )
+
+
+def test_convergent_filter_singular_H_gradient_matches_standard(rng):
+    """A measurement-error-free model has singular H. The tail backward routes its one H-coupled
+    term through F^{-1}, so every gradient -- d_H included -- matches StandardFilter even when H is
+    singular."""
+    m, p, n_shocks, n = 4, 3, 4, 120
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+    # Perfectly observe one series: zero its measurement-noise row and column.
+    vals[8][0, :] = 0.0
+    vals[8][:, 0] = 0.0
+
+    def build(kfilter):
+        inputs, outputs = initialize_filter(kfilter, p=p, m=m, r=n_shocks, n=n)
+        loss = outputs[-1].sum()
+        grads = pt.grad(loss, inputs[1:])
+        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
+
+    out_std = build(StandardFilter())(*vals)
+    out_conv = build(ConvergentFilter())(*vals)
+    names = ["loss", "d_a0", "d_P0", "d_c", "d_d", "d_T", "d_Z", "d_R", "d_H", "d_Q"]
+    symmetric = {"d_P0", "d_H", "d_Q"}
+    for name, s, c in zip(names, out_std, out_conv):
+        s, c = np.asarray(s, float), np.asarray(c, float)
+        if name in symmetric:
+            s, c = 0.5 * (s + s.T), 0.5 * (c + c.T)
+        assert_allclose(c, s, atol=ATOL, rtol=RTOL, err_msg=f"{name} mismatch for singular H")
