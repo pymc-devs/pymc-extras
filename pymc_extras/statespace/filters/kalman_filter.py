@@ -845,7 +845,9 @@ class UnivariateFilter(BaseFilter):
 class ConvergentFilter(StandardFilter):
     """Kalman filter that exploits Riccati convergence to a fixed-gain steady state.
 
-    For a stationary observable system with no missing data, the predicted-covariance Riccati recursion
+    For a time-invariant system whose Riccati recursion reaches a steady state -- detectability and
+    stabilizability are sufficient, which is weaker than stationarity and admits unit-root models such
+    as the local level -- the predicted-covariance recursion
     ``P_{t+1|t} = T (P_{t|t-1} - K_t F_t K_t^T) T^T + R Q R^T`` is data-independent and converges to the
     discrete algebraic Riccati equation (DARE) fixed point ``P_star``. Once converged, the Kalman gain
     ``K_t = P_{t|t-1} Z^T F_t^{-1}`` and innovation covariance ``F_t = Z P_{t|t-1} Z^T + H`` are constant
@@ -878,7 +880,11 @@ class ConvergentFilter(StandardFilter):
     Constraints (validated at graph build time):
 
     - All model matrices (``c, d, T, Z, R, H, Q``) must be time-invariant. Time-varying inputs raise
-      :class:`ValueError`; Riccati convergence is not meaningful for a non-stationary system.
+      :class:`ValueError`: a constant steady-state gain only exists when the system matrices are
+      constant. This is a statement about time-invariance, not stationarity -- a time-invariant model
+      whose Riccati recursion never settles within the series simply never triggers the ``until``
+      clause, so ``k = n``, the post-convergence tail is empty, and the result reduces to
+      :class:`StandardFilter`.
     - ``data`` must contain no missing values. A masked observation changes the effective ``Z_t`` (and
       so ``K_t`` and ``F_t``), breaking the cached-``K_star`` assumption. The statespace core replaces
       ``NaN`` with ``missing_fill_value`` before the filter runs, so both ``NaN`` and that sentinel are

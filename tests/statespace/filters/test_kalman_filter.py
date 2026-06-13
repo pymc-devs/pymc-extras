@@ -597,3 +597,67 @@ def test_convergent_filter_singular_H_gradient_matches_standard(rng):
         if name in symmetric:
             s, c = 0.5 * (s + s.T), 0.5 * (c + c.T)
         assert_allclose(c, s, atol=ATOL, rtol=RTOL, err_msg=f"{name} mismatch for singular H")
+
+
+def _make_local_level_system(n, rng):
+    """A unit-root (non-stationary) but observable and controllable local level. Its Riccati
+    recursion still converges to a steady-state gain, so ConvergentFilter applies -- convergence
+    requires detectability and stabilizability, not stationarity."""
+    sigma_level, sigma_obs = 0.4, 0.7
+    T_np = np.array([[1.0]], dtype=floatX)
+    Z_np = np.array([[1.0]], dtype=floatX)
+    R_np = np.array([[1.0]], dtype=floatX)
+    Q_np = np.array([[sigma_level**2]], dtype=floatX)
+    H_np = np.array([[sigma_obs**2]], dtype=floatX)
+    c_np = np.zeros(1, dtype=floatX)
+    d_np = np.zeros(1, dtype=floatX)
+    a0_np = np.zeros(1, dtype=floatX)
+    P0_np = np.array([[1.0]], dtype=floatX)
+    level = rng.standard_normal()
+    data_np = np.empty((n, 1), dtype=floatX)
+    for t in range(n):
+        level = level + sigma_level * rng.standard_normal()
+        data_np[t] = level + sigma_obs * rng.standard_normal()
+    return [data_np, a0_np, P0_np, c_np, d_np, T_np, Z_np, R_np, H_np, Q_np]
+
+
+def test_convergent_filter_local_level_matches_standard(rng):
+    """A unit-root local level converges to a steady-state gain. ConvergentFilter forward outputs
+    and gradients should match StandardFilter even though the system is non-stationary."""
+    n = 250
+    vals = _make_local_level_system(n, rng)
+
+    def build(filter_cls):
+        inputs, outputs = initialize_filter(filter_cls(), p=1, m=1, r=1, n=n)
+        ll_obs = outputs[-1]
+        grads = pt.grad(ll_obs.sum(), inputs[1:])
+        return pytensor.function(inputs, [*outputs, *grads], on_unused_input="ignore")
+
+    out_std = build(StandardFilter)(*vals)
+    out_conv = build(ConvergentFilter)(*vals)
+    for s, c in zip(out_std, out_conv):
+        assert_allclose(np.asarray(c), np.asarray(s), atol=ATOL, rtol=RTOL)
+
+
+def test_convergent_filter_k_equals_n_gradient_matches_standard(rng):
+    """With tol=0 the until clause never fires, so k == n and the post-convergence tail is empty.
+    The forward reduces to a plain Kalman pass and the gradient (an empty tail backward plus the
+    autodiff pre-convergence backward) must still match StandardFilter."""
+    m, p, n_shocks, n = 4, 2, 4, 40
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+
+    def build(kfilter):
+        inputs, outputs = initialize_filter(kfilter, p=p, m=m, r=n_shocks, n=n)
+        loss = outputs[-1].sum()
+        grads = pt.grad(loss, inputs[1:])
+        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
+
+    out_std = build(StandardFilter())(*vals)
+    out_conv = build(ConvergentFilter(tol=0.0))(*vals)
+    names = ["loss", "d_a0", "d_P0", "d_c", "d_d", "d_T", "d_Z", "d_R", "d_H", "d_Q"]
+    symmetric = {"d_P0", "d_H", "d_Q"}
+    for name, s, c in zip(names, out_std, out_conv):
+        s, c = np.asarray(s, float), np.asarray(c, float)
+        if name in symmetric:
+            s, c = 0.5 * (s + s.T), 0.5 * (c + c.T)
+        assert_allclose(c, s, atol=ATOL, rtol=RTOL)
