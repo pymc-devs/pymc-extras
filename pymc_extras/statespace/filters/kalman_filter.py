@@ -1064,8 +1064,9 @@ class ConvergentFilter(StandardFilter):
         I_KZ = pt.eye(m) - K_star @ Z
         A = T @ I_KZ
         F_inv = pt.linalg.cho_solve((F_chol_star, True), pt.eye(p_dim))
+        ZtFinvZ = Z.T @ F_inv @ Z  # the data-independent half of direct_C, lifted out of the scan
 
-        def bwd(y, a_prev, r_next, P_hat_next, c_, d_, T_, Z_, K_, F_inv_, A_, I_KZ_):
+        def bwd(y, a_prev, r_next, P_hat_next, c_, d_, T_, Z_, K_, F_inv_, A_, I_KZ_, ZtFinvZ_):
             v = y - Z_ @ a_prev - d_
             Finv_v = F_inv_ @ v
             a_filt = a_prev + K_ @ v
@@ -1086,7 +1087,7 @@ class ConvergentFilter(StandardFilter):
             w = Z_.T @ Finv_v
             cross_a = 0.5 * (pt.outer(u, w) + pt.outer(w, u))
             Zt_Finv_v = w[:, None]
-            direct_C = Z_.T @ (F_inv_ @ Z_) - Zt_Finv_v @ Zt_Finv_v.T
+            direct_C = ZtFinvZ_ - Zt_Finv_v @ Zt_Finv_v.T
             d_P_prev = A_.T @ P_hat_next @ A_ + cross_a + direct_C
 
             dL_dT = pt.outer(r_next, a_filt)
@@ -1112,7 +1113,7 @@ class ConvergentFilter(StandardFilter):
                 None,
                 None,
             ],
-            non_sequences=[c, d, T, Z, K_star, F_inv, A, I_KZ],
+            non_sequences=[c, d, T, Z, K_star, F_inv, A, I_KZ, ZtFinvZ],
             go_backwards=True,
             strict=False,
             return_updates=False,
