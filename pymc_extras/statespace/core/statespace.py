@@ -11,7 +11,6 @@ import pytensor
 import pytensor.tensor as pt
 
 from pymc.model import modelcontext
-from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import RandomState
 from pytensor.graph.basic import Variable
 from pytensor.graph.replace import graph_replace
@@ -21,6 +20,7 @@ from rich.console import Console
 from rich.table import Table
 from xarray import DataTree
 
+from pymc_extras.statespace.core import dummy_graph, forecast, forward_sampling, irf
 from pymc_extras.statespace.core.properties import (
     Coord,
     CoordInfo,
@@ -45,21 +45,14 @@ from pymc_extras.statespace.filters import (
     UnivariateFilter,
 )
 from pymc_extras.statespace.filters.distributions import (
-    LinearGaussianStateSpace,
     SequenceMvNormal,
-    SimulationSmoother,
 )
-from pymc_extras.statespace.filters.utilities import stabilize
 from pymc_extras.statespace.utils.constants import (
-    ALL_STATE_AUX_DIM,
-    ALL_STATE_DIM,
     FILTER_OUTPUT_DIMS,
-    FILTER_OUTPUT_TYPES,
     JITTER_DEFAULT,
     MATRIX_DIMS,
     MATRIX_NAMES,
     OBS_STATE_DIM,
-    SHOCK_DIM,
     SHORT_NAME_TO_LONG,
     TIME_DIM,
 )
@@ -73,18 +66,6 @@ FILTER_FACTORY = {
     "univariate": UnivariateFilter,
     "cholesky": SquareRootFilter,
 }
-
-
-def _validate_filter_arg(filter_arg):
-    if filter_arg.lower() not in FILTER_OUTPUT_TYPES:
-        raise ValueError(
-            f"filter_output should be one of {', '.join(FILTER_OUTPUT_TYPES)}, received {filter_arg}"
-        )
-
-
-def _verify_group(group):
-    if group not in ["prior", "posterior"]:
-        raise ValueError(f'Argument "group" must be one of "prior" or "posterior", found {group}')
 
 
 def _validate_property(props, property_name, expected_type):
@@ -1204,43 +1185,7 @@ class PyMCStateSpace:
             return smooth_states, smooth_covariances
 
     def _build_dummy_graph(self) -> None:
-        """
-        Build a dummy computation graph for the state space model matrices.
-
-        This method creates "dummy" pm.Flat variables representing the deep parameters used in the state space model.
-
-        Returns
-        -------
-        list[pm.Flat]
-            A list of pm.Flat variables representing all parameters estimated by the model.
-        """
-
-        def infer_variable_shape(name):
-            shape = self._name_to_variable[name].type.shape
-            if not any(dim is None for dim in shape):
-                return shape
-
-            dim_names = self._fit_dims.get(name, None)
-            if dim_names is None:
-                raise ValueError(
-                    f"Could not infer shape for {name}, because it was not given coords during model"
-                    f"fitting"
-                )
-
-            shape_from_coords = tuple([len(self._fit_coords[dim]) for dim in dim_names])
-            return tuple(
-                [
-                    shape[i] if shape[i] is not None else shape_from_coords[i]
-                    for i in range(len(shape))
-                ]
-            )
-
-        for name in self.param_names:
-            pm.Flat(
-                name,
-                shape=infer_variable_shape(name),
-                dims=self._fit_dims.get(name, None),
-            )
+        return dummy_graph.build_dummy_graph(self)
 
     def _kalman_filter_outputs_from_dummy_graph(
         self,
@@ -1248,387 +1193,9 @@ class PyMCStateSpace:
         data_dims: str | tuple[str] | list[str] | None = None,
         scenario: dict[str, pd.DataFrame] | pd.DataFrame | None = None,
     ) -> tuple[list[pt.TensorVariable], list[tuple[pt.TensorVariable, pt.TensorVariable]]]:
-        """
-        Builds a Kalman filter graph using "dummy" pm.Flat distributions for the model variables and sorts the returns
-        into (mean, covariance) pairs for each of filtered, predicted, and smoothed output.
-
-        Parameters
-        ----------
-        data: pt.TensorLike, optional
-            Observed data on which to condition the model. If not provided, the function will use the data that was
-            provided when the model was built.
-        data_dims: str or tuple of str, optional
-            Dimension names associated with the model data. If None, defaults to ("time", "obs_state")
-        scenario: dict[str, pd.DataFrame], optional
-            Dictionary of out-of-sample scenario dataframes. If provided, it must have values for all data variables
-            in the model. pm.set_data is used to replace training data with new values.
-
-        Returns
-        -------
-        matrices: list of tensors
-            Statespace matrices with dummy parameters.
-
-        grouped_outputs: list of tuple of tensors
-            A list of tuples, each containing the mean and covariance of the filtered, predicted, and smoothed states.
-        """
-        if scenario is None:
-            scenario = dict()
-
-        pm_mod = modelcontext(None)
-        self._build_dummy_graph()
-        self._insert_random_variables()
-
-        for name in self.data_names:
-            if name not in pm_mod:
-                pm.Data(**self._fit_exog_data[name])
-
-        self._insert_data_variables()
-
-        for name in self.data_names:
-            if name in scenario.keys():
-                pm.set_data({name: scenario[name]})
-
-        matrices = self.unpack_statespace()
-
-        if data is None:
-            data = self._fit_data
-
-        # Replace n_timesteps with data length for time-varying matrices
-        data_len = data.shape[0] if hasattr(data, "shape") else len(data)
-        matrices = self._insert_constant_timestep(matrices, data_len)
-        x0, P0, c, d, T, Z, R, H, Q = matrices
-
-        obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
-
-        data, nan_mask = register_data_with_pymc(
-            data,
-            n_obs=self.ssm.k_endog,
-            obs_coords=obs_coords,
-            data_dims=data_dims,
-            register_data=True,
+        return dummy_graph.kalman_filter_outputs_from_dummy_graph(
+            self, data=data, data_dims=data_dims, scenario=scenario
         )
-
-        filter_outputs = self.kalman_filter.build_graph(
-            data,
-            x0,
-            P0,
-            c,
-            d,
-            T,
-            Z,
-            R,
-            H,
-            Q,
-            time_varying_names=self.ssm.time_varying_names,
-        )
-
-        filter_outputs.pop(-1)
-        states, covariances = filter_outputs[:3], filter_outputs[3:]
-
-        filtered_states, predicted_states, _ = states
-        filtered_covariances, predicted_covariances, _ = covariances
-
-        [smoothed_states, smoothed_covariances] = self.kalman_smoother.build_graph(
-            T,
-            R,
-            Q,
-            filtered_states,
-            filtered_covariances,
-            time_varying_names=self.ssm.time_varying_names,
-        )
-
-        grouped_outputs = [
-            (filtered_states, filtered_covariances),
-            (predicted_states, predicted_covariances),
-            (smoothed_states, smoothed_covariances),
-        ]
-
-        return [x0, P0, c, d, T, Z, R, H, Q], grouped_outputs
-
-    def _sample_conditional(
-        self,
-        idata: DataTree,
-        group: str,
-        random_seed: RandomState | None = None,
-        data: pt.TensorLike | None = None,
-        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
-        **kwargs,
-    ):
-        """
-        Common functionality shared between `sample_conditional_prior` and `sample_conditional_posterior`. See those
-        methods for details.
-
-        Parameters
-        ----------
-        idata : DataTree
-            A DataTree object containing the posterior distribution over model parameters.
-
-        group : str
-            DataTree group from which to draw samples. Should be one of "prior" or "posterior".
-
-        random_seed : int, RandomState or Generator, optional
-            Seed for the random number generator.
-
-        data: pt.TensorLike, optional
-            Observed data on which to condition the model. If not provided, the function will use the data that was
-            provided when the model was built.
-
-        mvn_method: str, default "svd"
-            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
-            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
-            to ill-conditioned matrices, while "svd" is slow but extremely robust.
-
-            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
-            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
-
-        kwargs:
-            Additional keyword arguments are passed to pymc.sample_posterior_predictive
-
-        Returns
-        -------
-        DataTree
-            A DataTree object containing sampled trajectories from the requested conditional distribution,
-            with data variables "filtered_{group}", "predicted_{group}", and "smoothed_{group}".
-        """
-        if data is None and self._fit_data is None:
-            raise ValueError("No data provided to condition the model")
-
-        _verify_group(group)
-        group_idata = getattr(idata, group)
-
-        compile_kwargs = kwargs.pop("compile_kwargs", {})
-        compile_kwargs.setdefault("mode", self.mode)
-
-        with pm.Model(coords=self._fit_coords) as forward_model:
-            (
-                [
-                    x0,
-                    P0,
-                    c,
-                    d,
-                    T,
-                    Z,
-                    R,
-                    H,
-                    Q,
-                ],
-                grouped_outputs,
-            ) = self._kalman_filter_outputs_from_dummy_graph(data=data)
-
-            for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs):
-                dummy_ll = pt.zeros_like(mu)
-
-                state_dims = (
-                    (TIME_DIM, ALL_STATE_DIM)
-                    if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM]])
-                    else (None, None)
-                )
-                obs_dims = (
-                    (TIME_DIM, OBS_STATE_DIM)
-                    if all([dim in self._fit_coords for dim in [TIME_DIM, OBS_STATE_DIM]])
-                    else (None, None)
-                )
-
-                if name == "smoothed":
-                    # The simulation smoother draws the whole latent path jointly, so the
-                    # states carry their cross-time posterior covariance.
-                    latent_states = SimulationSmoother(
-                        f"{name}_{group}",
-                        a_smooth=mu,
-                        x0=x0,
-                        P0=P0,
-                        c=c,
-                        d=d,
-                        T=T,
-                        Z=Z,
-                        R=R,
-                        H=H,
-                        Q=Q,
-                        kalman_filter=self.kalman_filter.copy(),
-                        kalman_smoother=self.kalman_smoother.copy(),
-                        sequence_names=tuple(self.kalman_filter.seq_names),
-                        dims=state_dims,
-                        method=mvn_method,
-                    )
-                    # Conditional on a joint draw of the latent path, the observation noise
-                    # is iid, so H alone is the correct per-step covariance. Adding the
-                    # zeros materializes the time axis, which keeps SequenceMvNormal's
-                    # ``(n),(n,n)->(n)`` gufunc from collapsing to a length-1 scan when H is
-                    # rank-3 but time-broadcastable.
-                    obs_mu = d + (Z @ latent_states[..., None]).squeeze(-1)
-                    obs_cov = pt.zeros((obs_mu.shape[0], 1, 1), dtype=H.dtype) + H
-                    obs_logp = pt.zeros_like(obs_mu)
-                else:
-                    SequenceMvNormal(
-                        f"{name}_{group}",
-                        mus=mu,
-                        covs=cov,
-                        logp=dummy_ll,
-                        dims=state_dims,
-                        method=mvn_method,
-                    )
-
-                    obs_mu = d + (Z @ mu[..., None]).squeeze(-1)
-                    obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H
-                    obs_logp = dummy_ll
-
-                SequenceMvNormal(
-                    f"{name}_{group}_observed",
-                    mus=obs_mu,
-                    covs=obs_cov,
-                    logp=obs_logp,
-                    dims=obs_dims,
-                    method=mvn_method,
-                )
-
-        # TODO: Remove this after pm.Flat initial values are fixed
-        forward_model.rvs_to_initial_values = {
-            rv: None for rv in forward_model.rvs_to_initial_values.keys()
-        }
-
-        frozen_model = freeze_dims_and_data(forward_model)
-        with frozen_model:
-            idata_conditional = pm.sample_posterior_predictive(
-                group_idata,
-                var_names=[
-                    f"{name}_{group}{suffix}"
-                    for name in FILTER_OUTPUT_TYPES
-                    for suffix in ["", "_observed"]
-                ],
-                random_seed=random_seed,
-                compile_kwargs=compile_kwargs,
-                **kwargs,
-            )
-
-        return idata_conditional.posterior_predictive
-
-    def _sample_unconditional(
-        self,
-        idata: DataTree,
-        group: str,
-        steps: int | None = None,
-        use_data_time_dim: bool = False,
-        random_seed: RandomState | None = None,
-        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
-        **kwargs,
-    ):
-        """
-        Draw unconditional sample trajectories according to state space dynamics, using random samples from the
-        a provided trace. The state space update equations are:
-
-            X[t+1] = T @ X[t] + R @ eta[t], eta ~ N(0, Q)
-            Y[t] = Z @ X[t] + nu[t], nu ~ N(0, H)
-            x[0] ~ N(a0, P0)
-
-        Parameters
-        ----------
-        idata : DataTree
-            A DataTree object with a posterior group containing samples from the
-            posterior distribution over model parameters.
-
-        steps : Optional[int], default=None
-            The number of time steps to sample for the unconditional trajectories. If not provided (None),
-            the function will sample trajectories for the entire available time dimension in the posterior.
-            Otherwise, it will generate trajectories for the specified number of steps.
-
-        use_data_time_dim : bool, default=False
-            If True, the function uses the time dimension present in the provided `idata` object to sample
-            unconditional trajectories. If False, a custom time dimension is created based on the number of steps
-            specified, or if steps is None, it uses the entire available time dimension in the posterior.
-
-        random_seed : int, RandomState or Generator, optional
-            Seed for the random number generator.
-
-        mvn_method: str, default "svd"
-            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
-            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
-            to ill-conditioned matrices, while "svd" is slow but extremely robust.
-
-            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
-            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
-
-        kwargs:
-            Additional keyword arguments are passed to pymc.sample_posterior_predictive
-
-        Returns
-        -------
-        DataTree
-            An Arviz InfereceData with two groups, posterior_latent and posterior_observed
-
-            - posterior_latent represents the latent state trajectories `X[t]`, which follows the dynamics:
-              `x[t+1] = T @ x[t] + R @ eta[t]`, where `eta ~ N(0, Q)`.
-
-            - posterior_observed represents the observed state trajectories `Y[t]`, which is obtained from
-              the latent state trajectories: `y[t] = Z @ x[t] + nu[t]`, where `nu ~ N(0, H)`.
-        """
-        _verify_group(group)
-
-        compile_kwargs = kwargs.pop("compile_kwargs", {})
-        compile_kwargs.setdefault("mode", self.mode)
-
-        group_idata = getattr(idata, group)
-        dims = None
-        temp_coords = self._fit_coords.copy()
-
-        if not use_data_time_dim and steps is not None:
-            temp_coords.update({TIME_DIM: np.arange(1 + steps, dtype="int")})
-            steps = len(temp_coords[TIME_DIM]) - 1
-        elif steps is not None:
-            n_dimsteps = len(temp_coords[TIME_DIM])
-            if n_dimsteps != steps:
-                raise ValueError(
-                    f"Length of time dimension does not match specified number of steps, expected"
-                    f" {n_dimsteps} steps, or steps=None."
-                )
-        else:
-            steps = len(temp_coords[TIME_DIM]) - 1
-
-        if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]]):
-            dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
-
-        with pm.Model(coords=temp_coords if dims is not None else None) as forward_model:
-            self._build_dummy_graph()
-            self._insert_random_variables()
-
-            for name in self.data_names:
-                pm.Data(**self._fit_exog_data[name])
-
-            self._insert_data_variables()
-            # The unconditional trajectory spans ``steps + 1`` timesteps, and time-varying
-            # matrices carry one row per timestep.
-            matrices = self._insert_constant_timestep(self.unpack_statespace(), step=steps + 1)
-            x0, P0, c, d, T, Z, R, H, Q = matrices
-
-            if not self.measurement_error:
-                H_jittered = pm.Deterministic("H_jittered", stabilize(H))
-                matrices = [x0, P0, c, d, T, Z, R, H_jittered, Q]
-
-            LinearGaussianStateSpace(
-                group,
-                *matrices,
-                steps=steps,
-                dims=dims,
-                method=mvn_method,
-                sequence_names=self.kalman_filter.seq_names,
-                k_endog=self.k_endog,
-            )
-
-        # TODO: Remove this after pm.Flat has its initial_value fixed
-        forward_model.rvs_to_initial_values = {
-            rv: None for rv in forward_model.rvs_to_initial_values.keys()
-        }
-        frozen_model = freeze_dims_and_data(forward_model)
-
-        with frozen_model:
-            idata_unconditional = pm.sample_posterior_predictive(
-                group_idata,
-                var_names=[f"{group}_latent", f"{group}_observed"],
-                random_seed=random_seed,
-                compile_kwargs=compile_kwargs,
-                **kwargs,
-            )
-
-        return idata_unconditional.posterior_predictive
 
     def sample_conditional_prior(
         self,
@@ -1670,12 +1237,8 @@ class PyMCStateSpace:
              "predicted_prior", and "smoothed_prior".
         """
 
-        return self._sample_conditional(
-            idata=idata,
-            group="prior",
-            random_seed=random_seed,
-            mvn_method=mvn_method,
-            **kwargs,
+        return forward_sampling.sample_conditional_prior(
+            self, idata=idata, random_seed=random_seed, mvn_method=mvn_method, **kwargs
         )
 
     def sample_conditional_posterior(
@@ -1717,12 +1280,8 @@ class PyMCStateSpace:
              "predicted_posterior", and "smoothed_posterior".
         """
 
-        return self._sample_conditional(
-            idata=idata,
-            group="posterior",
-            random_seed=random_seed,
-            mvn_method=mvn_method,
-            **kwargs,
+        return forward_sampling.sample_conditional_posterior(
+            self, idata=idata, random_seed=random_seed, mvn_method=mvn_method, **kwargs
         )
 
     def sample_unconditional_prior(
@@ -1783,9 +1342,9 @@ class PyMCStateSpace:
               the observation equation: `y[t] = Z @ x[t] + nu[t]`, where `nu ~ N(0, H)`.
         """
 
-        return self._sample_unconditional(
+        return forward_sampling.sample_unconditional_prior(
+            self,
             idata=idata,
-            group="prior",
             steps=steps,
             use_data_time_dim=use_data_time_dim,
             random_seed=random_seed,
@@ -1849,9 +1408,9 @@ class PyMCStateSpace:
               the latent state trajectories: `y[t] = Z @ x[t] + nu[t]`, where `nu ~ N(0, H)`.
         """
 
-        return self._sample_unconditional(
+        return forward_sampling.sample_unconditional_posterior(
+            self,
             idata=idata,
-            group="posterior",
             steps=steps,
             use_data_time_dim=use_data_time_dim,
             random_seed=random_seed,
@@ -1884,47 +1443,9 @@ class PyMCStateSpace:
         -------
         idata_matrices: az.InterenceData
         """
-        _verify_group(group)
-
-        compile_kwargs = kwargs.pop("compile_kwargs", {})
-        compile_kwargs.setdefault("mode", self.mode)
-
-        if matrix_names is None:
-            matrix_names = MATRIX_NAMES
-        elif isinstance(matrix_names, str):
-            matrix_names = [matrix_names]
-
-        with pm.Model(coords=self._fit_coords) as forward_model:
-            self._build_dummy_graph()
-            self._insert_random_variables()
-
-            for name in self.data_names:
-                pm.Data(**self.data_info[name])
-
-            self._insert_data_variables()
-            matrices = self.unpack_statespace()
-            for short_name, matrix in zip(MATRIX_NAMES, matrices):
-                long_name = SHORT_NAME_TO_LONG[short_name]
-                if (long_name in matrix_names) or (short_name in matrix_names):
-                    name = long_name if long_name in matrix_names else short_name
-                    dims = [x if x in self._fit_coords else None for x in MATRIX_DIMS[short_name]]
-                    pm.Deterministic(name, matrix, dims=dims)
-
-        # TODO: Remove this after pm.Flat has its initial_value fixed
-        forward_model.rvs_to_initial_values = {
-            rv: None for rv in forward_model.rvs_to_initial_values.keys()
-        }
-        frozen_model = freeze_dims_and_data(forward_model)
-        with frozen_model:
-            matrix_idata = pm.sample_posterior_predictive(
-                idata if group == "posterior" else idata["prior"],
-                var_names=matrix_names,
-                extend_inferencedata=False,
-                compile_kwargs=compile_kwargs,
-                **kwargs,
-            )
-
-        return matrix_idata
+        return forward_sampling.sample_statespace_matrices(
+            self, idata, matrix_names=matrix_names, group=group, **kwargs
+        )
 
     def sample_filter_outputs(
         self,
@@ -1933,80 +1454,13 @@ class PyMCStateSpace:
         group: str = "posterior",
         **kwargs,
     ):
-        if isinstance(filter_output_names, str):
-            filter_output_names = [filter_output_names]
-
-        if filter_output_names is None:
-            filter_output_names = list(FILTER_OUTPUT_DIMS.keys())
-        else:
-            unknown_filter_output_names = np.setdiff1d(
-                filter_output_names, list(FILTER_OUTPUT_DIMS.keys())
-            )
-            if unknown_filter_output_names.size > 0:
-                raise ValueError(f"{unknown_filter_output_names} not a valid filter output name!")
-            filter_output_names = [x for x in FILTER_OUTPUT_DIMS.keys() if x in filter_output_names]
-
-        compile_kwargs = kwargs.pop("compile_kwargs", {})
-        compile_kwargs.setdefault("mode", self.mode)
-
-        with pm.Model(coords=self.coords) as m:
-            self._build_dummy_graph()
-            self._insert_random_variables()
-
-            if self.data_names:
-                for name in self.data_names:
-                    pm.Data(**self._fit_exog_data[name])
-
-            self._insert_data_variables()
-
-            x0, P0, c, d, T, Z, R, H, Q = self.unpack_statespace()
-            data = self._fit_data
-
-            obs_coords = m.coords.get(OBS_STATE_DIM, None)
-
-            data, nan_mask = register_data_with_pymc(
-                data,
-                n_obs=self.ssm.k_endog,
-                obs_coords=obs_coords,
-                register_data=True,
-            )
-
-            filter_outputs = self.kalman_filter.build_graph(
-                data,
-                x0,
-                P0,
-                c,
-                d,
-                T,
-                Z,
-                R,
-                H,
-                Q,
-                time_varying_names=self.ssm.time_varying_names,
-            )
-
-            smoother_outputs = self.kalman_smoother.build_graph(
-                T,
-                R,
-                Q,
-                filter_outputs[0],
-                filter_outputs[3],
-                time_varying_names=self.ssm.time_varying_names,
-            )
-
-            filter_outputs = filter_outputs[:-1] + list(smoother_outputs)
-            for output in filter_outputs:
-                if output.name in filter_output_names:
-                    dims = FILTER_OUTPUT_DIMS[output.name]
-                    pm.Deterministic(output.name, output, dims=dims)
-
-        with freeze_dims_and_data(m):
-            return pm.sample_posterior_predictive(
-                idata if group == "posterior" else idata["prior"],
-                var_names=filter_output_names,
-                compile_kwargs=compile_kwargs,
-                **kwargs,
-            )
+        return forward_sampling.sample_filter_outputs(
+            self,
+            idata,
+            filter_output_names=filter_output_names,
+            group=group,
+            **kwargs,
+        )
 
     @staticmethod
     def _validate_forecast_args(
@@ -2018,55 +1472,18 @@ class PyMCStateSpace:
         use_scenario_index: bool = False,
         verbose: bool = True,
     ):
-        if isinstance(start, pd.Timestamp) and start not in time_index:
-            raise ValueError("Datetime start must be in the data index used to fit the model.")
-        elif isinstance(start, int):
-            if abs(start) > len(time_index):
-                raise ValueError(
-                    "Integer start must be within the range of the data index used to fit the model."
-                )
-        if periods is None and end is None and not use_scenario_index:
-            raise ValueError(
-                "Must specify one of either periods or end unless use_scenario_index=True"
-            )
-        if periods is not None and end is not None:
-            raise ValueError("Must specify exactly one of either periods or end")
-        if scenario is None and use_scenario_index:
-            raise ValueError("use_scenario_index=True requires a scenario to be provided.")
-        if scenario is not None and use_scenario_index:
-            if isinstance(scenario, dict):
-                first_df = next(
-                    (df for df in scenario.values() if isinstance(df, pd.DataFrame | pd.Series)),
-                    None,
-                )
-                if first_df is None:
-                    raise ValueError(
-                        "use_scenario_index=True requires a scenario to be a DataFrame or Series."
-                    )
-            elif not isinstance(scenario, pd.DataFrame | pd.Series):
-                raise ValueError(
-                    "use_scenario_index=True requires a scenario to be a DataFrame or Series."
-                )
-        if use_scenario_index and any(arg is not None for arg in [start, end, periods]) and verbose:
-            _log.warning(
-                "start, end, and periods arguments are ignored when use_scenario_index is True. Pass only "
-                "one or the other to avoid this warning, or pass verbose = False."
-            )
+        return forecast._validate_forecast_args(
+            time_index,
+            start,
+            periods=periods,
+            end=end,
+            scenario=scenario,
+            use_scenario_index=use_scenario_index,
+            verbose=verbose,
+        )
 
     def _get_fit_time_index(self) -> pd.RangeIndex | pd.DatetimeIndex:
-        time_index = self._fit_coords.get(TIME_DIM, None) if self._fit_coords is not None else None
-        if time_index is None:
-            raise ValueError(
-                "No time dimension found on coordinates used to fit the model. Has this model been fit?"
-            )
-
-        if isinstance(time_index[0], pd.Timestamp):
-            time_index = pd.DatetimeIndex(time_index)
-            time_index.freq = time_index.inferred_freq
-        else:
-            time_index = np.array(time_index)
-
-        return time_index
+        return forecast._get_fit_time_index(self)
 
     def _validate_scenario_data(
         self,
@@ -2074,140 +1491,7 @@ class PyMCStateSpace:
         name: str | None = None,
         verbose=True,
     ):
-        """
-        Validate the scenario data provided to the forecast method by checking that it has the correct shape and
-        dimensions.
-
-        Parameters
-        ----------
-        scenario
-        name
-        verbose
-
-        Returns
-        -------
-        scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray]
-            Scenario data, validated and potentially modified.
-
-        """
-        if not self._needs_exog_data:
-            return scenario
-
-        var_to_dims = {key: info["dims"][1:] for key, info in self.data_info.items()}
-
-        if any(len(dims) > 1 for dims in var_to_dims.values()):
-            raise NotImplementedError(">2d exogenous data is not yet supported.")
-        coords = {
-            var: self._fit_coords[dim[0]]
-            for var, dim in var_to_dims.items()
-            if dim[0] in self._fit_coords
-        }
-
-        if self._needs_exog_data and scenario is None:
-            exog_str = ",".join(self.data_names)
-            suffix = "s" if len(exog_str) > 1 else ""
-            raise ValueError(
-                f"This model was fit using exogenous data. Forecasting cannot be performed without "
-                f"providing scenario data for the following variable{suffix}: {exog_str}"
-            )
-
-        if isinstance(scenario, dict):
-            for name, data in scenario.items():
-                if name not in self.data_names:
-                    raise ValueError(
-                        f"Scenario data provided for variable '{name}', which is not an exogenous variable "
-                        f"used to fit the model."
-                    )
-
-                # Recursively call this function to trigger the non-dictionary branch of the checks on each object
-                # inside the dictionary
-                scenario[name] = self._validate_scenario_data(data, name)
-
-            # The provided dictionary might be a mix of numpy arrays and dataframes if the user is truly horrible.
-            # For checking shapes, the first object will always be good enough. But we also need to make sure all the
-            # indices agree, so we grab the first dataframe (which might not exist, but that's OK)
-            first_scenario = next(iter(scenario.values()))
-            first_df = next((df for df in scenario.values() if isinstance(df, pd.DataFrame)), None)
-
-            if not all(data.shape[0] == first_scenario.shape[0] for data in scenario.values()):
-                raise ValueError(
-                    "Scenario data must have the same number of time steps for all variables."
-                )
-
-            if first_df is not None and not all(
-                df.index.equals(first_df.index)
-                for df in scenario.values()
-                if isinstance(df, pd.DataFrame)
-            ):
-                raise ValueError("Scenario data must have the same index for all variables.")
-
-            return scenario
-
-        elif isinstance(scenario, pd.Series | pd.DataFrame | np.ndarray | list | tuple):
-            # A user might be lazy and pass a simple list when there is only one exogenous variable.
-            if isinstance(scenario, list | tuple) or (
-                isinstance(scenario, np.ndarray) and scenario.ndim == 1
-            ):
-                scenario = np.array(scenario).reshape(-1, 1)
-
-            if name is None:
-                # name should only be None on the first non-recursive call. We only arrive to this branch in that case
-                # if a non-dictionary was passed, which in turn should only happen if only a single exogenous data
-                # needs to be set.
-                if len(self.data_names) > 1:
-                    raise ValueError(
-                        "Multiple exogenous variables were used to fit the model. Provide a dictionary of "
-                        "scenario data instead."
-                    )
-                name = self.data_names[0]
-
-            # Omit dataframe from this basic shape check so we can give more detailed information about missing columns
-            # in the next check
-            if not isinstance(scenario, pd.DataFrame | pd.Series) and scenario.shape[1] != len(
-                coords[name]
-            ):
-                raise ValueError(
-                    f"Scenario data for variable '{name}' has the wrong number of columns. Expected "
-                    f"{len(coords[name])}, got {scenario.shape[1]}"
-                )
-
-            if isinstance(scenario, pd.Series):
-                if len(coords[name]) > 1:
-                    raise ValueError(
-                        f"Scenario data for variable '{name}' has the wrong number of columns. Expected "
-                        f"{len(coords[name])}, got 1"
-                    )
-
-            if isinstance(scenario, pd.DataFrame):
-                expected_cols = coords[name]
-                cols = scenario.columns
-                missing_columns = sorted(list(set(expected_cols) - set(cols)))
-                if len(missing_columns) > 0:
-                    suffix = "s" if len(missing_columns) > 1 else ""
-                    raise ValueError(
-                        f"Scenario data for variable '{name}' is missing the following column{suffix}: "
-                        f"{', '.join(missing_columns)}"
-                    )
-
-                extra_columns = sorted(list(set(cols) - set(expected_cols)))
-                if len(extra_columns) > 0:
-                    suffix = "s" if len(extra_columns) > 1 else ""
-                    verb = "is" if len(extra_columns) == 1 else "are"
-                    raise ValueError(
-                        f"Scenario data for variable '{name}' contains the following extra column{suffix} "
-                        f"that {verb} not used by the model: "
-                        f"{', '.join(extra_columns)}"
-                    )
-
-                if not (a == b for a, b in zip(expected_cols, cols)) and verbose:
-                    _log.warning(
-                        f"Scenario data for {name} has a different column order than the data used to fit the "
-                        f"model. Columns will be automatically re-ordered. Ensure consistent ordering to avoid "
-                        f"silent errors."
-                    )
-                    scenario = scenario[expected_cols]
-
-            return scenario
+        return forecast._validate_scenario_data(self, scenario, name=name, verbose=verbose)
 
     @staticmethod
     def _build_forecast_index(
@@ -2218,120 +1502,14 @@ class PyMCStateSpace:
         use_scenario_index: bool = False,
         scenario: pd.DataFrame | np.ndarray | None = None,
     ) -> tuple[int | pd.Timestamp, pd.RangeIndex | pd.DatetimeIndex]:
-        """
-        Construct a pandas Index for the requested forecast horizon.
-
-        Parameters
-        ----------
-        time_index: pd.RangeIndex or pd.DatetimeIndex
-            Index of the data used to fit the model
-        start: int or pd.Timestamp, optional
-            Date from which to begin forecasting. If using a datetime index, integer start will be interpreted
-            as a positional index. Otherwise, start must be found inside the time_index
-        end: int or pd.Timestamp, optional
-            Date at which to end forecasting. If using a datetime index, end must be a timestamp.
-        periods: int, optional
-            Number of periods to forecast
-        scenario:  pd.DataFrame, np.ndarray, optional
-            Scenario data to use for forecasting. If provided, the index of the scenario data will be used as the
-            forecast index. If provided, start, end, and periods will be ignored.
-        use_scenario_index: bool, default False
-            If True, the index of the scenario data will be used as the forecast index.
-
-
-        Returns
-        -------
-        start: int | pd.TimeStamp
-            The starting date index or time step from which to generate the forecasts.
-
-        forecast_index: pd.DatetimeIndex or pd.RangeIndex
-            Index for the forecast results
-        """
-
-        def get_or_create_index(x, time_index, start=None):
-            if isinstance(x, pd.DataFrame | pd.Series):
-                return x.index
-            elif isinstance(x, dict):
-                return get_or_create_index(next(iter(x.values())), time_index, start)
-            elif isinstance(x, np.ndarray | list | tuple):
-                if start is None:
-                    raise ValueError(
-                        "Provided scenario has no index and no start date was provided. This combination "
-                        "is ambiguous. Please provide a start date, or add an index to the scenario."
-                    )
-                is_datetime_index = isinstance(time_index, pd.DatetimeIndex)
-                n = x.shape[0] if isinstance(x, np.ndarray) else len(x)
-
-                if isinstance(start, int):
-                    start = time_index[start]
-                if is_datetime_index:
-                    return pd.date_range(start, periods=n, freq=time_index.freq)
-                return pd.RangeIndex(start, n + start, step=1, dtype="int")
-
-            else:
-                raise ValueError(f"{type(x)} is not a valid type for scenario data.")
-
-        x0_idx = None
-
-        if use_scenario_index:
-            forecast_index = get_or_create_index(scenario, time_index, start)
-            is_datetime = isinstance(forecast_index, pd.DatetimeIndex)
-
-            # If the user provided an index, we want to take it as-is (without removing the start value). Instead,
-            # step one back and use this as the start value.
-            delta = forecast_index.freq if is_datetime else 1
-            x0_idx = forecast_index[0] - delta
-
-        else:
-            # Otherwise, build an index. It will be a DateTime index if we have all the necessary information, otherwise
-            # use a range index.
-            is_datetime = isinstance(time_index, pd.DatetimeIndex)
-            forecast_index = None
-
-            if is_datetime:
-                freq = time_index.freq
-                if isinstance(start, int):
-                    start = time_index[start]
-                if isinstance(end, int):
-                    raise ValueError(
-                        "end must be a timestamp if using a datetime index. To specify a number of "
-                        "timesteps from the start date, use the periods argument instead."
-                    )
-                if end is not None:
-                    forecast_index = pd.date_range(start, end=end, freq=freq)
-                if periods is not None:
-                    # date_range includes both the start and end date, but we're going to pop off the start later
-                    # (it will be interpreted as x0). So we need to add 1 to the periods so the user gets "periods"
-                    # number of forecasts back
-                    forecast_index = pd.date_range(start, periods=periods + 1, freq=freq)
-
-            else:
-                # If the user provided a positive integer as start, directly interpret it as the start time. If its
-                # negative, interpret it as a positional index.
-                if start < 0:
-                    start = time_index[start]
-                if end is not None:
-                    forecast_index = pd.RangeIndex(start, end, step=1, dtype="int")
-                if periods is not None:
-                    forecast_index = pd.RangeIndex(start, start + periods + 1, step=1, dtype="int")
-
-        if is_datetime:
-            if forecast_index.freq != time_index.freq:
-                raise ValueError(
-                    "The frequency of the forecast index must match the frequency on the data used "
-                    f"to fit the model. Got {forecast_index.freq}, expected {time_index.freq}"
-                )
-
-        if x0_idx is None:
-            x0_idx, forecast_index = forecast_index[0], forecast_index[1:]
-        if x0_idx in forecast_index:
-            raise ValueError("x0_idx should not be in the forecast index")
-        if x0_idx not in time_index:
-            raise ValueError("start must be in the data index used to fit the model.")
-
-        # The starting value should not be included in the forecast index. It will be used only to define x0 and P0,
-        # and no forecast will be associated with it.
-        return x0_idx, forecast_index
+        return forecast._build_forecast_index(
+            time_index,
+            start=start,
+            end=end,
+            periods=periods,
+            use_scenario_index=use_scenario_index,
+            scenario=scenario,
+        )
 
     def _finalize_scenario_initialization(
         self,
@@ -2339,149 +1517,14 @@ class PyMCStateSpace:
         forecast_index: pd.RangeIndex | pd.DatetimeIndex,
         name=None,
     ):
-        if not self.data_info:
-            return scenario
-
-        var_to_dims = {key: info["dims"][1:] for key, info in self.data_info.items()}
-
-        if any(len(dims) > 1 for dims in var_to_dims.values()):
-            raise NotImplementedError(">2d exogenous data is not yet supported.")
-        coords = {
-            var: self._fit_coords[dim[0]]
-            for var, dim in var_to_dims.items()
-            if dim[0] in self._fit_coords
-        }
-
-        if scenario is None:
-            return scenario
-
-        if isinstance(scenario, dict):
-            for name, data in scenario.items():
-                scenario[name] = self._finalize_scenario_initialization(data, forecast_index, name)
-            return scenario
-
-        # This was already checked as valid
-        name = self.data_names[0] if name is None else name
-
-        # Small tidying up in the case we just have a single scenario that's already a dataframe.
-        if isinstance(scenario, pd.DataFrame | pd.Series):
-            if isinstance(scenario, pd.Series):
-                scenario = scenario.to_frame(name=coords[name][0])
-            if not scenario.index.equals(forecast_index):
-                scenario.index = forecast_index
-
-        # lists and tuples were handled during validation, along with shape check, so just cast arrays to dataframes
-        # with the correct index and columns
-        if isinstance(scenario, np.ndarray):
-            scenario = pd.DataFrame(scenario, index=forecast_index, columns=coords[name])
-
-        return scenario
+        return forecast._finalize_scenario_initialization(self, scenario, forecast_index, name=name)
 
     def _build_forecast_model(
         self, time_index, t0, forecast_index, scenario, filter_output, mvn_method
     ):
-        filter_time_dim = TIME_DIM
-        temp_coords = self._fit_coords.copy()
-
-        dims = None
-        if all([dim in temp_coords for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]]):
-            dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
-
-        t0_idx = np.flatnonzero(time_index == t0)[0]
-
-        temp_coords["data_time"] = time_index
-        temp_coords[TIME_DIM] = forecast_index
-
-        mu_dims, cov_dims = None, None
-        if all([dim in self._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]]):
-            mu_dims = ["data_time", ALL_STATE_DIM]
-            cov_dims = ["data_time", ALL_STATE_DIM, ALL_STATE_AUX_DIM]
-
-        with pm.Model(coords=temp_coords) as forecast_model:
-            _, grouped_outputs = self._kalman_filter_outputs_from_dummy_graph(
-                data_dims=["data_time", OBS_STATE_DIM],
-            )
-
-            group_idx = FILTER_OUTPUT_TYPES.index(filter_output)
-            mu, cov = grouped_outputs[group_idx]
-
-            sub_dict = {
-                data_var: pt.as_tensor_variable(data_var.get_value(), name="data")
-                for data_var in forecast_model.data_vars
-            }
-
-            missing_data_vars = np.setdiff1d(
-                ar1=[*self.data_names, "data"], ar2=[k.name for k, _ in sub_dict.items()]
-            )
-            if missing_data_vars.size > 0:
-                raise ValueError(f"{missing_data_vars} data used for fitting not found!")
-
-            mu_frozen, cov_frozen = graph_replace([mu, cov], replace=sub_dict, strict=True)
-
-            x0 = pm.Deterministic(
-                "x0_slice", mu_frozen[t0_idx], dims=mu_dims[1:] if mu_dims is not None else None
-            )
-            P0 = pm.Deterministic(
-                "P0_slice", cov_frozen[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
-            )
-
-            # Get fresh matrices with n_timesteps placeholder still intact.
-            # Build for the full timeline (training + forecast) so that time-varying matrices
-            # continue at the correct phase, then slice to keep only the forecast portion.
-            n_train = len(time_index)
-            n_total = n_train + len(forecast_index)
-
-            full_matrices = self._insert_constant_timestep(self.unpack_statespace(), n_total)
-            _, _, *forecast_matrices = full_matrices
-
-            # For exogenous-data-driven matrices the time dimension comes from the
-            # data shared variable, not from the n_timesteps symbolic.  Replace the
-            # shared variables with concatenated training + scenario tensors so the
-            # [n_train:] slice below yields the correct forecast portion.
-            # TODO: Is there a way to handle this in a fully symbolic way, without having to
-            #  run the full scan on training data to get the system's state at the start date?
-            if scenario is not None and self._needs_exog_data:
-                exog_replace = {}
-                for name in self.data_names:
-                    if name not in scenario:
-                        continue
-                    forecast_data = scenario[name]
-                    train_val = self._fit_exog_data[name]["value"]
-                    fc_val = (
-                        forecast_data.values
-                        if isinstance(forecast_data, pd.DataFrame)
-                        else np.asarray(forecast_data)
-                    )
-                    combined = np.concatenate([train_val, fc_val], axis=0)
-                    exog_replace[forecast_model[name]] = pt.as_tensor_variable(combined, name=name)
-                if exog_replace:
-                    forecast_matrices = graph_replace(
-                        forecast_matrices, replace=exog_replace, strict=False
-                    )
-
-            forecast_names = MATRIX_NAMES[2:]  # c, d, T, Z, R, H, Q
-            time_varying_names = self.ssm.time_varying_names
-            # Start one step early: the transition into the first forecast period uses the
-            # matrices of the last training period, and its observation is discarded.
-            forecast_matrices = [
-                m[n_train - 1 :] if SHORT_NAME_TO_LONG[name] in time_varying_names else m
-                for m, name in zip(forecast_matrices, forecast_names)
-            ]
-
-            _ = LinearGaussianStateSpace(
-                "forecast",
-                x0,
-                P0,
-                *forecast_matrices,
-                steps=len(forecast_index),
-                dims=dims,
-                sequence_names=self.kalman_filter.seq_names,
-                k_endog=self.k_endog,
-                append_x0=False,
-                method=mvn_method,
-            )
-
-        return forecast_model
+        return forecast._build_forecast_model(
+            self, time_index, t0, forecast_index, scenario, filter_output, mvn_method
+        )
 
     def forecast(
         self,
@@ -2575,83 +1618,20 @@ class PyMCStateSpace:
                   the latent state trajectories: `y[t] = Z @ x[t] + nu[t]`, where `nu ~ N(0, H)`.
 
         """
-        _validate_filter_arg(filter_output)
-
-        compile_kwargs = kwargs.pop("compile_kwargs", {})
-        compile_kwargs.setdefault("mode", self.mode)
-
-        time_index = self._get_fit_time_index()
-
-        if start is None and verbose:
-            _log.warning(
-                "No start date provided. Using the last date in the data index. To silence this warning, "
-                "explicitly pass a start date or set verbose = False"
-            )
-            start = time_index[-1]
-
-        if self._needs_exog_data and not isinstance(scenario, dict):
-            if len(self.data_names) > 1:
-                raise ValueError(
-                    "Model needs more than one exogenous data to do forecasting. In this case, you must "
-                    "pass a dictionary of scenario data."
-                )
-            [data_name] = self.data_names
-            scenario = {data_name: scenario}
-
-        scenario: dict = self._validate_scenario_data(scenario, verbose=verbose)
-
-        self._validate_forecast_args(
-            time_index=time_index,
+        return forecast.forecast(
+            self,
+            idata,
             start=start,
-            end=end,
             periods=periods,
+            end=end,
             scenario=scenario,
             use_scenario_index=use_scenario_index,
-            verbose=verbose,
-        )
-
-        t0, forecast_index = self._build_forecast_index(
-            time_index=time_index,
-            start=start,
-            end=end,
-            periods=periods,
-            scenario=scenario,
-            use_scenario_index=use_scenario_index,
-        )
-        scenario = self._finalize_scenario_initialization(scenario, forecast_index)
-
-        forecast_model = self._build_forecast_model(
-            time_index=time_index,
-            t0=t0,
-            forecast_index=forecast_index,
-            scenario=scenario,
             filter_output=filter_output,
+            random_seed=random_seed,
+            verbose=verbose,
             mvn_method=mvn_method,
+            **kwargs,
         )
-
-        with forecast_model:
-            if scenario is not None:
-                dummy_obs_data = np.zeros((len(forecast_index), self.k_endog))
-                pm.set_data(
-                    scenario | {"data": dummy_obs_data},
-                    coords={"data_time": np.arange(len(forecast_index))},
-                )
-
-        forecast_model.rvs_to_initial_values = {
-            k: None for k in forecast_model.rvs_to_initial_values.keys()
-        }
-        frozen_model = freeze_dims_and_data(forecast_model)
-
-        with frozen_model:
-            idata_forecast = pm.sample_posterior_predictive(
-                idata,
-                var_names=["forecast_latent", "forecast_observed"],
-                random_seed=random_seed,
-                compile_kwargs=compile_kwargs,
-                **kwargs,
-            )
-
-        return idata_forecast.posterior_predictive
 
     def impulse_response_function(
         self,
@@ -2737,132 +1717,16 @@ class PyMCStateSpace:
         time-varying cycle. This means the response represents the effect of a shock occurring at the first
         modeled state, T(0).
         """
-        options = [shock_size, shock_cov, shock_trajectory]
-        n_options = sum(x is not None for x in options)
-        Q = None  # No covariance matrix needed if a trajectory is provided. Will be overwritten later if needed.
-
-        compile_kwargs = kwargs.pop("compile_kwargs", {})
-        compile_kwargs.setdefault("mode", self.mode)
-
-        if n_options > 1:
-            raise ValueError("Specify exactly 0 or 1 of shock_size, shock_cov, or shock_trajectory")
-        elif n_options == 1:
-            # If the user passed an alternative parameterization for the shocks of the IRF, don't use the posterior
-            use_posterior_cov = False
-
-        if shock_trajectory is not None:
-            # Validate the shock trajectory
-            n, k = shock_trajectory.shape
-            steps = n
-
-            if k != self.k_posdef:
-                raise ValueError(
-                    "If shock_trajectory is provided, there must be a trajectory provided for each shock. "
-                    f"Model has {self.k_posdef} shocks, but shock_trajectory has only {k} columns"
-                )
-            if steps is not None and steps != n:
-                _log.warning(
-                    "Both steps and shock_trajectory were provided but do not agree. Length of "
-                    "shock_trajectory will take priority, and steps will be ignored."
-                )
-            n_steps = n  # Overwrite steps with the length of the shock trajectory
-            shock_trajectory = pt.as_tensor_variable(shock_trajectory)
-
-        simulation_coords = self._fit_coords.copy()
-        simulation_coords[TIME_DIM] = np.arange(n_steps, dtype="int")
-
-        with pm.Model(coords=simulation_coords):
-            self._build_dummy_graph()
-            self._insert_random_variables()
-
-            matrices = self._insert_constant_timestep(self.unpack_statespace(), step=n_steps)
-            P0, _, c, d, T, Z, R, H, post_Q = matrices
-            x0 = pm.Deterministic("x0_new", pt.zeros(self.k_states), dims=[ALL_STATE_DIM])
-
-            if use_posterior_cov:
-                Q = post_Q
-                if orthogonalize_shocks:
-                    Q = pt.linalg.cholesky(Q) / pt.diag(Q)
-            elif shock_cov is not None:
-                Q = pt.as_tensor_variable(shock_cov)
-                if orthogonalize_shocks:
-                    Q = pt.linalg.cholesky(Q) / pt.diag(Q)
-
-            if shock_trajectory is None:
-                shock_trajectory = pt.zeros((n_steps, self.k_posdef))
-                if Q is not None:
-                    init_shock = pm.MvNormal(
-                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
-                    )
-                else:
-                    init_shock = pm.Deterministic(
-                        "initial_shock",
-                        pt.as_tensor_variable(np.atleast_1d(shock_size)),
-                        dims=[SHOCK_DIM],
-                    )
-                shock_trajectory = pt.set_subtensor(shock_trajectory[0], init_shock)
-
-            else:
-                shock_trajectory = pt.as_tensor_variable(shock_trajectory)
-
-            time_varying_T = "transition" in self.ssm.time_varying_names
-
-            def irf_step(*args):
-                if time_varying_T:
-                    shock, T, x, c, R = args
-                else:
-                    shock, x, c, T, R = args
-
-                next_x = c + T @ x + R @ shock
-                return next_x
-
-            sequences = [shock_trajectory, T] if time_varying_T else [shock_trajectory]
-            non_sequences = [c, R] if time_varying_T else [c, T, R]
-
-            irf = pytensor.scan(
-                irf_step,
-                sequences=sequences,
-                outputs_info=[x0],
-                non_sequences=non_sequences,
-                n_steps=n_steps,
-                strict=True,
-                return_updates=False,
-            )
-
-            pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])
-
-            irf_idata = pm.sample_posterior_predictive(
-                idata,
-                var_names=["irf"],
-                random_seed=random_seed,
-                compile_kwargs=compile_kwargs,
-                **kwargs,
-            )
-
-            return irf_idata["posterior_predictive"]
-
-    def _sort_obs_inputs_by_time_varying(self, d, Z):
-        seqs = []
-        non_seqs = []
-
-        for matrix, name in zip([d, Z], ["d", "Z"]):
-            if name in self.kalman_filter.seq_names:
-                seqs.append(matrix)
-            else:
-                non_seqs.append(matrix)
-
-        return seqs, non_seqs
-
-    @staticmethod
-    def _sort_obs_scan_args(args):
-        args = list(args)
-
-        # If a matrix is time-varying, pytensor will put a [t] on the name
-        arg_names = [x.name.replace("[t]", "") for x in args]
-        ordered_args = []
-
-        for name in ["d", "Z"]:
-            idx = arg_names.index(name)
-            ordered_args.append(args[idx])
-
-        return ordered_args
+        return irf.impulse_response_function(
+            self,
+            idata,
+            n_steps=n_steps,
+            use_posterior_cov=use_posterior_cov,
+            shock_size=shock_size,
+            shock_cov=shock_cov,
+            shock_trajectory=shock_trajectory,
+            orthogonalize_shocks=orthogonalize_shocks,
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            **kwargs,
+        )
