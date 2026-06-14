@@ -479,8 +479,8 @@ class TestVARMAXWithExogenous:
 
         with pytest.raises(
             ValueError,
-            match="This model was fit using exogenous data. Forecasting cannot be performed "
-            "without providing scenario data",
+            match=r"This model was fit using exogenous data. Forecasting cannot be performed "
+            r"without providing scenario data",
         ):
             mod.forecast(prior.prior, periods=10, random_seed=rng)
 

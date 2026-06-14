@@ -325,7 +325,7 @@ def recover(
     """
     if isinstance(idata, Model):
         raise TypeError(
-            "The order of arguments of `recover` changed. " "The first input must be an idata"
+            "The order of arguments of `recover` changed. The first input must be an idata"
         )
 
     model = modelcontext(model)

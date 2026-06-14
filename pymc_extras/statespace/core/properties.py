@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass, fields
-from typing import Generic, Protocol, Self, TypeVar
+from typing import Protocol, Self
 
 from pytensor.tensor.variable import TensorVariable
 
@@ -34,11 +34,8 @@ class Property:
         return "\n".join(f"{f.name}: {getattr(self, f.name)}" for f in fields(self))
 
 
-T = TypeVar("T", bound=Property)
-
-
 @dataclass(frozen=True)
-class Info(Generic[T]):
+class Info[T: Property]:
     items: tuple[T, ...] | None
     key_field: str | tuple[str, ...] = "name"
     _index: dict[str | tuple, T] | None = None

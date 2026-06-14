@@ -22,9 +22,9 @@ from pymc_extras.inference.pathfinder.pathfinder import fit_blackjax_pathfinder,
 __all__ = [
     "find_MAP",
     "fit",
+    "fit_INLA",
     "fit_blackjax_pathfinder",
+    "fit_dadvi",
     "fit_laplace",
     "fit_pathfinder",
-    "fit_dadvi",
-    "fit_INLA",
 ]

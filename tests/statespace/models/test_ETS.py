@@ -44,7 +44,9 @@ def test_invalid_order_raises():
         BayesianETS(order=("A", "Ad", "M"), endog_names=["y"])
 
     # seasonal_periods must be provided if seasonal is requested
-    with pytest.raises(ValueError, match="If seasonal is True, seasonal_periods must be provided."):
+    with pytest.raises(
+        ValueError, match=r"If seasonal is True, seasonal_periods must be provided."
+    ):
         BayesianETS(order=("A", "Ad", "A"), endog_names=["y"])
 
 

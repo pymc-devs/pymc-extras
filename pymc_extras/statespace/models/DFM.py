@@ -531,7 +531,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         coords = list(self.default_coords())
 
         # Factor coords
-        factor_labels = tuple(f"factor_{i+1}" for i in range(self.k_factors))
+        factor_labels = tuple(f"factor_{i + 1}" for i in range(self.k_factors))
         coords.append(Coord(dimension=FACTOR_DIM, labels=factor_labels))
 
         # AR param coords for factors

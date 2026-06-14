@@ -75,7 +75,7 @@ def test_unstable_lbfgs_update_mask(jitter):
 
     else:
         # High jitter values (>=750) cause numerical overflow and all paths fail
-        with pytest.raises(ValueError, match="(All paths failed|BUG: Failed to iterate)"):
+        with pytest.raises(ValueError, match=r"(All paths failed|BUG: Failed to iterate)"):
             with model:
                 idata = pmx.fit(
                     method="pathfinder",

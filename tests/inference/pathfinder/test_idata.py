@@ -242,9 +242,9 @@ def test_mock_result_is_subset_of_real_schema():
 
     mock_fields = {f.name for f in fields(MockMultiPathfinderResult)}
     real_fields = {f.name for f in fields(MultiPathfinderResult)}
-    assert (
-        mock_fields <= real_fields
-    ), f"mock has fields absent from MultiPathfinderResult: {mock_fields - real_fields}"
+    assert mock_fields <= real_fields, (
+        f"mock has fields absent from MultiPathfinderResult: {mock_fields - real_fields}"
+    )
 
 
 # ---------------------------------------------------------------------------

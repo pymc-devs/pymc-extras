@@ -301,9 +301,9 @@ def test_elbo_statistical_equivalence(model_name, vectorize):
     x_full, g_full, elbo_ref = _load_fixture(model_name)
     model = MODEL_FACTORIES[model_name]()
     elbo = _run_callback_replay(model, x_full, vectorize=vectorize)
-    assert (
-        elbo.shape == elbo_ref.shape
-    ), f"[{model_name}] shape mismatch: {elbo.shape} vs {elbo_ref.shape}"
+    assert elbo.shape == elbo_ref.shape, (
+        f"[{model_name}] shape mismatch: {elbo.shape} vs {elbo_ref.shape}"
+    )
     _check_statistical_equivalence(model_name, elbo, elbo_ref)
 
 

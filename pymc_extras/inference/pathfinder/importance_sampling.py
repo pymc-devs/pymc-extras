@@ -136,8 +136,7 @@ def importance_sampling(
     p = np.where(np.isfinite(p), p, 0.0)  # guard against any residual nan/inf from the smoothing
     if not (p_sum := p.sum()) > 0:
         raise ValueError(
-            "All Pathfinder importance weights collapsed to zero; the approximation is "
-            "degenerate."
+            "All Pathfinder importance weights collapsed to zero; the approximation is degenerate."
         )
     p = p / p_sum
     rng = np.random.default_rng(random_seed)

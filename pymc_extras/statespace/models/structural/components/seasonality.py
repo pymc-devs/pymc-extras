@@ -14,7 +14,7 @@ from pymc_extras.statespace.core.properties import (
 from pymc_extras.statespace.models.structural.core import Component
 from pymc_extras.statespace.models.structural.utils import _frequency_transition_block
 
-__all__ = ["TimeSeasonality", "FrequencySeasonality"]
+__all__ = ["FrequencySeasonality", "TimeSeasonality"]
 
 
 class TimeSeasonality(Component):

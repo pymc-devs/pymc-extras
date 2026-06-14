@@ -138,6 +138,7 @@ ignore = [
   "RUF001", # String contains ambiguous character (such as Greek letters)
   "RUF002", # Docstring contains ambiguous character (such as Greek letters)
   "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
+  "RUF059", # Unused unpacked variable -- naming unused tuple elements is idiomatic in PyMC code
   "D100",
   "D101",
   "D102",
@@ -176,3 +177,4 @@ lines-between-types = 1
   'F811'  # Redefine while unused -- this check fails on imported fixtures
 ]
 'pymc_extras/__init__.py' = ['F401', 'F403']
+'notebooks/*.ipynb' = ['E402']  # Notebooks configure backends and suppress warnings before importing

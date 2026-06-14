@@ -535,7 +535,7 @@ def test_build_statespace_graph_raises_if_data_has_missing_fill():
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))
         P0 = pm.Deterministic("P0", pt.eye(1, dtype=floatX))
-        with pytest.raises(ValueError, match="Provided data contains the value 1.0"):
+        with pytest.raises(ValueError, match=r"Provided data contains the value 1.0"):
             data = np.ones((10, 1), dtype=floatX)
             data[3] = np.nan
             ss_mod.build_statespace_graph(data=data, missing_fill_value=1.0, register_data=False)
@@ -649,7 +649,7 @@ def test_bad_forecast_arguments(use_datetime_index, caplog):
 
     # Not-fit model raises
     ss_mod._fit_coords = dict()
-    with pytest.raises(ValueError, match="Has this model been fit?"):
+    with pytest.raises(ValueError, match=r"Has this model been fit?"):
         ss_mod._get_fit_time_index()
 
     time_idx = _make_time_idx(ss_mod, use_datetime_index)
@@ -930,14 +930,15 @@ def test_invalid_scenarios():
 
     # Omitting the data raises
     with pytest.raises(
-        ValueError, match="This model was fit using exogenous data. Forecasting cannot be performed"
+        ValueError,
+        match=r"This model was fit using exogenous data. Forecasting cannot be performed",
     ):
         ss_mod._validate_scenario_data(None)
 
     # Giving a list, tuple, or Series when a matrix of data is expected should always raise
     with pytest.raises(
         ValueError,
-        match="Scenario data for variable 'a' has the wrong number of columns. Expected 2, got 1",
+        match=r"Scenario data for variable 'a' has the wrong number of columns. Expected 2, got 1",
     ):
         for data_type in [list, tuple, pd.Series]:
             ss_mod._validate_scenario_data(data_type(np.zeros(10)))
@@ -953,7 +954,7 @@ def test_invalid_scenarios():
     # Incorrect 2nd dimension of a non-dataframe
     with pytest.raises(
         ValueError,
-        match="Scenario data for variable 'a' has the wrong number of columns. Expected 2, got 1",
+        match=r"Scenario data for variable 'a' has the wrong number of columns. Expected 2, got 1",
     ):
         scenario = np.zeros(10).tolist()
         ss_mod._validate_scenario_data(scenario)
@@ -1294,9 +1295,9 @@ def test_param_dims_coords(ss_mod_multi_component):
             assert dims is None
             continue
         for i, s in zip(shape, dims):
-            assert i == len(
-                ss_mod_multi_component.coords[s]
-            ), f"Mismatch between shape {i} and dimension {s}"
+            assert i == len(ss_mod_multi_component.coords[s]), (
+                f"Mismatch between shape {i} and dimension {s}"
+            )
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
