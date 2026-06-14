@@ -1,6 +1,6 @@
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.6.0
+  rev: v6.0.0
   hooks:
     -   id: check-merge-conflict
     -   id: check-toml
@@ -12,9 +12,9 @@ repos:
     -   id: trailing-whitespace
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.5.5
+  rev: v0.15.17
   hooks:
-    - id: ruff
+    - id: ruff-check
       args: [ --fix, --unsafe-fixes, --exit-non-zero-on-fix ]
     - id: ruff-format
       types_or: [ python, pyi, jupyter ]
