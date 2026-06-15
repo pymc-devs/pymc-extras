@@ -36,13 +36,9 @@ class EnumerableMarginalRV(MarginalRV):
         self,
         *args,
         dims_connections: tuple[tuple[int | None], ...],
-        marginalized_dims,
-        n_dependent_rvs: int,
         **kwargs,
     ) -> None:
         self.dims_connections = dims_connections
-        self.marginalized_dims = marginalized_dims
-        self.n_dependent_rvs = n_dependent_rvs
         super().__init__(*args, **kwargs)
 
     @property
