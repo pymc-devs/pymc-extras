@@ -118,6 +118,56 @@ class TestDiscreteMarkovRV:
         logp = pm.logp(chain, [0, 1, 2]).eval()
         assert logp == np.log(0.2 * 0.5 * 0.3)
 
+    def test_time_varying_P(self):
+        """Time-inhomogeneous chain: a distinct transition matrix per step (#392)."""
+        pi0 = np.array([0.6, 0.4])
+        # shape (T, k, k): one transition matrix per step
+        P_t = np.array(
+            [
+                [[0.9, 0.1], [0.2, 0.8]],
+                [[0.5, 0.5], [0.5, 0.5]],
+                [[0.1, 0.9], [0.7, 0.3]],
+                [[0.3, 0.7], [0.6, 0.4]],
+            ]
+        )
+        T = P_t.shape[0]
+        x0 = pm.Categorical.dist(p=pi0)
+        # steps is left unspecified: it is inferred from P's time axis.
+        chain = DiscreteMarkovChain.dist(
+            P=pt.as_tensor_variable(P_t), init_dist=x0, time_varying_P=True
+        )
+
+        # Shape: init state + T transitions
+        draw = pm.draw(chain, random_seed=1)
+        assert draw.shape == (T + 1,)
+
+        # logp uses the per-step matrix at each transition
+        path = np.array([0, 1, 1, 0, 1])
+        logp = pm.logp(chain, path).eval()
+        expected = np.log(pi0[path[0]]) + sum(
+            np.log(P_t[t, path[t], path[t + 1]]) for t in range(T)
+        )
+        np.testing.assert_allclose(logp, expected)
+
+        # Sampling honours the step-0 transition (0 -> 0 with prob 0.9)
+        draws = pm.draw(chain, draws=20_000, random_seed=2)
+        from_0 = draws[:, 0] == 0
+        np.testing.assert_allclose((draws[from_0, 1] == 0).mean(), 0.9, atol=0.02)
+
+    def test_time_varying_P_requires_single_lag(self):
+        P_t = np.zeros((3, 2, 2, 2))
+        x0 = pm.Categorical.dist(p=[0.5, 0.5])
+        with pytest.raises(NotImplementedError, match="time_varying_P is only supported"):
+            DiscreteMarkovChain.dist(P=P_t, init_dist=x0, steps=3, time_varying_P=True, n_lags=2)
+
+    def test_time_varying_P_steps_conflict(self):
+        """An explicit steps inconsistent with P's time axis is rejected."""
+        P_t = np.zeros((3, 2, 2))  # 3 transitions
+        x0 = pm.Categorical.dist(p=[0.5, 0.5])
+        chain = DiscreteMarkovChain.dist(P=P_t, init_dist=x0, steps=5, time_varying_P=True)
+        with pytest.raises(AssertionError, match="support_shape does not match"):
+            pm.draw(chain)
+
     def test_moment_function(self):
         P_np = np.array([[0.1, 0.5, 0.4], [0.3, 0.4, 0.3], [0.9, 0.05, 0.05]])
 
