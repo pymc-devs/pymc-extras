@@ -109,6 +109,7 @@ def merge_consensus(
         rng = np.random.default_rng(_as_seed(random_seed))
         draw_idxs = rng.integers(0, num_samples, size=(num_shards, draws))
         samples_np = samples_np[np.arange(num_shards)[:, None], draw_idxs]
+        samples_np = _validate_subposteriors(samples_np, diagonal=diagonal)
 
     samples = pt.tensor3("subposteriors")
     if diagonal:
@@ -198,6 +199,55 @@ def _resolve_axis(model: pm.Model, name: str, axis: int | str) -> tuple[int, str
             "Automatic splitting requires named model dimensions; pass explicit shards for unnamed axes."
         )
     return axis, dims[axis]
+
+
+def _sharded_dim_lengths(
+    model: pm.Model,
+    shard: Mapping[str, Any],
+    sharded_dims: set[str],
+) -> dict[str, int]:
+    lengths: dict[str, int] = {}
+    for name, value in shard.items():
+        dims = tuple(model.named_vars_to_dims.get(name, ()))
+        array = np.asarray(value)
+        for axis, dim in enumerate(dims[: array.ndim]):
+            if dim not in sharded_dims:
+                continue
+            length = array.shape[axis]
+            if dim in lengths and lengths[dim] != length:
+                raise ValueError(
+                    f"Shard data disagree on sharded dimension '{dim}'; pass aligned shard values or explicit shard_coords."
+                )
+            lengths[dim] = length
+    return lengths
+
+
+def _complete_shard_coords(
+    model: pm.Model,
+    shards: Sequence[Mapping[str, Any]],
+    shard_coords: list[dict[str, Sequence[Any]]],
+    sharded_dims: set[str],
+) -> list[dict[str, Sequence[Any]]]:
+    for shard, coords in zip(shards, shard_coords, strict=True):
+        for dim, length in _sharded_dim_lengths(model, shard, sharded_dims).items():
+            if dim in model.coords and dim not in coords:
+                coords[dim] = np.arange(length)
+    return shard_coords
+
+
+def _shard_sizes(
+    model: pm.Model,
+    shards: Sequence[Mapping[str, Any]],
+    sharded_dims: set[str],
+) -> list[int]:
+    sizes = []
+    for shard in shards:
+        lengths = _sharded_dim_lengths(model, shard, sharded_dims)
+        if not lengths:
+            sizes.append(1)
+        else:
+            sizes.append(lengths[sorted(lengths)[0]])
+    return sizes
 
 
 def _resolve_shards(
@@ -290,6 +340,7 @@ def _resolve_shards(
             raise ValueError(
                 "Explicit shards with non-scalar data require sharded_dims or shard_coords so global and shard-local dimensions are unambiguous."
             )
+    resolved_coords = _complete_shard_coords(model, resolved_shards, resolved_coords, resolved_dims)
     return resolved_shards, resolved_coords, resolved_dims
 
 
@@ -657,7 +708,7 @@ def fit_consensus_mc(
                 "cores": xr.DataArray(cores),
                 "prior_scale": xr.DataArray(1.0 / num_shards),
                 "shard_size": xr.DataArray(
-                    [np.asarray(shard[next(iter(shard))]).shape[0] for shard in resolved_shards],
+                    _shard_sizes(model, resolved_shards, resolved_sharded_dims),
                     dims=["shard"],
                 ),
             }

@@ -146,6 +146,16 @@ def test_merge_validation_errors(subposteriors, match):
         merge_consensus(subposteriors, diagonal=False)
 
 
+def test_resampled_consensus_validates_resampled_draw_count():
+    subposteriors = np.arange(20.0).reshape(2, 5, 2)
+
+    with pytest.raises(ValueError, match="at least two samples"):
+        merge_consensus(subposteriors, draws=1, diagonal=True, random_seed=53)
+
+    with pytest.raises(ValueError, match="more samples"):
+        merge_consensus(subposteriors, draws=2, diagonal=False, random_seed=53)
+
+
 def test_prior_scaling_untransformed_model():
     y = np.array([0.2, -0.1])
     with pm.Model() as model:
@@ -381,6 +391,79 @@ def test_explicit_shards_num_shards_and_sharded_dims():
         )
 
 
+def test_explicit_shards_without_coords_generate_shard_local_coords(monkeypatch):
+    calls = []
+
+    def fake_sample(*, draws, chains, model, **kwargs):
+        calls.append(
+            (
+                tuple(model.coords["obs"]),
+                model["x"].get_value().shape,
+                model["y"].get_value().shape,
+            )
+        )
+        values = np.ones((chains, draws, 2))
+        return DataTree.from_dict(
+            {"posterior": xr.Dataset({"beta": (("chain", "draw", "feature"), values)})}
+        )
+
+    monkeypatch.setattr(pm, "sample", fake_sample)
+    with pm.Model(coords={"obs": np.arange(6), "feature": ["a", "b"]}) as model:
+        x = pm.Data("x", np.ones((6, 2)), dims=("obs", "feature"))
+        y = pm.Data("y", np.arange(6.0), dims="obs")
+        beta = pm.Normal("beta", dims="feature")
+        pm.Normal("y_like", x @ beta, 1, observed=y, dims="obs")
+
+    idata = fit_consensus_mc(
+        model=model,
+        shards=[
+            {"x": np.ones((3, 2)), "y": np.arange(3.0)},
+            {"x": np.ones((3, 2)), "y": np.arange(3.0, 6.0)},
+        ],
+        sharded_dims=["obs"],
+        draws=2,
+        sample_draws=2,
+        tune=0,
+        diagonal=True,
+        attach_data=False,
+        progressbar=False,
+    )
+
+    assert calls == [((0, 1, 2), (3, 2), (3,)), ((0, 1, 2), (3, 2), (3,))]
+    np.testing.assert_array_equal(idata["consensus_mc"].dataset["shard_size"].values, [3, 3])
+    np.testing.assert_array_equal(model["y"].get_value(), np.arange(6.0))
+    assert tuple(model.coords["obs"]) == tuple(np.arange(6))
+
+
+def test_shard_size_uses_named_split_axis_not_axis_zero(monkeypatch):
+    def fake_sample(*, draws, chains, **kwargs):
+        values = np.ones((chains, draws, 2))
+        return DataTree.from_dict(
+            {"posterior": xr.Dataset({"beta": (("chain", "draw", "feature"), values)})}
+        )
+
+    monkeypatch.setattr(pm, "sample", fake_sample)
+    with pm.Model(coords={"feature": ["a", "b"], "obs": np.arange(6)}) as model:
+        x = pm.Data("x", np.ones((2, 6)), dims=("feature", "obs"))
+        y = pm.Data("y", np.arange(6.0), dims="obs")
+        beta = pm.Normal("beta", dims="feature")
+        pm.Normal("y_like", beta @ x, 1, observed=y, dims="obs")
+
+    idata = fit_consensus_mc(
+        model=model,
+        split_data={"x": "obs", "y": "obs"},
+        num_shards=2,
+        draws=2,
+        sample_draws=2,
+        tune=0,
+        diagonal=True,
+        attach_data=False,
+        progressbar=False,
+    )
+
+    np.testing.assert_array_equal(idata["consensus_mc"].dataset["shard_size"].values, [3, 3])
+
+
 def test_minibatch_and_total_size_likelihoods_are_rejected():
     with pm.Model(coords={"obs": np.arange(4)}) as total_size_model:
         y = pm.Data("y", np.arange(4.0), dims="obs")
@@ -527,3 +610,17 @@ def test_constrained_support_warning_and_pmx_fit_smoke(monkeypatch):
 
     assert idata["posterior"].dataset.sizes["draw"] == 2
     assert len(calls) == 2
+
+
+def test_public_inference_import_smoke():
+    from pymc_extras.inference import (
+        estimate_parametric,
+        fit_consensus_mc,
+        merge_consensus,
+        merge_parametric,
+    )
+
+    assert fit_consensus_mc.__name__ == "fit_consensus_mc"
+    assert merge_consensus.__name__ == "merge_consensus"
+    assert estimate_parametric.__name__ == "estimate_parametric"
+    assert merge_parametric.__name__ == "merge_parametric"
