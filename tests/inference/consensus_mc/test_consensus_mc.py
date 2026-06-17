@@ -22,24 +22,26 @@ from pymc_extras.inference.consensus_mc.consensus_mc import (
 )
 
 
-def _expected_full_consensus(samples):
-    covs = []
+def _expected_covariances(samples):
+    covariances = []
     for subposterior in samples:
         centered = subposterior - subposterior.mean(axis=0, keepdims=True)
-        covs.append(centered.T @ centered / (subposterior.shape[0] - 1))
-    precisions = np.array([np.linalg.inv(cov) for cov in covs])
+        covariances.append(centered.T @ centered / (subposterior.shape[0] - 1))
+    return np.asarray(covariances)
+
+
+def _expected_full_consensus(samples):
+    covariances = _expected_covariances(samples)
+    precisions = np.array([np.linalg.inv(covariance) for covariance in covariances])
     total_cov = np.linalg.inv(precisions.sum(axis=0))
     weights = np.einsum("ij,kjl->kil", total_cov, precisions)
     return np.einsum("kij,knj->ni", weights, samples)
 
 
 def _expected_parametric(samples):
-    covs = []
     means = samples.mean(axis=1)
-    for subposterior in samples:
-        centered = subposterior - subposterior.mean(axis=0, keepdims=True)
-        covs.append(centered.T @ centered / (subposterior.shape[0] - 1))
-    precisions = np.array([np.linalg.inv(cov) for cov in covs])
+    covariances = _expected_covariances(samples)
+    precisions = np.array([np.linalg.inv(covariance) for covariance in covariances])
     cov = np.linalg.inv(precisions.sum(axis=0))
     weights = np.einsum("ij,kjl->kil", cov, precisions)
     mean = np.einsum("kij,kj->i", weights, means)

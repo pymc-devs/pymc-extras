@@ -36,27 +36,26 @@ def fit(method: str, **kwargs) -> DataTree:
 
         return fit_pathfinder(**kwargs)
 
-    elif method == "laplace":
+    if method == "laplace":
         from pymc_extras.inference.laplace_approx import fit_laplace
 
         return fit_laplace(**kwargs)
 
-    elif method == "INLA":
+    if method == "INLA":
         from pymc_extras.inference.INLA import fit_INLA
 
         return fit_INLA(**kwargs)
 
-    elif method == "dadvi":
+    if method == "dadvi":
         from pymc_extras.inference import fit_dadvi
 
         return fit_dadvi(**kwargs)
 
-    elif method == "consensus_mc":
+    if method == "consensus_mc":
         from pymc_extras.inference.consensus_mc import fit_consensus_mc
 
         return fit_consensus_mc(**kwargs)
 
-    else:
-        raise ValueError(
-            f"method '{method}' not supported. Use one of 'pathfinder', 'laplace', 'INLA', 'dadvi', or 'consensus_mc'."
-        )
+    raise ValueError(
+        f"method '{method}' not supported. Use one of 'pathfinder', 'laplace', 'INLA', 'dadvi', or 'consensus_mc'."
+    )

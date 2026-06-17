@@ -80,17 +80,19 @@ def _as_seed(random_seed: RandomSeed = None) -> int:
     return int(_get_seeds_per_chain(random_seed, 1)[0])
 
 
-def _full_covariance_nodes(samples: pt.TensorVariable, num_shards: int):
+def _full_covariance_nodes(
+    samples: pt.TensorVariable, num_shards: int
+) -> tuple[pt.TensorVariable, pt.TensorVariable]:
     denom = samples.shape[1] - 1
-    covs = []
-    for k in range(num_shards):
-        centered = samples[k] - samples[k].mean(axis=0, keepdims=True)
-        covs.append(pt.dot(centered.T, centered) / denom)
-    covs = pt.stack(covs)
-    precisions = pt.stack([pt.linalg.inv(covs[k]) for k in range(num_shards)])
-    total_cov = pt.linalg.inv(precisions.sum(axis=0))
-    weights = pt.einsum("ij,kjl->kil", total_cov, precisions)
-    return covs, precisions, total_cov, weights
+    covariances = []
+    for shard_idx in range(num_shards):
+        centered = samples[shard_idx] - samples[shard_idx].mean(axis=0, keepdims=True)
+        covariances.append(pt.dot(centered.T, centered) / denom)
+    covariances = pt.stack(covariances)
+    precisions = pt.stack([pt.linalg.inv(covariances[k]) for k in range(num_shards)])
+    covariance = pt.linalg.inv(precisions.sum(axis=0))
+    weights = pt.einsum("ij,kjl->kil", covariance, precisions)
+    return covariance, weights
 
 
 def merge_consensus(
@@ -117,7 +119,7 @@ def merge_consensus(
         normalized = precision / precision.sum(axis=0)
         merged = pt.einsum("kp,knp->np", normalized, samples)
     else:
-        _, _, _, weights = _full_covariance_nodes(samples, num_shards)
+        _, weights = _full_covariance_nodes(samples, num_shards)
         merged = pt.einsum("kij,knj->ni", weights, samples)
 
     return np.asarray(pytensor.function([samples], merged)(samples_np))
@@ -141,7 +143,7 @@ def estimate_parametric(
         mean = pt.einsum("kp,kp->p", var * precision, submeans)
         fn = pytensor.function([samples], [mean, var])
     else:
-        _, _, cov, weights = _full_covariance_nodes(samples, num_shards)
+        cov, weights = _full_covariance_nodes(samples, num_shards)
         mean = pt.einsum("kij,kj->i", weights, submeans)
         fn = pytensor.function([samples], [mean, cov])
 
@@ -527,6 +529,15 @@ def _flat_array_to_posterior_dataset(
     return dict_to_dataset(posterior_dict, coords=coords, dims=dims, inference_library=pm)
 
 
+def _coords_for_data_var(
+    model: pm.Model,
+    name: str,
+    coords: Mapping[str, Sequence[Any]],
+) -> dict[str, Sequence[Any]]:
+    data_dims = set(model.named_vars_to_dims.get(name, ()))
+    return {dim: value for dim, value in coords.items() if dim in data_dims}
+
+
 def _restore_data(
     model: pm.Model,
     originals: Mapping[str, np.ndarray],
@@ -535,8 +546,7 @@ def _restore_data(
 ) -> None:
     coords = {dim: original_coords[dim] for dim in sharded_dims if dim in original_coords}
     for name, value in originals.items():
-        name_dims = set(model.named_vars_to_dims.get(name, ()))
-        model.set_data(name, value, coords={dim: coords[dim] for dim in name_dims & coords.keys()})
+        model.set_data(name, value, coords=_coords_for_data_var(model, name, coords))
 
 
 def _set_shard_data(
@@ -545,8 +555,7 @@ def _set_shard_data(
     coords: Mapping[str, Sequence[Any]],
 ) -> None:
     for name, value in shard.items():
-        name_dims = set(model.named_vars_to_dims.get(name, ()))
-        model.set_data(name, value, coords={dim: coords[dim] for dim in name_dims & coords.keys()})
+        model.set_data(name, value, coords=_coords_for_data_var(model, name, coords))
 
 
 def fit_consensus_mc(
