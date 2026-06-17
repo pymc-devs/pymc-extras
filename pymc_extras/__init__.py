@@ -13,7 +13,7 @@
 #   limitations under the License.
 import logging
 
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
 from pymc_extras import gp, marginal, statespace, utils
 from pymc_extras.distributions import *
@@ -31,4 +31,7 @@ if not logging.root.handlers:
         _log.addHandler(handler)
 
 
-__version__ = version("pymc-extras")
+try:
+    __version__ = version("pymc-extras")
+except PackageNotFoundError:
+    from _version import version as __version__

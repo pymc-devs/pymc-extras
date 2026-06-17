@@ -1,12 +1,12 @@
 from pymc import Normal
 from pymc.logprob.abstract import _logprob
 from pymc.logprob.basic import logp
-from pymc.pytensorf import get_symbolic_rv_shapes
 from pytensor.graph import node_rewriter
 from pytensor.graph.replace import graph_replace
 from pytensor.graph.traversal import ancestors
 from pytensor.tensor import broadcast_to, constant, sqrt
 
+from pymc_extras.inference.advi.pytensorf import get_symbolic_rv_shapes
 from pymc_extras.model.marginal.distributions.core import (
     MarginalRV,
     inline_ofg_outputs,

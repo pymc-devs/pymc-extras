@@ -12,29 +12,16 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-from pymc_extras.inference.consensus_mc import (
+from pymc_extras.inference.consensus_mc.consensus_mc import (
     estimate_parametric,
     fit_consensus_mc,
     merge_consensus,
     merge_parametric,
 )
-from pymc_extras.inference.dadvi.dadvi import fit_dadvi
-from pymc_extras.inference.fit import fit
-from pymc_extras.inference.INLA.inla import fit_INLA
-from pymc_extras.inference.laplace_approx.find_map import find_MAP
-from pymc_extras.inference.laplace_approx.laplace import fit_laplace
-from pymc_extras.inference.pathfinder.pathfinder import fit_blackjax_pathfinder, fit_pathfinder
 
 __all__ = [
     "estimate_parametric",
-    "find_MAP",
-    "fit",
-    "fit_INLA",
-    "fit_blackjax_pathfinder",
     "fit_consensus_mc",
-    "fit_dadvi",
-    "fit_laplace",
-    "fit_pathfinder",
     "merge_consensus",
     "merge_parametric",
 ]

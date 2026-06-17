@@ -1,0 +1,27 @@
+[workspace]
+authors = ["Chris Fonnesbeck <fonnesbeck@gmail.com>"]
+channels = ["conda-forge", "nodefaults"]
+name = "pymc-extras"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+pymc = ">=5.27.1"
+pytensor = ">=2.37.0"
+scikit-learn = "*"
+better-optimize = ">=0.1.5"
+dask = "<2025.1.1"
+xhistogram = "*"
+statsmodels = "*"
+numba = "*"
+pytest = "*"
+pytest-cov = "*"
+pydantic = ">=2.0.0"
+preliz = ">=0.20.0"
+pip = "*"
+
+[pypi-dependencies]
+jax = "*"
+blackjax = "*"

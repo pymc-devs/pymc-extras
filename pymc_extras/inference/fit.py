@@ -17,13 +17,13 @@ from xarray import DataTree
 def fit(method: str, **kwargs) -> DataTree:
     """
     Fit a model with an inference algorithm.
-    See :func:`fit_pathfinder` and :func:`fit_laplace` for more details.
+    See :func:`fit_pathfinder`, :func:`fit_laplace`, and :func:`fit_consensus_mc` for more details.
 
     Parameters
     ----------
     method : str
         Which inference method to run.
-        Supported: pathfinder or laplace
+        Supported: pathfinder, laplace, INLA, dadvi, or consensus_mc
 
     kwargs: keyword arguments are passed on to the inference method.
 
@@ -51,7 +51,12 @@ def fit(method: str, **kwargs) -> DataTree:
 
         return fit_dadvi(**kwargs)
 
+    elif method == "consensus_mc":
+        from pymc_extras.inference.consensus_mc import fit_consensus_mc
+
+        return fit_consensus_mc(**kwargs)
+
     else:
         raise ValueError(
-            f"method '{method}' not supported. Use one of 'pathfinder', 'laplace' or 'INLA'."
+            f"method '{method}' not supported. Use one of 'pathfinder', 'laplace', 'INLA', 'dadvi', or 'consensus_mc'."
         )

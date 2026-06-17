@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import pymc as pm
@@ -8,7 +9,11 @@ import pytensor.tensor as pt
 from numpy.typing import NDArray
 from pymc import Model
 from pymc.pytensorf import compile
-from pytensor.compile.executor import Function
+
+try:
+    from pytensor.compile.executor import Function
+except ModuleNotFoundError:  # PyTensor 2.x keeps this type private.
+    Function = Any
 from pytensor.graph import clone_replace, vectorize_graph
 from pytensor.tensor import TensorVariable
 
