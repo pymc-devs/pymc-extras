@@ -189,7 +189,7 @@ def AutoDiagonalNormal(model: Model, random_seed=None) -> AutoGuideModel:
             )
             Deterministic(
                 rv.name,
-                loc + pt.softplus(scale) * z,
+                loc + pt.exp(scale) * z,
                 dims=value_dims[rv],
             )
 
@@ -252,7 +252,7 @@ def AutoMultivariateNormal(model: Model, random_seed=None) -> AutoGuideModel:
     ordered_rvs = [value_to_rv[name] for name, *_ in point_map_info]
 
     # Initialize the diagonal params at 0.1 (off-diagonal at 0): the full-rank guide starts as
-    # the mean-field guide (diagonal scale softplus(0.1)) and grows correlation structure.
+    # the mean-field guide (diagonal scale exp(0.1)) and grows correlation structure.
     # Matches AutoDiagonalNormal's scale init.
     rows, cols = np.tril_indices(n_dim)
     L_packed_init = np.zeros(rows.size, dtype=loc_init.dtype)
@@ -265,7 +265,7 @@ def AutoMultivariateNormal(model: Model, random_seed=None) -> AutoGuideModel:
         idx = pt.arange(n)
 
         L = pt.zeros((n, n))[pt.tril_indices(n)].set(L_packed)
-        L = L[idx, idx].set(pt.softplus(pt.diagonal(L)))  # positive diagonal
+        L = L[idx, idx].set(pt.exp(pt.diagonal(L)))  # positive diagonal
         # Promise the structure so the MeasurableMatMul logq's solve(L, .) / slogdet(L) lower
         # to the triangular routines instead of a general LU.
         L = assume(L, lower_triangular=True)
@@ -297,7 +297,7 @@ class AutoLowRankGuideModel(AutoGuideModel):
         u = self.latent
         loc = self["loc"]
         W = self["cov_factor"]  # shape (D, K)
-        d = pt.softplus(self["cov_diag_unconstrained"])  # shape (D,), positive
+        d = pt.exp(self["cov_diag_unconstrained"])  # shape (D,), positive
         n_dim = u.shape[0]
         rank = W.shape[1]
 
@@ -363,7 +363,7 @@ def AutoLowRankMultivariateNormal(
         rank = round(n_dim**0.5)
     rank = max(1, min(rank, n_dim))
 
-    # W starts at 0 (no correlation) and d at softplus(0.1): the guide starts as the mean-field guide.
+    # W starts at 0 (no correlation) and d at exp(0.1): the guide starts as the mean-field guide.
     W_init = np.zeros((n_dim, rank), dtype=loc_init.dtype)
     d_unconstrained_init = np.full(n_dim, 0.1, dtype=loc_init.dtype)
 
@@ -371,7 +371,7 @@ def AutoLowRankMultivariateNormal(
         loc = pt.tensor("loc", shape=(None,))
         W = pt.tensor("cov_factor", shape=(None, rank))
         d_unconstrained = pt.tensor("cov_diag_unconstrained", shape=(None,))
-        d = pt.softplus(d_unconstrained)
+        d = pt.exp(d_unconstrained)
         n = loc.shape[0]
 
         eps_k = Normal("eps_k", mu=0.0, sigma=1.0, shape=(rank,))
