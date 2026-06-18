@@ -535,6 +535,10 @@ class Trainer:
         )
 
         idata = DataTree.from_dict({"posterior": posterior_dataset})
-        idata = add_data_to_inference_data(idata=idata, progressbar=False, model=model)
+        # Forward the chosen backend so model deterministics are computed on the same
+        # backend as the rest of the fit, not pytensor's default.
+        idata = add_data_to_inference_data(
+            idata=idata, progressbar=False, model=model, compile_kwargs=self.compile_kwargs
+        )
 
         return idata
