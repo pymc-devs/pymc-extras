@@ -3,7 +3,7 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
-from pymc_extras.inference.advi import ADVIModule, SVITrainer, fit_advi
+from pymc_extras.inference.advi import Trainer, fit_advi
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
 
 
@@ -97,20 +97,19 @@ def test_guide_built_inside_model_context():
 
 
 def test_naive_custom_guide_does_not_leak_into_user_model():
-    class NaiveGuideModule(ADVIModule):
-        def configure_guide(self, model):
-            # Written without the Model(model=None) idiom, as a user naturally would
-            loc, scale = pt.scalar("mu_loc"), pt.scalar("mu_scale")
-            with pm.Model() as guide_model:
-                z = pm.Normal("mu_z")
-                pm.Deterministic("mu", loc + pt.softplus(scale) * z)
-            return AutoGuideModel(guide_model, {loc: np.array(0.0), scale: np.array(0.1)})
+    def naive_guide(model):
+        # Written without the Model(model=None) idiom, as a user naturally would
+        loc, scale = pt.scalar("mu_loc"), pt.scalar("mu_scale")
+        with pm.Model() as guide_model:
+            z = pm.Normal("mu_z")
+            pm.Deterministic("mu", loc + pt.softplus(scale) * z)
+        return AutoGuideModel(guide_model, {loc: np.array(0.0), scale: np.array(0.1)})
 
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         pm.Normal("y", mu, 1, observed=[0.5])
-        trainer = SVITrainer(NaiveGuideModule())
-        trainer.fit(n_steps=10, model=model)
+        trainer = Trainer(guide=naive_guide, convergence_window=None)
+        trainer.fit(10)
 
     assert set(model.named_vars) == {"mu", "y"}
 
