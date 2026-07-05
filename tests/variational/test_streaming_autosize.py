@@ -344,7 +344,7 @@ def test_parquet_source_names_the_shard_missing_a_column(tmp_path):
     pq.write_table(pa.table({"a": [1.0], "b": [2.0]}), f"{tmp_path}/p0.parquet")
     pq.write_table(pa.table({"a": [3.0]}), f"{tmp_path}/p1.parquet")
     src = parquet_source(str(tmp_path))
-    with pytest.raises(ValueError, match="p1.parquet"):
+    with pytest.raises(ValueError, match=r"p1\.parquet"):
         list(src)
 
 
