@@ -28,6 +28,7 @@ def compile_svi_training_fn(
     guide: AutoGuideModel,
     draws: int = 1,
     path_derivative_gradient: bool = True,
+    logp_scalings: dict | None = None,
     **compile_kwargs,
 ) -> TrainingFn:
     # draws is a compile-time constant: backends like JAX cannot handle inputs that
@@ -35,7 +36,12 @@ def compile_svi_training_fn(
     params = guide.params
     inputs = list(params)
 
-    logp, logq = get_logp_logq(model, guide, path_derivative_gradient=path_derivative_gradient)
+    logp, logq = get_logp_logq(
+        model,
+        guide,
+        path_derivative_gradient=path_derivative_gradient,
+        logp_scalings=logp_scalings,
+    )
 
     scalar_negative_elbo = advi_objective(logp, logq)
     [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
@@ -57,6 +63,7 @@ def compile_svi_step_fn(
     guide: AutoGuideModel,
     draws: int = 1,
     path_derivative_gradient: bool = True,
+    logp_scalings: dict | None = None,
     clip_norm: float | None = 10.0,
     beta1: float = 0.9,
     beta2: float = 0.999,
@@ -77,7 +84,12 @@ def compile_svi_step_fn(
     shared_params : dict
         Maps each guide parameter name to the shared variable holding its value.
     """
-    logp, logq = get_logp_logq(model, guide, path_derivative_gradient=path_derivative_gradient)
+    logp, logq = get_logp_logq(
+        model,
+        guide,
+        path_derivative_gradient=path_derivative_gradient,
+        logp_scalings=logp_scalings,
+    )
     scalar_negative_elbo = advi_objective(logp, logq)
     [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
     negative_elbo = negative_elbo_draws.mean(axis=0)

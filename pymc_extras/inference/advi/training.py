@@ -1,18 +1,22 @@
 import time
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 import pymc as pm
+import pytensor
 
 from arviz_base import dict_to_dataset
 from pymc import Model, modelcontext
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.progress_bar import CustomProgress, default_progress_theme
 from pymc.pytensorf import resolve_backend_compile_kwargs
+from pymc.variational.minibatch_rv import MinibatchRandomVariable
 from pytensor import config as pytensor_config
+from pytensor.compile.sharedvalue import SharedVariable
+from pytensor.graph import ancestors
 from pytensor.tensor.random.type import RandomType
 from rich.console import Console
 from rich.progress import (
@@ -217,6 +221,9 @@ class Trainer:
 
         self._guide: AutoGuideModel | None = guide if isinstance(guide, AutoGuideModel) else None
         self._param_names: list[str] | None = None
+        self._fit_model: Model | None = None
+        self._stream_shareds: dict[str, SharedVariable] = {}
+        self._logp_scalings: dict[str, float] = {}
         self._training_fn: TrainingFn | None = None
         self._step_fn: TrainingFn | None = None
         self._step_shared_params: dict | None = None
@@ -249,6 +256,7 @@ class Trainer:
             self._guide,
             draws=self.n_particles,
             path_derivative_gradient=self.path_derivative_gradient,
+            logp_scalings=self._logp_scalings_for(model),
             **self.compile_kwargs,
         )
 
@@ -331,6 +339,7 @@ class Trainer:
                 self._guide,
                 draws=self.n_particles,
                 path_derivative_gradient=self.path_derivative_gradient,
+                logp_scalings=self._logp_scalings_for(model),
                 clip_norm=self.clip_norm,
                 **self.compile_kwargs,
             )
@@ -381,10 +390,93 @@ class Trainer:
 
         return step_fn, state, finalize
 
+    def _prepare_data_stream(
+        self,
+        model: Model,
+        first_batch: dict[str, Any],
+        observeds: list | None,
+        total_size: int | None,
+    ) -> Model:
+        """Bind the model to a data stream, observing the variables named in ``observeds``.
+
+        A free RV in ``observeds`` is observed *once* with :func:`pymc.observe`,
+        through a shared variable initialized from the first batch, so later batches
+        stream in with a ``set_value`` instead of a model transform and recompile. A
+        ``pm.Data`` variable in ``observeds`` needs no transform and is streamed with
+        ``set_data`` like any other batch key. The resulting model is cached: the
+        guide, the compiled functions, and :meth:`sample_posterior` all use it.
+
+        When ``total_size`` (the dataset row count ``N``) is known, the
+        log-likelihood of each variable in ``observeds`` is rescaled by
+        ``N / batch_rows`` so the minibatch estimate is unbiased for the full-data
+        one; variables already carrying their own ``total_size`` in the model are
+        left alone.
+        """
+        if self._fit_model is not None:
+            return self._fit_model
+
+        def likelihood_scale(name: str) -> float | None:
+            if total_size is None or name not in first_batch:
+                return None
+            value = np.asarray(first_batch[name])
+            return total_size / (value.shape[0] if value.ndim else 1)
+
+        to_observe = {}
+        for var in observeds or []:
+            name = var if isinstance(var, str) else var.name
+            var = model[name]
+            if isinstance(var, SharedVariable):
+                # A pm.Data placeholder: rescale the observed RVs it is the
+                # observation of
+                if (scale := likelihood_scale(name)) is not None:
+                    for rv in model.observed_RVs:
+                        if isinstance(rv.owner.op, MinibatchRandomVariable):
+                            # The model already rescales this likelihood: a total_size
+                            # passed to the observed RV wraps it in a
+                            # MinibatchRandomVariable whose logp carries the
+                            # N / batch_size factor, so adding ours would scale twice
+                            continue
+                        if var in ancestors([model.rvs_to_values[rv]]):
+                            self._logp_scalings[rv.name] = scale
+                continue
+            if name not in first_batch:
+                raise ValueError(
+                    f"{name!r} is listed in observeds but the data stream's first "
+                    f"batch has no entry for it."
+                )
+            value = np.asarray(first_batch[name], dtype=var.dtype)
+            to_observe[name] = self._stream_shareds[name] = pytensor.shared(
+                value, name=f"{name}_data"
+            )
+            if (scale := likelihood_scale(name)) is not None:
+                self._logp_scalings[name] = scale
+        if to_observe:
+            model = pm.observe(model, to_observe)
+
+        self._fit_model = model
+        return model
+
+    def _logp_scalings_for(self, model: Model) -> dict | None:
+        """Resolve the cached per-name likelihood scalings against the fit model."""
+        if not self._logp_scalings:
+            return None
+        return {model[name]: scale for name, scale in self._logp_scalings.items()}
+
+    def _apply_batch(self, model: Model, batch: dict[str, Any]) -> None:
+        """Stream one batch into the model, ahead of the next training step."""
+        for name, value in batch.items():
+            shared = self._stream_shareds.get(name)
+            if shared is not None:
+                shared.set_value(np.asarray(value, dtype=shared.type.dtype))
+            else:
+                model.set_data(name, value)
+
     def fit(
         self,
         n: int = 10_000,
+        data: Iterable[dict[str, Any]] | None = None,
         *,
+        observeds: list | None = None,
         state: SVIState | None = None,
         random_seed=None,
     ) -> SVIState:
@@ -401,7 +493,26 @@ class Trainer:
         n : int, optional
             Maximum number of optimization steps, by default 10_000. Training may
             stop earlier, controlled by ``convergence_window`` and
-            ``relative_tolerance``.
+            ``relative_tolerance``, or by the ``data`` iterator running out.
+        data : iterable of dict, optional
+            A stream of batches, one per step, each a dictionary mapping variable
+            names to data. Every step, each entry is reassigned on the model with
+            ``set_data`` before the gradient update, so the model trains on one
+            batch at a time. Names listed in ``observeds`` may instead refer to
+            free RVs, see below. If the iterable supports ``len``, that is taken
+            as the total dataset row count ``N`` (as for a torch-style dataloader
+            that yields minibatches of a dataset of ``N`` rows).
+        observeds : list of str or variable, optional
+            Variables whose entry in the ``data`` dictionaries is an observation.
+            A variable that is a ``pm.Data`` placeholder is streamed into as usual;
+            one that is instead a random variable is first converted to an observed
+            RV with :func:`pymc.observe` (once, before compilation; the values then
+            stream through a shared variable). Requires ``data``. When ``N`` is
+            known from ``len(data)``, each observation's log-likelihood is rescaled
+            by ``N / batch_rows``, making the minibatch ELBO an unbiased estimate
+            of the full-data one; without it batches are treated as the full
+            dataset and the posterior will be too wide. Variables that already
+            carry a ``total_size`` in the model are left alone.
         state : SVIState, optional
             Previous state to resume training from. If None, starts fresh. With the
             default compiled optimizer only the parameters are restored, not the
@@ -419,6 +530,26 @@ class Trainer:
             raise ValueError(f"n must be a positive integer (the number of fit steps), got {n!r}")
 
         model = modelcontext(self.model)
+
+        stream = None
+        if data is not None:
+            try:
+                total_size = len(data)
+            except TypeError:
+                total_size = None
+            stream = iter(data)
+            first_batch = next(stream, None)
+            if first_batch is None:
+                raise ValueError("the data iterator yielded no batches")
+            model = self._prepare_data_stream(model, first_batch, observeds, total_size)
+            self._apply_batch(model, first_batch)
+        elif observeds:
+            raise ValueError("observeds requires a data iterator to stream the observations from")
+        elif self._fit_model is not None:
+            # A previous fit bound this trainer to a stream-observed model; the guide
+            # and compiled functions belong to it, not to the original model
+            model = self._fit_model
+
         self._resolve_guide(model)
 
         if self.optimizer is None:
@@ -447,6 +578,14 @@ class Trainer:
                 start_time = None
 
                 for step in range(n):
+                    if stream is not None and step > 0:
+                        # The first batch was applied before compilation; training
+                        # stops early if the stream runs out
+                        batch = next(stream, None)
+                        if batch is None:
+                            break
+                        self._apply_batch(model, batch)
+
                     loss, state = step_fn(step, state)
                     if start_time is None:
                         start_time = time.perf_counter()
@@ -514,7 +653,9 @@ class Trainer:
         if state is None or self._guide is None:
             raise RuntimeError("The trainer has not been fitted yet.")
 
-        model = modelcontext(self.model)
+        # The guide was built on the fit model, which differs from the user's model
+        # when fit streamed observations into it with pm.observe
+        model = self._fit_model if self._fit_model is not None else modelcontext(self.model)
         self._compile_sampling_fn(model, draws)
 
         if random_seed is not None:

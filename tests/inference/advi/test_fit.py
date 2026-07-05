@@ -114,6 +114,112 @@ def test_naive_custom_guide_does_not_leak_into_user_model():
     assert set(model.named_vars) == {"mu", "y"}
 
 
+def test_fit_streams_batches_into_data():
+    rng = np.random.default_rng(0)
+
+    def batches():
+        while True:
+            yield {"batch": rng.normal(1.0, 1.0, size=64)}
+
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        batch = pm.Data("batch", np.zeros(64))
+        pm.Normal("y", theta, 1, observed=batch)
+
+    trainer = Trainer(model=model, convergence_window=None)
+    trainer.fit(1_000, batches(), random_seed=1)
+    idata = trainer.sample_posterior(1_000, random_seed=2)
+
+    theta_draws = idata["posterior"].dataset["theta"].values.ravel()
+    np.testing.assert_allclose(theta_draws.mean(), 1.0, atol=0.1)
+    # The last batch remains on the model
+    assert not np.array_equal(model["batch"].get_value(), np.zeros(64))
+
+
+def test_fit_streams_observations_into_free_rv():
+    rng = np.random.default_rng(0)
+
+    def batches():
+        while True:
+            yield {"y": rng.normal(1.0, 1.0, size=64)}
+
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        pm.Normal("y", theta, 1, shape=(64,))
+
+    trainer = Trainer(model=model, convergence_window=None)
+    trainer.fit(1_000, batches(), observeds=["y"], random_seed=1)
+    idata = trainer.sample_posterior(1_000, random_seed=2)
+
+    # y was observed, so the posterior contains only theta
+    assert set(idata["posterior"].dataset.data_vars) == {"theta"}
+    theta_draws = idata["posterior"].dataset["theta"].values.ravel()
+    np.testing.assert_allclose(theta_draws.mean(), 1.0, atol=0.1)
+    # The user's model is untouched
+    assert "y" not in [rv.name for rv in model.observed_RVs]
+
+
+def test_fit_rescales_likelihood_when_stream_has_len():
+    rng = np.random.default_rng(0)
+    full_data = rng.normal(1.0, 1.0, size=1_000)
+
+    class Loader:
+        # A torch-style dataloader: yields minibatches, len is the dataset size N
+        def __len__(self):
+            return full_data.shape[0]
+
+        def __iter__(self):
+            while True:
+                idx = rng.integers(full_data.shape[0], size=50)
+                yield {"y": full_data[idx]}
+
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 1)
+        pm.Normal("y", theta, 1, shape=(50,))
+
+    trainer = Trainer(model=model, convergence_window=None)
+    trainer.fit(3_000, Loader(), observeds=["y"], random_seed=1)
+    idata = trainer.sample_posterior(2_000, random_seed=2)
+    theta_draws = idata["posterior"].dataset["theta"].values.ravel()
+
+    # Reference: the same fit with the full dataset observed at once
+    with pm.Model() as full_model:
+        theta = pm.Normal("theta", 0, 1)
+        pm.Normal("y", theta, 1, observed=full_data)
+    ref = fit_advi(
+        model=full_model, n_steps=3_000, draws=2_000, convergence_window=None, random_seed=1
+    )
+    ref_draws = ref["posterior"].dataset["theta"].values.ravel()
+
+    post_mean = full_data.sum() / (1 + full_data.size)
+    np.testing.assert_allclose(theta_draws.mean(), post_mean, atol=0.1)
+    # With the N / batch_rows rescaling the minibatch fit matches the full-data
+    # fit, not the unscaled 50-row batch posterior (whose std would be ~0.14)
+    np.testing.assert_allclose(theta_draws.std(), ref_draws.std(), rtol=0.25)
+    assert theta_draws.std() < 0.1
+
+
+def test_fit_stops_when_stream_runs_out():
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        pm.Normal("y", theta, 1, shape=(4,))
+
+    data = ({"y": np.ones(4)} for _ in range(5))
+    trainer = Trainer(model=model, convergence_window=None)
+    state = trainer.fit(1_000, data, observeds=["y"], random_seed=1)
+
+    assert state.step == 5
+
+
+def test_fit_observeds_without_data_raises():
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        pm.Normal("y", theta, 1, shape=(4,))
+
+    with pytest.raises(ValueError, match="observeds requires a data iterator"):
+        Trainer(model=model).fit(10, observeds=["y"])
+
+
 def test_discrete_free_rv_raises():
     with pm.Model() as model:
         z = pm.Bernoulli("z", 0.5)

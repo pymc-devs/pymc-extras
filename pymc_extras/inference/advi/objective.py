@@ -7,7 +7,12 @@ from pytensor.tensor import TensorVariable
 from pymc_extras.inference.advi.autoguide import AutoGuideModel
 
 
-def get_logp_logq(model: Model, guide: AutoGuideModel, path_derivative_gradient: bool = True):
+def get_logp_logq(
+    model: Model,
+    guide: AutoGuideModel,
+    path_derivative_gradient: bool = True,
+    logp_scalings: dict[TensorVariable, float] | None = None,
+):
     """
     Compute the log probability of the model and the guide, evaluated under draws from the guide.
 
@@ -23,6 +28,10 @@ def get_logp_logq(model: Model, guide: AutoGuideModel, path_derivative_gradient:
         change the value of logq, only its gradients: the score-function term, which has zero
         expectation, is dropped, yielding the lower-variance path-derivative gradient
         estimator of _[1] (also known as "sticking the landing").
+    logp_scalings : dict, optional
+        Maps model variables to a factor multiplying their logp term, e.g. the
+        ``total_size / batch_size`` rescaling that makes a minibatch log-likelihood an
+        unbiased estimate of the full-data one.
 
     Returns
     -------
@@ -43,7 +52,16 @@ def get_logp_logq(model: Model, guide: AutoGuideModel, path_derivative_gradient:
         if rv not in model.observed_RVs
     }
 
-    logp = graph_replace(model.logp(), inputs_to_guide_rvs)
+    if logp_scalings:
+        scaled = set(logp_scalings)
+        rest = [var for var in (*model.basic_RVs, *model.potentials) if var not in scaled]
+        model_logp = model.logp(vars=rest)
+        for var, scale in logp_scalings.items():
+            model_logp = model_logp + scale * model.logp(vars=[var])
+    else:
+        model_logp = model.logp()
+
+    logp = graph_replace(model_logp, inputs_to_guide_rvs)
     logq = guide.stochastic_logq(path_derivative_gradient=path_derivative_gradient)
 
     return logp, logq
