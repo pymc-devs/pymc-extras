@@ -5,7 +5,7 @@ from pymc_extras.inference.advi.autoguide import (
     AutoMultivariateNormal,
     get_value_shapes_and_dims,
 )
-from pymc_extras.inference.advi.fit import ADVIModule, fit_advi
+from pymc_extras.inference.advi.fit import fit_advi
 from pymc_extras.inference.advi.optimizers import (
     GradientTransformation,
     adam,
@@ -15,18 +15,16 @@ from pymc_extras.inference.advi.optimizers import (
     clipped_adam,
     linear_onecycle_schedule,
 )
-from pymc_extras.inference.advi.training import SVIModule, SVIState, SVITrainer
+from pymc_extras.inference.advi.training import SVIState, Trainer
 
 __all__ = [
-    "ADVIModule",
     "AutoDiagonalNormal",
     "AutoGuideModel",
     "AutoLowRankMultivariateNormal",
     "AutoMultivariateNormal",
     "GradientTransformation",
-    "SVIModule",
     "SVIState",
-    "SVITrainer",
+    "Trainer",
     "adam",
     "apply_updates",
     "chain",
