@@ -6,6 +6,7 @@ from pytensor.graph import node_rewriter
 from pytensor.graph.replace import graph_replace
 from pytensor.graph.traversal import ancestors
 from pytensor.tensor import broadcast_to, constant, sqrt
+from pytensor.tensor.rewriting.basic import broadcasted_by
 
 from pymc_extras.model.marginal.distributions.core import (
     MarginalRV,
@@ -86,6 +87,15 @@ def normal_normal_marginal_rewrite(fgraph, node):
     if not (
         isinstance(marginalized_rv.owner.op, Normal) and isinstance(dependent_rv.owner.op, Normal)
     ):
+        return None
+
+    # Deny broadcasting of the marginalized RV into the dependent. The closed
+    # form is elementwise: each dependent draw depends on its own marginalized
+    # draw. If the marginalized RV is broadcast (stretched) to a wider dependent,
+    # one latent is shared across several dependents and the true marginal is a
+    # correlated MvNormal, not the elementwise Normal we emit. Unknown (None)
+    # dependent dims count as broadcasting since they may be >1 at runtime.
+    if broadcasted_by(marginalized_rv, dependent_rv):
         return None
 
     mu_dep, sigma_dep = dependent_rv.owner.op.dist_params(dependent_rv.owner)

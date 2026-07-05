@@ -61,6 +61,18 @@ def test_normal_normal_nonlinear_in_sigma():
         marginalize(m, m["x"])
 
 
+@pytest.mark.parametrize("x_shape", [(), (1,)], ids=["scalar", "size-1"])
+def test_normal_normal_broadcast_dependent_not_supported(x_shape):
+    """A marginalized rv broadcast across a wider dependent shares one latent,
+    so the true marginal is a correlated MvNormal, not the elementwise Normal."""
+    with pm.Model() as m:
+        x = pm.Normal("x", mu=0, sigma=1, shape=x_shape)
+        y = pm.Normal("y", mu=x, sigma=1.0, shape=(3,))
+
+    with pytest.raises(NotImplementedError):
+        marginalize(m, m["x"])
+
+
 def test_normal_normal_conditional_logp():
     """Test that conditional gives correct conjugate posterior logp for Normal-Normal."""
     sigma_prior = 3.0
