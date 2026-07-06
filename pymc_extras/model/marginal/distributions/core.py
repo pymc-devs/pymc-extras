@@ -15,7 +15,7 @@ def inline_ofg_outputs(op: OpFromGraph, inputs: Sequence[Variable]) -> list[Vari
     Whereas `OpFromGraph` "wraps" a graph inside a single Op, this function "unwraps"
     the inner graph.
     """
-    outputs = op._frozen_fgraph.bind(list(inputs))
+    outputs = op.fgraph.bind(list(inputs))
     for inner_out, out in zip(op.inner_outputs, outputs):
         out.name = inner_out.name
     return outputs

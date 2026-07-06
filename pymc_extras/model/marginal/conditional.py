@@ -132,7 +132,9 @@ def conditional_fgraph(
         # variable and any new shared RNGs (e.g. from Categorical.dist) as inputs.
         sample_graph.name = var_name
         value = sample_graph.clone()
-        conditional_free_rv = model_free_rv(sample_graph, value, None, *op.marginalized_dims)
+        conditional_free_rv = model_free_rv(
+            sample_graph, value, None, var_name, *op.marginalized_dims
+        )
         fg.add_output(conditional_free_rv, reason="conditionalize", import_missing=True)
         recovered[var_name] = conditional_free_rv
 

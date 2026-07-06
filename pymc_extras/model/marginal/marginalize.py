@@ -11,7 +11,6 @@ from pymc.model.fgraph import (
     ModelDeterministic,
     ModelPotential,
     ModelValuedVar,
-    extract_dims,
     fgraph_from_model,
     model_from_fgraph,
 )
@@ -128,7 +127,7 @@ def _replace_marginal_subgraph(
             if client_node in subgraph_nodes:
                 fgraph.change_node_input(client_node, client_idx, raw_rv, import_missing=True)
 
-    marginalized_dims = extract_dims(rv_to_marginalize)
+    marginalized_dims = rv_to_marginalize.owner.op.dims
     n_dep = len(dependent_rvs)
 
     has_nested = any(

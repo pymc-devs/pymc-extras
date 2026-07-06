@@ -231,8 +231,12 @@ def finite_discrete_marginalized_conditional(op, inputs, dep_rvs):
     # perform internally (warn_rvs cannot be forwarded there). Work on the
     # inner (nominal) graph with value dummies and substitute the real
     # variables once at the end.
-    marginalized = op.inner_outputs[0]
-    dependents = list(op.inner_outputs[1 : 1 + op.n_dependent_rvs])
+    # inner_inputs/inner_outputs are frozen (immutable) views; conditional_logp
+    # and graph_replace below need mutable nodes, so work on an unfrozen copy.
+    inner_graph = op.fgraph.unfreeze()
+    inner_inputs = inner_graph.inputs
+    marginalized = inner_graph.outputs[0]
+    dependents = list(inner_graph.outputs[1 : 1 + op.n_dependent_rvs])
 
     marginalized_value = marginalized.clone()
     dep_dummies = [dep.type() for dep in dependents]
@@ -274,7 +278,7 @@ def finite_discrete_marginalized_conditional(op, inputs, dep_rvs):
         # matching the marginalized dtype so the conditional stays loggable.
         sample_graph += rv_domain[0].astype(marginalized.dtype)
 
-    replacements = dict(zip(op.inner_inputs, inputs))
+    replacements = dict(zip(inner_inputs, inputs))
     replacements.update(zip(dep_dummies, dep_rvs))
     [sample_graph] = graph_replace([sample_graph], replace=replacements, strict=False)
     return sample_graph

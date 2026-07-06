@@ -256,8 +256,12 @@ def discrete_markov_chain_marginalized_conditional(op, inputs, dep_rvs):
     (nominal) graph with value dummies for the dependents, then the real
     ``inputs`` / ``dep_rvs`` are substituted once at the end.
     """
-    chain = op.inner_outputs[0]
-    dependents = list(op.inner_outputs[1 : 1 + op.n_dependent_rvs])
+    # inner_inputs/inner_outputs are frozen (immutable) views; the logp and
+    # graph_replace below need mutable nodes, so work on an unfrozen copy.
+    inner_graph = op.fgraph.unfreeze()
+    inner_inputs = inner_graph.inputs
+    chain = inner_graph.outputs[0]
+    dependents = list(inner_graph.outputs[1 : 1 + op.n_dependent_rvs])
 
     if chain.type.ndim > 1:
         raise NotImplementedError(
@@ -297,7 +301,7 @@ def discrete_markov_chain_marginalized_conditional(op, inputs, dep_rvs):
         P=P_t, init_dist=init_dist, steps=steps, time_varying_P=True
     )
 
-    replacements = dict(zip(op.inner_inputs, inputs))
+    replacements = dict(zip(inner_inputs, inputs))
     replacements.update(zip(dep_dummies, dep_rvs))
     [cond_chain] = graph_replace([cond_chain], replace=replacements, strict=False)
     return cond_chain
