@@ -1,10 +1,10 @@
-from pymc.model.fgraph import model_free_rv
+from pymc.model.fgraph import ModelValuedVar, model_free_rv
 from pymc.pytensorf import collect_default_updates
 from pytensor.compile import SharedVariable
 from pytensor.graph import Apply, Op, node_rewriter
 from pytensor.graph.replace import graph_replace
 from pytensor.graph.rewriting.db import EquilibriumDB
-from pytensor.graph.traversal import graph_inputs
+from pytensor.graph.traversal import ancestors, graph_inputs
 
 from pymc_extras.model.marginal.distributions.core import MarginalRV, inline_ofg_outputs
 
@@ -173,7 +173,17 @@ def local_unmarginalize(fgraph, node):
     # import_missing imports the new value variable as an input.
     fgraph.add_output(unmarginalized_free_rv, reason="unmarginalize", import_missing=True)
 
-    dependent_rvs = graph_replace(dependent_rvs, {unmarginalized_rv: unmarginalized_free_rv})
+    # Pin already-built model-var wrappers (opaque ModelValuedVar) as boundaries so
+    # graph_replace does not clone their subgraphs, otherwise a shared upstream RV
+    # they wrap (e.g. a previously unmarginalized parent) gets duplicated.
+    pinned = {
+        a: a
+        for a in ancestors(dependent_rvs)
+        if a.owner is not None and isinstance(a.owner.op, ModelValuedVar)
+    }
+    dependent_rvs = graph_replace(
+        dependent_rvs, {**pinned, unmarginalized_rv: unmarginalized_free_rv}
+    )
 
     return [unmarginalized_free_rv, *dependent_rvs, *rngs]
 
