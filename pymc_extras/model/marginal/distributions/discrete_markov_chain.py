@@ -74,40 +74,48 @@ def _hmm_emission_logp(op, chain, dependent_rvs, values):
 
 
 def _hmm_log_init_and_transition(chain, chain_shape, batch_chain_value):
-    """Log initial-state probabilities (per state) and the log transition matrix.
+    """Joint log-prob of the initial states and the log transition matrix.
 
     Returns
     -------
-    batch_logp_init_dist : TensorVariable
-        Shape ``(n_states, *chain_batch)``.
+    log_init_joint : TensorVariable
+        Joint log-prob of the ``n_lags`` initial states, one leading axis per lag,
+        ``((n_states,) * n_lags, *chain_batch)``.
     log_P : TensorVariable
-        Log transition matrix. Homogeneous chains place the two core (from, to)
-        axes at the front, ``(n_states, n_states, *batch)``. Time-varying chains
-        keep one matrix per transition, ``(n_transitions, n_states, n_states)`` =
-        ``(time, from, to)`` (unbatched), iterated as a scan sequence downstream.
+        Log transition matrix. Homogeneous chains place the ``n_lags + 1`` core state
+        axes at the front, ``((n_states,) * (n_lags + 1), *batch)``. Time-varying chains
+        keep one matrix per transition, ``(time, (n_states,) * (n_lags + 1), *batch)``,
+        iterated as a scan sequence downstream.
     """
     P, n_steps_, init_dist_, rng = chain.owner.inputs
-    time_varying = chain.owner.op.time_varying_P
+    op = chain.owner.op
+    n_lags = op.n_lags
+    time_varying = op.time_varying_P
 
-    # To compute the prior probabilities of each state, we evaluate the logp of the domain (all
-    # possible states) under the initial distribution. This is robust to everything the user can
-    # throw at it.
     init_dist_value = init_dist_.type()
     logp_init_dist = logp(init_dist_, init_dist_value)
-    # Squeeze core dimension for n_lags=1 (only supported case)
-    batch_logp_init_dist = vectorize_graph(
-        logp_init_dist, {init_dist_value: batch_chain_value[..., :1]}
-    ).squeeze(-1)
+    # The n_lags initial states are independent (IID scalar init). Evaluate the domain at every
+    # lag position and outer-sum the per-position terms, one leading state axis per lag.
+    logp_init_per_position = vectorize_graph(
+        logp_init_dist, {init_dist_value: batch_chain_value[..., :n_lags]}
+    )  # (n_states, *batch, n_lags)
+    log_init_joint = 0
+    for j in range(n_lags):
+        g_j = logp_init_per_position[..., j]  # (n_states, *batch) over state j
+        insert = tuple(i for i in range(n_lags) if i != j)
+        log_init_joint = log_init_joint + (pt.expand_dims(g_j, insert) if insert else g_j)
 
-    if time_varying:
-        # P is already (time, from, to); each transition uses its own matrix.
-        log_P = pt.log(P)
-    else:
-        # Add implicit dimensions of P, and place core (from, to) dimensions at the front
-        P = pt.atleast_Nd(P, n=len(chain_shape) + 1)
-        P = pt.moveaxis(P, (-2, -1), (0, 1))
-        log_P = pt.log(P)
-    return batch_logp_init_dist, log_P
+    # Bring P's n_lags + 1 state axes (and the time axis, when time-varying) to the front so the
+    # message pass indexes them directly; batch dims trail. Homogeneous P becomes
+    # (n_states,) * (n_lags + 1) + batch; time-varying becomes (time, (n_states,) * (n_lags + 1),
+    # batch), iterated as a scan sequence downstream.
+    batch_ndim = len(chain_shape) - 1
+    core_ndim = op.P_core_ndim
+    P = pt.atleast_Nd(P, n=core_ndim + batch_ndim)
+    state_axes = list(range(-(n_lags + 1), 0))
+    source = [-(n_lags + 2), *state_axes] if time_varying else state_axes
+    log_P = pt.log(pt.moveaxis(P, source, list(range(core_ndim))))
+    return log_init_joint, log_P
 
 
 def _scan_messages(core, *, init, emissions_seq, log_P, time_varying):
@@ -150,21 +158,37 @@ def _scan_messages(core, *, init, emissions_seq, log_P, time_varying):
     return seq.owner.inputs[0]
 
 
-def _hmm_forward_log_alphas(batch_logp_emissions, batch_logp_init_dist, log_P, time_varying=False):
-    """Forward filter. Returns the full ``log_alpha`` trace, shape ``(T, n_states, *batch)``.
+def _hmm_forward_log_alphas(
+    batch_logp_emissions, log_init_joint, log_P, n_lags, time_varying=False
+):
+    """Forward filter. Returns the full ``log_alpha`` trace, time first.
 
-    ``alpha_t(s) = p(y_{1:t}, s_t=s)`` computed entirely in logs:
-    ``alpha_t = p(y_t | s_t) * sum_{s_{t-1}}(p(s_t | s_{t-1}) * alpha_{t-1})``.
-    The trace is time first and includes ``alpha_0`` as the initial state.
+    ``alpha_t`` is a message over the last ``n_lags`` states,
+    ``p(y_{0:t}, s_{t-n_lags+1}, ..., s_t)``, held with the ``n_lags`` state axes leading and batch
+    trailing. The seed ``alpha_{n_lags-1}`` is the joint over the first ``n_lags`` initial states
+    with their emissions; each transition then sums out the oldest state ``s_{t-n_lags}`` and
+    folds in the newest emission ``p(y_t | s_t)``. For ``n_lags == 1`` this is the standard filter.
     """
-    log_alpha_init = batch_logp_init_dist + batch_logp_emissions[..., 0]
+    # Seed: joint init logp over the n_lags leading state axes, plus each position's emission
+    # placed on its own axis.
+    log_alpha_init = log_init_joint
+    for j in range(n_lags):
+        e_j = batch_logp_emissions[..., j]  # (n_states, *batch) over state j
+        insert = tuple(i for i in range(n_lags) if i != j)
+        log_alpha_init = log_alpha_init + (pt.expand_dims(e_j, insert) if insert else e_j)
 
-    # Scan needs the time dimension first, and we already consumed the 1st logp computing the initial value
-    emissions_seq = pt.moveaxis(batch_logp_emissions[..., 1:], -1, 0)
+    # Transitions consume the emissions for steps n_lags .. T-1 (the seed used 0 .. n_lags-1).
+    emissions_seq = pt.moveaxis(batch_logp_emissions[..., n_lags:], -1, 0)
 
     def step_alpha(logp_emission, log_P_t, log_alpha):
-        step_log_prob = pt.logsumexp(log_alpha[:, None, ...] + log_P_t, axis=0)
-        return logp_emission + step_log_prob
+        # log_alpha is (n_states,) * n_lags + batch over (s_{t-n_lags}, ..., s_{t-1}); add the s_t
+        # axis, weight by the transition tensor, and sum out the oldest state s_{t-n_lags}.
+        step_log_prob = pt.logsumexp(pt.expand_dims(log_alpha, n_lags) + log_P_t, axis=0)
+        # Emission depends on s_t only -> broadcast onto the newest (last) state axis.
+        emission = (
+            pt.expand_dims(logp_emission, tuple(range(n_lags - 1))) if n_lags > 1 else logp_emission
+        )
+        return emission + step_log_prob
 
     return _scan_messages(
         step_alpha,
@@ -206,6 +230,20 @@ def _hmm_backward_log_betas(batch_logp_emissions, log_P, time_varying=False):
 
 @_logprob.register(MarginalDiscreteMarkovChainRV)
 def marginal_discrete_markov_chain_logp(op, values, *inputs, **kwargs):
+    """Marginal ``log p(emissions | inputs)`` of a marginalized DiscreteMarkovChain.
+
+    Standard forward algorithm, generalized to ``n_lags`` and run in log space:
+
+    1. Emissions. The conditional logp of the dependent RVs is vectorized over the chain domain,
+       giving ``log p(y_t | s_t)`` for every state at every step.
+    2. Forward filter. ``alpha_t`` is the joint ``log p(y_{0:t}, s_{t-n_lags+1}, ..., s_t)``, seeded
+       from the init distribution and advanced one step at a time by a scan.
+    3. Termination. The last message is logsumexp-ed over its ``n_lags`` state axes.
+
+    A chain with ``n_lags > 1`` is *not* rewritten into an equivalent first-order chain over
+    ``n_states ** n_lags`` compound states. The message keeps one axis per lag and the transition
+    tensor is indexed directly, which avoids materializing the compound transition matrix.
+    """
     all_outputs = inline_ofg_outputs(op, inputs)
     chain_rv = all_outputs[0]
     dependent_rvs = list(all_outputs[1 : 1 + op.n_dependent_rvs])
@@ -216,16 +254,14 @@ def marginal_discrete_markov_chain_logp(op, values, *inputs, **kwargs):
     )
 
     # Step 2: Run the forward algorithm over the transition probabilities
-    batch_logp_init_dist, log_P = _hmm_log_init_and_transition(
-        chain_rv, chain_shape, batch_chain_value
-    )
-    time_varying = chain_rv.owner.op.time_varying_P
+    log_init_joint, log_P = _hmm_log_init_and_transition(chain_rv, chain_shape, batch_chain_value)
+    chain_op = chain_rv.owner.op
     log_alphas = _hmm_forward_log_alphas(
-        batch_logp_emissions, batch_logp_init_dist, log_P, time_varying
+        batch_logp_emissions, log_init_joint, log_P, chain_op.n_lags, chain_op.time_varying_P
     )
 
-    # Final logp is just the sum of the last scan state
-    joint_logp = pt.logsumexp(log_alphas[-1], axis=0)
+    # Final logp sums the last message over all n_lags remaining (leading) state axes.
+    joint_logp = pt.logsumexp(log_alphas[-1], axis=tuple(range(chain_op.n_lags)))
 
     # Align logp with non-collapsed batch dimensions of first RV
     remaining_dims_first_emission = list(op.dims_connections[0])
@@ -262,7 +298,12 @@ def discrete_markov_chain_marginalized_conditional(op, inputs, dep_rvs):
     inner_inputs = inner_graph.inputs
     chain = inner_graph.outputs[0]
     dependents = list(inner_graph.outputs[1 : 1 + op.n_dependent_rvs])
+    chain_op = chain.owner.op
 
+    if chain_op.n_lags > 1:
+        raise NotImplementedError(
+            "conditional()/recover() for DiscreteMarkovChain with n_lags > 1 is not yet supported."
+        )
     if chain.type.ndim > 1:
         raise NotImplementedError(
             "Recovering a batched DiscreteMarkovChain (more than one chain) is not yet supported."
@@ -273,12 +314,10 @@ def discrete_markov_chain_marginalized_conditional(op, inputs, dep_rvs):
     batch_logp_emissions, batch_chain_value, chain_shape = _hmm_emission_logp(
         op, chain, dependents, dep_dummies
     )
-    batch_logp_init_dist, log_P = _hmm_log_init_and_transition(
-        chain, chain_shape, batch_chain_value
-    )
-    time_varying = chain.owner.op.time_varying_P
+    log_init_joint, log_P = _hmm_log_init_and_transition(chain, chain_shape, batch_chain_value)
+    time_varying = chain_op.time_varying_P
     log_alphas = _hmm_forward_log_alphas(
-        batch_logp_emissions, batch_logp_init_dist, log_P, time_varying
+        batch_logp_emissions, log_init_joint, log_P, chain_op.n_lags, time_varying
     )  # (T, k)
     log_betas = _hmm_backward_log_betas(batch_logp_emissions, log_P, time_varying)  # (T, k)
 
@@ -314,24 +353,6 @@ def discrete_markov_chain_marginal(fgraph, node):
     marginalized_rv_op = marginalized_rv.owner.op
     if not isinstance(marginalized_rv_op, DiscreteMarkovChain):
         return None
-
-    if marginalized_rv_op.n_lags > 1:
-        raise NotImplementedError(
-            "Marginalization for DiscreteMarkovChain with n_lags > 1 is not supported"
-        )
-    P_ndim = marginalized_rv.owner.inputs[0].type.ndim
-    # A time-varying chain has an extra (time, k, k) core axis, so ndim == 3 is expected
-    # there; the flag disambiguates it from a genuine batch dimension.
-    if marginalized_rv_op.time_varying_P:
-        if P_ndim > 3:
-            raise NotImplementedError(
-                "Marginalization for batched time-varying DiscreteMarkovChain is not supported"
-            )
-    elif P_ndim > 2:
-        raise NotImplementedError(
-            "Marginalization for DiscreteMarkovChain with non-matrix transition probability "
-            "is not supported"
-        )
 
     return build_enumerable_marginal_rv(node, inputs, outputs, MarginalDiscreteMarkovChainRV)
 

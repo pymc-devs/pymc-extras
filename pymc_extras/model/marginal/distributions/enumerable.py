@@ -8,7 +8,7 @@ import pytensor.tensor as pt
 from pymc.distributions import Bernoulli, Categorical, DiscreteUniform
 from pymc.logprob.abstract import _logprob
 from pymc.logprob.basic import conditional_logp
-from pymc.pytensorf import constant_fold
+from pymc.pytensorf import constant_fold, resolve_shapes
 from pytensor.compile.mode import Mode
 from pytensor.graph import Op, node_rewriter, vectorize_graph
 from pytensor.graph.replace import graph_replace
@@ -100,7 +100,8 @@ def get_domain_of_finite_discrete_rv(rv: TensorVariable) -> tuple[int, ...]:
         return tuple(np.arange(lower, upper + 1))
     elif isinstance(op, DiscreteMarkovChain):
         P, *_ = dist_params
-        return tuple(range(pt.get_vector_length(P[-1])))
+        [n_states] = constant_fold(resolve_shapes([P.shape[-1]]))
+        return tuple(range(n_states))
 
     raise NotImplementedError(f"Cannot compute domain for op {op}")
 

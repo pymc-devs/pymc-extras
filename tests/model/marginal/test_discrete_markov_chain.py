@@ -223,6 +223,97 @@ def test_marginalized_discrete_markov_chain_time_varying_P():
     np.testing.assert_allclose(marginal_m.compile_logp()({}), expected)
 
 
+def test_marginalized_discrete_markov_chain_batched_time_varying_P():
+    """Batched chains sharing one time-varying P. The batch axes of the chain must not collide
+    with P's core (time, from, to) axes in the forward filter."""
+    pi0 = np.array([0.6, 0.4])
+    sigma = 0.8
+    obs = np.array([[0.1, 1.2, 0.8, -0.2], [0.9, -0.1, 0.2, 1.1], [0.5, 0.7, 1.0, 0.3]])
+    n_chains, T, k = *obs.shape, 2
+    A_t = np.array(
+        [
+            [[0.9, 0.1], [0.2, 0.8]],
+            [[0.4, 0.6], [0.3, 0.7]],
+            [[0.1, 0.9], [0.5, 0.5]],
+        ]
+    )  # (T - 1, k, k), no batch axis: every chain shares the same per-step kernels
+
+    with pm.Model() as m:
+        init = pm.Categorical.dist(p=pi0, shape=(n_chains,))
+        states = DiscreteMarkovChain(
+            "states", P=A_t, init_dist=init, time_varying_P=True, shape=(n_chains, T)
+        )
+        pm.Normal("emission", mu=states, sigma=sigma, observed=obs)
+
+    marginal_m = marginalize(m, [states])
+
+    # The chains are independent, so brute force each one over its k**T paths and sum.
+    expected = 0.0
+    for b in range(n_chains):
+        log_joint = []
+        for s in itertools.product(range(k), repeat=T):
+            lp = np.log(pi0[s[0]]) + sum(np.log(A_t[t - 1, s[t - 1], s[t]]) for t in range(1, T))
+            lp += norm.logpdf(obs[b], loc=np.array(s), scale=sigma).sum()
+            log_joint.append(lp)
+        expected += logsumexp(log_joint)
+
+    np.testing.assert_allclose(marginal_m.compile_logp()({}), expected)
+
+
+def test_marginalized_discrete_markov_chain_higher_order():
+    """Marginalizing a second-order (n_lags=2) chain matches brute force over all k**T paths."""
+    rng = np.random.default_rng(4)
+    pi0 = np.array([0.4, 0.6])
+    sigma = 0.7
+    obs = np.array([0.2, 1.1, -0.3, 0.9, 0.5])
+    T, k, n_lags = len(obs), 2, 2
+    P = rng.dirichlet(np.ones(k), size=(k, k))  # (k, k, k): P[s_{t-2}, s_{t-1}, s_t]
+
+    with pm.Model() as m:
+        init = pm.Categorical.dist(p=pi0)
+        chain = DiscreteMarkovChain("chain", P=P, init_dist=init, steps=T - n_lags, n_lags=n_lags)
+        pm.Normal("emission", mu=chain, sigma=sigma, observed=obs)
+    marginal_m = marginalize(m, [chain])
+
+    log_joint = []
+    for s in itertools.product(range(k), repeat=T):
+        lp = np.log(pi0[s[0]]) + np.log(pi0[s[1]])
+        lp += sum(np.log(P[s[t - 2], s[t - 1], s[t]]) for t in range(n_lags, T))
+        lp += norm.logpdf(obs, loc=np.array(s), scale=sigma).sum()
+        log_joint.append(lp)
+    expected = logsumexp(log_joint)
+
+    np.testing.assert_allclose(marginal_m.compile_logp()({}), expected)
+
+
+def test_marginalized_discrete_markov_chain_higher_order_time_varying():
+    """Second-order (n_lags=2) chain with a per-step transition tensor, vs brute force."""
+    rng = np.random.default_rng(5)
+    pi0 = np.array([0.4, 0.6])
+    sigma = 0.7
+    obs = np.array([0.2, 1.1, -0.3, 0.9, 0.5])
+    T, k, n_lags = len(obs), 2, 2
+    P_t = rng.dirichlet(np.ones(k), size=(T - n_lags, k, k))  # (steps, k, k, k)
+
+    with pm.Model() as m:
+        init = pm.Categorical.dist(p=pi0)
+        chain = DiscreteMarkovChain(
+            "chain", P=P_t, init_dist=init, n_lags=n_lags, time_varying_P=True
+        )
+        pm.Normal("emission", mu=chain, sigma=sigma, observed=obs)
+    marginal_m = marginalize(m, [chain])
+
+    log_joint = []
+    for s in itertools.product(range(k), repeat=T):
+        lp = np.log(pi0[s[0]]) + np.log(pi0[s[1]])
+        lp += sum(np.log(P_t[t - n_lags, s[t - 2], s[t - 1], s[t]]) for t in range(n_lags, T))
+        lp += norm.logpdf(obs, loc=np.array(s), scale=sigma).sum()
+        log_joint.append(lp)
+    expected = logsumexp(log_joint)
+
+    np.testing.assert_allclose(marginal_m.compile_logp()({}), expected)
+
+
 def test_conditional_discrete_markov_chain_time_varying_P():
     """conditional()/recover() for a non-homogeneous (time-varying P) HMM."""
     pi0 = np.array([0.6, 0.4])
