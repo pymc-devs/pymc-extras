@@ -116,7 +116,7 @@ def _infer_batch_dimensions(
 
         if len(sub_shape) < len(core_shape):
             raise ValueError(
-                f"Subbed matrix has fewer dims than core matrix: " f"{sub_shape} vs {core_shape}"
+                f"Subbed matrix has fewer dims than core matrix: {sub_shape} vs {core_shape}"
             )
 
         # Verify trailing/core dimensions match
@@ -124,7 +124,7 @@ def _infer_batch_dimensions(
 
         for core_dim, sub_dim in zip(core_shape, trailing_shape):
             if core_dim is not None and sub_dim is not None and core_dim != sub_dim:
-                raise ValueError(f"Core dimension mismatch: " f"{core_shape} vs {sub_shape}")
+                raise ValueError(f"Core dimension mismatch: {core_shape} vs {sub_shape}")
 
         batch_dims = sub_shape[: -len(core_shape)]
 
@@ -139,7 +139,7 @@ def _infer_batch_dimensions(
 
         # Validate consistency
         if len(batch_dims) != len(inferred_batch_dims):
-            raise ValueError(f"Inconsistent batch rank: " f"{batch_dims} vs {inferred_batch_dims}")
+            raise ValueError(f"Inconsistent batch rank: {batch_dims} vs {inferred_batch_dims}")
 
         merged_dims = []
 
@@ -152,7 +152,7 @@ def _infer_batch_dimensions(
                 merged_dims.append(inferred_dim)
             else:
                 raise ValueError(
-                    f"Inconsistent batch dimensions: " f"{batch_dims} vs {inferred_batch_dims}"
+                    f"Inconsistent batch dimensions: {batch_dims} vs {inferred_batch_dims}"
                 )
 
         inferred_batch_dims = tuple(merged_dims)
