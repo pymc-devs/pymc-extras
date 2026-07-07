@@ -9,8 +9,10 @@ from numpy.typing import NDArray
 from pymc import Model
 from pymc.pytensorf import compile
 from pytensor.compile.executor import Function
-from pytensor.graph import clone_replace, vectorize_graph
+from pytensor.graph import graph_replace, vectorize_graph
+from pytensor.graph.traversal import truncated_graph_inputs
 from pytensor.tensor import TensorVariable
+from pytensor.tensor.random.type import RandomType
 
 REGULARIZATION_TERM = 1e-8
 
@@ -181,11 +183,26 @@ def make_pathfinder_sample_fn(
     if vectorize:
         batched_logP_sym = vectorize_graph(logP_single, replace={single_input: phi_sym})
     else:
-        batched_logP_sym = pytensor.map(
-            fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
+        # A random draw that is loop-invariant w.r.t. the scanned input (e.g. a Minibatch's
+        # batch) must be drawn outside the scan: inside, its RNG has no update output and
+        # pm.compile rejects the graph. Draw it once in the outer graph, as the vectorize
+        # path already does, so the same draw is shared across every row.
+        invariant_draws = [
+            v
+            for v in truncated_graph_inputs([logP_single], ancestors_to_include=[single_input])
+            if v.owner and any(isinstance(i.type, RandomType) for i in v.owner.inputs)
+        ]
+        placeholders = [d.type() for d in invariant_draws]
+        logP_pure = graph_replace(logP_single, dict(zip(invariant_draws, placeholders)))
+
+        batched_pure = pytensor.map(
+            fn=lambda x_i: graph_replace(logP_pure, {single_input: x_i}),
             sequences=[phi_sym],
             return_updates=False,
         )
+        # Graft the real draws back on outside the loop. Passing them into the scan as
+        # non_sequences doesn't work: scan re-clones the RNG into the loop body from them.
+        batched_logP_sym = graph_replace(batched_pure, dict(zip(placeholders, invariant_draws)))
 
     outputs = [phi_sym, logQ_sym, batched_logP_sym, inv_hessian_diag_sym]
 
