@@ -154,11 +154,48 @@ class TestDiscreteMarkovRV:
         from_0 = draws[:, 0] == 0
         np.testing.assert_allclose((draws[from_0, 1] == 0).mean(), 0.9, atol=0.02)
 
-    def test_time_varying_P_requires_single_lag(self):
-        P_t = np.zeros((3, 2, 2, 2))
-        x0 = pm.Categorical.dist(p=[0.5, 0.5])
-        with pytest.raises(NotImplementedError, match="time_varying_P is only supported"):
-            DiscreteMarkovChain.dist(P=P_t, init_dist=x0, steps=3, time_varying_P=True, n_lags=2)
+    @pytest.mark.parametrize("batched", [False, True], ids=lambda b: f"batched={b}")
+    @pytest.mark.parametrize("time_varying", [False, True], ids=lambda t: f"time_varying={t}")
+    def test_higher_order_P(self, batched, time_varying):
+        """A second-order (n_lags=2) chain, optionally batched (a leading batch dim on P yields
+        independent chains) and/or time-varying (a per-step transition tensor). Draws have the
+        expected per-chain shape and logp matches the hand-rolled init * transition product."""
+        rng = np.random.default_rng(4)
+        B, k, n_lags, steps = 3, 2, 2, 4
+        pi0 = np.array([0.4, 0.6])
+        # Transition tensor core is (k,) * (n_lags + 1) == P[s_{t-2}, s_{t-1}, s_t]; prepend a time
+        # axis when time-varying and a batch axis when batched. dirichlet's ``size`` is everything
+        # left of the final (normalized) axis.
+        size = ((B,) if batched else ()) + ((steps,) if time_varying else ()) + (k, k)
+        P = rng.dirichlet(np.ones(k), size=size)
+        x0 = pm.Categorical.dist(p=pi0)
+        chain = DiscreteMarkovChain.dist(
+            P=pt.as_tensor_variable(P),
+            init_dist=x0,
+            n_lags=n_lags,
+            time_varying_P=time_varying,
+            # steps inferred from P's time axis when time-varying
+            steps=None if time_varying else steps,
+        )
+
+        draw = pm.draw(chain, random_seed=1)
+        assert draw.shape == ((B, n_lags + steps) if batched else (n_lags + steps,))
+
+        value = rng.integers(0, k, size=draw.shape)
+        logp = pm.logp(chain, value).eval()
+
+        def path_logp(P_row, v):
+            lp = np.log(pi0[v[0]]) + np.log(pi0[v[1]])
+            for t in range(steps):
+                P_t = P_row[t] if time_varying else P_row
+                lp += np.log(P_t[v[t], v[t + 1], v[t + 2]])
+            return lp
+
+        if batched:
+            expected = np.array([path_logp(P[b], value[b]) for b in range(B)])
+        else:
+            expected = path_logp(P, value)
+        np.testing.assert_allclose(logp, expected)
 
     def test_time_varying_P_steps_conflict(self):
         """An explicit steps inconsistent with P's time axis is rejected."""
