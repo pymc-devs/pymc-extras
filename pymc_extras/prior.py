@@ -1733,8 +1733,8 @@ class Scaled:
     def to_dict(self) -> dict[str, Any]:
         """Convert the scaled distribution to a dictionary.
 
-        The ``factor`` is encoded with :func:`_serialize_value`: a scalar is
-        stored as-is, a numpy array as a list, and an ``xarray.DataArray`` as a
+        The ``factor`` is encoded the same way as ``Prior`` parameters: a
+        scalar is stored as-is, a numpy array as a list, and an ``xarray.DataArray`` as a
         ``{"class": "DataArray", ...}`` mapping. A pytensor variable is
         evaluated first. Non-tensor factors (arbitrary Python objects) are left
         untouched, so a factor that is not JSON-serializable will fail at the
