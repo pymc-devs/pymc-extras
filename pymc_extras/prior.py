@@ -101,6 +101,7 @@ from pydantic.dataclasses import dataclass
 from pymc.distributions.shape_utils import Dims
 from pytensor.graph import Variable
 from pytensor.tensor import TensorVariable
+from pytensor.xtensor.type import XTensorType
 from xarray import DataArray, Dataset
 
 from pymc_extras.deserialize import deserialize, register_deserialization
@@ -522,6 +523,34 @@ def _param_value_with_dims(param: str, value, dims: Dims | None):
                 value = as_xtensor(value, dims=parameter_dims)
             else:
                 value = DataArray(value, dims=parameter_dims)
+
+    return value
+
+
+def _serialize_value(value):
+    """Encode a value for the dictionary form of a distribution.
+
+    Scalars pass through unchanged, numpy arrays become lists, and an
+    ``xarray.DataArray`` becomes a ``{"class": "DataArray", ...}`` mapping. A
+    pytensor variable is evaluated first, then handled as above.
+    """
+    if isinstance(value, Variable):
+        if isinstance(value.type, pt.TensorType):
+            value = value.eval()
+        elif isinstance(value.type, XTensorType):
+            value = DataArray(value.eval(), dims=value.type.dims)
+        else:
+            raise ValueError(f"Cannot serialize pytensor variable of type {value.type}")
+
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+
+    if isinstance(value, DataArray):
+        return {
+            "class": "DataArray",
+            "data": value.data.tolist(),
+            "dims": list(value.dims),
+        }
 
     return value
 
@@ -1045,28 +1074,7 @@ class Prior:
                 if isinstance(value, Prior):
                     return value.to_dict()
 
-                if isinstance(value, Variable):
-                    if isinstance(value.type, pt.TensorType):
-                        value = value.eval()
-
-                    # Avoid XTensor import warnings, remove this when the warnings are gone
-                    elif value.type.__class__.__name__.startswith("XTensor"):
-                        value = DataArray(value.eval(), dims=value.type.dims)
-
-                    else:
-                        raise ValueError(
-                            f"Prior does not know how to serialize pytensor variable of type {value.type}"
-                        )
-
-                if isinstance(value, np.ndarray):
-                    return value.tolist()
-
-                if isinstance(value, DataArray):
-                    return {
-                        "class": "DataArray",
-                        "data": value.data.tolist(),
-                        "dims": list(value.dims),
-                    }
+                value = _serialize_value(value)
 
                 if hasattr(value, "to_dict"):
                     return value.to_dict()
@@ -1725,49 +1733,23 @@ class Scaled:
     def to_dict(self) -> dict[str, Any]:
         """Convert the scaled distribution to a dictionary.
 
-        The ``factor`` is stored inline: a scalar is stored as-is, a numpy array
-        as a list, and an ``xarray.DataArray`` as a ``{"class": "DataArray", ...}``
-        mapping. A pytensor variable is evaluated first. Non-tensor factors
-        (arbitrary Python objects) are left untouched, so a factor that is not
-        JSON-serializable will fail at the serialization layer, not here.
+        The ``factor`` is encoded with :func:`_serialize_value`: a scalar is
+        stored as-is, a numpy array as a list, and an ``xarray.DataArray`` as a
+        ``{"class": "DataArray", ...}`` mapping. A pytensor variable is
+        evaluated first. Non-tensor factors (arbitrary Python objects) are left
+        untouched, so a factor that is not JSON-serializable will fail at the
+        serialization layer, not here.
 
         Returns
         -------
         dict[str, Any]
             The dictionary format of the scaled distribution.
         """
-
-        def handle_factor(value):
-            if isinstance(value, Variable):
-                if isinstance(value.type, pt.TensorType):
-                    value = value.eval()
-
-                # Avoid XTensor import warnings, remove this when the warnings are gone
-                elif value.type.__class__.__name__.startswith("XTensor"):
-                    value = DataArray(value.eval(), dims=value.type.dims)
-
-                else:
-                    raise ValueError(
-                        f"Scaled does not know how to serialize pytensor variable of type {value.type}"
-                    )
-
-            if isinstance(value, np.ndarray):
-                return value.tolist()
-
-            if isinstance(value, DataArray):
-                return {
-                    "class": "DataArray",
-                    "data": value.data.tolist(),
-                    "dims": list(value.dims),
-                }
-
-            return value
-
         return {
             "class": "Scaled",
             "data": {
                 "dist": self.dist.to_dict(),
-                "factor": handle_factor(self.factor),
+                "factor": _serialize_value(self.factor),
             },
         }
 
