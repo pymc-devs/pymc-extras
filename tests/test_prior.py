@@ -1001,6 +1001,18 @@ class TestScaled:
         assert isinstance(again.factor, xr.DataArray)
         xr.testing.assert_equal(again.factor, factor)
 
+    def test_scaled_round_trip_pytensor_factor(self) -> None:
+        """Test round-trip with a pytensor tensor-variable factor."""
+        normal = Prior("Normal", mu=0, sigma=1)
+        scaled = Scaled(normal, factor=pt.as_tensor_variable(2.5))
+
+        data = scaled.to_dict()
+        assert data["data"]["factor"] == 2.5
+
+        again = deserialize(data)
+        assert isinstance(again, Scaled)
+        assert again.factor == 2.5
+
 
 class TestCensored:
     def test_censored_is_variable_factory(
