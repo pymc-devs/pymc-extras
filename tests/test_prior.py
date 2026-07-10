@@ -940,6 +940,67 @@ class TestScaled:
         assert "scaled_var" in prior
         assert "scaled_var_unscaled" in prior
 
+    def test_scaled_to_dict(self) -> None:
+        """Test that a scalar-factor Scaled serializes as expected."""
+        normal = Prior("Normal", mu=0, sigma=1, dims="channel")
+        scaled = Scaled(normal, factor=2.0)
+
+        data = scaled.to_dict()
+        assert data == {
+            "class": "Scaled",
+            "data": {"dist": normal.to_dict(), "factor": 2.0},
+        }
+
+    def test_deserialize_scaled(self) -> None:
+        """Test that a Scaled dictionary reconstructs a Scaled instance."""
+        data = {
+            "class": "Scaled",
+            "data": {
+                "dist": {"dist": "Normal", "kwargs": {"mu": 0, "sigma": 1}},
+                "factor": 50_000,
+            },
+        }
+
+        instance = deserialize(data)
+        assert isinstance(instance, Scaled)
+        assert isinstance(instance.dist, Prior)
+        assert instance.dist == Prior("Normal", mu=0, sigma=1)
+        assert instance.factor == 50_000
+
+    def test_scaled_round_trip(self) -> None:
+        """Test that to_dict -> deserialize preserves dist and factor."""
+        normal = Prior("Normal", mu=0, sigma=1, dims="channel")
+        scaled = Scaled(normal, factor=2.5)
+
+        again = deserialize(scaled.to_dict())
+        assert isinstance(again, Scaled)
+        assert again.dist == scaled.dist
+        assert again.factor == scaled.factor
+
+    def test_scaled_round_trip_array_factor(self) -> None:
+        """Test round-trip with a numpy-array factor."""
+        normal = Prior("Normal", mu=0, sigma=1, dims="channel")
+        factor = np.array([1.0, 2.0, 3.0])
+        scaled = Scaled(normal, factor=factor)
+
+        data = scaled.to_dict()
+        assert data["data"]["factor"] == [1.0, 2.0, 3.0]
+
+        again = deserialize(data)
+        assert isinstance(again, Scaled)
+        np.testing.assert_array_equal(again.factor, factor)
+
+    def test_scaled_round_trip_dataarray_factor(self) -> None:
+        """Test round-trip with an xarray.DataArray factor."""
+        normal = Prior("Normal", mu=0, sigma=1, dims="channel")
+        factor = xr.DataArray([1.0, 2.0, 3.0], dims="channel")
+        scaled = Scaled(normal, factor=factor)
+
+        again = deserialize(scaled.to_dict())
+        assert isinstance(again, Scaled)
+        assert isinstance(again.factor, xr.DataArray)
+        xr.testing.assert_equal(again.factor, factor)
+
 
 class TestCensored:
     def test_censored_is_variable_factory(
