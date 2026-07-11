@@ -87,7 +87,7 @@ order_params = (
 
 
 @pytest.mark.parametrize(
-    "order, expected_flags", zip(orders, order_expected_flags), ids=order_names
+    "order, expected_flags", list(zip(orders, order_expected_flags)), ids=order_names
 )
 def test_order_flags(order, expected_flags):
     mod = BayesianETS(order=order, endog_names=["y"], seasonal_periods=4)
@@ -101,7 +101,7 @@ def test_mode_argument():
     assert mod.mode == "FAST_RUN"
 
 
-@pytest.mark.parametrize("order, expected_params", zip(orders, order_params), ids=order_names)
+@pytest.mark.parametrize("order, expected_params", list(zip(orders, order_params)), ids=order_names)
 def test_param_info(order: tuple[str, str, str], expected_params):
     mod = BayesianETS(order=order, endog_names=["y"], seasonal_periods=4)
 
@@ -115,7 +115,7 @@ def test_param_info(order: tuple[str, str, str], expected_params):
     )
 
 
-@pytest.mark.parametrize("order, expected_params", zip(orders, order_params), ids=order_names)
+@pytest.mark.parametrize("order, expected_params", list(zip(orders, order_params)), ids=order_names)
 @pytest.mark.parametrize("use_transformed", [True, False], ids=["transformed", "untransformed"])
 def test_statespace_matrices(
     rng, order: tuple[str, str, str], expected_params: list[str], use_transformed: bool
@@ -212,7 +212,7 @@ def test_statespace_matrices(
     assert_allclose(Z, Z_val)
 
 
-@pytest.mark.parametrize("order, params", zip(orders, order_params), ids=order_names)
+@pytest.mark.parametrize("order, params", list(zip(orders, order_params)), ids=order_names)
 def test_statespace_matches_statsmodels(rng, order: tuple[str, str, str], params):
     seasonal_periods = rng.integers(3, 12)
     data = rng.normal(size=(100,))
@@ -274,7 +274,7 @@ def test_statespace_matches_statsmodels(rng, order: tuple[str, str, str], params
         assert_allclose(matrix, sm_matrix, err_msg=f"{name} does not match")
 
 
-@pytest.mark.parametrize("order, params", zip(orders, order_params), ids=order_names)
+@pytest.mark.parametrize("order, params", list(zip(orders, order_params)), ids=order_names)
 @pytest.mark.parametrize("dense_cov", [True, False], ids=["dense", "diagonal"])
 def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
     seasonal_periods = 4
