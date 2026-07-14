@@ -126,9 +126,11 @@ class DiscreteMarkovChain(Distribution):
     steps: tensor, optional
         Length of the markov chain. Only needed if state is not provided.
     init_dist : unnamed distribution, optional
-        Vector distribution for initial values. Unnamed refers to distributions
-        created with the ``.dist()`` API. Distribution should have shape n_states.
-        If not, it will be automatically resized.
+        Distribution over the ``n_lags`` initial states. Unnamed refers to distributions
+        created with the ``.dist()`` API. A scalar-support distribution (e.g. ``Categorical``)
+        is broadcast IID across the initial states; a vector-support distribution (e.g.
+        :class:`JointCategorical`) provides their joint distribution and must have support
+        length ``n_lags``.
 
         .. warning:: init_dist will be cloned, rendering it independent of the one passed as input.
     n_lags : int, default 1
@@ -314,7 +316,13 @@ class DiscreteMarkovChain(Distribution):
                 P[tuple([...] + [0] * n_core_P)], pt.atleast_1d(init_dist)[..., 0]
             )
 
-        init_dist = change_dist_size(init_dist, (*batch_size, n_lags))
+        # A scalar init_dist is broadcast IID across the n_lags initial states; a vector
+        # (multivariate) init_dist instead provides them jointly through its own support
+        # dimension, which must cover n_lags. Mirrors pymc's AR.
+        if init_dist.owner.op.ndim_supp == 0:
+            init_dist = change_dist_size(init_dist, (*batch_size, n_lags))
+        else:
+            init_dist = change_dist_size(init_dist, batch_size)
         init_dist_ = init_dist.type()
         P_ = P.type()
         steps_ = steps.type()
@@ -434,7 +442,15 @@ def discrete_mc_logp(op, values, P, steps, init_dist, state_rng, **kwargs):
     # The n_lags + 1 state indices per transition: x_{t-n_lags}, ..., x_{t-1}, x_t.
     indices = [value[..., i : -(n_lags - i) if n_lags != i else None] for i in range(n_lags + 1)]
 
-    mc_logprob = logp(init_dist, value[..., :n_lags]).sum(axis=-1)
+    init_logp = logp(init_dist, value[..., :n_lags])
+    # A scalar init_dist scores each of the n_lags initial states independently (per-position
+    # logp, with the lag axis to sum over); a vector (multivariate) init_dist already returns
+    # their joint logp. Mirrors pymc's AR. Decided by the logp dimensionality rather than the
+    # op's ndim_supp, so inits rewritten into measurable graphs (e.g. an inlined
+    # JointCategorical lookup) are handled too.
+    if init_logp.type.ndim == value.type.ndim:
+        init_logp = init_logp.sum(axis=-1)
+    mc_logprob = init_logp
 
     # Gather the transition log-probabilities by advanced-indexing P's trailing state axes with
     # `indices`. P's leading batch axes (and the time axis, when time-varying) are indexed with

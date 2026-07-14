@@ -10,7 +10,7 @@ from arviz_base import from_dict
 from scipy.special import logsumexp
 from scipy.stats import norm
 
-from pymc_extras.distributions import DiscreteMarkovChain
+from pymc_extras.distributions import DiscreteMarkovChain, JointCategorical
 from pymc_extras.marginal import conditional, marginalize, recover
 
 
@@ -189,124 +189,220 @@ def test_conditional_discrete_markov_chain():
     np.testing.assert_allclose(recovered, brute_marginal, atol=0.02)
 
 
-def test_marginalized_discrete_markov_chain_time_varying_P():
-    """Marginalizing a non-homogeneous (time-varying P) chain matches brute force."""
+@pytest.mark.parametrize("batched", [False, True], ids=lambda b: f"batched={b}")
+def test_marginalized_discrete_markov_chain_time_varying_P(batched):
+    """Marginalizing a non-homogeneous (time-varying P) chain matches brute force. When batched,
+    independent chains share one per-step transition sequence, so the chain's batch axes must not
+    collide with P's core (time, from, to) axes in the forward filter."""
+    rng = np.random.default_rng(8)
     pi0 = np.array([0.6, 0.4])
     sigma = 0.8
-    obs = np.array([0.1, 1.2, 0.8, -0.2, 0.9])
-    T, k = len(obs), 2
-    A_t = np.array(
-        [
-            [[0.9, 0.1], [0.2, 0.8]],
-            [[0.4, 0.6], [0.3, 0.7]],
-            [[0.1, 0.9], [0.5, 0.5]],
-            [[0.7, 0.3], [0.6, 0.4]],
-        ]
-    )
+    T, k = 5, 2
+    A_t = rng.dirichlet(np.ones(k), size=(T - 1, k))  # (T - 1, k, k): one matrix per transition
+    if batched:
+        n_chains = 3
+        obs = rng.normal(size=(n_chains, T))
+    else:
+        obs = rng.normal(size=T)
 
     with pm.Model() as m:
-        init = pm.Categorical.dist(p=pi0)
+        init = pm.Categorical.dist(p=pi0, shape=(n_chains,) if batched else None)
         # steps inferred from A_t's time axis
-        states = DiscreteMarkovChain("states", P=A_t, init_dist=init, time_varying_P=True)
-        pm.Normal("emission", mu=states, sigma=sigma, observed=obs)
-
-    marginal_m = marginalize(m, [states])
-
-    # Brute-force marginal likelihood log p(y) over all k^T paths.
-    log_joint = []
-    for s in itertools.product(range(k), repeat=T):
-        lp = np.log(pi0[s[0]]) + sum(np.log(A_t[t - 1, s[t - 1], s[t]]) for t in range(1, T))
-        lp += norm.logpdf(obs, loc=np.array(s), scale=sigma).sum()
-        log_joint.append(lp)
-    expected = logsumexp(log_joint)
-
-    np.testing.assert_allclose(marginal_m.compile_logp()({}), expected)
-
-
-def test_marginalized_discrete_markov_chain_batched_time_varying_P():
-    """Batched chains sharing one time-varying P. The batch axes of the chain must not collide
-    with P's core (time, from, to) axes in the forward filter."""
-    pi0 = np.array([0.6, 0.4])
-    sigma = 0.8
-    obs = np.array([[0.1, 1.2, 0.8, -0.2], [0.9, -0.1, 0.2, 1.1], [0.5, 0.7, 1.0, 0.3]])
-    n_chains, T, k = *obs.shape, 2
-    A_t = np.array(
-        [
-            [[0.9, 0.1], [0.2, 0.8]],
-            [[0.4, 0.6], [0.3, 0.7]],
-            [[0.1, 0.9], [0.5, 0.5]],
-        ]
-    )  # (T - 1, k, k), no batch axis: every chain shares the same per-step kernels
-
-    with pm.Model() as m:
-        init = pm.Categorical.dist(p=pi0, shape=(n_chains,))
         states = DiscreteMarkovChain(
-            "states", P=A_t, init_dist=init, time_varying_P=True, shape=(n_chains, T)
+            "states",
+            P=A_t,
+            init_dist=init,
+            time_varying_P=True,
+            shape=(n_chains, T) if batched else None,
         )
         pm.Normal("emission", mu=states, sigma=sigma, observed=obs)
 
     marginal_m = marginalize(m, [states])
 
-    # The chains are independent, so brute force each one over its k**T paths and sum.
-    expected = 0.0
-    for b in range(n_chains):
+    def brute(obs_row):
+        # Marginal likelihood log p(y) over all k**T paths of a single chain.
         log_joint = []
         for s in itertools.product(range(k), repeat=T):
             lp = np.log(pi0[s[0]]) + sum(np.log(A_t[t - 1, s[t - 1], s[t]]) for t in range(1, T))
-            lp += norm.logpdf(obs[b], loc=np.array(s), scale=sigma).sum()
+            lp += norm.logpdf(obs_row, loc=np.array(s), scale=sigma).sum()
             log_joint.append(lp)
-        expected += logsumexp(log_joint)
+        return logsumexp(log_joint)
 
+    expected = sum(brute(o) for o in obs) if batched else brute(obs)
     np.testing.assert_allclose(marginal_m.compile_logp()({}), expected)
 
 
-def test_marginalized_discrete_markov_chain_higher_order():
-    """Marginalizing a second-order (n_lags=2) chain matches brute force over all k**T paths."""
+@pytest.mark.parametrize("batched", [False, True], ids=lambda b: f"batched={b}")
+def test_marginalized_discrete_markov_chain_higher_order(batched):
+    """Marginalizing a second-order (n_lags=2) chain matches brute force over all k**T paths. When
+    batched, a leading batch dim on P gives independent chains each with their own transition
+    tensor, exercising P's batch axis in the forward filter."""
     rng = np.random.default_rng(4)
     pi0 = np.array([0.4, 0.6])
     sigma = 0.7
-    obs = np.array([0.2, 1.1, -0.3, 0.9, 0.5])
-    T, k, n_lags = len(obs), 2, 2
-    P = rng.dirichlet(np.ones(k), size=(k, k))  # (k, k, k): P[s_{t-2}, s_{t-1}, s_t]
+    T, k, n_lags = 5, 2, 2
+    n_chains = 3
+    # (k, k, k) == P[s_{t-2}, s_{t-1}, s_t]; a leading batch axis when batched.
+    P = rng.dirichlet(np.ones(k), size=((n_chains, k, k) if batched else (k, k)))
+    obs = rng.normal(size=(n_chains, T)) if batched else rng.normal(size=T)
 
     with pm.Model() as m:
         init = pm.Categorical.dist(p=pi0)
+        chain = DiscreteMarkovChain(
+            "chain",
+            P=P,
+            init_dist=init,
+            steps=T - n_lags,
+            n_lags=n_lags,
+            shape=obs.shape if batched else None,
+        )
+        pm.Normal("emission", mu=chain, sigma=sigma, observed=obs)
+    marginal_m = marginalize(m, [chain])
+
+    def brute(P_row, obs_row):
+        log_joint = []
+        for s in itertools.product(range(k), repeat=T):
+            lp = np.log(pi0[s[0]]) + np.log(pi0[s[1]])
+            lp += sum(np.log(P_row[s[t - 2], s[t - 1], s[t]]) for t in range(n_lags, T))
+            lp += norm.logpdf(obs_row, loc=np.array(s), scale=sigma).sum()
+            log_joint.append(lp)
+        return logsumexp(log_joint)
+
+    expected = sum(brute(P[b], obs[b]) for b in range(n_chains)) if batched else brute(P, obs)
+    np.testing.assert_allclose(marginal_m.compile_logp()({}), expected)
+
+
+@pytest.mark.parametrize("batched", [False, True], ids=lambda b: f"batched={b}")
+def test_marginalized_discrete_markov_chain_higher_order_time_varying(batched):
+    """Second-order (n_lags=2) chain with a per-step transition tensor, vs brute force. When
+    batched, independent chains share one per-step transition tensor."""
+    rng = np.random.default_rng(5)
+    pi0 = np.array([0.4, 0.6])
+    sigma = 0.7
+    T, k, n_lags = 5, 2, 2
+    P_t = rng.dirichlet(np.ones(k), size=(T - n_lags, k, k))  # (steps, k, k, k)
+    obs = rng.normal(size=(3, T)) if batched else rng.normal(size=T)
+
+    with pm.Model() as m:
+        init = pm.Categorical.dist(p=pi0)
+        chain = DiscreteMarkovChain(
+            "chain",
+            P=P_t,
+            init_dist=init,
+            n_lags=n_lags,
+            time_varying_P=True,
+            shape=obs.shape if batched else None,
+        )
+        pm.Normal("emission", mu=chain, sigma=sigma, observed=obs)
+    marginal_m = marginalize(m, [chain])
+
+    def brute(obs_row):
+        log_joint = []
+        for s in itertools.product(range(k), repeat=T):
+            lp = np.log(pi0[s[0]]) + np.log(pi0[s[1]])
+            lp += sum(np.log(P_t[t - n_lags, s[t - 2], s[t - 1], s[t]]) for t in range(n_lags, T))
+            lp += norm.logpdf(obs_row, loc=np.array(s), scale=sigma).sum()
+            log_joint.append(lp)
+        return logsumexp(log_joint)
+
+    expected = sum(brute(o) for o in obs) if batched else brute(obs)
+    np.testing.assert_allclose(marginal_m.compile_logp()({}), expected)
+
+
+@pytest.mark.parametrize("batched", [False, True], ids=lambda b: f"batched={b}")
+def test_conditional_discrete_markov_chain_higher_order(batched):
+    """conditional() logp and recover() marginals for a second-order (n_lags=2) HMM, vs brute force.
+
+    The posterior over the first two states is correlated, so the recovered chain carries a joint
+    (JointCategorical) init; when batched, a leading batch dim on P gives independent chains each
+    with their own transition tensor, and that init and the smoothed time-varying transitions are
+    themselves batched."""
+    rng = np.random.default_rng(7 if batched else 3)
+    k, n_lags = 2, 2
+    pi0 = np.array([0.5, 0.5])
+    sigma = 0.8
+    obs = np.array([[0.2, 1.1, -0.3, 0.9], [-0.7, 0.5, 1.3, 0.1]])
+    if not batched:
+        obs = obs[:1]
+    n_chains, T = obs.shape
+    # (k, k, k) == P[s_{t-2}, s_{t-1}, s_t]; a leading batch axis when batched (each chain its own).
+    P = rng.dirichlet(np.ones(k), size=((n_chains, k, k) if batched else (k, k)))
+
+    with pm.Model() as m:
+        init = pm.Categorical.dist(p=pi0)
+        states = DiscreteMarkovChain(
+            "states",
+            P=P,
+            init_dist=init,
+            steps=T - n_lags,
+            n_lags=n_lags,
+            shape=obs.shape if batched else None,
+        )
+        pm.Normal("emission", mu=states, sigma=sigma, observed=obs if batched else obs[0])
+    marginal_m = marginalize(m, [states])
+    cond_m = conditional(marginal_m)
+
+    # Per-row brute force over all k**T paths -> normalizer -> marginals.
+    log_joint = [{} for _ in range(n_chains)]
+    for b in range(n_chains):
+        P_row = P[b] if batched else P
+        for s in itertools.product(range(k), repeat=T):
+            lp = np.log(pi0[s[0]]) + np.log(pi0[s[1]])
+            lp += sum(np.log(P_row[s[t - 2], s[t - 1], s[t]]) for t in range(n_lags, T))
+            lp += norm.logpdf(obs[b], loc=np.array(s), scale=sigma).sum()
+            log_joint[b][s] = lp
+    log_z = [logsumexp(list(d.values())) for d in log_joint]
+    brute_marginal = np.array(
+        [
+            [sum(np.exp(d[s] - z) for s in d if s[t] == 1) for t in range(T)]
+            for d, z in zip(log_joint, log_z)
+        ]
+    )
+
+    # Exact conditional logp p(s | y) (summed over the batch rows when batched).
+    logp_fn = cond_m.compile_logp(vars=[cond_m["states"]])
+    if batched:
+        paths = np.array([[0, 0, 1, 0], [1, 1, 0, 1]])
+        expected_logp = sum(log_joint[b][tuple(paths[b])] - log_z[b] for b in range(n_chains))
+        np.testing.assert_allclose(logp_fn({"states": paths}), expected_logp, atol=1e-5)
+    else:
+        for path in [(0, 0, 1, 0), (1, 1, 0, 1), (0, 1, 1, 0)]:
+            np.testing.assert_allclose(
+                logp_fn({"states": np.array(path)}), log_joint[0][path] - log_z[0], atol=1e-5
+            )
+
+    # Recovered marginals match each row's brute force.
+    idata = from_dict({"posterior": {"sigma": np.full((2, 4000), sigma)}})
+    recovered = (
+        recover(idata, model=marginal_m, random_seed=0).posterior["states"].mean(("chain", "draw"))
+    )
+    expected_marginal = brute_marginal if batched else brute_marginal[0]
+    np.testing.assert_allclose(recovered, expected_marginal, atol=0.02)
+
+
+def test_marginalized_discrete_markov_chain_joint_init_dist():
+    """Marginalizing a second-order chain whose initial states have a correlated joint
+    (JointCategorical) init_dist matches brute force. This closes the loop over recovery: the
+    init of a recovered higher-order chain is a JointCategorical, so its model can itself be
+    marginalized again."""
+    rng = np.random.default_rng(6)
+    k, n_lags = 2, 2
+    P = rng.dirichlet(np.ones(k), size=(k, k))  # (k, k, k): P[s_{t-2}, s_{t-1}, s_t]
+    pi0_joint = np.array([[0.1, 0.4], [0.3, 0.2]])  # pi0_joint[s_0, s_1]
+    sigma = 0.7
+    obs = np.array([0.2, 1.1, -0.3, 0.9])
+    T = len(obs)
+
+    with pm.Model() as m:
+        init = JointCategorical.dist(p=pi0_joint, n_lags=n_lags)
         chain = DiscreteMarkovChain("chain", P=P, init_dist=init, steps=T - n_lags, n_lags=n_lags)
         pm.Normal("emission", mu=chain, sigma=sigma, observed=obs)
     marginal_m = marginalize(m, [chain])
 
     log_joint = []
     for s in itertools.product(range(k), repeat=T):
-        lp = np.log(pi0[s[0]]) + np.log(pi0[s[1]])
+        lp = np.log(pi0_joint[s[0], s[1]])
         lp += sum(np.log(P[s[t - 2], s[t - 1], s[t]]) for t in range(n_lags, T))
-        lp += norm.logpdf(obs, loc=np.array(s), scale=sigma).sum()
-        log_joint.append(lp)
-    expected = logsumexp(log_joint)
-
-    np.testing.assert_allclose(marginal_m.compile_logp()({}), expected)
-
-
-def test_marginalized_discrete_markov_chain_higher_order_time_varying():
-    """Second-order (n_lags=2) chain with a per-step transition tensor, vs brute force."""
-    rng = np.random.default_rng(5)
-    pi0 = np.array([0.4, 0.6])
-    sigma = 0.7
-    obs = np.array([0.2, 1.1, -0.3, 0.9, 0.5])
-    T, k, n_lags = len(obs), 2, 2
-    P_t = rng.dirichlet(np.ones(k), size=(T - n_lags, k, k))  # (steps, k, k, k)
-
-    with pm.Model() as m:
-        init = pm.Categorical.dist(p=pi0)
-        chain = DiscreteMarkovChain(
-            "chain", P=P_t, init_dist=init, n_lags=n_lags, time_varying_P=True
-        )
-        pm.Normal("emission", mu=chain, sigma=sigma, observed=obs)
-    marginal_m = marginalize(m, [chain])
-
-    log_joint = []
-    for s in itertools.product(range(k), repeat=T):
-        lp = np.log(pi0[s[0]]) + np.log(pi0[s[1]])
-        lp += sum(np.log(P_t[t - n_lags, s[t - 2], s[t - 1], s[t]]) for t in range(n_lags, T))
         lp += norm.logpdf(obs, loc=np.array(s), scale=sigma).sum()
         log_joint.append(lp)
     expected = logsumexp(log_joint)

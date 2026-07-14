@@ -10,6 +10,7 @@ from pymc.model.fgraph import (
     model_free_rv,
     model_from_fgraph,
 )
+from pymc.pytensorf import resolve_backend_compile_kwargs
 from pymc.sampling.forward import sample_posterior_predictive
 from pymc.util import RandomState
 from pytensor.graph import FunctionGraph, Variable
@@ -284,6 +285,8 @@ def recover(
     var_names: Sequence[str] | None = None,
     extend_inferencedata: bool = True,
     random_seed: RandomState = None,
+    backend: str | None = None,
+    compile_kwargs: dict | None = None,
 ):
     """Sample marginalized variables from their conditional posterior.
 
@@ -303,6 +306,12 @@ def recover(
         Whether to extend the original DataTree or return a new Dataset.
     random_seed : int, array-like of int or SeedSequence, optional
         Seed for generating samples.
+    backend : str, optional
+        Which computational backend to use. Recommended to be one of "numba", "c", and "jax".
+        Cannot be combined with ``compile_kwargs["mode"]``.
+    compile_kwargs : dict, optional
+        Extra arguments passed to the sampling function's compilation, e.g.
+        ``dict(mode=...)`` to select a backend.
 
     Returns
     -------
@@ -348,6 +357,7 @@ def recover(
 
     freeze = [rv.name for rv in cond_model.free_RVs if rv.name not in var_names_to_recover]
 
+    compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
     sample_result = sample_posterior_predictive(
         idata,
         model=cond_model,
@@ -355,6 +365,7 @@ def recover(
         freeze_vars=freeze,
         random_seed=random_seed,
         progressbar=False,
+        compile_kwargs=compile_kwargs,
     )
     pp = sample_result.posterior_predictive
     pp_ds = pp.dataset if isinstance(pp, DataTree) else pp

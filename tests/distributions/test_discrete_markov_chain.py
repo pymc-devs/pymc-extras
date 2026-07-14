@@ -10,6 +10,7 @@ from pymc.distributions.shape_utils import change_dist_size
 from pymc.logprob.utils import ParameterValueError
 from pymc.sampling.mcmc import assign_step_methods
 
+from pymc_extras.distributions.multivariate import JointCategorical
 from pymc_extras.distributions.timeseries import (
     DiscreteMarkovChain,
     DiscreteMarkovChainGibbsMetropolis,
@@ -195,6 +196,41 @@ class TestDiscreteMarkovRV:
             expected = np.array([path_logp(P[b], value[b]) for b in range(B)])
         else:
             expected = path_logp(P, value)
+        np.testing.assert_allclose(logp, expected)
+
+    def test_joint_categorical(self):
+        """JointCategorical draws and scores an arbitrary joint over n_lags categorical states."""
+        rng = np.random.default_rng(0)
+        k, n_lags = 2, 3
+        gamma = rng.random((k,) * n_lags)
+        gamma /= gamma.sum()
+        jc = JointCategorical.dist(p=gamma, n_lags=n_lags)
+
+        draws = pm.draw(jc, 40_000, random_seed=1)
+        assert draws.shape == (40_000, n_lags)
+        flat = draws[:, 0] * k * k + draws[:, 1] * k + draws[:, 2]
+        emp = np.bincount(flat, minlength=k**n_lags) / len(flat)
+        np.testing.assert_allclose(emp, gamma.ravel(), atol=0.01)
+
+        value = np.array([1, 0, 1])
+        logp = pm.logp(jc, value).eval()
+        np.testing.assert_allclose(logp, np.log(gamma[tuple(value)]))
+
+    def test_multivariate_init_dist(self):
+        """A DMC accepts a multivariate (joint) init_dist, scoring the initial states jointly."""
+        rng = np.random.default_rng(1)
+        k, n_lags = 2, 2
+        gamma = rng.random((k,) * n_lags)
+        gamma /= gamma.sum()
+        P = rng.dirichlet(np.ones(k), size=(k, k))  # (k, k, k)
+        init = JointCategorical.dist(p=gamma, n_lags=n_lags)
+        chain = DiscreteMarkovChain.dist(P=P, init_dist=init, steps=2, n_lags=n_lags)
+
+        draws = pm.draw(chain, random_seed=2)
+        assert draws.shape == (n_lags + 2,)
+        value = np.array([1, 0, 1, 1])
+        logp = pm.logp(chain, value).eval()
+        expected = np.log(gamma[1, 0]) + np.log(P[1, 0, 1]) + np.log(P[0, 1, 1])
         np.testing.assert_allclose(logp, expected)
 
     def test_time_varying_P_steps_conflict(self):

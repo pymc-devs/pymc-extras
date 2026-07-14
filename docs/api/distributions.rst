@@ -11,6 +11,7 @@ like regular PyMC distributions and can be used directly inside a model.
    Chi
    Maxwell
    DiscreteMarkovChain
+   JointCategorical
    GeneralizedPoisson
    BetaNegativeBinomial
    GenExtreme
