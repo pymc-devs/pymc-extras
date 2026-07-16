@@ -7,6 +7,7 @@ from pytensor.graph.replace import graph_replace
 from pytensor.graph.traversal import ancestors
 from pytensor.tensor import broadcast_to, constant, sqrt
 
+from pymc_extras.model.marginal.dims import output_dims_of
 from pymc_extras.model.marginal.distributions.core import (
     MarginalRV,
     inline_ofg_outputs,
@@ -15,6 +16,7 @@ from pymc_extras.model.marginal.distributions.core import (
 from pymc_extras.model.marginal.rewrites import (
     MarginalSubgraph,
     extract_marginal_subgraph,
+    finalize_marginal_rv,
     marginal_rewrites_db,
 )
 
@@ -79,7 +81,7 @@ def normal_normal_marginal_rewrite(fgraph, node):
     if op.n_dependent_rvs != 1:
         return None
 
-    inputs, outputs = extract_marginal_subgraph(node)
+    inputs, outer_inputs, outputs = extract_marginal_subgraph(node)
     marginalized_rv = outputs[0]
     dependent_rv = outputs[1]
 
@@ -112,12 +114,9 @@ def normal_normal_marginal_rewrite(fgraph, node):
         outputs=outputs,
         marginalized_name=op.marginalized_name,
         marginalized_dims=op.marginalized_dims,
+        output_dims=output_dims_of(node),
     )
-
-    new_outputs = typed_op(*inputs)
-    if not isinstance(new_outputs, list):
-        new_outputs = list(new_outputs)
-    return new_outputs[: len(node.outputs)]
+    return finalize_marginal_rv(node, typed_op, outer_inputs)
 
 
 marginal_rewrites_db.register("normal_normal_marginal", normal_normal_marginal_rewrite, "basic")

@@ -14,6 +14,12 @@ from pymc.sampling.forward import sample_posterior_predictive
 from pymc.util import RandomState
 from pytensor.graph import FunctionGraph, Variable
 from pytensor.graph.replace import graph_replace
+from pytensor.xtensor.basic import (
+    XTensorFromTensor,
+    tensor_from_xtensor,
+    xtensor_from_tensor,
+)
+from pytensor.xtensor.type import XTensorType
 from xarray import DataTree
 
 from pymc_extras.model.marginal.distributions.core import (
@@ -37,15 +43,31 @@ def _find_marg_rv(fg, var_name):
 
 
 def _model_var_of(fg, rv_output):
-    """The fg model variable wrapping ``rv_output`` (or its data, if observed)."""
-    mv_client = next(
-        (c for c, _ in fg.clients[rv_output] if isinstance(c.op, ModelValuedVar)), None
-    )
-    if mv_client is None:
-        raise ValueError(f"No model variable found wrapping dependent output {rv_output}")
-    if isinstance(mv_client.op, ModelObservedRV):
-        return mv_client.inputs[1]
-    return mv_client.outputs[0]
+    """The fg model variable wrapping ``rv_output`` (or its data, if observed).
+
+    In a ``pymc.dims`` model the MarginalRV was built over a lowered tensor subgraph, so its
+    outputs reach their model variable through an XTensorFromTensor that restores the dims.
+    """
+    candidates = [rv_output]
+    candidates += [
+        c.outputs[0]
+        for c, _ in fg.clients[rv_output]
+        if c != "output" and isinstance(c.op, XTensorFromTensor)
+    ]
+    for candidate in candidates:
+        mv_client = next(
+            (
+                c
+                for c, _ in fg.clients[candidate]
+                if c != "output" and isinstance(c.op, ModelValuedVar)
+            ),
+            None,
+        )
+        if mv_client is not None:
+            if isinstance(mv_client.op, ModelObservedRV):
+                return mv_client.inputs[1]
+            return mv_client.outputs[0]
+    raise ValueError(f"No model variable found wrapping dependent output {rv_output}")
 
 
 def conditional_fgraph(
@@ -126,7 +148,16 @@ def conditional_fgraph(
             replaced = graph_replace([*inputs, *dep_rvs], replace=remap, strict=False)
             inputs, dep_rvs = replaced[: len(inputs)], replaced[len(inputs) :]
 
+        # For a dims model the op's inner graph is lowered tensors, so the dependents it
+        # conditions on are handed over as tensors and the conditional comes back as one.
+        dep_rvs = [
+            tensor_from_xtensor(dep_rv) if isinstance(dep_rv.type, XTensorType) else dep_rv
+            for dep_rv in dep_rvs
+        ]
         sample_graph = marginalized_conditional(op, inputs, dep_rvs)
+        marginalized_dims = None if op.output_dims is None else op.output_dims[0]
+        if marginalized_dims is not None:
+            sample_graph = xtensor_from_tensor(sample_graph, dims=marginalized_dims)
 
         # Add the conditional as a new free RV. import_missing imports its value
         # variable and any new shared RNGs (e.g. from Categorical.dist) as inputs.

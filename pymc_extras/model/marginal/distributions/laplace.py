@@ -184,7 +184,7 @@ def laplace_marginal(fgraph, node):
 
     # Q was appended as the last boundary input and is kept as a dummy input
     # of the OpFromGraph (popped again by the logp implementation)
-    inputs, outputs = extract_marginal_subgraph(node)
+    inputs, outer_inputs, outputs = extract_marginal_subgraph(node)
 
     typed_op = MarginalLaplaceRV(
         inputs=inputs,
@@ -195,7 +195,7 @@ def laplace_marginal(fgraph, node):
         minimizer_kwargs=op.minimizer_kwargs,
     )
 
-    new_outputs = typed_op(*inputs)
+    new_outputs = typed_op(*outer_inputs)
     if not isinstance(new_outputs, list):
         new_outputs = list(new_outputs)
     return new_outputs[: len(node.outputs)]

@@ -28,6 +28,13 @@ class MarginalRV(OpFromGraph, MeasurableOp):
     number of dependent RVs, are stored explicitly (``marginalized_name``,
     ``marginalized_dims``, ``n_dependent_rvs``) because pytensor makes no
     guarantee that variable names/metadata survive cloning and rewrites.
+
+    ``output_dims`` holds the dims each output carries -- the marginalized variable first, then
+    the dependents -- or None for an output that is a plain tensor. It is only set when
+    marginalizing a ``pymc.dims`` model, whose subgraph is lowered to tensors inside the op, and
+    is what lets the dims be restored on the way out (see ``core_dims``, and
+    ``local_unmarginalize``). Distinct from ``marginalized_dims``, which is the model's dims
+    metadata and exists for plain tensor models too.
     """
 
     def __init__(
@@ -36,12 +43,34 @@ class MarginalRV(OpFromGraph, MeasurableOp):
         marginalized_name: str,
         marginalized_dims,
         n_dependent_rvs: int,
+        output_dims: tuple[tuple[str, ...] | None, ...] | None = None,
         **kwargs,
     ) -> None:
         self.marginalized_name = marginalized_name
         self.marginalized_dims = marginalized_dims
         self.n_dependent_rvs = n_dependent_rvs
+        self.output_dims = output_dims
         super().__init__(*args, **kwargs)
+
+    @property
+    def core_dims(self) -> tuple[tuple[str, ...] | None, ...] | None:
+        """For each dependent's value, the dims this op's logp reduces.
+
+        This is the op's io dims signature: ``pymc.dims`` reads it to keep the joint logp on a
+        single node and to label the resulting terms, rather than assuming (wrongly, for us)
+        that the reduced dims are the rightmost ones. None when marginalizing a plain tensor
+        model, where there are no dims to declare.
+        """
+        if self.output_dims is None:
+            return None
+        # `support_axes` is the same information positionally, and the subclasses already derive
+        # it from their dims_connections. Output 0 is the marginalized variable, which has no
+        # value and so no core dims to declare.
+        support_axes = getattr(self, "support_axes", ((),) * self.n_dependent_rvs)
+        return tuple(
+            None if dims is None else tuple(dims[axis] for axis in axes)
+            for dims, axes in zip(self.output_dims[1:], support_axes, strict=True)
+        )
 
 
 @_support_point.register(MarginalRV)

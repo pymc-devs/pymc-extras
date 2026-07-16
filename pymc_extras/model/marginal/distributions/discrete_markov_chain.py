@@ -308,7 +308,7 @@ def discrete_markov_chain_marginalized_conditional(op, inputs, dep_rvs):
 
 @node_rewriter(tracks=[MarginalSubgraph])
 def discrete_markov_chain_marginal(fgraph, node):
-    inputs, outputs = extract_marginal_subgraph(node)
+    inputs, outer_inputs, outputs = extract_marginal_subgraph(node)
     marginalized_rv = outputs[0]
     marginalized_rv_op = marginalized_rv.owner.op
     if not isinstance(marginalized_rv_op, DiscreteMarkovChain):
@@ -332,7 +332,9 @@ def discrete_markov_chain_marginal(fgraph, node):
             "is not supported"
         )
 
-    return build_enumerable_marginal_rv(node, inputs, outputs, MarginalDiscreteMarkovChainRV)
+    return build_enumerable_marginal_rv(
+        node, inputs, outer_inputs, outputs, MarginalDiscreteMarkovChainRV
+    )
 
 
 marginal_rewrites_db.register(

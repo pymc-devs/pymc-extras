@@ -16,6 +16,7 @@ from pytensor.scan import map as scan_map
 from pytensor.tensor import TensorVariable
 
 from pymc_extras.distributions import DiscreteMarkovChain
+from pymc_extras.model.marginal.dims import output_dims_of
 from pymc_extras.model.marginal.distributions.core import (
     MarginalRV,
     inline_ofg_outputs,
@@ -28,6 +29,7 @@ from pymc_extras.model.marginal.graph_analysis import (
 from pymc_extras.model.marginal.rewrites import (
     MarginalSubgraph,
     extract_marginal_subgraph,
+    finalize_marginal_rv,
     marginal_rewrites_db,
 )
 
@@ -82,7 +84,8 @@ def dummy_logps(op, values) -> tuple[TensorVariable, ...]:
     The joint logp of a MarginalRV cannot be split across its dependents, so it is all assigned
     to the first value and the rest get a placeholder. Each carries the shape a real term would
     have -- the value's shape minus the axes its logp reduces -- rather than a bare scalar, so
-    that callers can reason about the term's shape without special-casing the placeholder.
+    that callers can reason about the term's shape (and, for dims models, label its dims)
+    without special-casing the placeholder.
     """
     if len(values) < 2:
         return ()
@@ -305,7 +308,7 @@ def finite_discrete_marginalized_conditional(op, inputs, dep_rvs):
     return sample_graph
 
 
-def build_enumerable_marginal_rv(node, inputs, outputs, constructor):
+def build_enumerable_marginal_rv(node, inputs, outer_inputs, outputs, constructor):
     """Build an :class:`EnumerableMarginalRV` of type ``constructor`` from a marginal subgraph.
 
     Shared by the per-distribution rewriters (e.g. finite discrete and DiscreteMarkovChain).
@@ -334,21 +337,20 @@ def build_enumerable_marginal_rv(node, inputs, outputs, constructor):
         marginalized_name=op.marginalized_name,
         marginalized_dims=op.marginalized_dims,
         n_dependent_rvs=n_dep,
+        output_dims=output_dims_of(node),
     )
-
-    new_outputs = typed_op(*inputs)
-    if not isinstance(new_outputs, list):
-        new_outputs = list(new_outputs)
-    return new_outputs[: len(node.outputs)]
+    return finalize_marginal_rv(node, typed_op, outer_inputs)
 
 
 @node_rewriter(tracks=[MarginalSubgraph])
 def finite_discrete_marginal(fgraph, node):
-    inputs, outputs = extract_marginal_subgraph(node)
+    inputs, outer_inputs, outputs = extract_marginal_subgraph(node)
     marginalized_rv_op = outputs[0].owner.op
     if not isinstance(marginalized_rv_op, Bernoulli | Categorical | DiscreteUniform):
         return None
-    return build_enumerable_marginal_rv(node, inputs, outputs, MarginalFiniteDiscreteRV)
+    return build_enumerable_marginal_rv(
+        node, inputs, outer_inputs, outputs, MarginalFiniteDiscreteRV
+    )
 
 
 marginal_rewrites_db.register("finite_discrete_marginal", finite_discrete_marginal, "basic")
