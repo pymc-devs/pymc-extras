@@ -15,10 +15,10 @@ from pymc_extras.model.marginal.distributions.core import (
     marginalized_conditional,
 )
 from pymc_extras.model.marginal.distributions.enumerable import (
-    DUMMY_ZERO,
     EnumerableMarginalRV,
     align_logp_dims,
     build_enumerable_marginal_rv,
+    dummy_logps,
     reduce_batch_dependent_logps,
     warn_non_separable_logp,
 )
@@ -57,7 +57,7 @@ def _hmm_emission_logp(op, chain, dependent_rvs, values):
 
     chain_value = chain.clone()
     dependent_rvs = clone_replace(dependent_rvs, {chain: chain_value})
-    logp_emissions_dict = conditional_logp(dict(zip(dependent_rvs, values)))
+    logp_emissions_dict = conditional_logp(dict(zip(dependent_rvs, values, strict=True)))
 
     # Reduce and add the batch dims beyond the chain dimension
     reduced_logp_emissions = reduce_batch_dependent_logps(
@@ -236,8 +236,7 @@ def marginal_discrete_markov_chain_logp(op, values, *inputs, **kwargs):
     # If there are multiple emission streams, we have to add dummy logps for the remaining value variables. The first
     # return is the joint probability of everything together, but PyMC still expects one logp for each emission stream.
     warn_non_separable_logp(values)
-    dummy_logps = (DUMMY_ZERO,) * (len(values) - 1)
-    return joint_logp, *dummy_logps
+    return joint_logp, *dummy_logps(op, values)
 
 
 @marginalized_conditional.register(MarginalDiscreteMarkovChainRV)
@@ -301,15 +300,15 @@ def discrete_markov_chain_marginalized_conditional(op, inputs, dep_rvs):
         P=P_t, init_dist=init_dist, steps=steps, time_varying_P=True
     )
 
-    replacements = dict(zip(inner_inputs, inputs))
-    replacements.update(zip(dep_dummies, dep_rvs))
+    replacements = dict(zip(inner_inputs, inputs, strict=True))
+    replacements.update(zip(dep_dummies, dep_rvs, strict=True))
     [cond_chain] = graph_replace([cond_chain], replace=replacements, strict=False)
     return cond_chain
 
 
 @node_rewriter(tracks=[MarginalSubgraph])
 def discrete_markov_chain_marginal(fgraph, node):
-    inputs, outputs = extract_marginal_subgraph(node)
+    inputs, outer_inputs, outputs = extract_marginal_subgraph(node)
     marginalized_rv = outputs[0]
     marginalized_rv_op = marginalized_rv.owner.op
     if not isinstance(marginalized_rv_op, DiscreteMarkovChain):
@@ -333,7 +332,9 @@ def discrete_markov_chain_marginal(fgraph, node):
             "is not supported"
         )
 
-    return build_enumerable_marginal_rv(node, inputs, outputs, MarginalDiscreteMarkovChainRV)
+    return build_enumerable_marginal_rv(
+        node, inputs, outer_inputs, outputs, MarginalDiscreteMarkovChainRV
+    )
 
 
 marginal_rewrites_db.register(

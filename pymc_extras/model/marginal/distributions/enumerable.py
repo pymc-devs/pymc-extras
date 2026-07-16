@@ -16,15 +16,20 @@ from pytensor.scan import map as scan_map
 from pytensor.tensor import TensorVariable
 
 from pymc_extras.distributions import DiscreteMarkovChain
+from pymc_extras.model.marginal.dims import output_dims_of
 from pymc_extras.model.marginal.distributions.core import (
     MarginalRV,
     inline_ofg_outputs,
     marginalized_conditional,
 )
-from pymc_extras.model.marginal.graph_analysis import subgraph_batch_dim_connection
+from pymc_extras.model.marginal.graph_analysis import (
+    get_support_axes,
+    subgraph_batch_dim_connection,
+)
 from pymc_extras.model.marginal.rewrites import (
     MarginalSubgraph,
     extract_marginal_subgraph,
+    finalize_marginal_rv,
     marginal_rewrites_db,
 )
 
@@ -73,7 +78,24 @@ def warn_non_separable_logp(values):
         )
 
 
-DUMMY_ZERO = pt.constant(0, name="dummy_zero")
+def dummy_logps(op, values) -> tuple[TensorVariable, ...]:
+    """Zero placeholders for the values whose density was folded into the first logp term.
+
+    The joint logp of a MarginalRV cannot be split across its dependents, so it is all assigned
+    to the first value and the rest get a placeholder. Each carries the shape a real term would
+    have -- the value's shape minus the axes its logp reduces -- rather than a bare scalar, so
+    that callers can reason about the term's shape (and, for dims models, label its dims)
+    without special-casing the placeholder.
+    """
+    if len(values) < 2:
+        return ()
+
+    placeholders = []
+    for value, supp_axes in zip(values[1:], get_support_axes(op)[1:]):
+        ndim = value.type.ndim
+        kept = [i for i in range(ndim) if (i - ndim) not in supp_axes]
+        placeholders.append(pt.zeros([value.shape[i] for i in kept], dtype=value.type.dtype))
+    return tuple(placeholders)
 
 
 def align_logp_dims(dims: tuple[int | None, ...], logp: TensorVariable) -> TensorVariable:
@@ -125,8 +147,6 @@ def reduce_batch_dependent_logps(
        as well as transpose the remaining axis of dep1 logp before adding the two element-wise.
 
     """
-    from pymc_extras.model.marginal.graph_analysis import get_support_axes
-
     reduced_logps = []
     for dependent_op, dependent_logp, dependent_dims_connection in zip(
         dependent_ops, dependent_logps, dependent_dims_connections
@@ -136,9 +156,12 @@ def reduce_batch_dependent_logps(
             # Some may have already been reduced by the logp expression of the dependent RV (e.g., multivariate RVs)
             dep_supp_axes = get_support_axes(dependent_op)[0]
 
-            # Dependent RV support axes are already collapsed in the logp, so we ignore them
+            # Dependent RV support axes are already collapsed in the logp, so we ignore them.
+            # The axes that remain must also be renumbered: they are counted against the
+            # dependent RV, but the logp no longer has the collapsed ones, so each support axis
+            # to the right of an axis shifts it one step towards zero.
             supp_axes = [
-                -i
+                -(i - sum(1 for supp_axis in dep_supp_axes if supp_axis > -i))
                 for i, dim in enumerate(reversed(dependent_dims_connection), start=1)
                 if (dim is None and -i not in dep_supp_axes)
             ]
@@ -162,7 +185,9 @@ def finite_discrete_marginal_rv_logp(op: MarginalFiniteDiscreteRV, values, *inpu
     inner_rvs = list(all_outputs[1 : 1 + op.n_dependent_rvs])
 
     # Obtain the joint_logp graph of the inner RV graph
-    inner_rv_values = dict(zip(inner_rvs, values))
+    # strict: a caller that provides fewer values than there are dependents would
+    # otherwise silently get the joint density of a subset of them
+    inner_rv_values = dict(zip(inner_rvs, values, strict=True))
     marginalized_vv = marginalized_rv.clone()
     rv_values = inner_rv_values | {marginalized_rv: marginalized_vv}
     logps_dict = conditional_logp(rv_values=rv_values, **kwargs)
@@ -217,8 +242,7 @@ def finite_discrete_marginal_rv_logp(op: MarginalFiniteDiscreteRV, values, *inpu
 
     warn_non_separable_logp(values)
     # We have to add dummy logps for the remaining value variables, otherwise PyMC will raise
-    dummy_logps = (DUMMY_ZERO,) * (len(values) - 1)
-    return joint_logp, *dummy_logps
+    return joint_logp, *dummy_logps(op, values)
 
 
 @marginalized_conditional.register(MarginalFiniteDiscreteRV)
@@ -241,7 +265,7 @@ def finite_discrete_marginalized_conditional(op, inputs, dep_rvs):
     marginalized_value = marginalized.clone()
     dep_dummies = [dep.type() for dep in dependents]
     rvs_to_values = {marginalized: marginalized_value}
-    rvs_to_values.update(zip(dependents, dep_dummies))
+    rvs_to_values.update(zip(dependents, dep_dummies, strict=True))
 
     logps_dict = conditional_logp(rvs_to_values)
     marginalized_logp = logps_dict[marginalized_value]
@@ -278,13 +302,13 @@ def finite_discrete_marginalized_conditional(op, inputs, dep_rvs):
         # matching the marginalized dtype so the conditional stays loggable.
         sample_graph += rv_domain[0].astype(marginalized.dtype)
 
-    replacements = dict(zip(inner_inputs, inputs))
-    replacements.update(zip(dep_dummies, dep_rvs))
+    replacements = dict(zip(inner_inputs, inputs, strict=True))
+    replacements.update(zip(dep_dummies, dep_rvs, strict=True))
     [sample_graph] = graph_replace([sample_graph], replace=replacements, strict=False)
     return sample_graph
 
 
-def build_enumerable_marginal_rv(node, inputs, outputs, constructor):
+def build_enumerable_marginal_rv(node, inputs, outer_inputs, outputs, constructor):
     """Build an :class:`EnumerableMarginalRV` of type ``constructor`` from a marginal subgraph.
 
     Shared by the per-distribution rewriters (e.g. finite discrete and DiscreteMarkovChain).
@@ -313,21 +337,20 @@ def build_enumerable_marginal_rv(node, inputs, outputs, constructor):
         marginalized_name=op.marginalized_name,
         marginalized_dims=op.marginalized_dims,
         n_dependent_rvs=n_dep,
+        output_dims=output_dims_of(node),
     )
-
-    new_outputs = typed_op(*inputs)
-    if not isinstance(new_outputs, list):
-        new_outputs = list(new_outputs)
-    return new_outputs[: len(node.outputs)]
+    return finalize_marginal_rv(node, typed_op, outer_inputs)
 
 
 @node_rewriter(tracks=[MarginalSubgraph])
 def finite_discrete_marginal(fgraph, node):
-    inputs, outputs = extract_marginal_subgraph(node)
+    inputs, outer_inputs, outputs = extract_marginal_subgraph(node)
     marginalized_rv_op = outputs[0].owner.op
     if not isinstance(marginalized_rv_op, Bernoulli | Categorical | DiscreteUniform):
         return None
-    return build_enumerable_marginal_rv(node, inputs, outputs, MarginalFiniteDiscreteRV)
+    return build_enumerable_marginal_rv(
+        node, inputs, outer_inputs, outputs, MarginalFiniteDiscreteRV
+    )
 
 
 marginal_rewrites_db.register("finite_discrete_marginal", finite_discrete_marginal, "basic")

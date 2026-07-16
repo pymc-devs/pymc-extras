@@ -328,6 +328,12 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
         elif isinstance(node.op, MinibatchRandomVariable):
             var_dims[node.outputs[0]] = inputs_dims[0]
 
+        elif isinstance(node.op, Shape):
+            # A shape carries lengths, not values, so it connects no batch dims of the
+            # marginalized variable to the output. Leaving it out of var_dims marks it
+            # unrelated, which is what it is.
+            pass
+
         else:
             raise NotImplementedError(f"Marginalization through operation {node} not supported.")
 

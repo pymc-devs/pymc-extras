@@ -5,7 +5,10 @@ from pytensor.graph import Apply, Op, node_rewriter
 from pytensor.graph.replace import graph_replace
 from pytensor.graph.rewriting.db import EquilibriumDB
 from pytensor.graph.traversal import graph_inputs
+from pytensor.xtensor.basic import tensor_from_xtensor, xtensor_from_tensor
+from pytensor.xtensor.type import XTensorType
 
+from pymc_extras.model.marginal.dims import lower_marginal_subgraph
 from pymc_extras.model.marginal.distributions.core import MarginalRV, inline_ofg_outputs
 
 
@@ -138,9 +141,22 @@ def extract_marginal_subgraph(node):
     _unwrap_subgraph_model_vars during replace_marginal_subgraph. RNG
     updates are discovered here. The OpFromGraph constructor handles cloning.
 
-    Returns (inputs, outputs) where outputs = [marginalized_rv, *deps, *rng_updates].
+    A subgraph of a ``pymc.dims`` model is lowered to tensors first, so that the strategies
+    that recognize it, their dim-connection analysis and their logps all see the plain RVs they
+    were written for. ``finalize_marginal_rv`` casts the outputs back.
+
+    Returns (inner_inputs, outer_inputs, outputs), where outputs =
+    [marginalized_rv, *deps, *rng_updates]. The two input lists differ only for a lowered dims
+    subgraph: build the op over ``inner_inputs`` and apply it to ``outer_inputs``.
     """
     subgraph_outputs, boundary = node.op.split_node_inputs(node)
+
+    if any(isinstance(out.type, XTensorType) for out in subgraph_outputs):
+        boundary, outer_boundary, subgraph_outputs = lower_marginal_subgraph(
+            boundary, subgraph_outputs
+        )
+    else:
+        outer_boundary = boundary
 
     n_rvs = 1 + node.op.n_dependent_rvs
     rng_updates = collect_default_updates(
@@ -148,7 +164,26 @@ def extract_marginal_subgraph(node):
     )
 
     outputs = subgraph_outputs + list(rng_updates.values())
-    return boundary, outputs
+    return boundary, outer_boundary, outputs
+
+
+def finalize_marginal_rv(node, typed_op, inputs):
+    """Apply a resolved MarginalRV and return outputs matching the marker node's.
+
+    The marker's outputs carry the dims of the model variables they stand for. When those are
+    dims variables the MarginalRV was built over a lowered tensor subgraph, so its outputs are
+    cast back here -- the model keeps its dims on both the RVs and their values.
+    """
+    new_outputs = typed_op(*inputs)
+    if not isinstance(new_outputs, list):
+        new_outputs = list(new_outputs)
+
+    return [
+        xtensor_from_tensor(new_out, dims=old_out.type.dims)
+        if isinstance(old_out.type, XTensorType)
+        else new_out
+        for old_out, new_out in zip(node.outputs, new_outputs[: len(node.outputs)])
+    ]
 
 
 @node_rewriter(tracks=[MarginalRV])
@@ -159,13 +194,22 @@ def local_unmarginalize(fgraph, node):
     dependent_rvs = list(all_outputs[1 : 1 + n_dep])
     rngs = list(all_outputs[1 + n_dep :])
 
+    # For a dims model the inner graph was lowered to tensors, so the recovered variable comes
+    # out as one. Cast it back, or the model would silently get its variable back without dims.
+    marginalized_dims = None if node.op.output_dims is None else node.op.output_dims[0]
+    model_var = (
+        unmarginalized_rv
+        if marginalized_dims is None
+        else xtensor_from_tensor(unmarginalized_rv, dims=marginalized_dims)
+    )
+
     # Variable names are not preserved reliably through cloning/rewrites;
     # restore the model variable name from the op metadata.
-    unmarginalized_rv.name = node.op.marginalized_name
-    value = unmarginalized_rv.clone()
+    model_var.name = node.op.marginalized_name
+    value = model_var.clone()
     transform = None
     unmarginalized_free_rv = model_free_rv(
-        unmarginalized_rv, value, transform, node.op.marginalized_name, *node.op.marginalized_dims
+        model_var, value, transform, node.op.marginalized_name, *node.op.marginalized_dims
     )
 
     # Restore the model-variable output that was dropped when the variable was
@@ -173,9 +217,19 @@ def local_unmarginalize(fgraph, node):
     # import_missing imports the new value variable as an input.
     fgraph.add_output(unmarginalized_free_rv, reason="unmarginalize", import_missing=True)
 
-    dependent_rvs = graph_replace(dependent_rvs, {unmarginalized_rv: unmarginalized_free_rv})
+    # The dependents must be rewired onto the recovered *valued* variable, or they would keep
+    # drawing their own copy of it. For a dims model they are lowered tensors, so they take its
+    # tensor view -- replacing them with the xtensor model variable would match nothing.
+    recovered = (
+        unmarginalized_free_rv
+        if marginalized_dims is None
+        else tensor_from_xtensor(unmarginalized_free_rv)
+    )
+    dependent_rvs = graph_replace(dependent_rvs, {unmarginalized_rv: recovered})
 
-    return [unmarginalized_free_rv, *dependent_rvs, *rngs]
+    # The marginalized output has no clients (it was dropped when the variable was
+    # marginalized), but the replacement still has to match the node's output type.
+    return [recovered, *dependent_rvs, *rngs]
 
 
 marginal_rewrites_db = EquilibriumDB()
