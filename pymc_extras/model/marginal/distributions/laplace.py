@@ -35,13 +35,9 @@ class MarginalLaplaceRV(MarginalRV):
     def __init__(
         self,
         *args,
-        marginalized_dims,
-        n_dependent_rvs: int,
         minimizer_kwargs: dict = DEFAULT_MINIMIZER_KWARGS,
         **kwargs,
     ) -> None:
-        self.marginalized_dims = marginalized_dims
-        self.n_dependent_rvs = n_dependent_rvs
         self.minimizer_kwargs = minimizer_kwargs
         super().__init__(*args, **kwargs)
 

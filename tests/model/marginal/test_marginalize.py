@@ -712,7 +712,7 @@ def test_forward_after_sampling():
 
     # Check that model.initial_point() does not modify the inner graph of the marginalization Op
     marginal_rv = marginalized_mod["y_hat"]
-    inner_outputs_before = marginal_rv.owner.op.fgraph.clone().outputs
+    inner_outputs_before = marginal_rv.owner.op.fgraph.unfreeze().outputs
     marginalized_mod.initial_point()
     inner_outputs_after = marginal_rv.owner.op.fgraph.outputs
     assert equal_computations_up_to_root(inner_outputs_before, inner_outputs_after)

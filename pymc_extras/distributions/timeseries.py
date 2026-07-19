@@ -19,7 +19,7 @@ from pymc.distributions.shape_utils import (
 )
 from pymc.logprob.abstract import _logprob
 from pymc.logprob.basic import logp
-from pymc.pytensorf import constant_fold, intX
+from pymc.pytensorf import intX, resolve_shapes
 from pymc.step_methods import STEP_METHODS
 from pymc.step_methods.arraystep import ArrayStep
 from pymc.step_methods.compound import Competence
@@ -58,11 +58,13 @@ def _make_outputs_info(n_lags: int, init_dist: Distribution) -> list[Distributio
 
 class DiscreteMarkovChainRV(SymbolicRandomVariable):
     n_lags: int
+    time_varying_P: bool
     default_output = 1
     _print_name = ("DiscreteMC", "\\operatorname{DiscreteMC}")
 
-    def __init__(self, *args, n_lags, **kwargs):
+    def __init__(self, *args, n_lags, time_varying_P=False, **kwargs):
         self.n_lags = n_lags
+        self.time_varying_P = time_varying_P
         super().__init__(*args, **kwargs)
 
     def update(self, node: Node):
@@ -84,6 +86,15 @@ class DiscreteMarkovChain(Distribution):
     P: tensor
         Matrix of transition probabilities between states. Rows must sum to 1.
         One of P or P_logits must be provided.
+
+        When ``time_varying_P=False`` (default), ``P`` is a ``k x k`` matrix shared across
+        all transitions, with optional leading batch dimensions: ``(*batch, k, k)``.
+
+        When ``time_varying_P=True``, ``P`` carries an extra time axis just before the two
+        state axes: ``(*batch, steps, k, k)``. ``P[..., t, :, :]`` is the transition matrix
+        used to go from state ``t`` to state ``t + 1``, so the time axis must have length
+        ``steps`` (one transition matrix per step). When ``steps`` is not given explicitly,
+        it is inferred from this axis.
     P_logit: tensor, optional
         Matrix of transition logits. Converted to probabilities via Softmax activation.
         One of P or P_logits must be provided.
@@ -95,6 +106,10 @@ class DiscreteMarkovChain(Distribution):
         If not, it will be automatically resized.
 
         .. warning:: init_dist will be cloned, rendering it independent of the one passed as input.
+    time_varying_P : bool, default False
+        If ``True``, ``P`` is interpreted as a sequence of transition matrices, one per step,
+        with shape ``(*batch, steps, k, k)`` (see ``P`` above). This disambiguates the time
+        axis from a leading batch dimension. Only supported for ``n_lags=1``.
 
     Notes
     -----
@@ -108,6 +123,7 @@ class DiscreteMarkovChain(Distribution):
 
     .. code-block:: python
 
+        import numpy as np
         import pymc as pm
         import pymc_extras as pmx
 
@@ -116,6 +132,39 @@ class DiscreteMarkovChain(Distribution):
             init_dist = pm.Categorical.dist(p=np.full(3, 1 / 3))
             markov_chain = pmx.DiscreteMarkovChain(
                 "markov_chain", P=P, init_dist=init_dist, shape=(100,)
+            )
+
+    Use a time-varying transition matrix. ``P`` carries a leading time axis of length
+    ``steps`` (here 99 transitions for a chain of 100 states), so its shape is
+    ``(steps, k, k)``. Below the chain switches regime partway through: a "sticky" kernel
+    governs the first 40 transitions and a "mixing" kernel the remaining 59, assembled by
+    repeating each kernel along the time axis.
+
+    .. code-block:: python
+
+        import numpy as np
+        import pymc as pm
+        import pymc_extras as pmx
+        import pytensor.tensor as pt
+
+        with pm.Model() as regime_chain:
+            # Two 2 x 2 kernels: states persist under "sticky", shuffle under "mixing".
+            P_sticky = pm.Dirichlet("P_sticky", a=np.eye(2) * 8 + 1, size=2)
+            P_mixing = pm.Dirichlet("P_mixing", a=np.ones((2, 2)), size=2)
+
+            # Stack one kernel per step: 40 sticky then 59 mixing -> shape (99, 2, 2)
+            P = pt.concatenate(
+                [pt.repeat(P_sticky[None], 40, axis=0), pt.repeat(P_mixing[None], 59, axis=0)],
+                axis=0,
+            )
+
+            init_dist = pm.Categorical.dist(p=np.full(2, 0.5))
+            markov_chain = pmx.DiscreteMarkovChain(
+                "markov_chain",
+                P=P,
+                init_dist=init_dist,
+                time_varying_P=True,
+                shape=(100,),
             )
 
     """
@@ -134,22 +183,44 @@ class DiscreteMarkovChain(Distribution):
         return super().__new__(cls, *args, steps=steps, n_lags=n_lags, **kwargs)
 
     @classmethod
-    def dist(cls, P=None, logit_P=None, steps=None, init_dist=None, n_lags=1, **kwargs):
+    def dist(
+        cls,
+        P=None,
+        logit_P=None,
+        steps=None,
+        init_dist=None,
+        n_lags=1,
+        time_varying_P=False,
+        **kwargs,
+    ):
         steps = get_support_shape_1d(
             support_shape=steps, shape=kwargs.get("shape", None), support_shape_offset=n_lags
         )
 
-        if steps is None:
-            raise ValueError("Must specify steps or shape parameter")
         if P is None and logit_P is None:
             raise ValueError("Must specify P or logit_P parameter")
         if P is not None and logit_P is not None:
             raise ValueError("Must specify only one of either P or logit_P parameter")
+        # time_varying_P disambiguates a time axis in P (*batch, time, k, k) from a leading
+        # batch dimension; without it that axis would be treated as batch. See pymc-extras #392.
+        if time_varying_P and n_lags != 1:
+            raise NotImplementedError("time_varying_P is only supported for n_lags=1")
 
         if logit_P is not None:
             P = pm.math.softmax(logit_P, axis=-1)
 
         P = pt.as_tensor_variable(P)
+
+        if time_varying_P:
+            # P's transition axis (*batch, time, k, k) is itself an encoding of `steps`.
+            # Reconcile it through the same helper (zero offset — the time axis *is* the
+            # transition count): infers steps when only P is given, asserts when both are.
+            steps = get_support_shape_1d(
+                support_shape=steps, shape=(P.shape[-3],), support_shape_offset=0
+            )
+
+        if steps is None:
+            raise ValueError("Must specify steps or shape parameter")
         steps = pt.as_tensor_variable(intX(steps))
 
         if init_dist is not None:
@@ -177,15 +248,23 @@ class DiscreteMarkovChain(Distribution):
             k = P.shape[-1]
             init_dist = pm.Categorical.dist(p=pt.full((k,), 1 / k))
 
-        return super().dist([P, steps, init_dist], n_lags=n_lags, **kwargs)
+        return super().dist(
+            [P, steps, init_dist], n_lags=n_lags, time_varying_P=time_varying_P, **kwargs
+        )
 
     @classmethod
-    def rv_op(cls, P, steps, init_dist, n_lags, size=None):
+    def rv_op(cls, P, steps, init_dist, n_lags, size=None, time_varying_P=False):
+        if time_varying_P and n_lags != 1:
+            raise NotImplementedError("time_varying_P is only supported for n_lags=1")
+
+        # Trailing core axes of P: the (n_lags + 1) state axes, plus a leading time axis
+        # when P is time-varying. Everything to the left of those is batch.
+        n_core_P = (n_lags + 1) + (1 if time_varying_P else 0)
         if size is not None:
             batch_size = size
         else:
             batch_size = pt.broadcast_shape(
-                P[tuple([...] + [0] * (n_lags + 1))], pt.atleast_1d(init_dist)[..., 0]
+                P[tuple([...] + [0] * n_core_P)], pt.atleast_1d(init_dist)[..., 0]
             )
 
         init_dist = change_dist_size(init_dist, (*batch_size, n_lags))
@@ -195,11 +274,27 @@ class DiscreteMarkovChain(Distribution):
 
         state_rng = pytensor.shared(np.random.default_rng())
 
-        def transition(*args):
-            old_rng, *states, transition_probs = args
-            p = transition_probs[tuple(states)]
-            next_rng, next_state = pm.Categorical.dist(p=p, rng=old_rng, return_next_rng=True)
-            return next_rng, next_state
+        if time_varying_P:
+            # Move the time core axis (-3 for n_lags=1) to the front so scan iterates a
+            # distinct transition matrix per step. With a sequence, scan passes the sequence
+            # element first, then the recurring outputs (rng, state).
+            def transition(transition_probs, old_rng, *states):
+                p = transition_probs[tuple(states)]
+                next_rng, next_state = pm.Categorical.dist(p=p, rng=old_rng, return_next_rng=True)
+                return next_rng, next_state
+
+            # Pass n_steps too: steps is reconciled with P's time axis at construction, so
+            # this keeps steps live in the inner graph (its consistency Assert survives).
+            scan_kwargs = dict(sequences=[pt.moveaxis(P_, -3, 0)], n_steps=steps_)
+        else:
+
+            def transition(*args):
+                old_rng, *states, transition_probs = args
+                p = transition_probs[tuple(states)]
+                next_rng, next_state = pm.Categorical.dist(p=p, rng=old_rng, return_next_rng=True)
+                return next_rng, next_state
+
+            scan_kwargs = dict(non_sequences=[P_], n_steps=steps_)
 
         state_next_rng, markov_chain = pytensor.scan(
             transition,
@@ -208,19 +303,21 @@ class DiscreteMarkovChain(Distribution):
                 # Move lags to the front for scan
                 *_make_outputs_info(n_lags, pt.moveaxis(init_dist_, -1, 0)),
             ],
-            non_sequences=[P_],
-            n_steps=steps_,
             strict=True,
             return_updates=False,
+            **scan_kwargs,
         )
 
         discrete_mc_ = pt.concatenate([init_dist_, pt.moveaxis(markov_chain, 0, -1)], axis=-1)
 
+        # Time-varying P carries an extra leading core axis (the per-step matrices).
+        P_signature = "(u,p,p)" if time_varying_P else "(p,p)"
         discrete_mc_op = DiscreteMarkovChainRV(
             inputs=[P_, steps_, init_dist_, state_rng],
             outputs=[state_next_rng, discrete_mc_],
             n_lags=n_lags,
-            extended_signature="(p,p),(),(p),[rng]->[rng],(t)",
+            time_varying_P=time_varying_P,
+            extended_signature=f"{P_signature},(),(p),[rng]->[rng],(t)",
         )
 
         discrete_mc = discrete_mc_op(P, steps, init_dist, state_rng)
@@ -233,7 +330,12 @@ def change_mc_size(op, dist, new_size, expand=False):
         old_size = dist.shape[:-1]
         new_size = tuple(new_size) + tuple(old_size)
 
-    return DiscreteMarkovChain.rv_op(*dist.owner.inputs[:-1], size=new_size, n_lags=op.n_lags)
+    return DiscreteMarkovChain.rv_op(
+        *dist.owner.inputs[:-1],
+        size=new_size,
+        n_lags=op.n_lags,
+        time_varying_P=op.time_varying_P,
+    )
 
 
 @_support_point.register(DiscreteMarkovChainRV)
@@ -241,18 +343,28 @@ def discrete_mc_moment(op, rv, P, steps, init_dist, state_rng):
     init_dist_moment = support_point(init_dist)
     n_lags = op.n_lags
 
-    def greedy_transition(*args):
-        *states, transition_probs = args
-        p = transition_probs[tuple(states)]
-        return pt.argmax(p)
+    if op.time_varying_P:
+
+        def greedy_transition(transition_probs, *states):
+            p = transition_probs[tuple(states)]
+            return pt.argmax(p)
+
+        scan_kwargs = dict(sequences=[pt.moveaxis(P, -3, 0)], n_steps=steps)
+    else:
+
+        def greedy_transition(*args):
+            *states, transition_probs = args
+            p = transition_probs[tuple(states)]
+            return pt.argmax(p)
+
+        scan_kwargs = dict(non_sequences=[P], n_steps=steps)
 
     chain_moment = pytensor.scan(
         greedy_transition,
-        non_sequences=[P],
         outputs_info=_make_outputs_info(n_lags, init_dist),
-        n_steps=steps,
         strict=True,
         return_updates=False,
+        **scan_kwargs,
     )
     chain_moment = pt.concatenate([init_dist_moment, chain_moment])
     return chain_moment
@@ -263,16 +375,22 @@ def discrete_mc_logp(op, values, P, steps, init_dist, state_rng, **kwargs):
     value = values[0]
     n_lags = op.n_lags
 
-    indexes = [value[..., i : -(n_lags - i) if n_lags != i else None] for i in range(n_lags + 1)]
+    indices = [value[..., i : -(n_lags - i) if n_lags != i else None] for i in range(n_lags + 1)]
 
     mc_logprob = logp(init_dist, value[..., :n_lags]).sum(axis=-1)
-    mc_logprob += pt.log(P[tuple(indexes)]).sum(axis=-1)
+    if op.time_varying_P:
+        # P is (*batch, time, k, k); steps is baked into P's time axis at construction, so
+        # each transition just indexes its own matrix by the (from, to) states. n_lags == 1,
+        # so indexes == [from, to].
+        time_idx = pt.arange(P.shape[-3])
+        from_states, to_states = indices
+        mc_logprob += pt.log(P[..., time_idx, from_states, to_states]).sum(axis=-1)
+    else:
+        mc_logprob += pt.log(P[tuple(indices)]).sum(axis=-1)
 
     # We cannot leave any RV in the logp graph, even if just for an assert
     # If this is a core_dim, it should be part of the signature
-    [init_dist_core_dim] = constant_fold(
-        [pt.atleast_1d(init_dist).shape[-1]], raise_not_constant=False
-    )
+    [init_dist_core_dim] = resolve_shapes([pt.atleast_1d(init_dist).shape[-1]])
 
     return check_parameters(
         mc_logprob,

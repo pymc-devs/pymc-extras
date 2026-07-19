@@ -1,11 +1,19 @@
 import numpy as np
 import pymc as pm
+import pytensor.tensor as pt
 import pytest
 
 from pytensor import function as pytensor_function
 from scipy import special
 
-from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
+from pymc_extras.inference.advi.autoguide import (
+    AutoDiagonalNormal,
+    AutoGuideModel,
+    AutoLowRankMultivariateNormal,
+    AutoMultivariateNormal,
+)
+from pymc_extras.inference.advi.compile import compile_sampling_fn
+from pymc_extras.inference.advi.objective import get_logp_logq
 
 # TODO: This is a magic number from AutoDiagonalNormal's scale initialization
 SCALE_INIT = 0.1
@@ -74,6 +82,61 @@ class TestAutoDiagonalNormal:
 
         assert tuple(guide.model.coords["city"]) == tuple(coords["city"])
         assert guide.model.named_vars_to_dims["mu"] == ("city",)
+
+
+class TestTransformedRVs:
+    def test_shape_changing_transform(self):
+        # https://github.com/pymc-devs/pymc-extras/issues/646
+        with pm.Model() as model:
+            p = pm.Dirichlet("p", np.ones(3))
+            pm.Categorical("obs", p=p, observed=[0, 1, 2])
+
+        guide = AutoDiagonalNormal(model)
+
+        # The guide parameterizes the simplex-transformed value variable, of size n - 1
+        param_shapes = {p.name: v.shape for p, v in guide.params_init_values.items()}
+        assert param_shapes["p_loc"] == (2,)
+        assert param_shapes["p_scale"] == (2,)
+
+        logp, logq = get_logp_logq(model, guide)
+        f = pytensor_function(list(guide.params), [logp, logq])
+        res = f(*[guide.params_init_values[p] for p in guide.params])
+        assert np.all(np.isfinite(res))
+
+    def test_elemwise_transform_preserves_dims(self):
+        coords = {"city": ["A", "B", "C"]}
+        with pm.Model(coords=coords) as model:
+            pm.Exponential("sigma", 1, dims="city")
+
+        guide = AutoDiagonalNormal(model)
+
+        assert guide.model.named_vars_to_dims["sigma"] == ("city",)
+
+    def test_shape_changing_transform_drops_dims(self):
+        coords = {"cat": ["a", "b", "c"]}
+        with pm.Model(coords=coords) as model:
+            pm.Dirichlet("p", np.ones(3), dims="cat")
+
+        guide = AutoDiagonalNormal(model)
+
+        assert "p" not in guide.model.named_vars_to_dims
+
+    def test_sampling_fn_maps_to_constrained_space(self):
+        with pm.Model() as model:
+            pm.Uniform("u", lower=-1, upper=3, shape=(2,))
+            pm.Dirichlet("p", np.ones(3))
+
+        guide = AutoDiagonalNormal(model)
+        draws = 100
+        f_sample = compile_sampling_fn(model, guide, draws=draws)
+
+        u_draws, p_draws = f_sample(*[guide.params_init_values[p] for p in guide.params])
+
+        assert u_draws.shape == (draws, 2)
+        assert p_draws.shape == (draws, 3)
+        assert np.all((u_draws > -1) & (u_draws < 3))
+        assert np.all(p_draws >= 0)
+        np.testing.assert_allclose(p_draws.sum(axis=-1), 1.0)
 
 
 class TestAutoGuideModel:
@@ -154,3 +217,88 @@ class TestAutoDiagonalNormalSampling:
         std_large = sample_std(2.0)
 
         assert std_large > std_small * 2
+
+
+class TestAutoMultivariateNormal:
+    def test_full_rank_guide(self):
+        with pm.Model() as model:
+            pm.Normal("x", 0, 1)
+            pm.Normal("y", 0, 1, shape=(3,))
+            pm.Dirichlet("p", np.ones(3))  # transformed: value-space size 2
+
+        guide = AutoMultivariateNormal(model, random_seed=0)
+
+        # D = 1 + 3 + 2 = 6 ; lower-triangular Cholesky packs 6 * 7 / 2 = 21 entries
+        assert isinstance(guide, AutoGuideModel)
+        assert {p.name for p in guide.params} == {"loc", "L_packed"}
+        assert guide["loc"].type.shape == (None,)  # symbolic graph; size fixed by the init value
+        assert guide.params_init_values[guide["loc"]].shape == (6,)
+        assert guide.params_init_values[guide["L_packed"]].shape == (21,)
+
+        # logq is the joint MvNormal density at the realized draw; reconstruct the effective
+        # Cholesky factor for the reference.
+        _, logq = get_logp_logq(model, guide, path_derivative_gradient=False)
+        diag = pt.arange(6)
+        chol = pt.zeros((6, 6))[pt.tril_indices(6)].set(guide["L_packed"])
+        chol = chol[diag, diag].set(pt.softplus(pt.diagonal(chol)))
+        ref = pm.logp(pm.MvNormal.dist(mu=guide["loc"], chol=chol), guide.latent)
+
+        f_logq = pytensor_function(list(guide.params), logq, on_unused_input="ignore")
+        f_ref = pytensor_function(list(guide.params), ref, on_unused_input="ignore")
+        vals = [guide.params_init_values[p] for p in guide.params]
+        np.testing.assert_allclose(f_logq(*vals), f_ref(*vals))
+
+        # assume(L, lower_triangular=True) lowers the MeasurableMatMul solve/slogdet to the
+        # triangular fast path (checked on the logq graph alone, not the reference).
+        op_names = {type(node.op).__name__ for node in f_logq.maker.fgraph.apply_nodes}
+        assert any("Triangular" in name for name in op_names)
+
+        # sampling maps back to the constrained space (the simplex sums to 1)
+        f_sample = compile_sampling_fn(model, guide, draws=100)
+        *_, p_draws = f_sample(*vals)
+        assert p_draws.shape == (100, 3)
+        np.testing.assert_allclose(p_draws.sum(axis=-1), 1.0)
+
+
+class TestAutoLowRankMultivariateNormal:
+    def test_low_rank_guide(self):
+        with pm.Model() as model:
+            pm.Normal("x", 0, 1)
+            pm.Normal("y", 0, 1, shape=(3,))
+            pm.Dirichlet("p", np.ones(3))  # transformed: value-space size 2
+
+        guide = AutoLowRankMultivariateNormal(model, rank=2, random_seed=0)
+
+        # D = 1 + 3 + 2 = 6, rank = 2
+        assert isinstance(guide, AutoGuideModel)
+        assert {p.name for p in guide.params} == {"loc", "cov_factor", "cov_diag_unconstrained"}
+        assert guide.params_init_values[guide["cov_factor"]].shape == (6, 2)
+        assert guide.params_init_values[guide["cov_diag_unconstrained"]].shape == (6,)
+
+        # logq is the closed-form Woodbury density of cov = W W.T + diag(d**2); compare to the
+        # dense MvNormal reference, with W perturbed off its zero init so the rank term is live.
+        _, logq = get_logp_logq(model, guide, path_derivative_gradient=False)
+        W, d_unc, loc = guide["cov_factor"], guide["cov_diag_unconstrained"], guide["loc"]
+        cov = W @ W.T + pt.diag(pt.softplus(d_unc) ** 2)
+        ref = pm.logp(pm.MvNormal.dist(mu=loc, cov=cov), guide.latent)
+
+        values = dict(guide.params_init_values)
+        values[W] = np.full((6, 2), 0.3)  # perturb off the zero init
+        vals = [values[p] for p in guide.params]
+        f = pytensor_function(list(guide.params), [logq, ref], on_unused_input="ignore")
+        got, want = f(*vals)
+        assert got.shape == ()
+        np.testing.assert_allclose(got, want)
+
+        # sampling maps back to the constrained space (the simplex sums to 1)
+        f_sample = compile_sampling_fn(model, guide, draws=100)
+        *_, p_draws = f_sample(*[guide.params_init_values[p] for p in guide.params])
+        assert p_draws.shape == (100, 3)
+        np.testing.assert_allclose(p_draws.sum(axis=-1), 1.0)
+
+    def test_default_rank_is_sqrt_d_clamped(self):
+        with pm.Model() as model:
+            pm.Normal("x", 0, 1, shape=(9,))
+
+        guide = AutoLowRankMultivariateNormal(model)  # D = 9 -> round(sqrt(9)) = 3
+        assert guide.params_init_values[guide["cov_factor"]].shape == (9, 3)

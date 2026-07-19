@@ -25,10 +25,9 @@ class NormalNormalMarginalRV(MarginalRV):
     Inner graph: [marginalized_normal, dependent_normal, *rng_updates]
     """
 
-    def __init__(self, *args, marginalized_dims, **kwargs):
-        self.marginalized_dims = marginalized_dims
-        self.n_dependent_rvs = 1
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, **kwargs):
+        # Normal-Normal conjugacy always has exactly one dependent RV
+        super().__init__(*args, n_dependent_rvs=1, **kwargs)
 
 
 @_logprob.register(NormalNormalMarginalRV)

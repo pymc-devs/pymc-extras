@@ -29,8 +29,7 @@ def compile_svi_training_fn(
 
     negative_elbo_grads = pt.grad(rewrite_pregrad(negative_elbo), wrt=params)
 
-    if "trust_input" not in compile_kwargs:
-        compile_kwargs["trust_input"] = True
+    compile_kwargs.setdefault("trust_input", True)
 
     f_loss_dloss = compile(
         inputs=[draws, *params], outputs=[negative_elbo, *negative_elbo_grads], **compile_kwargs

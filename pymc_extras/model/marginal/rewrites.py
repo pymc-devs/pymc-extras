@@ -165,7 +165,7 @@ def local_unmarginalize(fgraph, node):
     value = unmarginalized_rv.clone()
     transform = None
     unmarginalized_free_rv = model_free_rv(
-        unmarginalized_rv, value, transform, *node.op.marginalized_dims
+        unmarginalized_rv, value, transform, node.op.marginalized_name, *node.op.marginalized_dims
     )
 
     # Restore the model-variable output that was dropped when the variable was

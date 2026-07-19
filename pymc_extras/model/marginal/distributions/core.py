@@ -15,7 +15,7 @@ def inline_ofg_outputs(op: OpFromGraph, inputs: Sequence[Variable]) -> list[Vari
     Whereas `OpFromGraph` "wraps" a graph inside a single Op, this function "unwraps"
     the inner graph.
     """
-    outputs = op._frozen_fgraph.bind(list(inputs))
+    outputs = op.fgraph.bind(list(inputs))
     for inner_out, out in zip(op.inner_outputs, outputs):
         out.name = inner_out.name
     return outputs
@@ -24,13 +24,23 @@ def inline_ofg_outputs(op: OpFromGraph, inputs: Sequence[Variable]) -> list[Vari
 class MarginalRV(OpFromGraph, MeasurableOp):
     """Base class for supported MarginalRVs.
 
-    The name of the marginalized model variable is stored explicitly as
-    ``marginalized_name`` (like ``marginalized_dims``), because pytensor makes
-    no guarantee that variable names survive cloning and rewrites.
+    The name and dims of the marginalized model variable, together with the
+    number of dependent RVs, are stored explicitly (``marginalized_name``,
+    ``marginalized_dims``, ``n_dependent_rvs``) because pytensor makes no
+    guarantee that variable names/metadata survive cloning and rewrites.
     """
 
-    def __init__(self, *args, marginalized_name: str, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        marginalized_name: str,
+        marginalized_dims,
+        n_dependent_rvs: int,
+        **kwargs,
+    ) -> None:
         self.marginalized_name = marginalized_name
+        self.marginalized_dims = marginalized_dims
+        self.n_dependent_rvs = n_dependent_rvs
         super().__init__(*args, **kwargs)
 
 

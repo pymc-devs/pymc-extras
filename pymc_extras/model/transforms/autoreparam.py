@@ -192,7 +192,7 @@ def vip_reparam_node(
         shape=rv_shape,
         name=lam_name,
     )
-    logit_lam = model_named(logit_lam_, *dims)
+    logit_lam = model_named(logit_lam_, lam_name, *dims)
     lam = pt.sigmoid(logit_lam)
     return (
         _vip_reparam_node(
@@ -243,6 +243,7 @@ def _(
         vip_rv_,
         vip_rv_.clone(),
         None,
+        vip_rv_.name,
         *dims,
     )
 
@@ -250,7 +251,7 @@ def _(
 
     vip_rep_.name = name
 
-    vip_rep = model_deterministic(vip_rep_, *dims)
+    vip_rep = model_deterministic(vip_rep_, vip_rep_.name, *dims)
     return vip_rep
 
 
@@ -281,6 +282,7 @@ def _(
         vip_rv_,
         vip_rv_value_,
         transform,
+        vip_rv_.name,
         *dims,
     )
 
@@ -288,7 +290,7 @@ def _(
 
     vip_rep_.name = name
 
-    vip_rep = model_deterministic(vip_rep_, *dims)
+    vip_rep = model_deterministic(vip_rep_, vip_rep_.name, *dims)
     return vip_rep
 
 

@@ -61,7 +61,7 @@ class BSplineBasis(Op):
             Bx = scipy.sparse.csr_matrix(Bx, dtype=eval_points.dtype)
         output_storage[0][0] = Bx
 
-    def infer_shape(self, fgraph, node, ins_shapes):
+    def infer_shape(self, node, ins_shapes):
         return [(node.inputs[0].shape[0], node.inputs[1])]
 
 
