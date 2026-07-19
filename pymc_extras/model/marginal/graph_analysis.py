@@ -11,6 +11,7 @@ from pytensor.graph.traversal import ancestors, io_toposort
 from pytensor.tensor import TensorType, TensorVariable
 from pytensor.tensor.blockwise import Blockwise
 from pytensor.tensor.elemwise import CAReduce, DimShuffle, Elemwise
+from pytensor.tensor.math import Dot
 from pytensor.tensor.random.op import RandomVariable
 from pytensor.tensor.shape import Shape
 from pytensor.tensor.subtensor import AdvancedSubtensor, Subtensor, get_idx_list
@@ -137,7 +138,7 @@ def _broadcast_dims(
     return tuple(output_dims)
 
 
-def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) -> VAR_DIMS:
+def _subgraph_batch_dim_clients(var_dims: VAR_DIMS, input_vars, output_vars) -> VAR_DIMS:
     for node in io_toposort(input_vars, output_vars):
         inputs_dims = [
             var_dims.get(inp, ((None,) * inp.type.ndim) if hasattr(inp.type, "ndim") else ())
@@ -165,7 +166,7 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
             inner_inputs = op.inner_inputs
             inner_outputs = op.inner_outputs
 
-            inner_var_dims = _subgraph_batch_dim_connection(
+            inner_var_dims = _subgraph_batch_dim_clients(
                 dict(zip(inner_inputs, inputs_dims)), inner_inputs, inner_outputs
             )
 
@@ -185,6 +186,22 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
                     ):
                         raise ValueError(f"Known dim corresponds to core dimension of {node.op}")
                     var_dims[out] = out_dims
+
+        elif isinstance(node.op, Blockwise) and isinstance(node.op.core_op, Dot):
+            # matmul: (..., m, k) @ (..., k, p) -> (..., m, p). Each output entry is
+            # ``sum_k A[..., m, k] * B[..., k, p]``, so the ``m`` and ``p`` dims are
+            # unmixed (a known dim there maps 1:1 to an output dim), while the
+            # contracted ``k`` dim mixes information and is a chokepoint.
+            a_dims, b_dims = inputs_dims
+            a_batch, (a_m, a_k) = a_dims[:-2], a_dims[-2:]
+            b_batch, (b_k, b_p) = b_dims[:-2], b_dims[-2:]
+            if a_k is not None or b_k is not None:
+                raise ValueError(
+                    f"Use of known dimensions as contracted dimensions of op {node.op} "
+                    "not supported."
+                )
+            batch_dims = _broadcast_dims((a_batch, b_batch))
+            var_dims[node.outputs[0]] = (*batch_dims, a_m, b_p)
 
         elif isinstance(node.op, Elemwise | Blockwise | RandomVariable | SymbolicRandomVariable):
             # NOTE: User-provided CustomDist may not respect core dimensions on the left.
@@ -229,7 +246,7 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
             elif axes is None:
                 axes = tuple(range(node.inputs[0].type.ndim))
 
-            if any(input_dims[axis] for axis in axes):
+            if any(input_dims[axis] is not None for axis in axes):
                 raise ValueError(
                     f"Use of known dimensions as reduced dimensions of op {node.op} not supported."
                 )
@@ -334,6 +351,205 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
     return var_dims
 
 
+AXES = tuple[bool, ...]
+
+
+def _backward_batch_axes(out_batch: AXES, inp: Variable, inp_batch_ndim: int) -> list[bool]:
+    """Right-aligned backprop of carried output batch axes onto one input.
+
+    ``out_batch`` are the carried flags over the op's output batch axes. Returns a
+    per-axis flag list for ``inp`` (length ``inp.type.ndim``), marking an input batch
+    axis when it feeds a carried output batch axis and is not broadcast (static size 1)
+    there. Core/support axes of ``inp`` (the trailing ``ndim - inp_batch_ndim``) never
+    carry a batch axis."""
+    in_c = [False] * inp.type.ndim
+    offset = len(out_batch) - inp_batch_ndim
+    shape = inp.type.shape
+    for j in range(inp_batch_ndim):
+        oa = j + offset
+        if 0 <= oa < len(out_batch) and out_batch[oa] and shape[j] != 1:
+            in_c[j] = True
+    return in_c
+
+
+def _backward_node_axes(node, outs: list[AXES | None]) -> list[AXES | None]:
+    """Backward batch-axis mapping for one node: given carried flags on its outputs,
+    return carried flags for each input (``None`` for non-tensor inputs)."""
+    op = node.op
+    inputs = node.inputs
+    none: list[AXES | None] = [None] * len(inputs)
+
+    def tensor_out() -> AXES | None:
+        # The single carried tensor output (RVs also output an rng we ignore).
+        for o, no in zip(outs, node.outputs):
+            if o is not None and isinstance(no.type, TensorType):
+                return o
+        return None
+
+    def conservative() -> list[AXES | None]:
+        carried = any(o is not None and any(o) for o in outs)
+        return [
+            (True,) * inp.type.ndim if (carried and isinstance(inp.type, TensorType)) else None
+            for inp in inputs
+        ]
+
+    if isinstance(op, ModelVar | MinibatchRandomVariable):
+        none[0] = tensor_out()
+        return none
+
+    if isinstance(op, DimShuffle):
+        out = outs[0]
+        in_c = [False] * inputs[0].type.ndim
+        for i, o in enumerate(op.new_order):
+            if o != "x" and out[i]:
+                in_c[o] = True
+        none[0] = tuple(in_c)
+        return none
+
+    if isinstance(op, CAReduce):
+        out = outs[0]
+        axes = op.axis
+        if isinstance(axes, int):
+            axes = (axes,)
+        elif axes is None:
+            axes = tuple(range(inputs[0].type.ndim))
+        kept = [a for a in range(inputs[0].type.ndim) if a not in axes]
+        in_c = [False] * inputs[0].type.ndim
+        for out_axis, in_axis in enumerate(kept):
+            if out[out_axis]:
+                in_c[in_axis] = True
+        none[0] = tuple(in_c)  # reduced axes stay False -> ancestor below is not reached
+        return none
+
+    if isinstance(op, Blockwise) and isinstance(op.core_op, Dot):
+        out = outs[0]
+        a, b = inputs
+        out_batch = out[:-2]
+        a_c = _backward_batch_axes(out_batch, a, a.type.ndim - 2)
+        b_c = _backward_batch_axes(out_batch, b, b.type.ndim - 2)
+        if out[-2]:  # output m comes from a's m
+            a_c[-2] = True
+        if out[-1]:  # output p comes from b's p
+            b_c[-1] = True
+        # the contracted k (a[-1], b[-2]) is never carried
+        none[0], none[1] = tuple(a_c), tuple(b_c)
+        return none
+
+    if isinstance(op, Elemwise):
+        out = outs[0]
+        return [tuple(_backward_batch_axes(out, inp, inp.type.ndim)) for inp in inputs]
+
+    if isinstance(op, RandomVariable):
+        out = tensor_out()
+        if out is None:
+            return none
+        op_batch_ndim = op.batch_ndim(node)
+        out_batch = out[:op_batch_ndim]
+        n_params = len(op.ndims_params)
+        param_start = len(inputs) - n_params
+        for k, core_ndim in enumerate(op.ndims_params):
+            idx = param_start + k
+            param = inputs[idx]
+            none[idx] = tuple(_backward_batch_axes(out_batch, param, param.type.ndim - core_ndim))
+        return none
+
+    if isinstance(op, SymbolicRandomVariable) and op.extended_signature is not None:
+        op_batch_ndim = op.batch_ndim(node)
+        [_, _, param_idxs], _ = op.get_input_output_type_idxs(op.extended_signature)
+        out_batch: AXES | None = None
+        for o in outs:
+            if o is None:
+                continue
+            ob = o[:op_batch_ndim]
+            out_batch = ob if out_batch is None else tuple(x or y for x, y in zip(out_batch, ob))
+        if out_batch is None:
+            return none
+        for pidx, core_ndim in zip(param_idxs, op.ndims_params):
+            param = inputs[pidx]
+            none[pidx] = tuple(_backward_batch_axes(out_batch, param, param.type.ndim - core_ndim))
+        return none
+
+    if isinstance(op, Subtensor):
+        out = outs[0]
+        value = inputs[0]
+        keys = list(get_idx_list(inputs, op.idx_list))
+        in_c = [False] * value.type.ndim
+        out_axis = 0
+        for v_axis in range(value.type.ndim):
+            idx = keys[v_axis] if v_axis < len(keys) else slice(None)
+            if isinstance(idx, slice):
+                # Dim is kept (a partial slice still maps onto the same axis).
+                if out_axis < len(out) and out[out_axis]:
+                    in_c[v_axis] = True
+                out_axis += 1
+            # else: scalar integer index drops this axis (not present in output)
+        none[0] = tuple(in_c)
+        return none
+
+    if isinstance(op, AdvancedSubtensor):
+        out = outs[0]
+        value = inputs[0]
+        keys = inputs[1:]
+        full_keys = get_idx_list(inputs, op.idx_list)
+        adv_axis, adv_ndim = _advanced_indexing_axis_and_ndim(full_keys)
+        # Value axes kept by a basic slice, in order, map to the non-advanced output axes.
+        kept_value_axes = [
+            v_axis
+            for v_axis, idx in zip_longest(range(value.type.ndim), full_keys, fillvalue=slice(None))
+            if v_axis is not None and isinstance(idx, slice)
+        ]
+        value_c = [False] * value.type.ndim
+        idx_carries = False
+        kept_ptr = 0
+        for out_axis in range(len(out)):
+            if adv_axis <= out_axis < adv_axis + adv_ndim:
+                idx_carries = idx_carries or out[out_axis]
+            else:
+                if kept_ptr < len(kept_value_axes):
+                    if out[out_axis]:
+                        value_c[kept_value_axes[kept_ptr]] = True
+                    kept_ptr += 1
+        none[0] = tuple(value_c)
+        if idx_carries:
+            for ki, key in enumerate(keys):
+                if isinstance(key.type, TensorType) and key.type.ndim > 0:
+                    none[1 + ki] = (True,) * key.type.ndim
+        return none
+
+    # MarginalRV, SymbolicRandomVariable without signature, generic Blockwise, and any
+    # other op: be conservative rather than risk dropping a carried ancestor.
+    return conservative()
+
+
+def subgraph_batch_dim_ancestors(output_var: Variable, axis: int) -> dict[Variable, AXES]:
+    """Trace a single batch ``axis`` of ``output_var`` backward to its ancestors.
+
+    Input-direction dual of :func:`_subgraph_batch_dim_clients`: instead of
+    propagating an input's batch dims forward to its clients, propagate one output axis
+    backward to the ancestors that feed it. Returns a map from every ancestor that
+    carries the axis to a boolean tuple marking which of *its* axes carry it.
+
+    Only presence/absence of the one axis is tracked (a bool per axis), so unlike the
+    forward pass there is no mixing of distinct labels. An axis reduced or contracted
+    away upstream is not propagated (the ancestor below it is not reached); an op whose
+    inverse cannot be traced propagates the axis conservatively to all its inputs, so
+    nothing that might carry it is silently dropped.
+    """
+    carries: dict[Variable, AXES] = {
+        output_var: tuple(i == axis for i in range(output_var.type.ndim))
+    }
+    for node in reversed(list(io_toposort([], [output_var]))):
+        outs = [carries.get(out) for out in node.outputs]
+        if not any(o is not None and any(o) for o in outs):
+            continue
+        for inp, c in zip(node.inputs, _backward_node_axes(node, outs)):
+            if not c or not any(c):
+                continue
+            prev = carries.get(inp)
+            carries[inp] = c if prev is None else tuple(p or q for p, q in zip(prev, c))
+    return carries
+
+
 def subgraph_batch_dim_connection(input_var, output_vars) -> list[DIMS]:
     """Identify how the batch dims of input map to the batch dimensions of the output_rvs.
 
@@ -377,7 +593,7 @@ def subgraph_batch_dim_connection(input_var, output_vars) -> list[DIMS]:
         If variable related to marginalized batch_dims is used in an operation that is not yet supported
     """
     var_dims = {input_var: tuple(range(input_var.type.ndim))}
-    var_dims = _subgraph_batch_dim_connection(var_dims, [input_var], output_vars)
+    var_dims = _subgraph_batch_dim_clients(var_dims, [input_var], output_vars)
     ret = []
     for output_var in output_vars:
         output_dims = var_dims.get(output_var, (None,) * output_var.type.ndim)

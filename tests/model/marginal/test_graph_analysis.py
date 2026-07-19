@@ -6,7 +6,9 @@ from pymc.variational.minibatch_rv import create_minibatch_rv
 from pytensor.tensor.type_other import NoneTypeT
 
 from pymc_extras.model.marginal.graph_analysis import (
+    _subgraph_batch_dim_clients,
     is_conditional_dependent,
+    subgraph_batch_dim_ancestors,
     subgraph_batch_dim_connection,
 )
 
@@ -47,6 +49,25 @@ class TestSubgraphBatchDimConnection:
         invalid_out = pt.sum(inp, axis=(1,))
         with pytest.raises(ValueError, match="Use of known dimensions"):
             subgraph_batch_dim_connection(inp, [invalid_out])
+
+        # Reducing the *leading* tracked dim (label 0) must also raise
+        invalid_leading = pt.sum(inp, axis=(0,))
+        with pytest.raises(ValueError, match="reduced dimensions"):
+            subgraph_batch_dim_connection(inp, [invalid_leading])
+
+    def test_matmul(self):
+        # matmul: the non-contracted (m, p) dims map 1:1 to the output, the contracted
+        # dim mixes. Track only the leading dim of a (obs, feature) matrix through
+        # ``beta @ x.T`` (feature is contracted) -- obs reaches the output.
+        x = pt.matrix("x", shape=(4, 3))
+        beta = pt.vector("beta", shape=(3,))
+        out = beta @ x.T
+        conn = _subgraph_batch_dim_clients({x: (0, None)}, [x], [out])
+        assert conn[out] == (0,)
+
+        # Tracking the contracted dimension instead raises
+        with pytest.raises(ValueError, match="contracted dimensions"):
+            _subgraph_batch_dim_clients({x: (None, 0)}, [x], [out])
 
     def test_subtensor(self):
         inp = pt.tensor(shape=(4, 3, 2))
@@ -211,3 +232,52 @@ class TestSubgraphBatchDimConnection:
         out = CustomDist.dist(inp, dist=dist, size=(4, 3, 2), signature="()->(2)")
         [dims] = subgraph_batch_dim_connection(inp, [out])
         assert dims == (0, 1, 2, None)
+
+
+class TestSubgraphBatchDimAncestors:
+    def test_elemwise_broadcast(self):
+        # A per-axis input is reached; a broadcast scalar is not.
+        per_obs = pt.vector("per_obs", shape=(5,))
+        scalar = pt.scalar("scalar")
+        other = pt.vector("other", shape=(5,))
+        carried = subgraph_batch_dim_ancestors(per_obs + scalar + other, 0)
+        assert carried.get(per_obs) == (True,)
+        assert carried.get(other) == (True,)
+        assert scalar not in carried
+
+    def test_reduction_not_reached(self):
+        # The axis is destroyed by the reduction, so the ancestor below it is not reached.
+        v = pt.vector("v", shape=(5,))
+        keep = pt.vector("keep", shape=(5,))
+        carried = subgraph_batch_dim_ancestors(v.sum() + keep, 0)
+        assert v not in carried
+        assert carried.get(keep) == (True,)
+
+    def test_transpose(self):
+        # The traced output axis maps back to the matching input axis.
+        m = pt.matrix("m", shape=(4, 3))
+        carried = subgraph_batch_dim_ancestors(m.T, 1)  # output axis 1 is m's axis 0
+        assert carried.get(m) == (True, False)
+
+    def test_matmul(self):
+        # The non-contracted (obs) dim survives; the contracted operand is not reached.
+        x = pt.matrix("x", shape=(4, 3))  # (obs, feature)
+        beta = pt.vector("beta", shape=(3,))
+        carried = subgraph_batch_dim_ancestors(beta @ x.T, 0)
+        assert carried.get(x) == (True, False)
+        assert beta not in carried
+
+    def test_advanced_indexing(self):
+        # a[idx]: the output axis comes from the index array, not the indexed value.
+        a = pt.vector("a", shape=(5,))
+        idx = pt.lvector("idx")
+        carried = subgraph_batch_dim_ancestors(a[idx], 0)
+        assert carried.get(idx) == (True,)
+        assert a not in carried
+
+    def test_untraceable_op_is_conservative(self):
+        # A reversed slice preserves the axis through an op the analysis cannot invert, so
+        # the ancestor is conservatively marked rather than dropped.
+        v = pt.vector("v", shape=(5,))
+        carried = subgraph_batch_dim_ancestors(v[::-1], 0)
+        assert carried.get(v) == (True,)
