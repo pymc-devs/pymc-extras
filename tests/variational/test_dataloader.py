@@ -58,7 +58,7 @@ def test_total_size_none_warns_at_construction():
     """total_size=None disables the N/batch_size rescaling, so it warns."""
     data = np.zeros((8, 1))
     with pytest.warns(UserWarning, match="total_size=None"):
-        DataLoader(chunked_factory(data, 4), batch_size=4, sample_shape=(1,))
+        DataLoader(chunked_factory(data, 4), batch_size=4, sample_shape=(1,), total_size=None)
 
 
 def test_preprocess_fn_applied():
@@ -149,7 +149,9 @@ def test_len_raises_when_total_size_none():
     rather than silently skipping the N/batch_size rescaling."""
     data = np.ones((4, 1))
     with pytest.warns(UserWarning, match="total_size=None"):
-        loader = DataLoader(lambda: iter([data] * 5), batch_size=4, sample_shape=(1,))
+        loader = DataLoader(
+            lambda: iter([data] * 5), batch_size=4, sample_shape=(1,), total_size=None
+        )
     with pytest.raises(TypeError, match="total_size=None"):
         len(loader)
 
@@ -343,9 +345,9 @@ def test_explicit_sample_shape_overrides_inference():
 
 
 def test_shuffle_buffer_accepts_factory_returning_reiterable():
-    """A factory returning a re-iterable (which _make_factory tolerates for the
-    loader) must not restart per buffer fill and loop forever; the stream is
-    normalized to a single iterator."""
+    """A factory returning a re-iterable (which the loader also tolerates) must not
+    restart per buffer fill and loop forever; the stream is normalized to a single
+    iterator."""
     data = np.arange(120, dtype="float64").reshape(120, 1)
     chunks = [data[i : i + 20] for i in range(0, 120, 20)]
     src = shuffle_buffer(lambda: chunks, buffer_size=50, batch_size=10, seed=0)

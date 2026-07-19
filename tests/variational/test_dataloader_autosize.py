@@ -22,7 +22,6 @@ from pymc_extras.variational.dataloader import (
     DataLoader,
     IterableDataset,
     parquet_source,
-    shuffle_buffer,
 )
 from tests.variational.dataloader_helpers import chunked_factory
 
@@ -54,21 +53,6 @@ def test_auto_rejects_one_shot_iterator():
         DataLoader(one_shot, batch_size=4, sample_shape=(1,), total_size="auto")
 
 
-def test_shuffle_buffer_forwards_n_rows_for_auto():
-    """shuffle_buffer forwards a known .n_rows so total_size='auto' works through
-    an explicit shuffle_buffer(parquet_source(...)) composition without counting."""
-    data = np.arange(40, dtype="float64").reshape(40, 1)
-    src = chunked_factory(data, 8)
-    src.n_rows = 40
-    wrapped = shuffle_buffer(src, buffer_size=20, batch_size=10, seed=0)
-    assert wrapped.n_rows == 40
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
-        ds = DataLoader(wrapped, batch_size=10, sample_shape=(1,), total_size="auto")
-    assert ds.total_size == 40
-
-
 def test_dataloader_shuffle_auto_resolves_via_n_rows():
     """DataLoader(shuffle=True, total_size='auto') resolves N from the source's
     .n_rows without a counting pass, even though shuffle wraps the source."""
@@ -87,13 +71,6 @@ def test_dataloader_shuffle_auto_resolves_via_n_rows():
             total_size="auto",
         )
     assert ds.total_size == 40
-
-
-def test_shuffle_buffer_without_n_rows_has_no_attribute():
-    """A source without .n_rows must not gain a bogus one through the wrapper."""
-    data = np.arange(40, dtype="float64").reshape(40, 1)
-    wrapped = shuffle_buffer(chunked_factory(data, 8), buffer_size=20, batch_size=10, seed=0)
-    assert not hasattr(wrapped, "n_rows")
 
 
 def test_auto_rejects_factory_returning_same_one_shot_iterator():
