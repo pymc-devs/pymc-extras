@@ -35,20 +35,61 @@ def test_normal_normal_batched_integer_mu():
     )
 
 
-@pytest.mark.parametrize("mu_fn", [lambda x: x + x, lambda x: 2 * x], ids=["x+x", "2*x"])
-@pytest.mark.xfail(reason="Affine f(x)=a*x+b not yet supported")
-def test_normal_normal_affine(mu_fn):
+@pytest.mark.parametrize(
+    "mu_fn, a, b",
+    [
+        (lambda x: x + x, 0, 2),
+        (lambda x: 2 * x, 0, 2),
+        (lambda x: 3 * x + 1, 1, 3),
+        (lambda x: 1 + x * 3, 1, 3),
+        (lambda x: x * 2 + x, 0, 3),
+        (lambda x: x + x + x, 0, 3),
+        (lambda x: 1 + 2 + 3 * x, 3, 3),
+    ],
+    ids=["x+x", "2x", "3x+1", "1+x3", "2x+x", "x+x+x", "1+2+3x"],
+)
+def test_normal_normal_affine(mu_fn, a, b):
+    """Dependent mean affine in the marginalized rv, mu = a + b*x, over the
+    flattened variadic Add/Mul forms (operand order and repetition vary)."""
     with pm.Model() as m:
         x = pm.Normal("x", mu=1, sigma=2)
         y = pm.Normal("y", mu=mu_fn(x), sigma=3)
 
     marginal_m = marginalize(m, m["x"])
 
-    # 2x: mu=2, sigma=sqrt(4*4 + 9)=5
+    expected_mu = a + b * 1
+    expected_sigma = np.sqrt(3**2 + (b * 2) ** 2)
     np.testing.assert_allclose(
         marginal_m.compile_logp()({"y": 5.0}),
-        scipy.stats.norm.logpdf(5.0, 2, 5),
+        scipy.stats.norm.logpdf(5.0, expected_mu, expected_sigma),
     )
+
+
+def test_normal_normal_affine_conditional():
+    """The conjugate posterior of an affine Normal-Normal accounts for the slope."""
+    sigma_prior = 3.0
+    a, b = 1.5, 2.0
+    sigma_lik = 4.0
+    y_obs = 10.0
+
+    with pm.Model() as m:
+        mu = pm.Normal("mu", 0, 10)
+        x = pm.Normal("x", mu=mu, sigma=sigma_prior)
+        y = pm.Normal("y", mu=b * x + a, sigma=sigma_lik, observed=y_obs)
+
+    marginal_m = marginalize(m, "x")
+    cond_m = conditional(marginal_m)
+
+    mu_val = 1.0
+    x_test = 3.0
+    prec_p = 1 / sigma_prior**2
+    post_prec = prec_p + b**2 / sigma_lik**2
+    post_sigma = np.sqrt(1 / post_prec)
+    post_mu = (mu_val * prec_p + b * (y_obs - a) / sigma_lik**2) / post_prec
+
+    expected = scipy.stats.norm.logpdf(x_test, post_mu, post_sigma)
+    actual = cond_m.compile_logp(vars=[cond_m["x"]])({"mu": mu_val, "x": x_test})
+    np.testing.assert_allclose(actual, expected)
 
 
 def test_normal_normal_nonlinear_in_sigma():
@@ -56,6 +97,16 @@ def test_normal_normal_nonlinear_in_sigma():
     with pm.Model() as m:
         x = pm.Normal("x", mu=0, sigma=1)
         y = pm.Normal("y", mu=0, sigma=x**2 + 1)
+
+    with pytest.raises(NotImplementedError):
+        marginalize(m, m["x"])
+
+
+def test_normal_normal_nonlinear_in_mu():
+    """Marginalized rv entering mu nonlinearly (x**2) has no closed-form Normal marginal."""
+    with pm.Model() as m:
+        x = pm.Normal("x", mu=0, sigma=1)
+        y = pm.Normal("y", mu=x**2, sigma=1)
 
     with pytest.raises(NotImplementedError):
         marginalize(m, m["x"])

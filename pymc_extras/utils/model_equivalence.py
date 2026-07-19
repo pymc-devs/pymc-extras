@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from pymc.model.core import Model
 from pymc.model.fgraph import fgraph_from_model
 from pytensor.compile import SharedVariable
+from pytensor.compile.mode import optdb
 from pytensor.graph.basic import Constant, Variable, equal_computations
 from pytensor.graph.traversal import graph_inputs
 from pytensor.tensor.random.type import RandomType
@@ -35,8 +36,14 @@ def equal_computations_up_to_root(
     )
 
 
-def equivalent_models(model1: Model, model2: Model, *, strict_dtype: bool = True) -> bool:
+def equivalent_models(
+    model1: Model, model2: Model, *, strict_dtype: bool = True, canonicalize: bool = False
+) -> bool:
     """Check whether two PyMC models are equivalent.
+
+    With ``canonicalize=True`` both model graphs are canonicalized before the
+    comparison, so models that differ only by canonicalization (e.g. one that
+    went through a rewrite pass and one that did not) compare equal.
 
     Examples
     --------
@@ -64,6 +71,10 @@ def equivalent_models(model1: Model, model2: Model, *, strict_dtype: bool = True
     """
     fgraph1, _ = fgraph_from_model(model1)
     fgraph2, _ = fgraph_from_model(model2)
+    if canonicalize:
+        canon = optdb.query("+canonicalize", "-local_eager_useless_unbatched_blockwise")
+        canon.rewrite(fgraph1)
+        canon.rewrite(fgraph2)
     # Model variable order is incidental (it follows graph construction
     # history); model variables are uniquely named, so compare by name.
     outputs1 = sorted(fgraph1.outputs, key=lambda var: var.name)

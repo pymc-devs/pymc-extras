@@ -186,8 +186,14 @@ def laplace_marginal(fgraph, node):
     # of the OpFromGraph (popped again by the logp implementation)
     inputs, outputs = extract_marginal_subgraph(node)
 
+    # Q may coincide with another boundary input (e.g. Q=tau where tau is also a
+    # parameter of the marginalized RV). OpFromGraph requires distinct inputs, and
+    # the inner graph never uses Q, so stand in a dummy variable for it.
+    *rest_inputs, Q = inputs
+    ofg_inputs = [*rest_inputs, Q.type()]
+
     typed_op = MarginalLaplaceRV(
-        inputs=inputs,
+        inputs=ofg_inputs,
         outputs=outputs,
         marginalized_name=op.marginalized_name,
         marginalized_dims=op.marginalized_dims,
