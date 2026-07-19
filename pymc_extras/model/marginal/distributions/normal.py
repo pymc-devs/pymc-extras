@@ -16,7 +16,7 @@ from pymc_extras.model.marginal.distributions.core import (
 from pymc_extras.model.marginal.rewrites import (
     MarginalSubgraph,
     extract_marginal_subgraph,
-    marginal_rewrites_db,
+    marginal_ir_rewrites_db,
 )
 
 
@@ -130,4 +130,4 @@ def normal_normal_marginal_rewrite(fgraph, node):
     return new_outputs[: len(node.outputs)]
 
 
-marginal_rewrites_db.register("normal_normal_marginal", normal_normal_marginal_rewrite, "basic")
+marginal_ir_rewrites_db.register("normal_normal_marginal", normal_normal_marginal_rewrite, "basic")

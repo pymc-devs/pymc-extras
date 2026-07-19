@@ -188,8 +188,8 @@ def local_unmarginalize(fgraph, node):
     return [unmarginalized_free_rv, *dependent_rvs, *rngs]
 
 
-marginal_rewrites_db = EquilibriumDB()
-marginal_rewrites_db.name = "marginal_rewrites_db"
+marginal_ir_rewrites_db = EquilibriumDB()
+marginal_ir_rewrites_db.name = "marginal_ir_rewrites_db"
 # The strategy-specific rewrites (finite discrete, Laplace, Normal-Normal)
 # live next to their MarginalRV subclasses in ``distributions/`` and register
 # themselves here on import.
@@ -315,7 +315,7 @@ def remarginalize_absorbed_dependent(fgraph, node):
     return [inner_outs[0], *outer_outs[1 : len(node.outputs)]]
 
 
-marginal_rewrites_db.register(
+marginal_ir_rewrites_db.register(
     "remarginalize_absorbed_dependent", remarginalize_absorbed_dependent, "basic"
 )
 
@@ -340,7 +340,7 @@ def resolve_deferred_marginal_subgraph(fgraph, node):
     return new_outputs
 
 
-marginal_rewrites_db.register(
+marginal_ir_rewrites_db.register(
     "resolve_deferred_marginal_subgraph",
     resolve_deferred_marginal_subgraph,
     "basic",

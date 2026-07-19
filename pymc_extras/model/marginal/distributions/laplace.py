@@ -19,7 +19,7 @@ from pymc_extras.model.marginal.rewrites import (
     DEFAULT_MINIMIZER_KWARGS,
     LaplaceMarginalSubgraph,
     extract_marginal_subgraph,
-    marginal_rewrites_db,
+    marginal_ir_rewrites_db,
 )
 
 
@@ -201,4 +201,4 @@ def laplace_marginal(fgraph, node):
     return new_outputs[: len(node.outputs)]
 
 
-marginal_rewrites_db.register("laplace_marginal", laplace_marginal, "basic")
+marginal_ir_rewrites_db.register("laplace_marginal", laplace_marginal, "basic")
