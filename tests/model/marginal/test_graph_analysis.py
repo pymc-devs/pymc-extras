@@ -48,6 +48,11 @@ class TestSubgraphBatchDimConnection:
         with pytest.raises(ValueError, match="Use of known dimensions"):
             subgraph_batch_dim_connection(inp, [invalid_out])
 
+        # Dim 0 is falsy, make sure it's not skipped by the check
+        invalid_out = pt.sum(inp, axis=(0,))
+        with pytest.raises(ValueError, match="Use of known dimensions"):
+            subgraph_batch_dim_connection(inp, [invalid_out])
+
     def test_subtensor(self):
         inp = pt.tensor(shape=(4, 3, 2))
 

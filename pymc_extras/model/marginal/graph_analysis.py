@@ -229,7 +229,7 @@ def _subgraph_batch_dim_connection(var_dims: VAR_DIMS, input_vars, output_vars) 
             elif axes is None:
                 axes = tuple(range(node.inputs[0].type.ndim))
 
-            if any(input_dims[axis] for axis in axes):
+            if any(input_dims[axis] is not None for axis in axes):
                 raise ValueError(
                     f"Use of known dimensions as reduced dimensions of op {node.op} not supported."
                 )
