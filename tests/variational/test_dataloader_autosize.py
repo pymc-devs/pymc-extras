@@ -18,13 +18,13 @@ import warnings
 import numpy as np
 import pytest
 
-from pymc_extras.variational.streaming import (
+from pymc_extras.variational.dataloader import (
     DataLoader,
     IterableDataset,
     parquet_source,
     shuffle_buffer,
 )
-from tests.variational.streaming_helpers import chunked_factory
+from tests.variational.dataloader_helpers import chunked_factory
 
 
 def test_auto_counts_finite_source():

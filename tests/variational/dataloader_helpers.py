@@ -11,7 +11,7 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
-"""Shared helpers for the streaming-dataset tests."""
+"""Shared helpers for the DataLoader tests."""
 
 
 def chunked_factory(data, size):

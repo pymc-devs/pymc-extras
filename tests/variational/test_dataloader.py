@@ -15,12 +15,12 @@ import numpy as np
 import pymc as pm
 import pytest
 
-from pymc_extras.variational.streaming import (
+from pymc_extras.variational.dataloader import (
     DataLoader,
     IterableDataset,
     shuffle_buffer,
 )
-from tests.variational.streaming_helpers import chunked_factory
+from tests.variational.dataloader_helpers import chunked_factory
 
 
 def test_plain_loader_rebatches_arbitrary_blocks():
