@@ -16,9 +16,11 @@ from pymc_extras.variational.dataloader import (
     parquet_source,
     shuffle_buffer,
 )
+from pymc_extras.variational.trainer import Trainer
 
 __all__ = [
     "DataLoader",
+    "Trainer",
     "parquet_source",
     "shuffle_buffer",
 ]
