@@ -25,7 +25,7 @@ from pymc_extras.model.marginal.graph_analysis import subgraph_batch_dim_connect
 from pymc_extras.model.marginal.rewrites import (
     MarginalSubgraph,
     extract_marginal_subgraph,
-    marginal_rewrites_db,
+    marginal_ir_rewrites_db,
 )
 
 
@@ -331,4 +331,4 @@ def finite_discrete_marginal(fgraph, node):
     return build_enumerable_marginal_rv(node, inputs, outputs, MarginalFiniteDiscreteRV)
 
 
-marginal_rewrites_db.register("finite_discrete_marginal", finite_discrete_marginal, "basic")
+marginal_ir_rewrites_db.register("finite_discrete_marginal", finite_discrete_marginal, "basic")

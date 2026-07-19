@@ -684,18 +684,20 @@ def test_unmarginalize():
     marginal_m = marginalize(m, [idx, sub_idx])
     assert not equivalent_models(marginal_m, m)
 
+    # marginalize canonicalizes the model graph, so the round-tripped models
+    # match the originals only up to canonicalization.
     unmarginal_m = unmarginalize(marginal_m)
-    assert equivalent_models(unmarginal_m, m)
+    assert equivalent_models(unmarginal_m, m, canonicalize=True)
 
     unmarginal_idx_explicit = unmarginalize(marginal_m, ("idx", "sub_idx"))
-    assert equivalent_models(unmarginal_idx_explicit, m)
+    assert equivalent_models(unmarginal_idx_explicit, m, canonicalize=True)
 
     # Test partial unmarginalize
     unmarginal_idx = unmarginalize(marginal_m, "idx")
-    assert equivalent_models(unmarginal_idx, marginalize(m, "sub_idx"))
+    assert equivalent_models(unmarginal_idx, marginalize(m, "sub_idx"), canonicalize=True)
 
     unmarginal_sub_idx = unmarginalize(marginal_m, "sub_idx")
-    assert equivalent_models(unmarginal_sub_idx, marginalize(m, "idx"))
+    assert equivalent_models(unmarginal_sub_idx, marginalize(m, "idx"), canonicalize=True)
 
 
 def test_forward_after_sampling():

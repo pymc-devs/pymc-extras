@@ -13,6 +13,27 @@
 #   limitations under the License.
 
 
+from pymc_extras.gp import kernels
+from pymc_extras.gp.gp import (
+    GP,
+    conditional,
+    conditional_moments,
+    marginalize,
+    predictive_fn,
+    prior_variance_correction,
+    project,
+)
 from pymc_extras.gp.latent_approx import KarhunenLoeveExpansion, ProjectedProcess
 
-__all__ = ["KarhunenLoeveExpansion", "ProjectedProcess"]
+__all__ = [
+    "GP",
+    "KarhunenLoeveExpansion",
+    "ProjectedProcess",
+    "conditional",
+    "conditional_moments",
+    "kernels",
+    "marginalize",
+    "predictive_fn",
+    "prior_variance_correction",
+    "project",
+]

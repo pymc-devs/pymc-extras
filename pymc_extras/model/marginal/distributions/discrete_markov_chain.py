@@ -26,7 +26,7 @@ from pymc_extras.model.marginal.distributions.enumerable import (
 from pymc_extras.model.marginal.rewrites import (
     MarginalSubgraph,
     extract_marginal_subgraph,
-    marginal_rewrites_db,
+    marginal_ir_rewrites_db,
 )
 
 
@@ -411,6 +411,6 @@ def discrete_markov_chain_marginal(fgraph, node):
     return build_enumerable_marginal_rv(node, inputs, outputs, MarginalDiscreteMarkovChainRV)
 
 
-marginal_rewrites_db.register(
+marginal_ir_rewrites_db.register(
     "discrete_markov_chain_marginal", discrete_markov_chain_marginal, "basic"
 )

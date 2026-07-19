@@ -189,7 +189,7 @@ def AutoDiagonalNormal(model: Model, random_seed=None) -> AutoGuideModel:
             )
             Deterministic(
                 rv.name,
-                loc + pt.softplus(scale) * z,
+                loc + pt.exp(scale) * z,
                 dims=value_dims[rv],
             )
 

@@ -1,10 +1,11 @@
-from pymc.model.fgraph import model_free_rv
+from pymc.model.fgraph import ModelValuedVar, model_free_rv
 from pymc.pytensorf import collect_default_updates
 from pytensor.compile import SharedVariable
+from pytensor.compile.mode import optdb
 from pytensor.graph import Apply, Op, node_rewriter
 from pytensor.graph.replace import graph_replace
-from pytensor.graph.rewriting.db import EquilibriumDB
-from pytensor.graph.traversal import graph_inputs
+from pytensor.graph.rewriting.db import EquilibriumDB, SequenceDB
+from pytensor.graph.traversal import ancestors, graph_inputs
 
 from pymc_extras.model.marginal.distributions.core import MarginalRV, inline_ofg_outputs
 
@@ -173,16 +174,47 @@ def local_unmarginalize(fgraph, node):
     # import_missing imports the new value variable as an input.
     fgraph.add_output(unmarginalized_free_rv, reason="unmarginalize", import_missing=True)
 
-    dependent_rvs = graph_replace(dependent_rvs, {unmarginalized_rv: unmarginalized_free_rv})
+    # Pin already-built model-var wrappers (opaque ModelValuedVar) as boundaries so
+    # graph_replace does not clone their subgraphs, otherwise a shared upstream RV
+    # they wrap (e.g. a previously unmarginalized parent) gets duplicated.
+    pinned = {
+        a: a
+        for a in ancestors(dependent_rvs)
+        if a.owner is not None and isinstance(a.owner.op, ModelValuedVar)
+    }
+    dependent_rvs = graph_replace(
+        dependent_rvs, {**pinned, unmarginalized_rv: unmarginalized_free_rv}
+    )
 
     return [unmarginalized_free_rv, *dependent_rvs, *rngs]
 
 
-marginal_rewrites_db = EquilibriumDB()
-marginal_rewrites_db.name = "marginal_rewrites_db"
+marginal_ir_rewrites_db = EquilibriumDB()
+marginal_ir_rewrites_db.name = "marginal_ir_rewrites_db"
 # The strategy-specific rewrites (finite discrete, Laplace, Normal-Normal)
 # live next to their MarginalRV subclasses in ``distributions/`` and register
 # themselves here on import.
+
+# Canonicalize (flattening Add/Mul, folding constants, ...) before resolving the
+# markers, mirroring pymc.logprob's pre-canonicalize -> IR sequence. The structure
+# detectors (e.g. affine_coefficients) can then assume canonical graphs instead of
+# re-implementing canonicalization. Note this runs over the whole model fgraph, not
+# just the marker subgraphs, so the model marginalize() returns is canonicalized
+# too; equivalent_models(..., canonicalize=True) compares against such a model.
+marginalize_rewrites_db = SequenceDB()
+marginalize_rewrites_db.name = "marginalize_rewrites_db"
+marginalize_rewrites_db.register(
+    "pre-canonicalize",
+    optdb.query("+canonicalize", "-local_eager_useless_unbatched_blockwise"),
+    "basic",
+    position=1,
+)
+marginalize_rewrites_db.register(
+    "marginal_ir_rewrites",
+    marginal_ir_rewrites_db,
+    "basic",
+    position=2,
+)
 
 
 @node_rewriter(tracks=[MarginalSubgraph, LaplaceMarginalSubgraph])
@@ -305,7 +337,7 @@ def remarginalize_absorbed_dependent(fgraph, node):
     return [inner_outs[0], *outer_outs[1 : len(node.outputs)]]
 
 
-marginal_rewrites_db.register(
+marginal_ir_rewrites_db.register(
     "remarginalize_absorbed_dependent", remarginalize_absorbed_dependent, "basic"
 )
 
@@ -330,7 +362,7 @@ def resolve_deferred_marginal_subgraph(fgraph, node):
     return new_outputs
 
 
-marginal_rewrites_db.register(
+marginal_ir_rewrites_db.register(
     "resolve_deferred_marginal_subgraph",
     resolve_deferred_marginal_subgraph,
     "basic",

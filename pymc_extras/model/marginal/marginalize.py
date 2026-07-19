@@ -26,7 +26,7 @@ from pytensor.graph.traversal import ancestors, io_toposort
 from pytensor.tensor import TensorVariable
 
 # Importing the distributions package registers the strategy rewrites
-# (enumerable, laplace, normal) into marginal_rewrites_db.
+# (enumerable, laplace, normal) into marginal_ir_rewrites_db.
 import pymc_extras.model.marginal.distributions  # noqa: F401
 
 from pymc_extras.model.marginal.distributions.core import (
@@ -47,7 +47,7 @@ from pymc_extras.model.marginal.rewrites import (
     MarginalSubgraph,
     MarginalSubgraphBase,
     local_unmarginalize,
-    marginal_rewrites_db,
+    marginalize_rewrites_db,
 )
 
 ModelRVs = TensorVariable | Sequence[TensorVariable] | str | Sequence[str]
@@ -259,7 +259,7 @@ def marginalize_fgraph(
 
         _replace_marginal_subgraph(fg, rv_to_marginalize, dependent_rvs, input_rvs, laplace_options)
 
-    rewriter = marginal_rewrites_db.query(rewrite_query)
+    rewriter = marginalize_rewrites_db.query(rewrite_query)
     rewriter.rewrite(fg)
 
     remaining = [node for node in fg.toposort() if isinstance(node.op, MarginalSubgraphBase)]
