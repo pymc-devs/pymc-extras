@@ -11,55 +11,22 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
-"""Out-of-core minibatching for variational inference.
+"""Stream out-of-core data into a PyMC model, one batch at a time.
 
-``pm.Minibatch`` indexes an array that is fully in memory, so its peak memory is
-O(N). This streams minibatches from an out-of-core source into a ``pm.Data``
-placeholder instead, so peak memory is set by the batch (plus the source chunk
-and any shuffle buffer), not by N.
+The full dataset never has to be resident: peak memory is set by the batch (plus
+the source chunk and any shuffle buffer), not by the dataset size N.
 
 The API mirrors ``torch.utils.data``: an :class:`IterableDataset` is a
 re-iterable source of rows (e.g. :func:`parquet_source` over a directory of
 shards, read a chunk at a time), and a :class:`DataLoader` turns it into
-fixed-size, optionally shuffled minibatches. One difference: ``len(loader)`` is
-the row count ``N`` (what the observed distribution needs for ``total_size``),
-not the batch count torch returns.
-
-The rescaling is the same as ``pm.Minibatch``: the observed log-likelihood is
-scaled by ``N / batch_size`` via ``create_minibatch_rv``, and ``N`` is
-``len(loader)``, so the model passes ``total_size=len(loader)``.
+fixed-size, optionally shuffled batches. One difference from torch:
+``len(loader)`` is the row count ``N``, not the batch count.
 
 Every batch has exactly ``batch_size`` rows, so each pass drops the final
 ``N mod batch_size`` rows (torch's ``drop_last``). Shuffling is only as good as
 the order the source yields rows in; a bounded buffer just block-shuffles
 time-ordered data, so pre-shuffle on disk (or interleave shards) for well-mixed
-minibatches, and/or pass ``shuffle=True``.
-
-Examples
---------
-.. code-block:: python
-
-    import numpy as np
-    import pymc as pm
-    from pymc_extras.variational.dataloader import DataLoader, parquet_source
-
-    loader = DataLoader(
-        parquet_source("shuffled/"),  # an IterableDataset over the shards
-        batch_size=4096,
-        sample_shape=(4,),  # 3 features + 1 observed column
-        total_size="auto",  # infer N from Parquet metadata; N == len(loader)
-    )
-
-    with pm.Model() as model:
-        b = pm.Normal("b", 0.0, 3.0, shape=4)
-        batch = pm.Data("batch", np.zeros((4096, 4)))
-        logit = b[0] + b[1] * batch[:, 0] + b[2] * batch[:, 1] + b[3] * batch[:, 2]
-        pm.Bernoulli("y", logit_p=logit, observed=batch[:, 3], total_size=len(loader))
-
-    with model:
-        for minibatch in loader:  # each epoch yields validated minibatches
-            model.set_data("batch", minibatch)
-            ...  # one variational step over this minibatch
+batches, and/or pass ``shuffle=True``.
 """
 
 from __future__ import annotations
@@ -342,6 +309,28 @@ class DataLoader:
     preprocess_fn : callable, optional
         Pure transform applied to each batch before it is yielded (e.g.
         normalization); it must preserve the row count and ``sample_shape``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        loader = DataLoader(
+            parquet_source("shuffled/"),  # an IterableDataset over the shards
+            batch_size=4096,
+            sample_shape=(4,),  # 3 features + 1 observed column
+            total_size="auto",  # infer N from the source; N == len(loader)
+        )
+
+        with pm.Model() as model:
+            b = pm.Normal("b", 0.0, 3.0, shape=4)
+            batch = pm.Data("batch", np.zeros((4096, 4)))
+            logit = b[0] + b[1] * batch[:, 0] + b[2] * batch[:, 1] + b[3] * batch[:, 2]
+            pm.Bernoulli("y", logit_p=logit, observed=batch[:, 3], total_size=len(loader))
+
+        with model:
+            for next_batch in loader:  # each epoch yields (batch_size, *sample_shape) arrays
+                model.set_data("batch", next_batch)
+                ...  # one optimization step over this batch
     """
 
     def __init__(
