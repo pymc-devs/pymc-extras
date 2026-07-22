@@ -70,10 +70,6 @@ class IterableDataset:
     the dataset can be replayed across epochs. Set :attr:`n_rows` if the row count
     is known cheaply (e.g. from file metadata) so ``total_size="auto"`` can skip a
     counting pass.
-
-    A plain array, a zero-arg factory, or any re-iterable also works directly as a
-    ``DataLoader`` source; this base class is only for attaching behavior or
-    ``n_rows`` to a custom source.
     """
 
     n_rows: int | None = None
@@ -84,23 +80,8 @@ class IterableDataset:
 
 def _as_source(
     dataset: IterableDataset | Iterable[np.ndarray] | Callable[[], Iterator[np.ndarray]],
-) -> tuple[Callable[[], Iterator[np.ndarray]], int | None, bool]:
-    """Normalize any accepted source into ``(new_iter, n_rows, reiterable)``.
-
-    ``new_iter()`` returns a fresh iterator for one epoch. ``n_rows`` is the
-    source's advertised row count (its ``.n_rows``) if it has one, else ``None``.
-    ``reiterable`` is ``False`` only for a bare iterator, which can be walked once.
-    """
-    n_rows = getattr(dataset, "n_rows", None)
-
-    if callable(dataset) and not isinstance(dataset, Iterator):
-        # A factory may return any iterable (a list, a generator, ...); normalize
-        # so the loader always pulls from a true iterator.
-        def new_iter() -> Iterator[np.ndarray]:
-            return iter(dataset())  # type: ignore[operator]
-
-        return new_iter, n_rows, True
-
+) -> Callable[[], Iterator[np.ndarray]]:
+    """Normalize any accepted source into a zero-arg factory returning a fresh iterator."""
     if isinstance(dataset, Iterator):
         used = {"done": False}
 
@@ -114,26 +95,21 @@ def _as_source(
             used["done"] = True
             return dataset
 
-        return new_iter, n_rows, False
+        return new_iter
 
-    def new_iter() -> Iterator[np.ndarray]:
-        return iter(dataset)
-
-    return new_iter, n_rows, True
+    # A factory may return any iterable; normalize to a true iterator.
+    make = dataset if callable(dataset) else (lambda: dataset)
+    return lambda: iter(make())
 
 
 def _auto_total_size(
+    dataset: IterableDataset | Iterable[np.ndarray] | Callable[[], Iterator[np.ndarray]],
     new_iter: Callable[[], Iterator[np.ndarray]],
-    n_rows: int | None,
-    reiterable: bool,
     sample_shape: tuple[int, ...],
 ) -> int:
-    """Resolve ``total_size="auto"``: trust a source ``.n_rows``, else count once.
-
-    A ``.n_rows`` (e.g. from Parquet metadata) is used directly. Otherwise a single
-    counting pass runs over a re-readable source; a one-shot iterator cannot be
-    counted (counting consumes it) and must pass ``total_size`` explicitly.
-    """
+    """Resolve ``total_size="auto"``: trust a source ``.n_rows``, else count once."""
+    n_rows = getattr(dataset, "n_rows", None)
+    reiterable = not isinstance(dataset, Iterator)
     if n_rows is not None:
         if not _is_positive_int(n_rows):
             raise ValueError(f"source.n_rows must be a positive integer, got {n_rows!r}")
@@ -270,25 +246,15 @@ def shuffle_buffer(
 class DataLoader:
     """Turn an out-of-core dataset into fixed-size minibatches for variational inference.
 
-    Like ``torch.utils.data.DataLoader``, it batches (and optionally shuffles) an
-    :class:`IterableDataset` into a minibatch stream. It is iterable and sized
-    (``len(loader)`` is the dataset size ``N``). With bounded source chunks the
-    full dataset is never resident at once.
-
     Parameters
     ----------
-    dataset : IterableDataset | Iterable[np.ndarray] | Callable[[], Iterator[np.ndarray]]
-        The source of rows: an :class:`IterableDataset`, a re-iterable (including a
-        plain ``np.ndarray``), or a zero-arg factory returning a fresh iterator
-        (preferred, so the stream restarts each epoch). It may yield single samples
-        or blocks of any size; the loader re-batches them in order to exactly
-        ``batch_size`` rows and drops a trailing partial batch (``drop_last``).
+    dataset : IterableDataset, iterable of ndarray, or zero-arg factory
+        The source of rows. A factory is preferred: it restarts the stream each
+        epoch. It may yield single samples or blocks of any size.
     batch_size : int
         Leading dimension of every yielded minibatch.
     shuffle : bool, default False
-        Wrap the source in a bounded :func:`shuffle_buffer`. This only approximates
-        i.i.d. batches for an already-unordered stream (pre-shuffle on disk for
-        strongly ordered data; see the module docstring).
+        Wrap the source in a bounded :func:`shuffle_buffer`.
     buffer_size : int, optional
         Shuffle-buffer size in rows when ``shuffle=True``; defaults to
         ``50 * batch_size``. A buffer as large as the dataset is a full shuffle.
@@ -302,13 +268,11 @@ class DataLoader:
         Dtype each batch is cast to; match the ``pm.Data`` placeholder's dtype.
     total_size : int or "auto", default "auto"
         The dataset size ``N``, or ``"auto"`` to infer it (from the source's
-        ``n_rows`` if available, else a single counting pass). Pass it on as
-        ``total_size=len(loader)`` so the minibatch log-likelihood is rescaled by
-        ``N / batch_size``. ``None`` warns and disables the rescaling (biased
-        posterior); a non-positive value raises.
+        ``n_rows`` if available, else one counting pass). ``None`` warns and
+        disables the rescaling; a non-positive value raises.
     preprocess_fn : callable, optional
-        Pure transform applied to each batch before it is yielded (e.g.
-        normalization); it must preserve the row count and ``sample_shape``.
+        Applied to each batch before it is yielded; must preserve the row count
+        and ``sample_shape``.
 
     Examples
     --------
@@ -349,20 +313,18 @@ class DataLoader:
         if not _is_positive_int(batch_size):
             raise ValueError(f"batch_size must be a positive integer, got {batch_size!r}")
         if sample_shape is None:
-            # A raw array is rows-of-samples; without this a 2-D array would be read
-            # as blocks of scalars and silently flattened.
+            # A raw 2-D array is rows-of-samples, not blocks of scalars.
             sample_shape = dataset.shape[1:] if isinstance(dataset, np.ndarray) else ()
         sample_shape = tuple(sample_shape)
 
-        new_iter, source_n_rows, reiterable = _as_source(dataset)
-        self._new_iter = new_iter
+        self._new_iter = new_iter = _as_source(dataset)
         self._batch_size = int(batch_size)
         self._sample_shape = sample_shape
         self._dtype = dtype
         self._preprocess_fn = preprocess_fn
 
         if total_size == "auto":
-            total_size = _auto_total_size(new_iter, source_n_rows, reiterable, sample_shape)
+            total_size = _auto_total_size(dataset, new_iter, sample_shape)
         elif total_size is None:
             warnings.warn(
                 "DataLoader created with total_size=None: the minibatch "
@@ -372,8 +334,6 @@ class DataLoader:
                 stacklevel=2,
             )
         elif not _is_positive_int(total_size):
-            # 0 is falsy (rescaling silently skipped) and a negative value flips the
-            # sign of the data log-likelihood; raise on both.
             raise ValueError(
                 "total_size must be a positive integer (the true dataset size N) so "
                 "the minibatch log-likelihood is rescaled by N / batch_size; got "
@@ -381,8 +341,7 @@ class DataLoader:
             )
         self._total_size = None if total_size is None else int(total_size)
 
-        # shuffle_buffer needs blocks, so promote single samples to one-row blocks
-        # before it; a plain source is re-batched as-is.
+        # shuffle_buffer needs blocks, so promote single samples first.
         if shuffle:
             if buffer_size is None:
                 buffer_size = 50 * self._batch_size
@@ -449,13 +408,10 @@ class DataLoader:
         return self._total_size
 
     def _stream_batches(self) -> Iterator[np.ndarray]:
-        """One epoch, but updating the counters and running the total_size check.
+        """One epoch, updating the counters and running the ``total_size`` check.
 
-        Like :meth:`__iter__`, but it updates :attr:`batches_seen` /
-        :attr:`rows_streamed` and fires the one-shot ``total_size`` sanity check on
-        the pass's final batch. The Trainer consumes this; plain :meth:`__iter__`
-        stays side-effect-free. Kept one batch ahead so the check still fires when a
-        fit stops exactly at the pass boundary.
+        Kept one batch ahead so the check still fires when a fit stops exactly at
+        the pass boundary.
         """
         seen_this_pass = 0
         it = self._rebatched()
@@ -472,47 +428,53 @@ class DataLoader:
             batch = following
 
     def _prepare(self, batch: np.ndarray) -> np.ndarray:
-        """Apply ``preprocess_fn`` and return an owned, correctly-typed copy.
-
-        A source may hand back a view into a reused buffer, so the copy prevents the
-        consumer from aliasing it (torch does the collate/transform here too).
-        """
+        """Apply ``preprocess_fn`` and cast; copies, since a source may reuse its buffer."""
         if self._preprocess_fn is not None:
             batch = self._preprocess_fn(batch)
         return np.array(batch, dtype=self._dtype)
 
     def _maybe_warn_total_size(self, seen: int) -> None:
-        """Warn once if ``total_size`` is inconsistent with the rows of one full pass.
-
-        ``seen`` is the row count of the pass that just completed. A correct ``N``
-        satisfies ``seen <= N < seen + batch_size`` (the trailing partial batch is
-        dropped), so that window never warns; outside it a 10% slack absorbs sources
-        that are only approximately sized.
-        """
+        """Warn once if ``total_size`` disagrees with the rows of one full pass."""
         if self._warned_size or self._total_size is None:
             return
         self._warned_size = True
+        # A correct N satisfies seen <= N < seen + batch_size (the trailing partial
+        # batch is dropped); outside that, 10% slack absorbs approximate sizes.
         if not seen or seen <= self._total_size < seen + self._batch_size:
             return
         if abs(self._total_size - seen) > 0.1 * seen:
             warnings.warn(
                 f"total_size={self._total_size} disagrees with the {seen} rows streamed "
-                f"in one full pass; the N/batch_size rescaling, and therefore the "
-                f"posterior width, is likely wrong. Pass the true dataset size (or, if "
-                f"'auto' resolved it from the source's n_rows, fix that attribute).",
+                f"in one full pass; the N/batch_size rescaling is likely wrong.",
                 UserWarning,
                 stacklevel=3,
             )
 
 
-class _ParquetDataset(IterableDataset):
-    """An :class:`IterableDataset` over a directory of Parquet shards.
+def _check_columns(schema, columns: list[str], path: str) -> None:
+    """Reject a shard whose schema cannot supply ``columns`` as a float batch.
 
-    Yields one ``(rows, n_columns)`` array per row group (so peak read memory is
-    one row group, not one file), in the fixed column order chosen at
-    construction, and exposes :attr:`n_rows` read from Parquet metadata (no data
-    scan).
+    ``read_row_group(columns=...)`` silently drops unknown names, and a non-numeric
+    column only blows up later at the float cast, so both are named against ``path``.
     """
+    import pyarrow as pa
+
+    missing = [c for c in columns if c not in schema.names]
+    if missing:
+        raise ValueError(
+            f"columns {missing} not found in {path!r}; available: {sorted(schema.names)}"
+        )
+    numeric = (pa.types.is_integer, pa.types.is_floating, pa.types.is_boolean)
+    bad = [c for c in columns if not any(t(schema.field(c).type) for t in numeric)]
+    if bad:
+        raise ValueError(
+            f"columns {bad} in {path!r} are not numeric and cannot be streamed into a "
+            f"float batch; select numeric columns with columns=."
+        )
+
+
+class _ParquetDataset(IterableDataset):
+    """Backs :func:`parquet_source`; see that docstring for what it yields."""
 
     def __init__(self, paths: list[str], columns: list[str], n_rows: int):
         self._paths = paths
@@ -520,39 +482,15 @@ class _ParquetDataset(IterableDataset):
         self.n_rows = n_rows
 
     def __iter__(self) -> Iterator[np.ndarray]:
-        import pyarrow as pa
         import pyarrow.parquet as pq
 
         for path in self._paths:
             file = pq.ParquetFile(path)
-            schema = file.schema_arrow
-            missing = [c for c in self._columns if c not in schema.names]
-            if missing:
-                # read_row_group(columns=...) silently drops unknown names, so a
-                # malformed shard must be named here, not surface as a bare
-                # KeyError with no path.
-                raise ValueError(f"columns {missing} not found in {path!r}")
-            non_numeric = [
-                c
-                for c in self._columns
-                if not (
-                    pa.types.is_integer(schema.field(c).type)
-                    or pa.types.is_floating(schema.field(c).type)
-                    or pa.types.is_boolean(schema.field(c).type)
-                )
-            ]
-            if non_numeric:
-                # parquet_source validates types against the first shard only; a
-                # later shard whose column turned non-numeric would otherwise
-                # become an object array and fail at the batch cast with no path.
-                raise ValueError(
-                    f"columns {non_numeric} in {path!r} are not numeric and cannot be "
-                    f"streamed into a float batch; select numeric columns with columns=."
-                )
+            # parquet_source only ever sees shard 0, so re-check every shard here.
+            _check_columns(file.schema_arrow, self._columns, path)
             for i in range(file.metadata.num_row_groups):
                 table = file.read_row_group(i, columns=self._columns)
-                # Stack by the frozen column names, not the file's own order, so
-                # a shard with a permuted schema cannot silently swap features.
+                # Stack by the frozen names: a permuted shard must not swap features.
                 yield np.column_stack([table.column(c).to_numpy() for c in self._columns])
 
 
@@ -572,8 +510,6 @@ def parquet_source(
     metadata (no data scan) so ``total_size="auto"`` resolves the dataset size for
     free. Pass ``shuffle=True`` to the :class:`DataLoader` for shuffled batches.
     """
-    # pyarrow is an optional dependency, so it is imported on use.
-    import pyarrow as pa
     import pyarrow.parquet as pq
 
     paths = sorted(glob.glob(os.path.join(directory, pattern)))
@@ -582,27 +518,6 @@ def parquet_source(
     schema = pq.read_schema(paths[0])
     if columns is None:
         columns = list(schema.names)
-    else:
-        missing = sorted(set(columns) - set(schema.names))
-        if missing:
-            raise ValueError(
-                f"columns {missing} not found in {paths[0]!r}; available: {sorted(schema.names)}"
-            )
-    non_numeric = [
-        c
-        for c in columns
-        if not (
-            pa.types.is_integer(schema.field(c).type)
-            or pa.types.is_floating(schema.field(c).type)
-            or pa.types.is_boolean(schema.field(c).type)
-        )
-    ]
-    if non_numeric:
-        # A string/dictionary column would turn whole chunks object-dtype and only
-        # fail later at the batch cast, without naming the column.
-        raise ValueError(
-            f"columns {non_numeric} in {paths[0]!r} are not numeric and cannot be "
-            f"streamed into a float batch; select numeric columns with columns=."
-        )
+    _check_columns(schema, columns, paths[0])
     n_rows = sum(pq.read_metadata(p).num_rows for p in paths)
     return _ParquetDataset(paths, columns, n_rows)
