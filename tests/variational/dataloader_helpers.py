@@ -13,22 +13,21 @@
 #   limitations under the License.
 """Shared helpers for the DataLoader tests."""
 
+import pytest
+
 
 def chunked_factory(data, size):
-    """Return a zero-arg factory that replays ``data`` in ``size``-row chunks.
-
-    A ``DataLoader`` restarts its source once per epoch, so the source has to be
-    re-readable. This returns a *factory* (a zero-arg callable) that produces a
-    fresh generator each call, the way an out-of-core source like
-    ``parquet_source`` does; a bare generator would be one-shot and could not be
-    replayed. The
-    final chunk may hold fewer than ``size`` rows -- the loader re-batches the
-    stream to ``batch_size`` regardless -- so this also exercises the loader's
-    re-batching across uneven source blocks.
-    """
+    """A zero-arg factory replaying ``data`` in ``size``-row chunks, fresh each epoch."""
 
     def factory():
         for i in range(0, len(data), size):
             yield data[i : i + size]
 
     return factory
+
+
+def write_parquet(path, columns, **kwargs):
+    """Write ``columns`` to ``path``, skipping the calling test if pyarrow is not installed."""
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    pq.write_table(pa.table(columns), str(path), **kwargs)

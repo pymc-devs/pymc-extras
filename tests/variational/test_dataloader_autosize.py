@@ -11,9 +11,7 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
-"""total_size='auto' resolution + the rows_streamed sanity warning."""
-
-import warnings
+"""total_size='auto' resolution, the total_size sanity warning, and parquet_source."""
 
 import numpy as np
 import pytest
@@ -23,7 +21,7 @@ from pymc_extras.variational.dataloader import (
     IterableDataset,
     parquet_source,
 )
-from tests.variational.dataloader_helpers import chunked_factory
+from tests.variational.dataloader_helpers import chunked_factory, write_parquet
 
 
 def test_auto_counts_finite_source():
@@ -36,12 +34,20 @@ def test_auto_counts_finite_source():
     assert ds.total_size == 60
 
 
-def test_auto_uses_n_rows_fast_path():
-    """A source-advertised .n_rows is trusted without a counting pass."""
-    data = np.zeros((8, 1))
-    f = chunked_factory(data, 4)
-    f.n_rows = 1000
-    ds = DataLoader(f, batch_size=4, sample_shape=(1,), total_size="auto")
+@pytest.mark.parametrize("shuffle", [False, True], ids=["plain", "shuffled"])
+def test_auto_uses_n_rows_fast_path(shuffle):
+    """A source-advertised .n_rows is trusted without a counting pass, shuffle or not."""
+    src = chunked_factory(np.zeros((8, 1)), 4)
+    src.n_rows = 1000
+    ds = DataLoader(
+        src,
+        batch_size=4,
+        shuffle=shuffle,
+        buffer_size=8,
+        seed=0,
+        sample_shape=(1,),
+        total_size="auto",
+    )
     assert ds.total_size == 1000
 
 
@@ -53,29 +59,8 @@ def test_auto_rejects_one_shot_iterator():
         DataLoader(one_shot, batch_size=4, sample_shape=(1,), total_size="auto")
 
 
-def test_dataloader_shuffle_auto_resolves_via_n_rows():
-    """DataLoader(shuffle=True, total_size='auto') resolves N from the source's
-    .n_rows without a counting pass, even though shuffle wraps the source."""
-    data = np.arange(40, dtype="float64").reshape(40, 1)
-    src = chunked_factory(data, 8)
-    src.n_rows = 40
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
-        ds = DataLoader(
-            src,
-            batch_size=10,
-            shuffle=True,
-            buffer_size=20,
-            seed=0,
-            sample_shape=(1,),
-            total_size="auto",
-        )
-    assert ds.total_size == 40
-
-
 def test_auto_rejects_factory_returning_same_one_shot_iterator():
-    """A factory that returns the same already-consumed iterator each call is not
-    re-readable; the counting pass detects and refuses it."""
+    """A factory handing back the same consumed iterator is not re-readable."""
     data = np.zeros((20, 1))
     one_shot = (data[i : i + 4] for i in range(0, 20, 4))
     with (
@@ -93,78 +78,34 @@ def test_auto_rejects_bad_n_rows():
         DataLoader(f, batch_size=4, sample_shape=(1,), total_size="auto")
 
 
-def test_sanity_warns_on_grossly_wrong_total_size():
-    """A hand-passed total_size that grossly disagrees with the rows actually
-    streamed in one pass triggers the one-shot warning at the epoch boundary."""
-    data = np.arange(20, dtype="float64").reshape(20, 1)
-    ds = DataLoader(chunked_factory(data, 4), batch_size=4, sample_shape=(1,), total_size=100)
-    with pytest.warns(UserWarning, match="disagrees with"):
+@pytest.mark.parametrize(
+    "n, batch_size, total_size, stray, warns",
+    [
+        (20, 4, 20, 0, False),
+        (25, 10, 25, 0, False),
+        (100, 10, 100, 3, False),
+        (100, 10, 130, 3, True),
+    ],
+    ids=["exact", "drop-last-truncates", "stray-pass-first", "wrong-size-after-stray"],
+)
+def test_total_size_sanity_check(n, batch_size, total_size, stray, warns):
+    """The epoch-boundary check reads the pass that just completed, not the cumulative rows."""
+    data = np.arange(n, dtype="float64").reshape(n, 1)
+    ds = DataLoader(
+        chunked_factory(data, 5), batch_size=batch_size, sample_shape=(1,), total_size=total_size
+    )
+    partial = ds._stream_batches()
+    for _ in range(stray):
+        next(partial)
+    if warns:
+        with pytest.warns(UserWarning, match="disagrees with"):
+            list(ds._stream_batches())
+    else:
         list(ds._stream_batches())
-
-
-def test_sanity_silent_when_total_size_matches():
-    """No warning when total_size matches the rows streamed in one pass."""
-    data = np.arange(20, dtype="float64").reshape(20, 1)
-    ds = DataLoader(chunked_factory(data, 4), batch_size=4, sample_shape=(1,), total_size=20)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
-        list(ds._stream_batches())
-
-
-def test_parquet_source_n_rows_from_metadata(tmp_path):
-    """parquet_source reads n_rows from file metadata (no data scan) and
-    total_size='auto' picks it up without a counting pass."""
-    pa = pytest.importorskip("pyarrow")
-    pq = pytest.importorskip("pyarrow.parquet")
-    rng = np.random.default_rng(0)
-    total = 0
-    for i in range(3):
-        n = 100 + 50 * i
-        total += n
-        block = rng.normal(size=(n, 2))
-        pq.write_table(
-            pa.table({"a": block[:, 0], "b": block[:, 1]}),
-            f"{tmp_path}/part_{i:02d}.parquet",
-        )
-    src = parquet_source(str(tmp_path))
-    assert isinstance(src, IterableDataset)
-    assert src.n_rows == total
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
-        ds = DataLoader(src, batch_size=10, sample_shape=(2,), total_size="auto")
-    assert ds.total_size == total
-
-
-def test_parquet_source_columns_and_shard_order(tmp_path):
-    """columns= selects a column subset and shards are read in sorted path order."""
-    pa = pytest.importorskip("pyarrow")
-    pq = pytest.importorskip("pyarrow.parquet")
-    for i in range(2):
-        pq.write_table(
-            pa.table(
-                {"a": [float(i)] * 2, "b": [9.0] * 2, "c": [float(10 + i)] * 2},
-            ),
-            f"{tmp_path}/part_{i}.parquet",
-        )
-    src = parquet_source(str(tmp_path), columns=["a", "c"])
-    blocks = list(src)
-    assert [b.shape for b in blocks] == [(2, 2), (2, 2)]
-    np.testing.assert_array_equal(blocks[0][:, 0], [0.0, 0.0])
-    np.testing.assert_array_equal(blocks[1][:, 1], [11.0, 11.0])
-
-
-def test_parquet_source_empty_dir_raises(tmp_path):
-    """A directory with no matching Parquet files raises a clear error."""
-    pytest.importorskip("pyarrow")
-    with pytest.raises(ValueError, match="no Parquet files match"):
-        parquet_source(str(tmp_path))
 
 
 def test_auto_counts_unshuffled_source_when_shuffling_non_divisible():
-    """total_size='auto' with shuffle=True counts the unshuffled source: the
-    shuffle buffer drops the trailing partial batch, so counting through it would
-    undercount N by up to batch_size - 1 (here 125 vs 120)."""
+    """With shuffle=True 'auto' counts the unshuffled source, so the dropped batch can't lower N."""
     data = np.arange(125, dtype="float64").reshape(125, 1)
     with pytest.warns(UserWarning, match="counting pass"):
         ds = DataLoader(
@@ -180,9 +121,7 @@ def test_auto_counts_unshuffled_source_when_shuffling_non_divisible():
 
 
 def test_stream_batches_updates_counters_and_warns_on_wrong_total_size():
-    """The accounting stream (``DataLoader._stream_batches``) updates the public
-    counters and fires the one-shot total_size sanity check at the epoch boundary,
-    while plain __iter__ stays side-effect-free."""
+    """_stream_batches updates the counters and runs the sanity check; __iter__ does neither."""
     data = np.arange(40, dtype="float64").reshape(20, 2)
     ds = DataLoader(
         chunked_factory(data, 5),
@@ -200,57 +139,8 @@ def test_stream_batches_updates_counters_and_warns_on_wrong_total_size():
     assert ds.rows_streamed == 20
 
 
-def test_sanity_silent_when_drop_last_truncates():
-    """An exactly-correct total_size does not warn when batch_size does not
-    divide N: the trailing partial batch is dropped by design."""
-    data = np.arange(25, dtype="float64").reshape(25, 1)
-    ds = DataLoader(chunked_factory(data, 5), batch_size=10, sample_shape=(1,), total_size=25)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
-        list(ds._stream_batches())
-
-
-def test_sanity_silent_for_auto_resolved_non_divisible_n():
-    """total_size='auto' must not warn against the N it just resolved."""
-    data = np.arange(25, dtype="float64").reshape(25, 1)
-    with pytest.warns(UserWarning, match="counting pass"):
-        ds = DataLoader(
-            chunked_factory(data, 5), batch_size=10, sample_shape=(1,), total_size="auto"
-        )
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
-        list(ds._stream_batches())
-
-
-def test_sanity_check_counts_the_completed_pass_not_cumulative_rows():
-    """A partially consumed stray stream must not inflate the epoch-boundary
-    check: with a correct total_size, the next full pass stays silent."""
-    data = np.arange(100, dtype="float64").reshape(100, 1)
-    ds = DataLoader(chunked_factory(data, 10), batch_size=10, sample_shape=(1,), total_size=100)
-    stray = ds._stream_batches()
-    for _ in range(3):
-        next(stray)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
-        list(ds._stream_batches())
-
-
-def test_sanity_check_not_fooled_by_cumulative_rows_matching_total_size():
-    """The converse: a wrong total_size that happens to equal the cumulative
-    row counter must still warn after a true full pass."""
-    data = np.arange(100, dtype="float64").reshape(100, 1)
-    ds = DataLoader(chunked_factory(data, 10), batch_size=10, sample_shape=(1,), total_size=130)
-    stray = ds._stream_batches()
-    for _ in range(3):
-        next(stray)
-    with pytest.warns(UserWarning, match="disagrees with"):
-        list(ds._stream_batches())
-
-
 def test_auto_rejects_factory_closing_over_consumed_iterator():
-    """A generator function over a one-shot iterator returns a new (so not
-    identical) but empty stream after the counting pass; the re-read probe
-    catches it at construction."""
+    """A generator function over a consumed iterator returns a new but empty stream."""
     data = np.zeros((20, 1))
     underlying = iter([data[i : i + 4] for i in range(0, 20, 4)])
 
@@ -264,49 +154,73 @@ def test_auto_rejects_factory_closing_over_consumed_iterator():
         DataLoader(gen, batch_size=4, sample_shape=(1,), total_size="auto")
 
 
+def test_parquet_source_n_rows_from_metadata(tmp_path):
+    """n_rows comes from file metadata, and total_size='auto' takes it without counting."""
+    rng = np.random.default_rng(0)
+    total = 0
+    for i in range(3):
+        n = 100 + 50 * i
+        total += n
+        block = rng.normal(size=(n, 2))
+        write_parquet(tmp_path / f"part_{i:02d}.parquet", {"a": block[:, 0], "b": block[:, 1]})
+    src = parquet_source(str(tmp_path))
+    assert isinstance(src, IterableDataset)
+    assert src.n_rows == total
+
+    ds = DataLoader(src, batch_size=10, sample_shape=(2,), total_size="auto")
+    assert ds.total_size == total
+
+
+def test_parquet_source_columns_and_shard_order(tmp_path):
+    """columns= selects a column subset and shards are read in sorted path order."""
+    for i in range(2):
+        write_parquet(
+            tmp_path / f"part_{i}.parquet",
+            {"a": [float(i)] * 2, "b": [9.0] * 2, "c": [float(10 + i)] * 2},
+        )
+    src = parquet_source(str(tmp_path), columns=["a", "c"])
+    blocks = list(src)
+    assert [b.shape for b in blocks] == [(2, 2), (2, 2)]
+    np.testing.assert_array_equal(blocks[0][:, 0], [0.0, 0.0])
+    np.testing.assert_array_equal(blocks[1][:, 1], [11.0, 11.0])
+
+
+def test_parquet_source_empty_dir_raises(tmp_path):
+    """A directory with no matching Parquet files raises a clear error."""
+    pytest.importorskip("pyarrow")
+    with pytest.raises(ValueError, match="no Parquet files match"):
+        parquet_source(str(tmp_path))
+
+
 def test_parquet_source_freezes_column_order_across_permuted_shards(tmp_path):
-    """A shard whose schema permutes the columns is read back in the first
-    shard's order instead of silently swapping features."""
-    pa = pytest.importorskip("pyarrow")
-    pq = pytest.importorskip("pyarrow.parquet")
-    pq.write_table(pa.table({"a": [1.0, 1.0], "b": [10.0, 10.0]}), f"{tmp_path}/p0.parquet")
-    pq.write_table(pa.table({"b": [20.0, 20.0], "a": [2.0, 2.0]}), f"{tmp_path}/p1.parquet")
+    """A shard whose schema permutes the columns is read back in the first shard's order."""
+    write_parquet(tmp_path / "p0.parquet", {"a": [1.0, 1.0], "b": [10.0, 10.0]})
+    write_parquet(tmp_path / "p1.parquet", {"b": [20.0, 20.0], "a": [2.0, 2.0]})
     blocks = list(parquet_source(str(tmp_path)))
     np.testing.assert_array_equal(blocks[0], [[1.0, 10.0], [1.0, 10.0]])
     np.testing.assert_array_equal(blocks[1], [[2.0, 20.0], [2.0, 20.0]])
 
 
 def test_parquet_source_streams_row_groups_not_whole_files(tmp_path):
-    """A multi-row-group file is yielded one row group at a time, so peak read
-    memory is a row group rather than the whole file."""
-    pa = pytest.importorskip("pyarrow")
-    pq = pytest.importorskip("pyarrow.parquet")
-    pq.write_table(pa.table({"a": np.arange(30.0)}), f"{tmp_path}/p.parquet", row_group_size=10)
+    """A multi-row-group file is yielded one row group at a time, not one file at a time."""
+    write_parquet(tmp_path / "p.parquet", {"a": np.arange(30.0)}, row_group_size=10)
     blocks = list(parquet_source(str(tmp_path)))
     assert [b.shape for b in blocks] == [(10, 1), (10, 1), (10, 1)]
     np.testing.assert_array_equal(np.concatenate(blocks).ravel(), np.arange(30.0))
 
 
 def test_parquet_source_names_a_later_shard_with_a_non_numeric_column(tmp_path):
-    """parquet_source type-checks only the first shard at construction; a later
-    shard whose same-named column turned non-numeric is caught at iteration with
-    that shard's path, not as an opaque float-cast error downstream."""
-    pa = pytest.importorskip("pyarrow")
-    pq = pytest.importorskip("pyarrow.parquet")
-    pq.write_table(pa.table({"a": [1.0, 2.0]}), f"{tmp_path}/p0.parquet")
-    pq.write_table(pa.table({"a": ["bad", "worse"]}), f"{tmp_path}/p1.parquet")
-    src = parquet_source(str(tmp_path))  # construction sees only the numeric p0
+    """A later shard whose column turned non-numeric is named by path, not an opaque cast error."""
+    write_parquet(tmp_path / "p0.parquet", {"a": [1.0, 2.0]})
+    write_parquet(tmp_path / "p1.parquet", {"a": ["bad", "worse"]})
+    src = parquet_source(str(tmp_path))
     with pytest.raises(ValueError, match=r"p1\.parquet.*not numeric"):
         list(src)
 
 
 def test_parquet_source_rejects_non_numeric_columns(tmp_path):
-    """A string column cannot be streamed into a float batch; the default
-    all-columns freeze rejects it at construction, naming the column and the
-    columns= remedy, instead of failing later at the batch cast."""
-    pa = pytest.importorskip("pyarrow")
-    pq = pytest.importorskip("pyarrow.parquet")
-    pq.write_table(pa.table({"x": [1.0, 2.0], "id": ["a", "b"]}), f"{tmp_path}/p.parquet")
+    """A string column is rejected at construction, naming the column and the columns= remedy."""
+    write_parquet(tmp_path / "p.parquet", {"x": [1.0, 2.0], "id": ["a", "b"]})
     with pytest.raises(ValueError, match="not numeric"):
         parquet_source(str(tmp_path))
     src = parquet_source(str(tmp_path), columns=["x"])
@@ -314,22 +228,16 @@ def test_parquet_source_rejects_non_numeric_columns(tmp_path):
 
 
 def test_parquet_source_names_the_shard_missing_a_column(tmp_path):
-    """read_row_group silently drops unknown column names, so a later shard
-    missing a frozen column must raise an error that names that shard."""
-    pa = pytest.importorskip("pyarrow")
-    pq = pytest.importorskip("pyarrow.parquet")
-    pq.write_table(pa.table({"a": [1.0], "b": [2.0]}), f"{tmp_path}/p0.parquet")
-    pq.write_table(pa.table({"a": [3.0]}), f"{tmp_path}/p1.parquet")
+    """read_row_group drops unknown names silently, so a shard missing a frozen column is named."""
+    write_parquet(tmp_path / "p0.parquet", {"a": [1.0], "b": [2.0]})
+    write_parquet(tmp_path / "p1.parquet", {"a": [3.0]})
     src = parquet_source(str(tmp_path))
     with pytest.raises(ValueError, match=r"p1\.parquet"):
         list(src)
 
 
 def test_parquet_source_rejects_unknown_columns(tmp_path):
-    """A typo in columns= raises a clear ValueError at construction instead of a
-    pyarrow error at first iteration."""
-    pa = pytest.importorskip("pyarrow")
-    pq = pytest.importorskip("pyarrow.parquet")
-    pq.write_table(pa.table({"a": [1.0], "b": [2.0]}), f"{tmp_path}/p.parquet")
+    """A typo in columns= raises at construction, not as a pyarrow error at first iteration."""
+    write_parquet(tmp_path / "p.parquet", {"a": [1.0], "b": [2.0]})
     with pytest.raises(ValueError, match="not found"):
         parquet_source(str(tmp_path), columns=["a", "nope"])

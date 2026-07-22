@@ -24,26 +24,12 @@ from tests.variational.dataloader_helpers import chunked_factory
 
 
 def test_plain_loader_rebatches_arbitrary_blocks():
-    """Blocks of 3 with batch_size=4 are re-batched in order; the trailing rows
-    that cannot fill a final batch are dropped (drop_last semantics)."""
+    """Blocks of 3 are re-batched into 4s in order, and the trailing rows are dropped."""
     data = np.arange(20, dtype="float64").reshape(10, 2)
     ds = DataLoader(chunked_factory(data, 3), batch_size=4, sample_shape=(2,), total_size=10)
     batches = list(ds)
     assert [b.shape for b in batches] == [(4, 2), (4, 2)]
     np.testing.assert_array_equal(np.concatenate(batches), data[:8])
-
-
-def test_raw_array_source_like_vi_rework_sketch():
-    """A raw array works directly, as in the VI-rework sketch
-    ``Dataloader(np.random.normal(...), batch_size=...)``: rows are yielded one
-    sample at a time, re-batched, and counted as rows by total_size='auto'."""
-    data = np.arange(40, dtype="float64").reshape(20, 2)
-    with pytest.warns(UserWarning, match="counting pass"):
-        ds = DataLoader(data, batch_size=8, sample_shape=(2,), total_size="auto")
-    assert ds.total_size == 20
-    batches = list(ds)
-    assert [b.shape for b in batches] == [(8, 2), (8, 2)]
-    np.testing.assert_array_equal(np.concatenate(batches), data[:16])
 
 
 def test_wrong_sample_shape_rejected():
@@ -52,13 +38,6 @@ def test_wrong_sample_shape_rejected():
     ds = DataLoader(chunked_factory(data, 4), batch_size=4, sample_shape=(2,), total_size=12)
     with pytest.raises(ValueError, match="source yielded shape"):
         next(iter(ds))
-
-
-def test_total_size_none_warns_at_construction():
-    """total_size=None disables the N/batch_size rescaling, so it warns."""
-    data = np.zeros((8, 1))
-    with pytest.warns(UserWarning, match="total_size=None"):
-        DataLoader(chunked_factory(data, 4), batch_size=4, sample_shape=(1,), total_size=None)
 
 
 def test_preprocess_fn_applied():
@@ -74,12 +53,17 @@ def test_preprocess_fn_applied():
     np.testing.assert_array_equal(next(iter(ds)), np.full((4, 1), 3.0))
 
 
-def test_shuffle_buffer_conserves_rows_with_non_dividing_chunks():
-    """Chunk and buffer sizes that do not divide batch_size must not lose or
-    duplicate rows; the remainder is carried into the next buffer fill."""
-    data = np.arange(140, dtype="float64").reshape(140, 1)
-    src = shuffle_buffer(chunked_factory(data, 7), buffer_size=55, batch_size=10, seed=0)
+@pytest.mark.parametrize(
+    "buffer_size, n_rows",
+    [(55, 140), (3, 120)],
+    ids=["non-dividing-chunks", "buffer-below-batch"],
+)
+def test_shuffle_buffer_conserves_rows(buffer_size, n_rows):
+    """Buffer sizes that do not divide batch_size, one of them below it, lose no rows."""
+    data = np.arange(n_rows, dtype="float64").reshape(n_rows, 1)
+    src = shuffle_buffer(chunked_factory(data, 7), buffer_size=buffer_size, batch_size=10, seed=0)
     batches = list(src())
+    assert batches
     assert all(b.shape == (10, 1) for b in batches)
     seen = np.sort(np.concatenate([b.ravel() for b in batches]))
     np.testing.assert_array_equal(seen, data.ravel())
@@ -95,8 +79,7 @@ def test_shuffle_buffer_does_not_mutate_source():
 
 
 def test_dataloader_shuffle_true_yields_full_batches():
-    """shuffle=True wraps the source in a bounded shuffle_buffer; one epoch yields
-    full batches and conserves every row when N divides batch_size."""
+    """shuffle=True yields full batches and conserves every row when N divides batch_size."""
     data = np.arange(120, dtype="float64").reshape(120, 1)
     ds = DataLoader(
         chunked_factory(data, 8),
@@ -115,9 +98,7 @@ def test_dataloader_shuffle_true_yields_full_batches():
 
 
 def test_total_size_rescales_logp_like_minibatch():
-    """total_size=len(loader) scales the observed minibatch log-likelihood by
-    exactly N / batch_size, through the same create_minibatch_rv mechanism as
-    pm.Minibatch: logp(scaled) == logp(plain) * N / batch_size."""
+    """total_size=len(loader) scales the observed logp by exactly N / batch_size."""
     rng = np.random.default_rng(0)
     N, bs = 1000, 20
     data = rng.normal(size=(bs, 1))
@@ -137,16 +118,8 @@ def test_total_size_rescales_logp_like_minibatch():
     np.testing.assert_allclose(obs_scaled, obs_plain * (N / bs), rtol=1e-6)
 
 
-def test_len_returns_total_size():
-    """len(loader) is the dataset row count N, the value total_size needs."""
-    data = np.zeros((40, 1))
-    loader = DataLoader(chunked_factory(data, 8), batch_size=8, sample_shape=(1,), total_size=40)
-    assert len(loader) == 40
-
-
 def test_len_raises_when_total_size_none():
-    """With total_size=None there is no N to hand the model, so len() raises
-    rather than silently skipping the N/batch_size rescaling."""
+    """total_size=None warns at construction, and len() then raises instead of guessing N."""
     data = np.ones((4, 1))
     with pytest.warns(UserWarning, match="total_size=None"):
         loader = DataLoader(
@@ -157,8 +130,7 @@ def test_len_raises_when_total_size_none():
 
 
 def test_iter_yields_clean_batches_and_reiterates():
-    """__iter__ yields validated (batch_size, *sample_shape) batches and can be
-    re-iterated for another epoch."""
+    """__iter__ yields (batch_size, *sample_shape) batches and can be re-iterated."""
     data = np.arange(40, dtype="float64").reshape(40, 1)
     loader = DataLoader(chunked_factory(data, 10), batch_size=10, sample_shape=(1,), total_size=40)
     e1 = list(loader)
@@ -168,30 +140,17 @@ def test_iter_yields_clean_batches_and_reiterates():
     np.testing.assert_array_equal(np.sort(np.concatenate([b.ravel() for b in e2])), data.ravel())
 
 
-def test_total_size_zero_raises():
-    """total_size=0 is falsy and would silently skip the rescaling, so it raises."""
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"total_size": 0}, {"total_size": -100}, {"batch_size": True}],
+    ids=["zero", "negative", "bool"],
+)
+def test_nonpositive_sizes_rejected(kwargs):
+    """0 skips the rescaling, a negative N flips the logp sign, and bool is not a size."""
+    kw = {"batch_size": 4, "total_size": 8, **kwargs}
     data = np.zeros((8, 1))
     with pytest.raises(ValueError, match="positive integer"):
-        DataLoader(chunked_factory(data, 4), batch_size=4, sample_shape=(1,), total_size=0)
-
-
-def test_total_size_negative_raises():
-    """A negative total_size would flip the sign of the data log-likelihood."""
-    data = np.zeros((8, 1))
-    with pytest.raises(ValueError, match="positive integer"):
-        DataLoader(chunked_factory(data, 4), batch_size=4, sample_shape=(1,), total_size=-100)
-
-
-def test_shuffle_buffer_small_buffer_conserves_rows():
-    """buffer_size < batch_size must not silently discard the dataset: the buffer
-    accumulates to at least batch_size before emitting."""
-    data = np.arange(120, dtype="float64").reshape(120, 1)
-    src = shuffle_buffer(chunked_factory(data, 7), buffer_size=3, batch_size=10, seed=0)
-    batches = list(src())
-    assert batches
-    assert all(b.shape == (10, 1) for b in batches)
-    seen = np.sort(np.concatenate([b.ravel() for b in batches]))
-    np.testing.assert_array_equal(seen, data.ravel())
+        DataLoader(chunked_factory(data, 4), sample_shape=(1,), **kw)
 
 
 def test_shuffle_buffer_rejects_nonpositive_sizes():
@@ -203,88 +162,41 @@ def test_shuffle_buffer_rejects_nonpositive_sizes():
         shuffle_buffer(chunked_factory(data, 5), buffer_size=10, batch_size=0)
 
 
-def test_accepts_numpy_integer_sizes_rejects_bool():
-    """The positive-int check uses numbers.Integral: numpy ints pass, bool does not."""
+def test_accepts_numpy_integer_sizes():
+    """numpy ints pass the Integral check and are stored as plain Python ints."""
     data = np.zeros((8, 1))
     ds = DataLoader(
         chunked_factory(data, 4), batch_size=np.int64(4), sample_shape=(1,), total_size=np.int64(8)
     )
     assert next(iter(ds)).shape == (4, 1)
-    assert ds.batch_size == 4
-    with pytest.raises(ValueError):
-        DataLoader(chunked_factory(data, 4), batch_size=True, sample_shape=(1,), total_size=8)
+    assert (ds.batch_size, ds.total_size) == (4, 8)
+    assert type(ds.batch_size) is int and type(ds.total_size) is int
 
 
-def test_shuffle_buffer_draws_fresh_permutation_each_epoch():
-    """A seeded buffer must not replay one fixed permutation every epoch; each
-    epoch reshuffles while conserving rows."""
+def test_shuffle_buffer_reshuffles_each_epoch_and_is_seed_reproducible():
+    """Each epoch draws a fresh permutation, and the same seed replays the same epochs."""
     data = np.arange(60, dtype="float64").reshape(60, 1)
-    factory = shuffle_buffer(chunked_factory(data, 10), buffer_size=60, batch_size=10, seed=0)
-    epoch1 = np.concatenate([b.ravel() for b in factory()])
-    epoch2 = np.concatenate([b.ravel() for b in factory()])
-    assert not np.array_equal(epoch1, epoch2)
-    np.testing.assert_array_equal(np.sort(epoch1), data.ravel())
-    np.testing.assert_array_equal(np.sort(epoch2), data.ravel())
 
+    def epochs():
+        f = shuffle_buffer(chunked_factory(data, 10), buffer_size=60, batch_size=10, seed=7)
+        return [np.concatenate([b.ravel() for b in f()]) for _ in range(2)]
 
-def test_shuffle_buffer_seed_reproducible_across_runs():
-    """The same seed gives an identical first-epoch order across constructions."""
-    data = np.arange(60, dtype="float64").reshape(60, 1)
-    a = np.concatenate(
-        [
-            b.ravel()
-            for b in shuffle_buffer(
-                chunked_factory(data, 10), buffer_size=60, batch_size=10, seed=7
-            )()
-        ]
-    )
-    b = np.concatenate(
-        [
-            b.ravel()
-            for b in shuffle_buffer(
-                chunked_factory(data, 10), buffer_size=60, batch_size=10, seed=7
-            )()
-        ]
-    )
-    np.testing.assert_array_equal(a, b)
-
-
-def test_sizes_normalized_to_python_int():
-    """Numpy integer sizes are stored as plain Python ints so total_size is
-    accepted downstream by create_minibatch_rv."""
-    data = np.zeros((8, 1))
-    ds = DataLoader(
-        chunked_factory(data, 4), batch_size=np.int64(4), sample_shape=(1,), total_size=np.int64(8)
-    )
-    assert type(ds.batch_size) is int
-    assert type(ds.total_size) is int
-
-
-def test_numpy_total_size_accepted_by_observed_rv():
-    """A numpy-integer total_size used to reach create_minibatch_rv and raise; the
-    normalized value must build and compile a valid observed RV."""
-    data = np.zeros((4, 1), dtype="float64")
-    loader = DataLoader(
-        lambda: iter([data]), batch_size=4, sample_shape=(1,), total_size=np.int64(4)
-    )
-    with pm.Model() as model:
-        mu = pm.Normal("mu", 0, 1)
-        batch = pm.Data("batch", data)
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
-    model.compile_logp(model.observed_RVs)({"mu": np.array(0.0)})
+    first, second = epochs()
+    assert not np.array_equal(first, second)
+    np.testing.assert_array_equal(epochs(), [first, second])
+    np.testing.assert_array_equal(np.sort(first), data.ravel())
+    np.testing.assert_array_equal(np.sort(second), data.ravel())
 
 
 def test_factory_returning_reiterable_is_accepted():
-    """A zero-arg factory may return any iterable (e.g. a list), not just an
-    iterator."""
+    """A zero-arg factory may return any iterable, e.g. a list, not just an iterator."""
     data = [np.zeros((4, 1), dtype="float64")]
     ds = DataLoader(lambda: data, batch_size=4, sample_shape=(1,), total_size=4)
     assert next(iter(ds)).shape == (4, 1)
 
 
 def test_raw_array_with_shuffle_true():
-    """A raw array source composes with shuffle=True: rows are promoted to
-    one-row blocks before the shuffle buffer instead of being flattened by it."""
+    """A raw 2-D array is promoted to one-row blocks before the shuffle buffer, not flattened."""
     data = np.arange(40, dtype="float64").reshape(20, 2)
     ds = DataLoader(
         data, batch_size=8, shuffle=True, buffer_size=16, seed=0, sample_shape=(2,), total_size=20
@@ -306,14 +218,20 @@ def test_scalar_raw_array_with_shuffle_true():
     np.testing.assert_array_equal(np.sort(np.concatenate(batches)), data)
 
 
-def test_scalar_samples_are_batched():
-    """With sample_shape=() a 0-D yield is one scalar sample, exactly what
-    iterating a raw 1-D array produces; the loader batches scalars."""
-    data = np.arange(6, dtype="float64")
-    ds = DataLoader(data, batch_size=3, sample_shape=(), total_size=6)
+@pytest.mark.parametrize(
+    "data, batch_size, shapes",
+    [
+        (np.arange(6, dtype="float64"), 3, [(3,), (3,)]),
+        (np.arange(40, dtype="float64").reshape(20, 2), 8, [(8,)] * 5),
+    ],
+    ids=["1d-source", "2d-source-overrides-inference"],
+)
+def test_scalar_sample_shape_batches_scalars(data, batch_size, shapes):
+    """sample_shape=() reads every element as one scalar sample, overriding any inference."""
+    ds = DataLoader(data, batch_size=batch_size, sample_shape=(), total_size=data.size)
     batches = list(ds)
-    assert [b.shape for b in batches] == [(3,), (3,)]
-    np.testing.assert_array_equal(np.concatenate(batches), data)
+    assert [b.shape for b in batches] == shapes
+    np.testing.assert_array_equal(np.concatenate(batches), data.ravel()[: len(shapes) * batch_size])
 
 
 def test_iterable_dataset_base_is_abstract():
@@ -323,9 +241,7 @@ def test_iterable_dataset_base_is_abstract():
 
 
 def test_raw_2d_array_infers_sample_shape():
-    """A raw 2-D array defaults sample_shape to its trailing shape, so the
-    VI-rework sketch ``DataLoader(arr, batch_size=...)`` batches rows instead of
-    flattening them into scalars."""
+    """A raw 2-D array defaults sample_shape to its trailing shape, so rows are batched."""
     data = np.arange(40, dtype="float64").reshape(20, 2)
     with pytest.warns(UserWarning, match="counting pass"):
         ds = DataLoader(data, batch_size=8, total_size="auto")
@@ -335,19 +251,8 @@ def test_raw_2d_array_infers_sample_shape():
     np.testing.assert_array_equal(np.concatenate(batches), data[:16])
 
 
-def test_explicit_sample_shape_overrides_inference():
-    """An explicit sample_shape=() reads each row of a 2-D array as a block of
-    scalar samples, the pre-inference behavior."""
-    data = np.arange(40, dtype="float64").reshape(20, 2)
-    ds = DataLoader(data, batch_size=8, sample_shape=(), total_size=40)
-    batches = list(ds)
-    assert [b.shape for b in batches] == [(8,)] * 5
-
-
 def test_shuffle_buffer_accepts_factory_returning_reiterable():
-    """A factory returning a re-iterable (which the loader also tolerates) must not
-    restart per buffer fill and loop forever; the stream is normalized to a single
-    iterator."""
+    """A factory returning a re-iterable is normalized to one iterator, so fills don't restart."""
     data = np.arange(120, dtype="float64").reshape(120, 1)
     chunks = [data[i : i + 20] for i in range(0, 120, 20)]
     src = shuffle_buffer(lambda: chunks, buffer_size=50, batch_size=10, seed=0)
