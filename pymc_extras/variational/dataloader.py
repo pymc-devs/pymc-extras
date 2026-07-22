@@ -255,7 +255,8 @@ class DataLoader:
     batch_size : int
         Leading dimension of every yielded minibatch.
     shuffle : bool, default False
-        Wrap the source in a bounded :func:`shuffle_buffer`.
+        Wrap the source in a bounded :func:`shuffle_buffer`. See the module
+        docstring for what that does and does not fix, and for ``drop_last``.
     buffer_size : int, optional
         Shuffle-buffer size in rows when ``shuffle=True``; defaults to
         ``50 * batch_size``. A buffer as large as the dataset is a full shuffle.
@@ -421,7 +422,8 @@ class DataLoader:
         if abs(self._total_size - seen) > 0.1 * seen:
             warnings.warn(
                 f"total_size={self._total_size} disagrees with the {seen} rows streamed "
-                f"in one full pass; the N/batch_size rescaling is likely wrong.",
+                f"in one full pass; the N/batch_size rescaling is likely wrong. Pass the "
+                f"true dataset size, or fix the source's n_rows if 'auto' read it there.",
                 UserWarning,
                 stacklevel=3,
             )
@@ -486,7 +488,7 @@ def parquet_source(
     metadata (no data scan) so ``total_size="auto"`` resolves the dataset size for
     free. Pass ``shuffle=True`` to the :class:`DataLoader` for shuffled batches.
     """
-    import pyarrow.parquet as pq
+    import pyarrow.parquet as pq  # optional dependency, so imported on use
 
     paths = sorted(glob.glob(os.path.join(directory, pattern)))
     if not paths:
