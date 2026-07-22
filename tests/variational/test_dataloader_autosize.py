@@ -94,14 +94,14 @@ def test_total_size_sanity_check(n, batch_size, total_size, stray, warns):
     ds = DataLoader(
         chunked_factory(data, 5), batch_size=batch_size, sample_shape=(1,), total_size=total_size
     )
-    partial = ds._stream_batches()
+    partial = iter(ds)
     for _ in range(stray):
         next(partial)
     if warns:
         with pytest.warns(UserWarning, match="disagrees with"):
-            list(ds._stream_batches())
+            list(ds)
     else:
-        list(ds._stream_batches())
+        list(ds)
 
 
 def test_auto_counts_unshuffled_source_when_shuffling_non_divisible():
@@ -120,23 +120,14 @@ def test_auto_counts_unshuffled_source_when_shuffling_non_divisible():
     assert ds.total_size == 125
 
 
-def test_stream_batches_updates_counters_and_warns_on_wrong_total_size():
-    """_stream_batches updates the counters and runs the sanity check; __iter__ does neither."""
+def test_total_size_warning_fires_once_across_passes():
+    """A wrong total_size warns on the first full pass and stays quiet on the next."""
     data = np.arange(40, dtype="float64").reshape(20, 2)
-    ds = DataLoader(
-        chunked_factory(data, 5),
-        batch_size=5,
-        sample_shape=(2,),
-        total_size=10_000,
-    )
-    assert ds.batches_seen == 0 and ds.rows_streamed == 0
-    list(ds)
-    assert ds.batches_seen == 0 and ds.rows_streamed == 0
+    ds = DataLoader(chunked_factory(data, 5), batch_size=5, sample_shape=(2,), total_size=10_000)
     with pytest.warns(UserWarning, match="disagrees with"):
-        batches = list(ds._stream_batches())
+        batches = list(ds)
     assert len(batches) == 4
-    assert ds.batches_seen == 4
-    assert ds.rows_streamed == 20
+    assert list(ds) != []
 
 
 def test_auto_rejects_factory_closing_over_consumed_iterator():

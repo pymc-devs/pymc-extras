@@ -13,8 +13,9 @@
 #   limitations under the License.
 """Stream out-of-core data into a PyMC model, one batch at a time.
 
-The full dataset never has to be resident: peak memory is set by the batch (plus
-the source chunk and any shuffle buffer), not by the dataset size N.
+The full dataset never has to be resident: peak memory is set by the batch, not by
+the dataset size N. Iteration runs one batch ahead, so budget two batches plus the
+source chunks they hold and any shuffle buffer.
 
 The API mirrors ``torch.utils.data``: an :class:`IterableDataset` is a
 re-iterable source of rows (e.g. :func:`parquet_source` over a directory of
@@ -356,8 +357,6 @@ class DataLoader:
         else:
             self._batch_source = self._new_iter
 
-        self._batches_seen = 0
-        self._rows_streamed = 0
         self._warned_size = False
 
     @property
@@ -369,29 +368,26 @@ class DataLoader:
         """The dataset size ``N`` (pass to the distribution's ``total_size``)."""
         return self._total_size
 
-    @property
-    def batches_seen(self) -> int:
-        return self._batches_seen
-
-    @property
-    def rows_streamed(self) -> int:
-        """Total rows streamed into the model (grows past ``N`` across epochs)."""
-        return self._rows_streamed
-
-    def _rebatched(self) -> Iterator[np.ndarray]:
-        """A fresh pass of exactly ``batch_size``-row batches from the source."""
-        return _rebatch(self._batch_source(), self._batch_size, self._sample_shape)
-
     def __iter__(self) -> Iterator[np.ndarray]:
         """Yield one epoch of ``(batch_size, *sample_shape)`` minibatches.
 
         Stream each into the model's ``pm.Data`` placeholder with ``model.set_data``
-        before a step. Plain iteration is side-effect-free (it does not touch the
-        :attr:`batches_seen` / :attr:`rows_streamed` counters); re-iterate for
-        another epoch.
+        before a step; re-iterate for another epoch. The pass runs one batch ahead so
+        the ``total_size`` check still fires when a fit stops exactly at the epoch
+        boundary, which also means the source is pulled one batch further than the
+        last batch yielded.
         """
-        for batch in self._rebatched():
-            yield self._prepare(batch)
+        seen = 0
+        it = _rebatch(self._batch_source(), self._batch_size, self._sample_shape)
+        batch = next(it, None)
+        while batch is not None:
+            following = next(it, None)
+            prepared = self._prepare(batch)
+            seen += int(prepared.shape[0])
+            if following is None:
+                self._maybe_warn_total_size(seen)
+            yield prepared
+            batch = following
 
     def __len__(self) -> int:
         """The dataset size ``N``; pass it to the distribution's ``total_size``.
@@ -406,26 +402,6 @@ class DataLoader:
                 "total_size=None; construct it with total_size=N or total_size='auto'."
             )
         return self._total_size
-
-    def _stream_batches(self) -> Iterator[np.ndarray]:
-        """One epoch, updating the counters and running the ``total_size`` check.
-
-        Kept one batch ahead so the check still fires when a fit stops exactly at
-        the pass boundary.
-        """
-        seen_this_pass = 0
-        it = self._rebatched()
-        batch = next(it, None)
-        while batch is not None:
-            following = next(it, None)
-            prepared = self._prepare(batch)
-            self._batches_seen += 1
-            self._rows_streamed += int(prepared.shape[0])
-            seen_this_pass += int(prepared.shape[0])
-            if following is None:
-                self._maybe_warn_total_size(seen_this_pass)
-            yield prepared
-            batch = following
 
     def _prepare(self, batch: np.ndarray) -> np.ndarray:
         """Apply ``preprocess_fn`` and cast; copies, since a source may reuse its buffer."""
