@@ -391,12 +391,7 @@ class DataLoader:
             batch = following
 
     def __len__(self) -> int:
-        """The dataset size ``N``; pass it to the distribution's ``total_size``.
-
-        This is the row count ``N`` (what ``total_size`` needs), not the batch count
-        ``torch.utils.data.DataLoader.__len__`` returns. Same value as
-        :attr:`total_size`.
-        """
+        """The dataset size ``N`` -- rows, not batches. Same value as :attr:`total_size`."""
         if self._total_size is None:
             raise TypeError(
                 "len(DataLoader) is the dataset size N, but this loader was built with "
