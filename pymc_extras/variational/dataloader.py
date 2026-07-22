@@ -110,12 +110,11 @@ def _auto_total_size(
 ) -> int:
     """Resolve ``total_size="auto"``: trust a source ``.n_rows``, else count once."""
     n_rows = getattr(dataset, "n_rows", None)
-    reiterable = not isinstance(dataset, Iterator)
     if n_rows is not None:
         if not _is_positive_int(n_rows):
             raise ValueError(f"source.n_rows must be a positive integer, got {n_rows!r}")
         return int(n_rows)
-    if not reiterable:
+    if isinstance(dataset, Iterator):
         raise ValueError(
             "total_size='auto' needs a re-readable source (a zero-arg factory or an "
             "iterable), not a one-shot iterator; pass total_size=N explicitly instead."
@@ -193,11 +192,10 @@ def shuffle_buffer(
     dropped. Each epoch (each call of the returned factory) draws a fresh
     permutation from ``seed``, reproducible per seed.
 
-    ``DataLoader(shuffle=True)`` calls this for you; use it directly only to
-    control ``buffer_size`` explicitly. It only approximates i.i.d. batches for an
-    already-unordered stream: a bounded buffer cannot fix strongly ordered data
-    (pre-shuffle on disk for that). ``buffer_size`` is a lower bound, and the chunk
-    that crosses it is kept whole, so peak allocation is about twice
+    ``DataLoader(shuffle=True)`` calls this for you; use it directly only to control
+    ``buffer_size`` explicitly. A bounded buffer cannot fix strongly ordered data --
+    pre-shuffle on disk for that. ``buffer_size`` is a lower bound, and the chunk that
+    crosses it is kept whole, so peak allocation is about twice
     ``max(buffer_size, batch_size)`` plus one chunk.
     """
     if not _is_positive_int(batch_size):

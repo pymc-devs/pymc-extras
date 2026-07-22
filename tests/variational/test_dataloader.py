@@ -69,32 +69,50 @@ def test_shuffle_buffer_conserves_rows(buffer_size, n_rows):
     np.testing.assert_array_equal(seen, data.ravel())
 
 
-def test_shuffle_buffer_does_not_mutate_source():
-    """Shuffling happens on an owned copy, never in place on the source arrays."""
+@pytest.mark.parametrize("chunk", [25, 100], ids=["several-chunks-per-fill", "one-chunk-fills-it"])
+def test_shuffle_buffer_does_not_mutate_source(chunk):
+    """Shuffling happens on an owned copy, even when a single chunk fills the buffer."""
     data = np.arange(100, dtype="float64").reshape(100, 1)
     original = data.copy()
-    src = shuffle_buffer(chunked_factory(data, 25), buffer_size=40, batch_size=10, seed=1)
+    src = shuffle_buffer(chunked_factory(data, chunk), buffer_size=40, batch_size=10, seed=1)
     list(src())
     np.testing.assert_array_equal(data, original)
 
 
-def test_dataloader_shuffle_true_yields_full_batches():
-    """shuffle=True yields full batches and conserves every row when N divides batch_size."""
-    data = np.arange(120, dtype="float64").reshape(120, 1)
+@pytest.mark.parametrize(
+    "data, make_source, sample_shape, batch_size, buffer_size, shapes",
+    [
+        (
+            np.arange(120.0).reshape(120, 1),
+            lambda d: chunked_factory(d, 8),
+            (1,),
+            10,
+            40,
+            [(10, 1)] * 12,
+        ),
+        (np.arange(40.0).reshape(20, 2), lambda d: d, (2,), 8, 16, [(8, 2)] * 2),
+        (np.arange(12.0), lambda d: d, (), 4, 6, [(4,)] * 3),
+    ],
+    ids=["block-factory", "raw-2d", "raw-1d-scalars"],
+)
+def test_shuffle_true_yields_whole_source_rows(
+    data, make_source, sample_shape, batch_size, buffer_size, shapes
+):
+    """shuffle=True yields only full batches, of distinct rows that all came from the source."""
     ds = DataLoader(
-        chunked_factory(data, 8),
-        batch_size=10,
+        make_source(data),
+        batch_size=batch_size,
         shuffle=True,
-        buffer_size=40,
+        buffer_size=buffer_size,
         seed=0,
-        sample_shape=(1,),
-        total_size=120,
+        sample_shape=sample_shape,
+        total_size=len(data),
     )
     batches = list(ds)
-    assert all(b.shape == (10, 1) for b in batches)
-    np.testing.assert_array_equal(
-        np.sort(np.concatenate([b.ravel() for b in batches])), data.ravel()
-    )
+    assert [b.shape for b in batches] == shapes
+    seen = {tuple(np.atleast_1d(r)) for b in batches for r in b}
+    assert len(seen) == sum(s[0] for s in shapes)
+    assert seen <= {tuple(np.atleast_1d(r)) for r in data}
 
 
 def test_total_size_rescales_logp_like_minibatch():
@@ -193,29 +211,6 @@ def test_factory_returning_reiterable_is_accepted():
     data = [np.zeros((4, 1), dtype="float64")]
     ds = DataLoader(lambda: data, batch_size=4, sample_shape=(1,), total_size=4)
     assert next(iter(ds)).shape == (4, 1)
-
-
-def test_raw_array_with_shuffle_true():
-    """A raw 2-D array is promoted to one-row blocks before the shuffle buffer, not flattened."""
-    data = np.arange(40, dtype="float64").reshape(20, 2)
-    ds = DataLoader(
-        data, batch_size=8, shuffle=True, buffer_size=16, seed=0, sample_shape=(2,), total_size=20
-    )
-    batches = list(ds)
-    assert [b.shape for b in batches] == [(8, 2), (8, 2)]
-    rows = {tuple(r) for b in batches for r in b}
-    assert len(rows) == 16 and rows <= {tuple(r) for r in data}
-
-
-def test_scalar_raw_array_with_shuffle_true():
-    """Scalar samples from a raw 1-D array compose with shuffle=True."""
-    data = np.arange(12, dtype="float64")
-    ds = DataLoader(
-        data, batch_size=4, shuffle=True, buffer_size=6, seed=0, sample_shape=(), total_size=12
-    )
-    batches = list(ds)
-    assert [b.shape for b in batches] == [(4,), (4,), (4,)]
-    np.testing.assert_array_equal(np.sort(np.concatenate(batches)), data)
 
 
 @pytest.mark.parametrize(
