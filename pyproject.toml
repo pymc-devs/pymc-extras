@@ -36,13 +36,10 @@ dynamic = ["version"]  # specify the version in the __init__.py file
 dependencies = [
   "pymc>=6.2.0,<6.3",
   "pytensor>=3.2.2,<3.3",
-  "arviz>=1.1,<2.0",
+  "arviz>=1.2,<2.0",
   "better-optimize>=0.4.2,<1.0",
   "pydantic>=2.0.0,<3.0",
   "preliz>=0.26.0,<0.27.0",
-  # arviz-plots 1.1.0 imports matplotlib.style.core, which was removed in matplotlib 3.11.
-  # Remove once a fixed arviz-plots is released.
-  "matplotlib<3.11",
 ]
 
 [project.optional-dependencies]
