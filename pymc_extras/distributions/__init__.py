@@ -17,7 +17,13 @@
 Experimental probability distributions for stochastic nodes in PyMC.
 """
 
-from pymc_extras.distributions.continuous import Chi, GenExtreme, Maxwell
+from pymc_extras.distributions.continuous import (
+    Chi,
+    ExtGenPareto,
+    GenExtreme,
+    GenPareto,
+    Maxwell,
+)
 from pymc_extras.distributions.discrete import (
     BetaNegativeBinomial,
     GeneralizedPoisson,
@@ -33,7 +39,9 @@ __all__ = [
     "BetaNegativeBinomial",
     "Chi",
     "DiscreteMarkovChain",
+    "ExtGenPareto",
     "GenExtreme",
+    "GenPareto",
     "GeneralizedPoisson",
     "JointCategorical",
     "Maxwell",

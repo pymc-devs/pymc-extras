@@ -15,6 +15,8 @@ like regular PyMC distributions and can be used directly inside a model.
    GeneralizedPoisson
    BetaNegativeBinomial
    GenExtreme
+   GenPareto
+   ExtGenPareto
    R2D2M2CP
    Skellam
    histogram_approximation

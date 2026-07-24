@@ -24,7 +24,9 @@ import pytensor.tensor as pt
 
 from pymc import ChiSquared, CustomDist
 from pymc.distributions import transforms
-from pymc.distributions.dist_math import check_parameters
+from pymc.distributions.dist_math import (
+    check_parameters,
+)
 from pymc.distributions.distribution import Continuous
 from pymc.distributions.shape_utils import rv_size_is_none
 from pymc.logprob.utils import CheckParameterValue
@@ -32,6 +34,9 @@ from pymc.pytensorf import floatX
 from pytensor.tensor.random.op import RandomVariable
 from pytensor.tensor.variable import TensorVariable
 from scipy import stats
+
+from pymc_extras.distributions.pymc_extgenpareto import ExtGenPareto  # noqa: F401
+from pymc_extras.distributions.pymc_genpareto import GenPareto  # noqa: F401
 
 
 class GenExtremeRV(RandomVariable):
