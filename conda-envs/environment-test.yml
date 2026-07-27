@@ -14,7 +14,7 @@ dependencies:
   - pydantic>=2.0.0,<3.0
   - h5netcdf
   - pymc>=6.2.0,<6.3
-  - pytensor>=3.2.2,<3.3
+  - pytensor>=3.2.3,<3.3
   - arviz>=1.2,<2.0
   - preliz>=0.27,<0.28
   - pip
