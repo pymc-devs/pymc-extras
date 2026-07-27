@@ -1,5 +1,6 @@
 import numpy as np
 import pymc as pm
+import pytensor
 import pytest
 
 from pymc_extras.inference.pathfinder.bfgs_sample import (
@@ -117,6 +118,21 @@ def test_make_pathfinder_sample_fn_runs(N, J):
     assert logQ.shape == (M,)
     assert logP.shape == (M,)
     assert inv_hessian_diag.shape == (N,)
+
+
+@pytest.mark.parametrize("N, J", [_DENSE, _SPARSE], ids=["dense", "sparse"])
+def test_make_pathfinder_sample_fn_preserves_float32(N, J):
+    """A float32 model keeps every sample-fn output in float32, on both the dense and sparse
+    branches. A stray float64 constant (e.g. the log-normalizer in logQ) would upcast the graph
+    and put a float64 op on-device, which MLX/Metal rejects."""
+    M = 7
+    with pytensor.config.change_flags(floatX="float32"):
+        fn = _pathfinder_sample_fn(N, J, mode="FAST_RUN")
+        inputs = tuple(np.asarray(a, dtype="float32") for a in _pathfinder_sample_inputs(N, J, M))
+        outputs = fn(*inputs)
+
+    for output in outputs:
+        assert np.asarray(output).dtype == np.float32
 
 
 @pytest.mark.parametrize("N, J", [_DENSE, _SPARSE], ids=["dense", "sparse"])

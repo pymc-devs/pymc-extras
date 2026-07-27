@@ -90,6 +90,22 @@ class LBFGSInitFailed(LBFGSException):
         super().__init__(message or self.DEFAULT_MESSAGE, status)
 
 
+def _as_numpy_value_grad(value_grad_fn: Callable) -> Callable:
+    """Wrap a fused ``(value, grad)`` objective so its outputs are numpy arrays.
+
+    scipy's L-BFGS-B needs numpy for the value and gradient. Array backends that return
+    their own type (e.g. MLX returns ``mx.array``) otherwise flow through unconverted and
+    the optimizer degenerates to zero steps. The computation's own dtype is preserved
+    (float32 backends stay float32); JAX already returns numpy, so this is a no-op there.
+    """
+
+    def wrapped(x):
+        value, grad = value_grad_fn(x)
+        return np.asarray(value), np.asarray(grad)
+
+    return wrapped
+
+
 class LBFGS:
     """L-BFGS optimizer wrapping ``scipy.optimize.minimize(method="L-BFGS-B")``.
 
@@ -109,6 +125,9 @@ class LBFGS:
         Maximum line-search steps per iteration. Default 1000.
     epsilon : float, optional
         Curvature-condition threshold for accepting a step. Default 1e-12.
+    dtype : str or numpy.dtype, optional
+        Working precision of the L-BFGS objective, matching the compiled model (e.g. float32
+        for MLX/float32 models). Default ``"float64"``.
     """
 
     def __init__(
@@ -120,14 +139,16 @@ class LBFGS:
         gtol: float = 1e-8,
         maxls: int = 1000,
         epsilon: float = 1e-12,
+        dtype: str | np.dtype = "float64",
     ) -> None:
-        self.value_grad_fn = value_grad_fn
+        self.value_grad_fn = _as_numpy_value_grad(value_grad_fn)
         self.maxcor = maxcor
         self.maxiter = maxiter
         self.ftol = ftol
         self.gtol = gtol
         self.maxls = maxls
         self.epsilon = epsilon
+        self.dtype = np.dtype(dtype)
 
     def _classify_status(self, result, update_count: int) -> LBFGSStatus:
         """Classify the LBFGS termination status.
@@ -175,7 +196,10 @@ class LBFGS:
         lbfgs_status : LBFGSStatus
             The classified termination status.
         """
-        x0 = np.array(x0, dtype=np.float64)
+        # scipy calls the objective at x0's dtype, so this sets the working precision of the
+        # L-BFGS objective (float32 for MLX/float32 models); scipy still runs its own state in
+        # double regardless.
+        x0 = np.asarray(x0, dtype=self.dtype)
         # better_optimize detects the fused (value, grad) objective and promotes maxcor/maxiter/...
         # to scipy's options dict itself, so they pass straight through as keyword arguments.
         result = minimize(
@@ -221,6 +245,10 @@ class LBFGSStreamingCallback:
         Called with a progress dict after each step. Default None.
     on_step_callback : callable, optional
         Called after each accepted step with ``(x, g, alpha, s_win, z_win, elbo)``. Default None.
+    dtype : str or numpy.dtype, optional
+        Working precision for the initial point, smoothing buffers, and ELBO draws passed to
+        ``sample_logp_fn``, matching the compiled model. scipy's float64 step positions are cast
+        down to it. Default ``"float64"``.
     """
 
     def __init__(
@@ -234,7 +262,9 @@ class LBFGSStreamingCallback:
         epsilon: float,
         progress_callback: Callable | None = None,
         on_step_callback: Callable | None = None,
+        dtype: str | np.dtype = "float64",
     ) -> None:
+        value_grad_fn = _as_numpy_value_grad(value_grad_fn)
         self.value_grad_fn = value_grad_fn
         self.sample_logp_fn = sample_logp_fn
         self.num_elbo_draws = num_elbo_draws
@@ -243,19 +273,24 @@ class LBFGSStreamingCallback:
         self.epsilon = epsilon
         self.progress_callback = progress_callback
         self.on_step_callback = on_step_callback
+        # Working precision for everything fed to the (model-dtype) sample_logp_fn: the initial
+        # point, the smoothing buffers, and the ELBO draws. scipy hands back float64 positions,
+        # which __call__ casts down to this.
+        self.dtype = np.dtype(dtype)
 
         N = x0.shape[0]
         self._N = N
+        x0 = np.asarray(x0, dtype=self.dtype)
         _, g0 = value_grad_fn(x0)
 
         self.x_prev: NDArray = x0.copy()
-        self.g_prev: NDArray = np.array(g0, dtype=np.float64)
-        self.alpha_prev: NDArray = np.ones(N, dtype=np.float64)
+        self.g_prev: NDArray = np.asarray(g0, dtype=self.dtype)
+        self.alpha_prev: NDArray = np.ones(N, dtype=self.dtype)
 
         # Ring buffer: numpy arrays passed as inputs to sample_logp_fn each call.
         # Thread-safe: no shared mutable state across concurrent invocations.
-        self.s_win: NDArray = np.zeros((N, J), dtype=np.float64)
-        self.z_win: NDArray = np.zeros((N, J), dtype=np.float64)
+        self.s_win: NDArray = np.zeros((N, J), dtype=self.dtype)
+        self.z_win: NDArray = np.zeros((N, J), dtype=self.dtype)
         self.win_idx: int = -1
         self.best_elbo: float = -np.inf
         self.best_state: dict = {}
@@ -270,13 +305,16 @@ class LBFGSStreamingCallback:
         ``intermediate`` is a scipy/better_optimize ``OptimizeResult`` (carrying ``.x``, ``.fun``,
         and ``.jac``) or, for a classic scipy callback, the raw position array.
         """
+        # scipy iterates in float64, but sample_logp_fn is compiled at self.dtype with
+        # trust_input=True. Positions and gradients must be cast down to self.dtype here; widening
+        # back to float64 would reintroduce a float64 op into the (possibly Metal) sample graph.
         if hasattr(intermediate, "x"):
-            x = np.asarray(intermediate.x, dtype=np.float64)
+            x = np.asarray(intermediate.x, dtype=self.dtype)
             value = float(intermediate.fun)
             g = getattr(intermediate, "jac", None)
-            g = self.value_grad_fn(x)[1] if g is None else np.asarray(g, dtype=np.float64)
+            g = self.value_grad_fn(x)[1] if g is None else np.asarray(g, dtype=self.dtype)
         else:
-            x = np.asarray(intermediate, dtype=np.float64)
+            x = np.asarray(intermediate, dtype=self.dtype)
             value, g = self.value_grad_fn(x)
 
         s = x - self.x_prev
@@ -295,7 +333,7 @@ class LBFGSStreamingCallback:
         self.z_win[:, self.win_idx] = z
 
         # Sample + logP in a single compiled call. Pass s_win/z_win as inputs.
-        u = self._rng.standard_normal((self.num_elbo_draws, self._N))
+        u = self._rng.standard_normal((self.num_elbo_draws, self._N)).astype(self.dtype)
         sample_out = self.sample_logp_fn(x, g, alpha, self.s_win, self.z_win, u)
         _, logQ, logP, _ = sample_out
         logP = np.asarray(logP)
