@@ -123,7 +123,10 @@ def _bfgs_sample_pt(
         ql = Q @ Lchol
         inv_hessian_diag = alpha * (1.0 + pt.sum(ql * ql, axis=1) - pt.sum(Q * Q, axis=1))
 
-    logQ = -0.5 * (logdet + pt.sum(u * u, axis=-1) + N * np.log(2.0 * np.pi))
+    # Keep the log-normalizer at the input dtype so the whole graph stays floatX; an np.float64
+    # constant here would upcast logQ and put a float64 op on-device (rejected by MLX/Metal).
+    log_2pi = pt.constant(np.log(2.0 * np.pi), dtype=x.dtype)
+    logQ = -0.5 * (logdet + pt.sum(u * u, axis=-1) + N * log_2pi)
     return phi, logQ, inv_hessian_diag
 
 
@@ -167,12 +170,15 @@ def make_pathfinder_sample_fn(
         model.value_vars,
     )
 
-    x_sym = pt.vector("x", dtype="float64")
-    g_sym = pt.vector("g", dtype="float64")
-    alpha_sym = pt.vector("alpha", dtype="float64")
-    s_win_sym = pt.matrix("s_win", dtype="float64")  # (N, J)
-    z_win_sym = pt.matrix("z_win", dtype="float64")  # (N, J)
-    u_sym = pt.matrix("u", dtype="float64")  # (M, N) — M is dynamic
+    # Match the model's precision (float32 for MLX/float32 models) so callers feed the
+    # compiled function inputs of the right dtype; single_input carries the model's floatX.
+    floatX = single_input.type.dtype
+    x_sym = pt.tensor("x", shape=(N,), dtype=floatX)
+    g_sym = pt.tensor("g", shape=(N,), dtype=floatX)
+    alpha_sym = pt.tensor("alpha", shape=(N,), dtype=floatX)
+    s_win_sym = pt.tensor("s_win", shape=(N, J), dtype=floatX)
+    z_win_sym = pt.tensor("z_win", shape=(N, J), dtype=floatX)
+    u_sym = pt.matrix("u", dtype=floatX)  # (M, N) — M is dynamic
 
     phi_sym, logQ_sym, inv_hessian_diag_sym = _bfgs_sample_pt(
         x_sym, g_sym, alpha_sym, s_win_sym, z_win_sym, u_sym, J, N

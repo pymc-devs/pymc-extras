@@ -211,11 +211,13 @@ def add_pathfinder_to_inference_data(
 
 
 def _transform_draws_vectorized(model, vars_to_sample, trace, compile_kwargs: dict) -> list:
-    # Add a (chain, draw) batch dim across the Deterministic subgraph in one shot.
-    new_shapes = [v.ndim * (None,) for v in trace.values()]
+    # Add a (chain, draw) batch dim across the Deterministic subgraph in one shot. The trace is
+    # already materialized, so give the batch dims their concrete sizes rather than None: the JAX
+    # backend rejects reshapes with traced target shapes, and static sizes let the batched
+    # reshapes fold to constant targets instead.
     replace = {
-        var: pt.tensor(dtype="float64", shape=new_shapes[i])
-        for i, var in enumerate(model.value_vars)
+        var: pt.tensor(name=var.name, dtype="float64", shape=trace[var.name].shape)
+        for var in model.value_vars
     }
     outputs = vectorize_graph(vars_to_sample, replace=replace)
     # The transform graph is compiled once and run once, so skip the rewrite phase (FAST_COMPILE)
@@ -227,7 +229,7 @@ def _transform_draws_vectorized(model, vars_to_sample, trace, compile_kwargs: di
         **{"mode": FAST_COMPILE, "on_unused_input": "ignore", **compile_kwargs},
     )
     fn.trust_input = True
-    result = fn(*list(trace.values()))
+    result = fn(*[trace[var.name] for var in model.value_vars])
     return result if isinstance(result, list) else [result]
 
 

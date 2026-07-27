@@ -16,6 +16,7 @@ from pymc_extras.inference.pathfinder.lbfgs import (
     LBFGSConfig,
     LBFGSStatus,
     LBFGSStreamingCallback,
+    _as_numpy_value_grad,
     _check_lbfgs_curvature_condition,
 )
 from tests.inference.pathfinder.conftest import (
@@ -40,6 +41,27 @@ from tests.inference.pathfinder.equivalence_models import make_ard_regression
 )
 def test_check_lbfgs_curvature_condition(s, z, epsilon, expected):
     assert _check_lbfgs_curvature_condition(s, z, epsilon) is expected
+
+
+def test_as_numpy_value_grad_converts_and_preserves_dtype():
+    """Foreign array outputs (e.g. MLX) become numpy without upcasting the computation's dtype."""
+
+    class FakeArray:
+        def __init__(self, data):
+            self._data = np.asarray(data, dtype=np.float32)
+
+        def __array__(self, dtype=None, copy=None):
+            return self._data if dtype is None else self._data.astype(dtype)
+
+    wrapped = _as_numpy_value_grad(lambda x: (FakeArray(1.5), FakeArray([0.1, 0.2])))
+    value, grad = wrapped(np.zeros(2))
+
+    assert isinstance(value, np.ndarray)
+    assert isinstance(grad, np.ndarray)
+    assert value.dtype == np.float32
+    assert grad.dtype == np.float32
+    np.testing.assert_allclose(value, 1.5)
+    np.testing.assert_allclose(grad, [0.1, 0.2])
 
 
 def test_set_default_maxcor_keeps_explicit_value():
@@ -72,9 +94,8 @@ def test_set_default_maxcor_heuristic(N, expected):
     ids=["init_failed", "init_low_pct", "max_iter", "non_finite", "low_update_pct", "converged"],
 )
 def test_classify_status(nit, status, update_count, expected):
-    lbfgs = LBFGS(value_grad_fn=lambda x: (0.0, x), maxcor=5)
     result = OptimizeResult(nit=nit, status=status)
-    assert lbfgs._classify_status(result, update_count) is expected
+    assert LBFGS._classify_status(result, update_count) is expected
 
 
 @pytest.mark.parametrize("vectorize", [False, True])
