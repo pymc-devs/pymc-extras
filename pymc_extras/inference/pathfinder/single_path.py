@@ -160,9 +160,7 @@ def make_single_pathfinder_fn(
         if progress_callback is not None:
             progress_callback({"status": "running"})
 
-        local_lbfgs = LBFGS(
-            neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon, dtype=floatX
-        )
+        local_lbfgs = LBFGS(maxcor, maxiter, ftol, gtol, maxls, dtype=floatX)
         lbfgs_status = LBFGSStatus.LBFGS_FAILED  # default before LBFGS runs
 
         try:

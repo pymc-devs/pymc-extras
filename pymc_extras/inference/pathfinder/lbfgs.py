@@ -109,10 +109,11 @@ def _as_numpy_value_grad(value_grad_fn: Callable) -> Callable:
 class LBFGS:
     """L-BFGS optimizer wrapping ``scipy.optimize.minimize(method="L-BFGS-B")``.
 
+    The objective and the curvature-condition threshold live on the
+    :class:`LBFGSStreamingCallback` that :meth:`minimize_streaming` drives, not here.
+
     Parameters
     ----------
-    value_grad_fn : callable
-        Returns ``(value, gradient)`` for a position.
     maxcor : int
         Number of variable-metric corrections.
     maxiter : int, optional
@@ -123,8 +124,6 @@ class LBFGS:
         Gradient-norm tolerance for convergence. Default 1e-8.
     maxls : int, optional
         Maximum line-search steps per iteration. Default 1000.
-    epsilon : float, optional
-        Curvature-condition threshold for accepting a step. Default 1e-12.
     dtype : str or numpy.dtype, optional
         Working precision of the L-BFGS objective, matching the compiled model (e.g. float32
         for MLX/float32 models). Default ``"float64"``.
@@ -132,25 +131,22 @@ class LBFGS:
 
     def __init__(
         self,
-        value_grad_fn,
         maxcor: int,
         maxiter: int = 1000,
         ftol: float = 1e-5,
         gtol: float = 1e-8,
         maxls: int = 1000,
-        epsilon: float = 1e-12,
         dtype: str | np.dtype = "float64",
     ) -> None:
-        self.value_grad_fn = _as_numpy_value_grad(value_grad_fn)
         self.maxcor = maxcor
         self.maxiter = maxiter
         self.ftol = ftol
         self.gtol = gtol
         self.maxls = maxls
-        self.epsilon = epsilon
         self.dtype = np.dtype(dtype)
 
-    def _classify_status(self, result, update_count: int) -> LBFGSStatus:
+    @staticmethod
+    def _classify_status(result, update_count: int) -> LBFGSStatus:
         """Classify the LBFGS termination status.
 
         Parameters

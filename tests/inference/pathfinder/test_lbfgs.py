@@ -94,9 +94,8 @@ def test_set_default_maxcor_heuristic(N, expected):
     ids=["init_failed", "init_low_pct", "max_iter", "non_finite", "low_update_pct", "converged"],
 )
 def test_classify_status(nit, status, update_count, expected):
-    lbfgs = LBFGS(value_grad_fn=lambda x: (0.0, x), maxcor=5)
     result = OptimizeResult(nit=nit, status=status)
-    assert lbfgs._classify_status(result, update_count) is expected
+    assert LBFGS._classify_status(result, update_count) is expected
 
 
 @pytest.mark.parametrize("vectorize", [False, True])
