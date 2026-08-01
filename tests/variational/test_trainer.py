@@ -13,6 +13,10 @@
 #   limitations under the License.
 """Trainer: drive variational inference over a DataLoader with no user callbacks."""
 
+import warnings
+
+from itertools import chain, islice, repeat
+
 import numpy as np
 import pymc as pm
 import pytest
@@ -27,6 +31,16 @@ def marked(n, rows=4):
     return [np.full((rows, 1), float(i)) for i in range(n)]
 
 
+def loud(n, rows=4, spacing=1000.0):
+    """``n`` blocks, block ``i`` filled with ``spacing * (i + 1)``.
+
+    Markers this far from zero and from each other survive into the loss, which is
+    quadratic in the batch value, so the loss fingerprints the batch the gradient
+    was actually taken on rather than the one ``set_data`` was asked for.
+    """
+    return [np.full((rows, 1), spacing * (i + 1)) for i in range(n)]
+
+
 def record_installed(model, log):
     """Log the marker of every batch ``set_data`` installs, in order."""
     original = model.set_data
@@ -36,6 +50,11 @@ def record_installed(model, log):
         return original(name, values, *args, **kwargs)
 
     model.set_data = spy
+
+
+def streamed(loader, k):
+    """The first ``k`` markers a user iterating ``loader`` themselves gets, epoch after epoch."""
+    return [float(batch[0, 0]) for batch in islice(chain.from_iterable(repeat(loader)), k)]
 
 
 def test_trainer_end_to_end_matches_in_ram_minibatch():
@@ -72,7 +91,6 @@ def test_trainer_end_to_end_matches_in_ram_minibatch():
         shuffle=True,
         buffer_size=40_000,
         seed=seed,
-        sample_shape=(3,),
         total_size=N,
     )
     with pm.Model() as model:
@@ -100,7 +118,7 @@ def test_trainer_streams_into_placeholder():
     callbacks after each step) and overwrites it each step; after fitting it holds
     a real batch, not the zero seed."""
     data = np.ones((4, 1))
-    loader = DataLoader(lambda: iter([data] * 100), batch_size=4, sample_shape=(1,), total_size=4)
+    loader = DataLoader(lambda: iter([data] * 100), batch_size=4, total_size=4)
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
@@ -121,7 +139,7 @@ def test_trainer_raises_when_loader_cannot_restart():
         if calls["n"] == 1:
             yield np.zeros((4, 1))
 
-    loader = DataLoader(factory, batch_size=4, sample_shape=(1,), total_size=4)
+    loader = DataLoader(factory, batch_size=4, total_size=4)
     with pm.Model():
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
@@ -144,7 +162,7 @@ def test_trainer_appends_user_callbacks_and_streams_distinct_batches():
     holds a different batch on successive steps. Also exercises the default
     data_name ("batch")."""
     blocks = [np.full((4, 1), float(i)) for i in range(60)]
-    loader = DataLoader(lambda: iter(blocks), batch_size=4, sample_shape=(1,), total_size=240)
+    loader = DataLoader(lambda: iter(blocks), batch_size=4, total_size=240)
     seen = []
     with pm.Model() as model:
         x = pm.Normal("x", 0.0, 1.0)
@@ -161,7 +179,7 @@ def test_trainer_accepts_inference_instance():
     """An Inference instance is forwarded to pm.fit unchanged; it is bound to
     the model it was built under, so the Trainer only streams the batches."""
     data = np.ones((4, 1))
-    loader = DataLoader(lambda: iter([data] * 50), batch_size=4, sample_shape=(1,), total_size=4)
+    loader = DataLoader(lambda: iter([data] * 50), batch_size=4, total_size=4)
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
@@ -177,9 +195,7 @@ def test_constructor_fit_kwargs_take_random_seed():
     data = np.ones((4, 1))
 
     def fit_with(ctor_kwargs, fit_kwargs):
-        loader = DataLoader(
-            lambda: iter([data] * 50), batch_size=4, sample_shape=(1,), total_size=4
-        )
+        loader = DataLoader(lambda: iter([data] * 50), batch_size=4, total_size=4)
         with pm.Model():
             mu = pm.Normal("mu", 0, 1)
             batch = pm.Data("batch", np.zeros((4, 1)))
@@ -195,9 +211,7 @@ def test_constructor_fit_kwargs_take_random_seed():
 
 def test_fit_trains_one_batch_per_step():
     """Step i trains batch i, and the step that ends the fit loads batch n for what follows."""
-    loader = DataLoader(
-        lambda: iter(marked(10, rows=2)), batch_size=2, sample_shape=(1,), total_size=20
-    )
+    loader = DataLoader(lambda: iter(marked(10, rows=2)), batch_size=2, total_size=20)
     installed = []
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
@@ -208,13 +222,55 @@ def test_fit_trains_one_batch_per_step():
     assert installed == [0.0, 1.0, 2.0, 3.0]
 
 
+@pytest.mark.parametrize(
+    "n, blocks, rows",
+    [(1, 6, 4), (4, 4, 4), (5, 3, 2), (7, 2, 1)],
+    ids=["single-step", "ends-at-seam", "wraps-once", "wraps-often"],
+)
+def test_steps_consume_the_loaders_own_batch_sequence(n, blocks, rows):
+    """The batches trained are the loader's own pass, in order, across epoch seams.
+
+    Three views have to agree with what iterating the loader by hand yields: the
+    batches ``set_data`` installed, the placeholder a callback reads while the loss
+    it was handed is still current, and the losses themselves -- with the optimizer
+    frozen the loss is quadratic in the batch marker, so ``hist / hist[0]`` decodes
+    the batch each gradient was taken on. A seam that repeats, drops or reorders a
+    batch still passes a "``n`` distinct batches" check.
+    """
+    loader = DataLoader(
+        lambda: iter(loud(blocks, rows=rows)),
+        batch_size=rows,
+        total_size=blocks * rows,
+    )
+    expected = streamed(loader, n + 1)
+    installed, seen = [], []
+    with pm.Model() as model:
+        mu = pm.Normal("mu", 0, 1)
+        batch = pm.Data("batch", np.zeros((rows, 1)))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        record_installed(model, installed)
+        approx = Trainer(
+            method="advi",
+            dataloader=loader,
+            obj_optimizer=pm.sgd(learning_rate=1e-12),
+        ).fit(
+            n,
+            random_seed=0,
+            callbacks=[lambda *_: seen.append(float(model["batch"].get_value()[0, 0]))],
+        )
+    assert installed == expected
+    assert seen == expected[:n]
+    trained = np.asarray(expected[:n]) / expected[0]
+    np.testing.assert_allclose(approx.hist / approx.hist[0], trained**2, rtol=0.02)
+
+
 def test_refine_after_fit_continues_without_repeating_a_batch():
     """Inference.refine replays pm.fit's saved callbacks and steps before they run.
 
     fit therefore has to leave the *next* batch loaded, or refine's first gradient
     step would retrain the batch fit just finished with.
     """
-    loader = DataLoader(lambda: iter(marked(50)), batch_size=4, sample_shape=(1,), total_size=4)
+    loader = DataLoader(lambda: iter(marked(50)), batch_size=4, total_size=4)
     installed = []
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
@@ -231,7 +287,7 @@ def test_refine_after_fit_continues_without_repeating_a_batch():
 
 def test_refine_after_an_early_stop_keeps_streaming():
     """A fit cut short by a callback must not leave the advance permanently disarmed."""
-    loader = DataLoader(lambda: iter(marked(50)), batch_size=4, sample_shape=(1,), total_size=4)
+    loader = DataLoader(lambda: iter(marked(50)), batch_size=4, total_size=4)
     installed = []
     armed = [True]
 
@@ -253,9 +309,37 @@ def test_refine_after_an_early_stop_keeps_streaming():
     assert installed == [1.0, 2.0, 3.0, 4.0]
 
 
+def test_a_second_fit_reseeds_and_forgets_the_first_calls_kwargs():
+    """Calling fit twice on one Trainer: each call re-reads the constructor's defaults
+    and installs a batch before its own step 0.
+
+    A per-call keyword that survived into the next call would silently change a fit
+    nobody passed it to, and a call that trusted the batch its predecessor left
+    loaded would train it twice.
+    """
+    loader = DataLoader(lambda: iter(marked(6)), batch_size=4, total_size=24)
+    installed, seen = [], []
+    with pm.Model() as model:
+        mu = pm.Normal("mu", 0, 1)
+        batch = pm.Data("batch", np.zeros((4, 1)))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        record_installed(model, installed)
+        trainer = Trainer(method="advi", dataloader=loader, random_seed=0)
+        unscored = trainer.fit(3, score=False)
+        left_loaded = installed[-1]
+        installed.clear()
+        scored = trainer.fit(
+            3, callbacks=[lambda *_: seen.append(float(model["batch"].get_value()[0, 0]))]
+        )
+    assert len(unscored.hist) == 0
+    assert len(scored.hist) == 3
+    assert seen == installed[:-1]
+    assert installed[0] != left_loaded
+
+
 def test_user_callbacks_see_the_batch_that_produced_the_loss():
     """A callback reading the placeholder must see batch i on step i, not batch i+1."""
-    loader = DataLoader(lambda: iter(marked(50)), batch_size=4, sample_shape=(1,), total_size=4)
+    loader = DataLoader(lambda: iter(marked(50)), batch_size=4, total_size=4)
     seen = []
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
@@ -271,7 +355,7 @@ def test_user_callbacks_see_the_batch_that_produced_the_loss():
 
 def test_inference_instance_bound_to_another_model_is_rejected():
     """Streaming into one model while an Inference optimizes another is silent otherwise."""
-    loader = DataLoader(lambda: iter(marked(50)), batch_size=4, sample_shape=(1,), total_size=4)
+    loader = DataLoader(lambda: iter(marked(50)), batch_size=4, total_size=4)
     with pm.Model() as other:
         pm.Normal("mu", 0, 1)
         pm.Data("batch", np.zeros((4, 1)))
@@ -285,6 +369,28 @@ def test_inference_instance_bound_to_another_model_is_rejected():
             Trainer(method=elsewhere, dataloader=loader).fit(3)
 
 
+def test_inference_instance_is_matched_against_the_trained_model():
+    """The identity check reads the model the Trainer was given, not the context stack,
+    and accepts an instance built under it; the fit hands back that instance's own
+    Approximation, so refining or sampling the return value is refining the fit."""
+    loader = DataLoader(lambda: iter(marked(10)), batch_size=4, total_size=40)
+    with pm.Model() as model:
+        mu = pm.Normal("mu", 0, 1)
+        batch = pm.Data("batch", np.zeros((4, 1)))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        inference = pm.ADVI(random_seed=0)
+    with pm.Model():
+        pm.Normal("mu", 0, 1)
+        pm.Data("batch", np.zeros((4, 1)))
+        stranger = pm.ADVI()
+
+    approx = Trainer(method=inference, dataloader=loader, model=model).fit(3)
+    assert approx is inference.approx
+    assert len(approx.hist) == 3
+    with pytest.raises(ValueError, match="bound to a different model"):
+        Trainer(method=stranger, dataloader=loader, model=model).fit(3)
+
+
 @pytest.mark.parametrize(
     "declared, match",
     [(None, "no observed variable declares total_size"), (40, "does not match the data")],
@@ -292,7 +398,7 @@ def test_inference_instance_bound_to_another_model_is_rejected():
 )
 def test_unusable_likelihood_scaling_warns(declared, match):
     """Absent or disagreeing total_size biases the posterior without failing the fit."""
-    loader = DataLoader(lambda: iter(marked(50)), batch_size=4, sample_shape=(1,), total_size=4)
+    loader = DataLoader(lambda: iter(marked(50)), batch_size=4, total_size=4)
     with pm.Model():
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
@@ -301,12 +407,51 @@ def test_unusable_likelihood_scaling_warns(declared, match):
             Trainer(method="advi", dataloader=loader).fit(3, random_seed=0)
 
 
+@pytest.mark.parametrize("rows, blocks", [(4, 10), (3, 7)], ids=["N=40,batch=4", "N=21,batch=3"])
+@pytest.mark.parametrize(
+    "declares, match",
+    [
+        ("absent", "no observed variable declares total_size"),
+        ("mismatched", "does not match the data"),
+        ("correct", None),
+    ],
+)
+def test_scaling_warning_fires_only_on_an_unusable_total_size(rows, blocks, declares, match):
+    """The scaling check warns on an absent or disagreeing total_size and stays quiet
+    on a correct one, for N != batch_size as well as N == batch_size.
+
+    A false positive would be worse than the bias the check guards against: it teaches
+    users to ignore the warning. One shape cannot show the check reads the dataset
+    size rather than anything else the loader could offer.
+    """
+    n_rows = rows * blocks
+    loader = DataLoader(
+        lambda: iter(marked(blocks, rows=rows)),
+        batch_size=rows,
+        total_size=n_rows,
+    )
+    total_size = {"absent": None, "mismatched": n_rows + rows, "correct": n_rows}[declares]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pm.Model():
+            mu = pm.Normal("mu", 0, 1)
+            batch = pm.Data("batch", np.zeros((rows, 1)))
+            pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=total_size)
+            Trainer(method="advi", dataloader=loader).fit(2, random_seed=0)
+    scaling = [str(w.message) for w in caught if "total_size" in str(w.message)]
+    if match is None:
+        assert scaling == []
+    else:
+        assert len(scaling) == 1
+        assert match in scaling[0]
+
+
 def test_total_size_check_fires_when_fit_ends_at_pass_boundary():
     """fit(n) with n exactly the batches in one pass still runs the total_size
     sanity check: the stream is kept one batch ahead, so stopping at the
     boundary does not abandon the check right before it would fire."""
     data = np.zeros((40, 1))
-    loader = DataLoader(chunked_factory(data, 10), batch_size=10, sample_shape=(1,), total_size=400)
+    loader = DataLoader(chunked_factory(data, 10), batch_size=10, total_size=400)
     with pm.Model():
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((10, 1)))
@@ -318,9 +463,7 @@ def test_total_size_check_fires_when_fit_ends_at_pass_boundary():
 def test_fit_rejects_nonpositive_n():
     """fit consumes the seed batch before pm.fit could reject n itself, so a
     non-positive n is refused up front, before touching the stream."""
-    loader = DataLoader(
-        lambda: iter([np.zeros((2, 1))]), batch_size=2, sample_shape=(1,), total_size=2
-    )
+    loader = DataLoader(lambda: iter([np.zeros((2, 1))]), batch_size=2, total_size=2)
     with pm.Model():
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((2, 1)))
@@ -332,9 +475,7 @@ def test_fit_rejects_nonpositive_n():
 def test_unknown_data_name_raises_before_consuming():
     """A data_name that is not in the model raises a guided KeyError before any
     batch is pulled from the loader."""
-    loader = DataLoader(
-        lambda: iter([np.zeros((4, 1))] * 3), batch_size=4, sample_shape=(1,), total_size=4
-    )
+    loader = DataLoader(lambda: iter([np.zeros((4, 1))] * 3), batch_size=4, total_size=4)
     installed = []
     with pm.Model() as model:
         pm.Normal("mu", 0, 1)
