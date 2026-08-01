@@ -20,7 +20,11 @@ from pymc_extras.variational.dataloader import (
     IterableDataset,
     shuffle_buffer,
 )
-from tests.variational.dataloader_helpers import chunked_factory, reused_buffer_factory
+from tests.variational.dataloader_helpers import (
+    BlockDataset,
+    chunked_factory,
+    reused_buffer_factory,
+)
 
 
 def test_plain_loader_rebatches_arbitrary_blocks():
@@ -271,6 +275,26 @@ def test_source_reusing_one_buffer_streams_every_row(block_rows, kwargs):
     )
 
 
+@pytest.mark.parametrize("block_rows, batch_size", [(3, 2), (5, 3), (7, 4)])
+def test_remainder_left_by_a_block_outlives_the_next_pull(block_rows, batch_size):
+    """Rows carried over from a block that overfilled a batch are copied before the next pull.
+
+    A block wider than one batch is sliced without ever being concatenated, so what
+    is left of it is a view of the source's buffer and is read only after the source
+    has been asked for -- and has refilled -- that same buffer.
+    """
+    n_blocks = 4
+    values = np.repeat(np.arange(n_blocks, dtype="float64"), block_rows)
+    ds = DataLoader(
+        reused_buffer_factory(n_blocks, block_rows),
+        batch_size=batch_size,
+        sample_shape=(1,),
+        total_size=len(values),
+    )
+    kept = len(values) // batch_size * batch_size
+    np.testing.assert_array_equal(np.concatenate(list(ds)).ravel(), values[:kept])
+
+
 def test_shuffle_buffer_copies_blocks_it_holds():
     """shuffle_buffer fills across several pulls, so it cannot alias the source's buffer."""
     src = shuffle_buffer(reused_buffer_factory(4, 2), buffer_size=8, batch_size=4, seed=0)
@@ -289,3 +313,157 @@ def test_shuffle_buffer_accepts_factory_returning_reiterable():
     np.testing.assert_array_equal(
         np.sort(np.concatenate([b.ravel() for b in batches])), data.ravel()
     )
+
+
+@pytest.mark.parametrize(
+    "shuffle, buffer_size",
+    [(False, None), (True, 7), (True, 1), (True, 500)],
+    ids=["plain", "buffer-under-chunk", "buffer-of-one", "buffer-over-dataset"],
+)
+@pytest.mark.parametrize(
+    "n, batch_size, chunk",
+    [(60, 10, 7), (37, 5, 1), (100, 100, 13), (23, 4, 23), (12, 1, 5)],
+    ids=[
+        "chunks-straddle-batches",
+        "one-row-chunks",
+        "one-batch-is-everything",
+        "one-chunk-many-batches",
+        "batch-of-one",
+    ],
+)
+def test_one_epoch_conserves_source_rows(n, batch_size, chunk, shuffle, buffer_size):
+    """An epoch is floor(N/batch_size) batches of distinct source rows, in source order unshuffled.
+
+    Nothing may be duplicated or invented, and the only rows a pass is allowed to
+    drop are the N mod batch_size that cannot fill a last batch -- for every mix of
+    chunking, batch size and buffer size, not just where they divide each other.
+    """
+    data = np.arange(2 * n, dtype="float64").reshape(n, 2)
+    loader = DataLoader(
+        chunked_factory(data, chunk),
+        batch_size=batch_size,
+        shuffle=shuffle,
+        buffer_size=buffer_size,
+        seed=0,
+        sample_shape=(2,),
+        total_size=n,
+    )
+    batches = list(loader)
+    n_batches = n // batch_size
+    assert [b.shape for b in batches] == [(batch_size, 2)] * n_batches
+    streamed = np.concatenate(batches)
+    if shuffle:
+        rows = {tuple(r) for r in streamed}
+        assert len(rows) == n_batches * batch_size
+        assert rows <= {tuple(r) for r in data}
+    else:
+        np.testing.assert_array_equal(streamed, data[: n_batches * batch_size])
+
+
+@pytest.mark.parametrize("shuffle", [False, True], ids=["plain", "shuffled"])
+def test_second_epoch_replays_the_same_rows(shuffle):
+    """A second pass over a re-readable source streams the same rows, reordered only if shuffling."""
+    data = np.arange(120, dtype="float64").reshape(60, 2)
+    loader = DataLoader(
+        chunked_factory(data, 7),
+        batch_size=10,
+        shuffle=shuffle,
+        buffer_size=25,
+        seed=4,
+        sample_shape=(2,),
+        total_size=60,
+    )
+    first, second = (np.concatenate(list(loader)) for _ in range(2))
+    for epoch in (first, second):
+        np.testing.assert_array_equal(epoch[np.argsort(epoch[:, 0])], data)
+    assert np.array_equal(first, second) is not shuffle
+
+
+@pytest.mark.parametrize(
+    "buffer_size, effective", [(25, 25), (None, 500)], ids=["given", "default"]
+)
+def test_shuffled_loader_is_a_seeded_shuffle_buffer(buffer_size, effective):
+    """A seeded loader reproduces itself across instances and equals the same shuffle_buffer wrap."""
+    data = np.arange(120, dtype="float64").reshape(60, 2)
+
+    def stream(seed):
+        loader = DataLoader(
+            chunked_factory(data, 7),
+            batch_size=10,
+            shuffle=True,
+            buffer_size=buffer_size,
+            seed=seed,
+            sample_shape=(2,),
+            total_size=60,
+        )
+        return np.concatenate(list(loader))
+
+    manual = shuffle_buffer(chunked_factory(data, 7), buffer_size=effective, batch_size=10, seed=11)
+    np.testing.assert_array_equal(stream(11), stream(11))
+    np.testing.assert_array_equal(stream(11), np.concatenate(list(manual())))
+    assert not np.array_equal(stream(11), stream(12))
+
+
+@pytest.mark.parametrize(
+    "make_source",
+    [
+        lambda d: d,
+        lambda d: chunked_factory(d, 7),
+        lambda d: [d[i : i + 7] for i in range(0, len(d), 7)],
+        lambda d: BlockDataset(d, 7),
+    ],
+    ids=["raw-array", "factory", "reiterable-blocks", "iterable-dataset"],
+)
+def test_every_source_kind_streams_the_same_batches(make_source):
+    """One row per yield, a block factory, a re-iterable and an IterableDataset are interchangeable."""
+    data = np.arange(84, dtype="float64").reshape(42, 2)
+    loader = DataLoader(make_source(data), batch_size=8, sample_shape=(2,), total_size=42)
+    batches = list(loader)
+    assert [b.shape for b in batches] == [(8, 2)] * 5
+    np.testing.assert_array_equal(np.concatenate(batches), data[:40])
+
+
+def test_preprocess_fn_runs_once_per_batch_over_the_rows_in_order():
+    """preprocess_fn sees each streamed row exactly once, batched and in source order.
+
+    It runs on the assembled batch, not on the source chunks, so a chunking that
+    straddles batches cannot split or repeat a call; it may reshape the sample as
+    long as the row count survives.
+    """
+    data = np.arange(60, dtype="float64").reshape(20, 3)
+    seen = []
+
+    def record(batch):
+        seen.append(np.array(batch))
+        return batch[:, :1] * 2.0
+
+    loader = DataLoader(
+        chunked_factory(data, 3),
+        batch_size=6,
+        sample_shape=(3,),
+        total_size=20,
+        preprocess_fn=record,
+    )
+    batches = list(loader)
+    assert [b.shape for b in batches] == [(6, 1)] * 3
+    np.testing.assert_array_equal(np.concatenate(seen), data[:18])
+    np.testing.assert_array_equal(np.concatenate(batches), data[:18, :1] * 2.0)
+    list(loader)
+    assert len(seen) == 6
+
+
+@pytest.mark.parametrize("dtype", ["float64", "float32", "int32"])
+def test_batches_are_cast_to_the_declared_dtype(dtype):
+    """Every batch carries the requested dtype, whatever the source and preprocess_fn produced."""
+    data = np.arange(24, dtype="int16").reshape(12, 2)
+    loader = DataLoader(
+        chunked_factory(data, 5),
+        batch_size=4,
+        sample_shape=(2,),
+        total_size=12,
+        dtype=dtype,
+        preprocess_fn=lambda b: b / 2.0,
+    )
+    batches = list(loader)
+    assert {b.dtype for b in batches} == {np.dtype(dtype)}
+    np.testing.assert_array_equal(np.concatenate(batches), (data / 2.0).astype(dtype))

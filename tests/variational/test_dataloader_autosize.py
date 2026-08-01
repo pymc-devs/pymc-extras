@@ -13,6 +13,8 @@
 #   limitations under the License.
 """total_size='auto' resolution, the total_size sanity warning, and parquet_source."""
 
+from contextlib import nullcontext
+
 import numpy as np
 import pytest
 
@@ -21,7 +23,7 @@ from pymc_extras.variational.dataloader import (
     IterableDataset,
     parquet_source,
 )
-from tests.variational.dataloader_helpers import chunked_factory, write_parquet
+from tests.variational.dataloader_helpers import BlockDataset, chunked_factory, write_parquet
 
 
 def test_auto_counts_finite_source():
@@ -247,3 +249,29 @@ def test_parquet_source_rejects_unknown_columns(tmp_path):
     write_parquet(tmp_path / "p.parquet", {"a": [1.0], "b": [2.0]})
     with pytest.raises(ValueError, match="not found"):
         parquet_source(str(tmp_path), columns=["a", "nope"])
+
+
+@pytest.mark.parametrize(
+    "make_source, counts",
+    [
+        (lambda d: d, True),
+        (lambda d: chunked_factory(d, 7), True),
+        (lambda d: [d[i : i + 7] for i in range(0, len(d), 7)], True),
+        (lambda d: BlockDataset(d, 7), True),
+        (lambda d: BlockDataset(d, 7, n_rows=45), False),
+    ],
+    ids=["raw-array", "factory", "reiterable-blocks", "iterable-dataset", "advertised-n-rows"],
+)
+def test_auto_resolves_the_explicit_n_for_every_source_kind(make_source, counts):
+    """'auto' lands on the same N an explicit total_size would, counting only when it must.
+
+    A source that does not advertise n_rows is counted, an IterableDataset that
+    inherits the base-class default is counted too, and either way the epoch that
+    follows the counting pass is the whole dataset.
+    """
+    data = np.arange(90, dtype="float64").reshape(45, 2)
+    counting = pytest.warns(UserWarning, match="counting pass") if counts else nullcontext()
+    with counting:
+        ds = DataLoader(make_source(data), batch_size=6, sample_shape=(2,), total_size="auto")
+    assert ds.total_size == len(ds) == 45
+    np.testing.assert_array_equal(np.concatenate(list(ds)), data[:42])
