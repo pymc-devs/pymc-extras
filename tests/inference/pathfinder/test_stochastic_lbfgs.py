@@ -3,9 +3,11 @@
 import itertools
 
 import numpy as np
+import pytest
 
 from pymc_extras.inference.pathfinder.stochastic_lbfgs import (
     StochasticLBFGSConfig,
+    _two_loop_direction,
     run_stochastic_lbfgs,
 )
 
@@ -17,6 +19,49 @@ def quadratic(A, b):
         return 0.5 * x @ A @ x - b @ x, A @ x - b
 
     return vg
+
+
+def double_well():
+    """Return value_grad_fn for f(x) = sum(0.25 x^4 - x^2).
+
+    The Hessian is negative definite inside ``|x| < sqrt(2/3)``, so descent steps taken
+    from there routinely produce ``s . y < 0``.
+    """
+
+    def vg(x):
+        return float(np.sum(0.25 * x**4 - x**2)), x**3 - 2 * x
+
+    return vg
+
+
+def dense_inverse_hessian(alpha, pairs):
+    """Textbook BFGS inverse-Hessian recursion from H0 = diag(alpha), oldest pair first."""
+    ident = np.eye(alpha.size)
+    H = np.diag(alpha)
+    for s, y in pairs:
+        rho = 1.0 / (s @ y)
+        V = ident - rho * np.outer(s, y)
+        H = V @ H @ V.T + rho * np.outer(s, s)
+    return H
+
+
+def fill_ring(J, n_pairs, rng, N=5):
+    """Write n_pairs curvature pairs into an (N, J) ring exactly as the optimizer does.
+
+    Returns ``(s_win, z_win, order)`` with ``order`` newest-first over the resident pairs.
+    """
+    M = rng.normal(size=(N, N))
+    P = M @ M.T + N * np.eye(N)  # SPD, so y = P s guarantees s . y > 0
+    s_win = np.zeros((N, J))
+    z_win = np.zeros((N, J))
+    win_idx = -1
+    for _ in range(n_pairs):
+        s = rng.normal(size=N)
+        win_idx = (win_idx + 1) % J
+        s_win[:, win_idx] = s
+        z_win[:, win_idx] = P @ s
+    order = [(win_idx - k) % J for k in range(min(n_pairs, J))]
+    return s_win, z_win, order
 
 
 def noop():
@@ -38,8 +83,6 @@ def test_quadratic_full_batch_converges_to_optimum():
 
 def test_two_loop_direction_matches_dense_bfgs():
     """After one pair, the two-loop direction equals -(diag-init BFGS update) . g."""
-    from pymc_extras.inference.pathfinder.stochastic_lbfgs import _two_loop_direction
-
     rng = np.random.default_rng(1)
     N = 4
     s = rng.normal(size=N)
@@ -62,14 +105,7 @@ def test_two_loop_direction_matches_dense_bfgs():
 
 def test_pair_rejected_when_curvature_violated():
     """A step crossing a negative-curvature region gives s.y < 0 and is rejected."""
-
-    def vg(x):
-        # 1-D double well f = 0.25 x^4 - x^2: concave (negative curvature) for
-        # |x| < sqrt(2/3), so a descent step out of x0=0.3 yields s.y < 0.
-        xv = x[0]
-        return 0.25 * xv**4 - xv**2, np.array([xv**3 - 2 * xv])
-
-    traj = run_stochastic_lbfgs(vg, noop, np.array([0.3]), num_iters=8)
+    traj = run_stochastic_lbfgs(double_well(), noop, np.array([0.3]), num_iters=8)
     assert traj.n_curvature_violations >= 1
     assert traj.n_accepted + traj.n_curvature_violations + traj.n_null == traj.n_steps
 
@@ -181,3 +217,123 @@ def test_stored_window_is_chronological_after_the_ring_wraps():
             np.testing.assert_allclose(
                 window[:, J - 1 - age], xs[k - age] - xs[k - age - 1], atol=1e-12
             )
+
+
+def test_both_gradients_of_every_accepted_pair_come_from_one_batch():
+    """s and y are differences of two evaluations made on the same batch.
+
+    Schraudolph pairing is what cancels the minibatch noise in y; differencing across
+    two batches leaves the noise in, and no counter the Trajectory reports can tell the
+    two apart. Each value_grad_fn call is tagged with the batch active when it ran, so
+    the pair stored at each accepted step can be traced back to its two evaluations.
+    """
+    rng = np.random.default_rng(20)
+    A = np.diag([1.0, 2.0, 5.0])
+    J = 4
+    state = {"batch": 0, "b": rng.normal(0, 0.3, size=3)}
+    log = []
+
+    def vg(x):
+        g = A @ x - state["b"]
+        log.append((state["batch"], np.array(x, dtype=float), g.copy()))
+        return 0.5 * x @ A @ x - state["b"] @ x, g
+
+    def advance():
+        state["batch"] += 1
+        state["b"] = rng.normal(0, 0.3, size=3)
+
+    traj = run_stochastic_lbfgs(
+        vg,
+        advance,
+        np.array([4.0, -4.0, 4.0]),
+        num_iters=40,
+        config=StochasticLBFGSConfig(maxcor=J),
+    )
+    assert traj.n_accepted > J
+
+    for k, it in enumerate(traj.iterates):
+        newest = min(k + 1, J) - 1
+        owners = {
+            b for b, xx, gg in log if np.array_equal(xx, it["x"]) and np.array_equal(gg, it["g"])
+        }
+        assert len(owners) == 1, f"iterate {k} gradient traced to batches {owners}"
+        (batch,) = owners
+        x_first, g_first = next((xx, gg) for b, xx, gg in log if b == batch)
+        np.testing.assert_array_equal(it["s_win"][:, newest], it["x"] - x_first)
+        np.testing.assert_array_equal(it["z_win"][:, newest], it["g"] - g_first)
+
+    assert sorted({b for b, _, _ in log}) == list(range(traj.n_steps + 1))
+
+
+@pytest.mark.parametrize("J, n_pairs", [(1, 1), (2, 5), (3, 2), (3, 3), (3, 7), (6, 4), (6, 13)])
+def test_two_loop_direction_matches_dense_recursion_over_the_ring(J, n_pairs):
+    """The two-loop recursion returns -H g for the dense BFGS H built from the resident
+    pairs in ring order, before the buffer wraps (n_pairs <= J) and after it has wrapped
+    several times. Any drift in the ordering or in the H0 = diag(alpha) seed shows up as
+    a different direction once more than one pair is resident.
+    """
+    rng = np.random.default_rng(100 + 31 * J + n_pairs)
+    s_win, z_win, order = fill_ring(J, n_pairs, rng)
+    N = s_win.shape[0]
+    alpha = np.abs(rng.normal(size=N)) + 0.5
+    g = rng.normal(size=N)
+
+    d = _two_loop_direction(g, alpha, s_win, z_win, order)
+    H = dense_inverse_hessian(alpha, [(s_win[:, c], z_win[:, c]) for c in reversed(order)])
+    np.testing.assert_allclose(d, -H @ g, rtol=1e-9, atol=1e-9)
+
+
+def test_history_holds_only_pairs_that_passed_the_curvature_test():
+    """Every column ever handed to the sampler satisfies s.y >= epsilon * s.s, and each
+    step lands in exactly one counter.
+
+    A rejected pair silently entering the ring makes the L-BFGS memory indefinite while
+    violation_rate keeps reading zero, so the counters alone cannot detect it.
+    """
+    cfg = StochasticLBFGSConfig(maxcor=4)
+    traj = run_stochastic_lbfgs(
+        double_well(), noop, np.array([0.05, -0.05, 0.6]), num_iters=30, config=cfg
+    )
+    for it in traj.iterates:
+        for s, y in zip(it["s_win"].T, it["z_win"].T):
+            if not np.any(s):
+                continue
+            assert s @ y > 1e-16
+            assert s @ y >= cfg.epsilon * (s @ s)
+    assert traj.n_accepted == len(traj.iterates)
+    assert (
+        traj.n_accepted + traj.n_curvature_violations + traj.n_null + traj.n_ls_failures
+        == traj.n_steps
+    )
+    assert traj.n_curvature_violations >= 1, "the objective produced no rejections to check"
+
+
+def test_window_layout_holds_before_the_ring_wraps():
+    """A partially filled ring is handed over unrolled: filled columns oldest-to-newest
+    starting at column 0, unused columns zero and trailing.
+
+    Rolling a not-yet-full ring would put the zero columns in the newest slots, which the
+    sampler cannot distinguish from real pairs.
+    """
+    rng = np.random.default_rng(21)
+    M = rng.normal(size=(5, 5))
+    A = M @ M.T + 0.2 * np.eye(5)  # deliberately ill-conditioned: no early convergence
+    J = 4
+    x0 = np.full(5, 3.0)
+    traj = run_stochastic_lbfgs(
+        quadratic(A, rng.normal(size=5)),
+        noop,
+        x0,
+        num_iters=9,
+        config=StochasticLBFGSConfig(maxcor=J),
+    )
+    assert traj.n_accepted == traj.n_steps > J, "every step must be accepted for xs to line up"
+    xs = [x0, *[it["x"] for it in traj.iterates]]
+    for k, it in enumerate(traj.iterates):
+        n_valid = min(k + 1, J)
+        for age in range(n_valid):
+            np.testing.assert_allclose(
+                it["s_win"][:, n_valid - 1 - age], xs[k + 1 - age] - xs[k - age], atol=1e-12
+            )
+        np.testing.assert_array_equal(it["s_win"][:, n_valid:], 0.0)
+        np.testing.assert_array_equal(it["z_win"][:, n_valid:], 0.0)

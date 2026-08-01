@@ -284,6 +284,119 @@ def test_full_data_logp_exact_with_tail():
         assert abs(got[i] - truth) < 1e-6, (i, got[i], truth)
 
 
+def full_data_logp_parts(model, k, rng, n_phi=4):
+    """Return ``(_full_data_logp, prior_fn, obs_fn, exact_logp, phi)`` for ``model``.
+
+    ``exact_logp`` evaluates the target on whatever is in the placeholder; call it with the
+    whole dataset set to get the value ``_full_data_logp`` reproduces from a streamed pass.
+    """
+    from pymc_extras.inference.pathfinder.bfgs_sample import get_neg_logp_dlogp_of_ravel_inputs
+    from pymc_extras.inference.pathfinder.streaming_pathfinder import (
+        _compile_batched_logp,
+        _full_data_logp,
+    )
+
+    prior_fn = _compile_batched_logp(model, model.free_RVs, jacobian=True)
+    obs_fn = _compile_batched_logp(model, model.observed_RVs, jacobian=False)
+    nlp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True)
+    phi = rng.normal(size=(n_phi, k))
+
+    def exact_logp():
+        return np.array([-nlp(row.astype(np.float64))[0] for row in phi])
+
+    return _full_data_logp, prior_fn, obs_fn, exact_logp, phi
+
+
+def test_full_data_logp_invariant_to_batch_order_and_size():
+    """logP is the exact full-data density, so any partition of the rows into batches, in
+    any order, gives the same value as evaluating the target on the whole dataset.
+
+    Every batch's contribution is un-rescaled by its own row count, so a pass of uneven
+    or single-row batches, or one that visits the rows shuffled, must not shift the total.
+    """
+    rng = np.random.default_rng(21)
+    k, n = 2, 60
+    X = rng.normal(size=(n, k))
+    y = X @ np.array([0.8, -1.2]) + rng.normal(0, 1.0, size=n)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    full_data_logp, prior_fn, obs_fn, exact_logp, phi = full_data_logp_parts(model, k, rng)
+
+    shuffled = packed[rng.permutation(n)]
+    passes = {
+        "one-batch": [packed],
+        "uneven-tail": [packed[i : i + 7] for i in range(0, n, 7)],
+        "single-rows": [packed[i : i + 1] for i in range(n)],
+        "shuffled": [shuffled[i : i + 13] for i in range(0, n, 13)],
+    }
+    got = {
+        name: full_data_logp(phi, p, model, "batch", prior_fn, obs_fn, n)
+        for name, p in passes.items()
+    }
+    model.set_data("batch", packed)
+    truth = exact_logp()
+    for name, value in got.items():
+        np.testing.assert_allclose(value, truth, atol=1e-8, err_msg=name)
+
+
+def test_incomplete_full_pass_is_refused():
+    """A pass that does not visit every row is rejected rather than returning a
+    subset-rescaled density that silently looks like the full-data one."""
+    rng = np.random.default_rng(22)
+    k, n = 2, 40
+    X = rng.normal(size=(n, k))
+    y = X @ np.array([0.5, 0.25]) + rng.normal(0, 1.0, size=n)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    full_data_logp, prior_fn, obs_fn, _, phi = full_data_logp_parts(model, k, rng)
+
+    with pytest.raises(RuntimeError, match=r"visited 25 rows but len\(loader\)=40"):
+        full_data_logp(phi, [packed[:25]], model, "batch", prior_fn, obs_fn, n)
+
+
+@pytest.mark.parametrize(
+    "importance_sampling, num_proposal_draws, n_prop, has_pareto_k",
+    [
+        (None, None, 50, False),
+        (None, 137, 137, False),
+        ("identity", None, 200, False),
+        ("identity", 137, 137, False),
+        ("psis", None, 200, True),
+        ("psis", 137, 137, True),
+    ],
+    ids=["none", "none-pool", "identity", "identity-pool", "psis", "psis-pool"],
+)
+def test_returned_draws_have_requested_shape(
+    importance_sampling, num_proposal_draws, n_prop, has_pareto_k
+):
+    """samples is (num_draws, N) for every weighting method and proposal-pool size, while
+    logP and logQ stay the length of the proposal pool they were computed on.
+
+    The pool defaults to 4x num_draws when resampling and to num_draws otherwise; an
+    explicit num_proposal_draws overrides both, and none of that may leak into the
+    returned draw count.
+    """
+    num_draws = 50
+    rng = np.random.default_rng(23)
+    X = rng.normal(size=(60, 2))
+    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    res = fit_streaming_pathfinder(
+        model,
+        ArrayLoader(packed, 20),
+        num_iters=8,
+        num_draws=num_draws,
+        num_proposal_draws=num_proposal_draws,
+        eval_rows=60,
+        importance_sampling=importance_sampling,
+        random_seed=0,
+        lbfgs_config=CFG,
+    )
+    assert res.samples.shape == (num_draws, 2)
+    assert res.logP.shape == (n_prop,)
+    assert res.logQ.shape == (n_prop,)
+    assert np.isfinite(res.samples).all()
+    assert (res.pareto_k is not None) == has_pareto_k
+
+
 def potential_model(y, n):
     """Normal-normal model carrying a pm.Potential that pulls theta away from the data."""
     with pm.Model() as model:
@@ -379,3 +492,45 @@ def test_proposal_pool_smaller_than_num_draws_still_returns_num_draws():
         random_seed=0,
     )
     assert result.samples.shape == (200, 2)
+
+
+def test_full_data_logp_installs_every_batch():
+    """The streaming pass must install each batch, not read whatever is already there.
+
+    A finished fit leaves the evaluation batch in the placeholder, so a loop that
+    forgot ``set_data`` would sum that one subset n_batches times. Existing tests
+    miss it because their fixtures happen to leave the full dataset installed, in
+    which case the rescaled sum telescopes back to the right answer by accident.
+    """
+    from pymc_extras.inference.pathfinder.bfgs_sample import get_neg_logp_dlogp_of_ravel_inputs
+    from pymc_extras.inference.pathfinder.streaming_pathfinder import (
+        _compile_batched_logp,
+        _full_data_logp,
+    )
+
+    rng = np.random.default_rng(0)
+    k, n, chunk = 2, 40, 10
+    X = rng.normal(size=(n, k))
+    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=n)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    phi = rng.normal(size=(4, k))
+
+    nlp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True)
+    model.set_data("batch", packed)
+    truth = np.array([-nlp(row.astype(np.float64))[0] for row in phi])
+
+    prior_fn = _compile_batched_logp(
+        model, [*model.free_RVs, *model.potentials], jacobian=True
+    )
+    obs_fn = _compile_batched_logp(model, model.observed_RVs, jacobian=False)
+    model.set_data("batch", packed[:chunk])  # the stale batch a finished fit leaves behind
+    got = _full_data_logp(
+        phi,
+        [packed[i : i + chunk] for i in range(0, n, chunk)],
+        model,
+        "batch",
+        prior_fn,
+        obs_fn,
+        n,
+    )
+    np.testing.assert_allclose(got, truth, rtol=1e-9)
