@@ -20,7 +20,7 @@ from pymc_extras.variational.dataloader import (
     IterableDataset,
     shuffle_buffer,
 )
-from tests.variational.dataloader_helpers import chunked_factory
+from tests.variational.dataloader_helpers import chunked_factory, reused_buffer_factory
 
 
 def test_plain_loader_rebatches_arbitrary_blocks():
@@ -244,6 +244,39 @@ def test_raw_2d_array_infers_sample_shape():
     batches = list(ds)
     assert [b.shape for b in batches] == [(8, 2), (8, 2)]
     np.testing.assert_array_equal(np.concatenate(batches), data[:16])
+
+
+@pytest.mark.parametrize(
+    "block_rows, kwargs",
+    [
+        (2, {}),
+        (2, {"shuffle": True, "buffer_size": 4, "seed": 0}),
+        (4, {}),
+    ],
+    ids=["rebatched", "shuffled", "exact-batch-size"],
+)
+def test_source_reusing_one_buffer_streams_every_row(block_rows, kwargs):
+    """A source may hand back a view into a buffer it overwrites; no row may be lost to it."""
+    n_blocks = 8 // block_rows
+    ds = DataLoader(
+        reused_buffer_factory(n_blocks, block_rows),
+        batch_size=4,
+        sample_shape=(1,),
+        total_size=8,
+        **kwargs,
+    )
+    np.testing.assert_array_equal(
+        np.sort(np.concatenate(list(ds)).ravel()),
+        np.repeat(np.arange(n_blocks, dtype="float64"), block_rows),
+    )
+
+
+def test_shuffle_buffer_copies_blocks_it_holds():
+    """shuffle_buffer fills across several pulls, so it cannot alias the source's buffer."""
+    src = shuffle_buffer(reused_buffer_factory(4, 2), buffer_size=8, batch_size=4, seed=0)
+    np.testing.assert_array_equal(
+        np.sort(np.concatenate(list(src())).ravel()), np.repeat(np.arange(4, dtype="float64"), 2)
+    )
 
 
 def test_shuffle_buffer_accepts_factory_returning_reiterable():

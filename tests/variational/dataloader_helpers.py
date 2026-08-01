@@ -13,6 +13,7 @@
 #   limitations under the License.
 """Shared helpers for the DataLoader tests."""
 
+import numpy as np
 import pytest
 
 
@@ -22,6 +23,22 @@ def chunked_factory(data, size):
     def factory():
         for i in range(0, len(data), size):
             yield data[i : i + size]
+
+    return factory
+
+
+def reused_buffer_factory(n_blocks, rows):
+    """A factory that refills and re-yields one array, as an out-of-core reader may.
+
+    Block ``i`` is ``rows`` copies of ``i``, so a batch that aliases an overwritten
+    buffer shows up as a repeated or missing value.
+    """
+
+    def factory():
+        buf = np.empty((rows, 1))
+        for value in range(n_blocks):
+            buf.fill(value)
+            yield buf
 
     return factory
 

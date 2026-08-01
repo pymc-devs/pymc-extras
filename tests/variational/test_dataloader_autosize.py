@@ -85,8 +85,15 @@ def test_auto_rejects_bad_n_rows():
         (25, 10, 25, 0, False),
         (100, 10, 100, 3, False),
         (100, 10, 130, 3, True),
+        (100, 10, 95, 0, True),
     ],
-    ids=["exact", "drop-last-truncates", "stray-pass-first", "wrong-size-after-stray"],
+    ids=[
+        "exact",
+        "drop-last-truncates",
+        "stray-pass-first",
+        "wrong-size-after-stray",
+        "fewer-rows-than-streamed",
+    ],
 )
 def test_total_size_sanity_check(n, batch_size, total_size, stray, warns):
     """The epoch-boundary check reads the pass that just completed, not the cumulative rows."""
@@ -102,6 +109,14 @@ def test_total_size_sanity_check(n, batch_size, total_size, stray, warns):
             list(ds)
     else:
         list(ds)
+
+
+def test_pass_too_short_for_one_batch_warns():
+    """A source that cannot fill a single batch streams nothing, which must not pass silently."""
+    data = np.arange(5, dtype="float64").reshape(5, 1)
+    ds = DataLoader(chunked_factory(data, 5), batch_size=10, sample_shape=(1,), total_size=5)
+    with pytest.warns(UserWarning, match="no complete batch"):
+        assert list(ds) == []
 
 
 def test_auto_counts_unshuffled_source_when_shuffling_non_divisible():

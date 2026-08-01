@@ -158,16 +158,19 @@ def _rebatch(
     ``(rows, *sample_shape)``), carrying remainders across blocks so no row is lost
     mid-stream. Trailing rows that do not fill a final batch are dropped when the
     stream ends (``drop_last``; the model observes a fixed-shape placeholder).
-    Sources that already yield exact ``batch_size`` blocks pass through uncopied.
+    A block that has to survive another pull is copied, since a source may hand
+    back a view into a buffer it overwrites; sources that already yield exact
+    ``batch_size`` blocks pass through uncopied.
     """
     buf: list[np.ndarray] = []
     have = 0
     for arr in blocks:
         a = _promote_to_block(np.asarray(arr), sample_shape)
-        buf.append(a)
         have += a.shape[0]
         if have < batch_size:
+            buf.append(np.array(a))
             continue
+        buf.append(a)
         merged = np.concatenate(buf, axis=0) if len(buf) > 1 else buf[0]
         n_full = merged.shape[0] // batch_size
         for i in range(n_full):
@@ -196,7 +199,8 @@ def shuffle_buffer(
     ``buffer_size`` explicitly. A bounded buffer cannot fix strongly ordered data --
     pre-shuffle on disk for that. ``buffer_size`` is a lower bound, and the chunk that
     crosses it is kept whole, so peak allocation is about twice
-    ``max(buffer_size, batch_size)`` plus one chunk.
+    ``max(buffer_size, batch_size)`` plus one chunk. Blocks are copied as they fill
+    the buffer, since a source may hand back a view into a buffer it overwrites.
     """
     if not _is_positive_int(batch_size):
         raise ValueError(f"batch_size must be a positive integer, got {batch_size!r}")
@@ -222,7 +226,7 @@ def shuffle_buffer(
                 have += carry.shape[0]
                 carry = None
             for arr in it:
-                a = np.asarray(arr)
+                a = np.array(arr)
                 bufs.append(a)
                 have += a.shape[0]
                 if have >= target:
@@ -379,10 +383,12 @@ class DataLoader:
         seen = 0
         it = _rebatch(self._batch_source(), self._batch_size, self._sample_shape)
         batch = next(it, None)
+        if batch is None:
+            self._maybe_warn_total_size(0)
         while batch is not None:
-            following = next(it, None)
             prepared = self._prepare(batch)
             seen += int(prepared.shape[0])
+            following = next(it, None)
             if following is None:
                 self._maybe_warn_total_size(seen)
             yield prepared
@@ -404,15 +410,27 @@ class DataLoader:
         return np.array(batch, dtype=self._dtype)
 
     def _maybe_warn_total_size(self, seen: int) -> None:
-        """Warn once if ``total_size`` disagrees with the rows of one full pass."""
+        """Warn once if ``total_size`` disagrees with the rows of one full pass.
+
+        A correct ``N`` satisfies ``seen <= N < seen + batch_size``, since the
+        trailing partial batch is dropped. Streaming more rows than ``N`` always
+        warns; over-declaring gets 10% slack to absorb approximate sizes.
+        """
         if self._warned_size or self._total_size is None:
             return
         self._warned_size = True
-        # A correct N satisfies seen <= N < seen + batch_size (the trailing partial
-        # batch is dropped); outside that, 10% slack absorbs approximate sizes.
-        if not seen or seen <= self._total_size < seen + self._batch_size:
+        if not seen:
+            warnings.warn(
+                f"the source yielded no complete batch of {self._batch_size} rows, so "
+                f"this pass streamed nothing. Lower batch_size, or check that the "
+                f"source is not empty.",
+                UserWarning,
+                stacklevel=3,
+            )
             return
-        if abs(self._total_size - seen) > 0.1 * seen:
+        if seen <= self._total_size < seen + self._batch_size:
+            return
+        if self._total_size < seen or self._total_size - seen > 0.1 * seen:
             warnings.warn(
                 f"total_size={self._total_size} disagrees with the {seen} rows streamed "
                 f"in one full pass; the N/batch_size rescaling is likely wrong. Pass the "
