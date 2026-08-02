@@ -20,8 +20,10 @@ source chunks they hold and any shuffle buffer.
 The API mirrors ``torch.utils.data``: an :class:`IterableDataset` is a
 re-iterable source of rows (e.g. :func:`parquet_source` over a directory of
 shards, read a chunk at a time), and a :class:`DataLoader` turns it into
-fixed-size, optionally shuffled batches. One difference from torch:
-``len(loader)`` is the row count ``N``, not the batch count.
+fixed-size, optionally shuffled batches. A source yields blocks of rows: the
+leading axis is the rows, so ``block.shape[1:]`` is one sample and nothing has to
+be declared. One difference from torch: ``len(loader)`` is the row count ``N``,
+not the batch count.
 
 Every batch has exactly ``batch_size`` rows, so each pass drops the final
 ``N mod batch_size`` rows (torch's ``drop_last``). Shuffling is only as good as
@@ -49,24 +51,11 @@ def _is_positive_int(value: object) -> bool:
     return isinstance(value, numbers.Integral) and not isinstance(value, bool) and int(value) > 0
 
 
-def _promote_to_block(a: np.ndarray, sample_shape: tuple[int, ...]) -> np.ndarray:
-    """Return ``a`` as a ``(rows, *sample_shape)`` block; a single sample becomes one row."""
-    if a.shape == sample_shape:
-        return a[None, ...]
-    if a.ndim != len(sample_shape) + 1 or a.shape[1:] != sample_shape:
-        raise ValueError(
-            f"source yielded shape {a.shape}; expected one sample of shape "
-            f"{sample_shape} or a (rows, *sample_shape) block; if the source is "
-            f"right, declare its trailing shape with DataLoader(sample_shape=...)"
-        )
-    return a
-
-
 class IterableDataset:
     """A re-iterable, out-of-core source of rows, like ``torch.utils.data.IterableDataset``.
 
-    Subclass and implement :meth:`__iter__` to yield ``np.ndarray`` blocks of rows
-    (shape ``(rows, *sample_shape)``); a :class:`DataLoader` re-batches those into
+    Subclass and implement :meth:`__iter__` to yield ``np.ndarray`` blocks whose
+    leading axis is the rows; a :class:`DataLoader` re-batches those into
     fixed-size minibatches. ``__iter__`` must return a fresh iterator each call so
     the dataset can be replayed across epochs. Set :attr:`n_rows` if the row count
     is known cheaply (e.g. from file metadata) so ``total_size="auto"`` can skip a
@@ -98,6 +87,11 @@ def _as_source(
 
         return new_iter
 
+    if isinstance(dataset, np.ndarray):
+        # Iterating an array yields its rows one at a time, which loses the
+        # distinction between a row and a block; hand it over whole instead.
+        return lambda: iter((dataset,))
+
     # A factory may return any iterable; normalize to a true iterator.
     make = dataset if callable(dataset) else (lambda: dataset)
     return lambda: iter(make())
@@ -106,7 +100,6 @@ def _as_source(
 def _auto_total_size(
     dataset: IterableDataset | Iterable[np.ndarray] | Callable[[], Iterator[np.ndarray]],
     new_iter: Callable[[], Iterator[np.ndarray]],
-    sample_shape: tuple[int, ...],
 ) -> int:
     """Resolve ``total_size="auto"``: trust a source ``.n_rows``, else count once."""
     n_rows = getattr(dataset, "n_rows", None)
@@ -128,9 +121,7 @@ def _auto_total_size(
     first = new_iter()
     count = 0
     for chunk in first:
-        a = np.asarray(chunk)
-        # A yield of shape exactly sample_shape is one sample, not a block.
-        count += 1 if a.shape == sample_shape else int(a.shape[0])
+        count += int(np.asarray(chunk).shape[0])
     if count <= 0:
         raise ValueError("total_size='auto' counted 0 rows (empty or non-re-readable source).")
     # A genuine source yields a fresh, non-empty stream each call; one that returns
@@ -147,17 +138,12 @@ def _auto_total_size(
     return count
 
 
-def _rebatch(
-    blocks: Iterable[np.ndarray],
-    batch_size: int,
-    sample_shape: tuple[int, ...],
-) -> Iterator[np.ndarray]:
-    """Slice a stream of samples/blocks into exact ``batch_size``-row batches, in order.
+def _rebatch(blocks: Iterable[np.ndarray], batch_size: int) -> Iterator[np.ndarray]:
+    """Slice a stream of row blocks into exact ``batch_size``-row batches, in order.
 
-    Accepts single samples (shape ``sample_shape``) and blocks of any size (shape
-    ``(rows, *sample_shape)``), carrying remainders across blocks so no row is lost
-    mid-stream. Trailing rows that do not fill a final batch are dropped when the
-    stream ends (``drop_last``; the model observes a fixed-shape placeholder).
+    Blocks may be any number of rows; remainders carry across them so no row is
+    lost mid-stream. Trailing rows that do not fill a final batch are dropped when
+    the stream ends (``drop_last``; the model observes a fixed-shape placeholder).
     A block that has to survive another pull is copied, since a source may hand
     back a view into a buffer it overwrites; sources that already yield exact
     ``batch_size`` blocks pass through uncopied.
@@ -165,7 +151,7 @@ def _rebatch(
     buf: list[np.ndarray] = []
     have = 0
     for arr in blocks:
-        a = _promote_to_block(np.asarray(arr), sample_shape)
+        a = np.asarray(arr)
         have += a.shape[0]
         if have < batch_size:
             buf.append(np.array(a))
@@ -264,10 +250,6 @@ class DataLoader:
         ``50 * batch_size``. A buffer as large as the dataset is a full shuffle.
     seed : int, optional
         Seed for the shuffle buffer (ignored when ``shuffle=False``).
-    sample_shape : tuple of int, optional
-        Trailing shape of one observation. ``()`` for scalars, ``(k,)`` to stream
-        ``k`` columns. Defaults to ``dataset.shape[1:]`` for a raw ``np.ndarray``
-        (its rows are the samples, like torch's ``TensorDataset``), else ``()``.
     dtype : str, default "float64"
         Dtype each batch is cast to; match the ``pm.Data`` placeholder's dtype.
     total_size : int or "auto", default "auto"
@@ -275,8 +257,7 @@ class DataLoader:
         ``n_rows`` if available, else one counting pass). ``None`` warns and
         disables the rescaling; a non-positive value raises.
     preprocess_fn : callable, optional
-        Applied to each batch before it is yielded; must preserve the row count
-        and ``sample_shape``.
+        Applied to each batch before it is yielded; must preserve the row count.
 
     Examples
     --------
@@ -284,8 +265,7 @@ class DataLoader:
 
         loader = DataLoader(
             parquet_source("shuffled/"),  # an IterableDataset over the shards
-            batch_size=4096,
-            sample_shape=(4,),  # 3 features + 1 observed column
+            batch_size=4096,  # each row group is (rows, 4): 3 features + 1 observed
             total_size="auto",  # infer N from the source; N == len(loader)
         )
 
@@ -296,7 +276,7 @@ class DataLoader:
             pm.Bernoulli("y", logit_p=logit, observed=batch[:, 3], total_size=len(loader))
 
         with model:
-            for next_batch in loader:  # each epoch yields (batch_size, *sample_shape) arrays
+            for next_batch in loader:  # each epoch yields (batch_size, 4) arrays
                 model.set_data("batch", next_batch)
                 ...  # one optimization step over this batch
     """
@@ -309,26 +289,20 @@ class DataLoader:
         shuffle: bool = False,
         buffer_size: int | None = None,
         seed: int | None = None,
-        sample_shape: tuple[int, ...] | None = None,
         dtype: str = "float64",
         total_size: int | str | None = "auto",
         preprocess_fn: Callable[[np.ndarray], np.ndarray] | None = None,
     ):
         if not _is_positive_int(batch_size):
             raise ValueError(f"batch_size must be a positive integer, got {batch_size!r}")
-        if sample_shape is None:
-            # A raw 2-D array is rows-of-samples, not blocks of scalars.
-            sample_shape = dataset.shape[1:] if isinstance(dataset, np.ndarray) else ()
-        sample_shape = tuple(sample_shape)
 
         self._new_iter = new_iter = _as_source(dataset)
         self._batch_size = int(batch_size)
-        self._sample_shape = sample_shape
         self._dtype = dtype
         self._preprocess_fn = preprocess_fn
 
         if total_size == "auto":
-            total_size = _auto_total_size(dataset, new_iter, sample_shape)
+            total_size = _auto_total_size(dataset, new_iter)
         elif total_size is None:
             warnings.warn(
                 "DataLoader created with total_size=None: the minibatch "
@@ -345,22 +319,41 @@ class DataLoader:
             )
         self._total_size = None if total_size is None else int(total_size)
 
-        # shuffle_buffer needs blocks, so promote single samples first.
         if shuffle:
             if buffer_size is None:
                 buffer_size = 50 * self._batch_size
-
-            def blocks() -> Iterator[np.ndarray]:
-                for arr in self._new_iter():
-                    yield _promote_to_block(np.asarray(arr), self._sample_shape)
-
             self._batch_source = shuffle_buffer(
-                blocks, buffer_size=buffer_size, batch_size=self._batch_size, seed=seed
+                self._blocks, buffer_size=buffer_size, batch_size=self._batch_size, seed=seed
             )
         else:
-            self._batch_source = self._new_iter
+            self._batch_source = self._blocks
 
         self._warned_size = False
+
+    def _blocks(self) -> Iterator[np.ndarray]:
+        """One epoch of source blocks, checked for a consistent trailing shape.
+
+        Rows are the leading axis, so ``block.shape[1:]`` is one sample. A source
+        that changes that shape mid-stream cannot be concatenated into batches, and
+        numpy would only say so once the shapes happened to collide.
+        """
+        trailing = None
+        for arr in self._new_iter():
+            a = np.asarray(arr)
+            if a.ndim == 0:
+                raise ValueError(
+                    "source yielded a scalar; blocks must be arrays whose leading "
+                    "axis is the rows, so a single sample of shape S is shape (1, *S)"
+                )
+            if trailing is None:
+                trailing = a.shape[1:]
+            elif a.shape[1:] != trailing:
+                raise ValueError(
+                    f"source yielded a block of shape {a.shape}, but earlier blocks had "
+                    f"trailing shape {trailing}; every block must be (rows, *sample_shape) "
+                    f"with the same sample shape"
+                )
+            yield a
 
     @property
     def batch_size(self) -> int:
@@ -372,7 +365,7 @@ class DataLoader:
         return self._total_size
 
     def __iter__(self) -> Iterator[np.ndarray]:
-        """Yield one epoch of ``(batch_size, *sample_shape)`` minibatches.
+        """Yield one epoch of ``batch_size``-row minibatches.
 
         Stream each into the model's ``pm.Data`` placeholder with ``model.set_data``
         before a step; re-iterate for another epoch. The pass runs one batch ahead so
@@ -381,7 +374,7 @@ class DataLoader:
         last batch yielded.
         """
         seen = 0
-        it = _rebatch(self._batch_source(), self._batch_size, self._sample_shape)
+        it = _rebatch(self._batch_source(), self._batch_size)
         batch = next(it, None)
         if batch is None:
             self._maybe_warn_total_size(0)

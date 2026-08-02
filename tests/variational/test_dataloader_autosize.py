@@ -30,9 +30,7 @@ def test_auto_counts_finite_source():
     """Without .n_rows, 'auto' does one counting pass and resolves the true N."""
     data = np.arange(60, dtype="float64").reshape(60, 1)
     with pytest.warns(UserWarning, match="counting pass"):
-        ds = DataLoader(
-            chunked_factory(data, 7), batch_size=10, sample_shape=(1,), total_size="auto"
-        )
+        ds = DataLoader(chunked_factory(data, 7), batch_size=10, total_size="auto")
     assert ds.total_size == 60
 
 
@@ -47,7 +45,6 @@ def test_auto_uses_n_rows_fast_path(shuffle):
         shuffle=shuffle,
         buffer_size=8,
         seed=0,
-        sample_shape=(1,),
         total_size="auto",
     )
     assert ds.total_size == 1000
@@ -58,7 +55,7 @@ def test_auto_rejects_one_shot_iterator():
     data = np.zeros((20, 1))
     one_shot = (data[i : i + 4] for i in range(0, 20, 4))
     with pytest.raises(ValueError, match="re-readable"):
-        DataLoader(one_shot, batch_size=4, sample_shape=(1,), total_size="auto")
+        DataLoader(one_shot, batch_size=4, total_size="auto")
 
 
 def test_auto_rejects_factory_returning_same_one_shot_iterator():
@@ -69,7 +66,7 @@ def test_auto_rejects_factory_returning_same_one_shot_iterator():
         pytest.warns(UserWarning, match="counting pass"),
         pytest.raises(ValueError, match="fresh iterator"),
     ):
-        DataLoader(lambda: one_shot, batch_size=4, sample_shape=(1,), total_size="auto")
+        DataLoader(lambda: one_shot, batch_size=4, total_size="auto")
 
 
 def test_auto_rejects_bad_n_rows():
@@ -77,7 +74,7 @@ def test_auto_rejects_bad_n_rows():
     f = chunked_factory(np.zeros((8, 1)), 4)
     f.n_rows = 0
     with pytest.raises(ValueError, match="n_rows must be a positive integer"):
-        DataLoader(f, batch_size=4, sample_shape=(1,), total_size="auto")
+        DataLoader(f, batch_size=4, total_size="auto")
 
 
 @pytest.mark.parametrize(
@@ -100,9 +97,7 @@ def test_auto_rejects_bad_n_rows():
 def test_total_size_sanity_check(n, batch_size, total_size, stray, warns):
     """The epoch-boundary check reads the pass that just completed, not the cumulative rows."""
     data = np.arange(n, dtype="float64").reshape(n, 1)
-    ds = DataLoader(
-        chunked_factory(data, 5), batch_size=batch_size, sample_shape=(1,), total_size=total_size
-    )
+    ds = DataLoader(chunked_factory(data, 5), batch_size=batch_size, total_size=total_size)
     partial = iter(ds)
     for _ in range(stray):
         next(partial)
@@ -116,7 +111,7 @@ def test_total_size_sanity_check(n, batch_size, total_size, stray, warns):
 def test_pass_too_short_for_one_batch_warns():
     """A source that cannot fill a single batch streams nothing, which must not pass silently."""
     data = np.arange(5, dtype="float64").reshape(5, 1)
-    ds = DataLoader(chunked_factory(data, 5), batch_size=10, sample_shape=(1,), total_size=5)
+    ds = DataLoader(chunked_factory(data, 5), batch_size=10, total_size=5)
     with pytest.warns(UserWarning, match="no complete batch"):
         assert list(ds) == []
 
@@ -131,7 +126,6 @@ def test_auto_counts_unshuffled_source_when_shuffling_non_divisible():
             shuffle=True,
             buffer_size=30,
             seed=0,
-            sample_shape=(1,),
             total_size="auto",
         )
     assert ds.total_size == 125
@@ -140,7 +134,7 @@ def test_auto_counts_unshuffled_source_when_shuffling_non_divisible():
 def test_total_size_warning_fires_once_across_passes():
     """A wrong total_size warns on the first full pass and stays quiet on the next."""
     data = np.arange(40, dtype="float64").reshape(20, 2)
-    ds = DataLoader(chunked_factory(data, 5), batch_size=5, sample_shape=(2,), total_size=10_000)
+    ds = DataLoader(chunked_factory(data, 5), batch_size=5, total_size=10_000)
     with pytest.warns(UserWarning, match="disagrees with"):
         batches = list(ds)
     assert len(batches) == 4
@@ -159,7 +153,7 @@ def test_auto_rejects_factory_closing_over_consumed_iterator():
         pytest.warns(UserWarning, match="counting pass"),
         pytest.raises(ValueError, match="fresh iterator"),
     ):
-        DataLoader(gen, batch_size=4, sample_shape=(1,), total_size="auto")
+        DataLoader(gen, batch_size=4, total_size="auto")
 
 
 def test_parquet_source_n_rows_from_metadata(tmp_path):
@@ -175,7 +169,7 @@ def test_parquet_source_n_rows_from_metadata(tmp_path):
     assert isinstance(src, IterableDataset)
     assert src.n_rows == total
 
-    ds = DataLoader(src, batch_size=10, sample_shape=(2,), total_size="auto")
+    ds = DataLoader(src, batch_size=10, total_size="auto")
     assert ds.total_size == total
 
 
@@ -272,6 +266,6 @@ def test_auto_resolves_the_explicit_n_for_every_source_kind(make_source, counts)
     data = np.arange(90, dtype="float64").reshape(45, 2)
     counting = pytest.warns(UserWarning, match="counting pass") if counts else nullcontext()
     with counting:
-        ds = DataLoader(make_source(data), batch_size=6, sample_shape=(2,), total_size="auto")
+        ds = DataLoader(make_source(data), batch_size=6, total_size="auto")
     assert ds.total_size == len(ds) == 45
     np.testing.assert_array_equal(np.concatenate(list(ds)), data[:42])
