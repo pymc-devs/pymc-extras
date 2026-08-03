@@ -484,16 +484,36 @@ def test_total_size_check_fires_when_fit_ends_at_pass_boundary():
             Trainer(method="advi", dataloader=loader).fit(4, random_seed=0)
 
 
-def test_fit_rejects_nonpositive_n():
+@pytest.mark.parametrize("n", [0, True], ids=["zero", "bool"])
+def test_fit_rejects_nonpositive_n(n):
     """fit consumes the seed batch before pm.fit could reject n itself, so a
-    non-positive n is refused up front, before touching the stream."""
+    non-positive n is refused up front, before touching the stream. ``True`` is an
+    ``int`` to Python, so it would otherwise pass as a one-step fit."""
     loader = DataLoader(lambda: iter([np.zeros((2, 1))]), batch_size=2, total_size=2)
     with pm.Model():
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((2, 1)))
         pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
         with pytest.raises(ValueError, match="positive integer"):
-            Trainer(method="advi", dataloader=loader).fit(0)
+            Trainer(method="advi", dataloader=loader).fit(n)
+
+
+def test_progressbar_defaults_off_and_yields_to_an_explicit_setting(monkeypatch):
+    """pm.fit draws a progress bar by default, which a per-step streaming fit turns
+    into a wall of output; an explicit setting from either level still wins."""
+    seen = []
+    monkeypatch.setattr(
+        "pymc_extras.variational.trainer._fit", lambda n, **kw: seen.append(kw["progressbar"])
+    )
+    loader = DataLoader(lambda: iter(marked(4)), batch_size=4, total_size=16)
+    with pm.Model():
+        mu = pm.Normal("mu", 0, 1)
+        batch = pm.Data("batch", np.zeros((4, 1)))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        trainer = Trainer(method="advi", dataloader=loader)
+        trainer.fit(2)
+        trainer.fit(2, progressbar=True)
+    assert seen == [False, True]
 
 
 def test_unknown_data_name_raises_before_consuming():
