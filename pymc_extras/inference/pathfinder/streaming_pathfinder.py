@@ -191,10 +191,8 @@ def fit_streaming_pathfinder(
         Post-hoc reweighting of the returned draws; ``None`` returns the proposal
         draws unweighted. ``"identity"`` weights by the raw log ratio, so like
         ``"psis"``/``"psir"`` it resamples from a larger pool. At the Notes configuration
-        (k=8, N=1e5, three seeds) the 4000-draw pool carried a raw-weight effective sample
-        size of 449-1762, so the weights inform the resampling rather than collapsing onto
-        a few draws; it cost 3.4-3.7x the wall clock of ``None``, which draws a pool of
-        ``num_draws`` only.
+        it cost 3.4-3.7x the wall clock of ``None``, which draws a pool of ``num_draws``
+        only.
     lbfgs_config : StochasticLBFGSConfig, optional
     callbacks : iterable of callable, optional
         ``pm.fit`` callbacks, called ``(None, losses, i)`` after each optimizer step;
@@ -209,10 +207,12 @@ def fit_streaming_pathfinder(
 
     Notes
     -----
-    Measured operating range. Bayesian logistic regression, Normal(0, 2) prior, batch 2048,
-    ``num_iters=200``, ``maxcor=6``, ``jitter=2.0``, ``num_draws=1000``,
-    ``num_proposal_draws=4000``, PSIS, against an exact full-data Laplace reference. With
-    k=8 coefficients, worst-coordinate error in reference-sd:
+    Measured operating range. Bayesian logistic regression, Normal(0, 2) prior, batch 2048
+    from a *shuffled* loader, ``num_iters=200``, ``maxcor=6``, ``jitter=2.0``,
+    ``num_draws=1000``, ``num_proposal_draws=4000``, PSIS, against an exact full-data
+    Laplace reference. Shuffling is part of the configuration, not a detail: an unshuffled
+    loader replays the same rows in the same order every epoch, and the table below was not
+    measured that way. With k=8 coefficients, worst-coordinate error in reference-sd:
 
     ====== ===================== =========================
     N      ``pareto_k``          worst coordinate (ref-sd)
@@ -299,12 +299,17 @@ def fit_streaming_pathfinder(
 
     # Polyak-Ruppert tail averaging of the iterate positions. Each stochastic L-BFGS step is
     # a full quasi-Newton step plus line search on ONE minibatch, so its accepted point is
-    # essentially that minibatch's MAP: ~sqrt(N / b) full-data posterior-sd off the true MAP
-    # (measured ratio 0.971 over 27 runs), while the same batch pins the posterior sd to
-    # within 1-2%. That makes it a location error, not a covariance one, which is why no rule
-    # that *picks* an iterate can fix it. g is zeroed because the sampler centres the Gaussian
-    # at mu = x - H_inv @ g; keeping the last iterate's gradient costs 2.0-6.6x. Curvature
-    # stays from the last iterate: averaged (s, z) pairs are not a valid L-BFGS memory.
+    # essentially that minibatch's MAP. Newton on 9 batches per size at the Notes k=8, N=1e5
+    # data puts that MAP about sqrt(N / b) full-data posterior-sd away in per-coordinate RMS
+    # (measured / sqrt(N / b) = 0.82, 0.92, 0.75 at b = 512, 2048, 8192; the max-coordinate
+    # norm is ~2x that, so the norm has to be named), while the same batch reproduces the
+    # posterior sd to a few percent (median over coordinates and runs 3.5%, 2.1%, 0.7%; worst
+    # coordinate 8.5%, 3.7%, 1.9%). The damage is in the location, not the covariance, which
+    # is why no rule that *picks* an iterate can fix it.
+    # g is zeroed because the sampler centres the Gaussian at mu = x - H_inv @ g; keeping the
+    # last iterate's gradient moved that centre 1.6-7.3x further from the full-data MAP over
+    # 12 seeds, worse on every one (worst coordinate, reference-sd). Curvature stays from the
+    # last iterate: averaged (s, z) pairs are not a valid L-BFGS memory.
     # Ruppert 1988 (Cornell ORIE TR-781); Polyak & Juditsky 1992, SIAM J. Control Optim.
     # 30(4):838-855; Jain et al., JMLR 18(223), 2018 (tail averaging the last c*n iterates);
     # Mandt, Hoffman & Blei, JMLR 18(134), 2017; Dhaka et al., NeurIPS 2020 and Welandawe

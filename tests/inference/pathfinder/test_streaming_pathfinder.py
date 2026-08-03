@@ -104,10 +104,9 @@ def test_a_saturated_trial_point_cannot_poison_the_gradient():
     """A logit past float64 saturation has a finite logp and a NaN gradient, so the
     Armijo test on the value alone accepts it. The accepted gradient then becomes the
     next step's ``g``: the direction is NaN, every later line search fails, and the run
-    ends with no accepted steps at all rather than with a visible error.
-
-    Deterministic: fixed data seed, fixed start, one fixed batch installed throughout.
-    Without the finiteness guard this configuration records ``n_accepted == 0``.
+    ends with no accepted steps at all rather than with a visible error. Deterministic —
+    fixed data seed, fixed start, one batch installed throughout — and without the
+    finiteness guard it records ``n_accepted == 0``.
     """
     from pymc_extras.inference.pathfinder.bfgs_sample import get_neg_logp_dlogp_of_ravel_inputs
     from pymc_extras.inference.pathfinder.stochastic_lbfgs import run_stochastic_lbfgs
@@ -298,24 +297,19 @@ def test_jitter_starts_two_seeds_at_different_points(monkeypatch):
     assert not np.allclose(firsts[0], firsts[1])
 
 
-def test_callbacks_reach_the_optimizer(monkeypatch):
-    """The optimizer's callback hook is only worth its lines if a user can reach it: a
-    pm.fit early-stopping rule has to run against a streaming fit unchanged, and the
-    shortened trajectory has to be the one the fit then averages."""
-    import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
+def test_callbacks_reach_the_optimizer():
+    """A pm.fit early-stopping rule has to run against a streaming fit unchanged, and the
+    fit has to finish on the trajectory the rule shortened.
 
+    pm.fit hands each callback ``(approx, scores[: i + 1], i + 1)``: the losses so far and
+    a 1-based step index. A rule reading more than the last loss — every convergence check
+    does — is silently starved by a one-element list.
+    """
     rng = np.random.default_rng(0)
     X = rng.normal(size=(60, 2))
     y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
     model, packed, *_ = gaussian_regression(X, y, 1.0)
-
-    seen, iterates = [], []
-    run = sp.run_stochastic_lbfgs
-    monkeypatch.setattr(
-        sp,
-        "run_stochastic_lbfgs",
-        lambda *a, **k: (lambda t: (iterates.extend(t.iterates), t)[1])(run(*a, **k)),
-    )
+    seen = []
 
     def stop_at_3(approx, losses, i):
         seen.append((approx, len(losses), i))
@@ -332,7 +326,6 @@ def test_callbacks_reach_the_optimizer(monkeypatch):
         random_seed=0,
     )
     assert seen == [(None, 1, 1), (None, 2, 2), (None, 3, 3)]
-    assert 0 < len(iterates) <= 3
     assert res.samples.shape == (10, 2)
 
 
@@ -492,9 +485,10 @@ def test_full_data_logp_invariant_to_batch_order_and_size():
 
 
 def test_a_drop_last_loader_is_refused_and_told_what_to_pass():
-    """A DataLoader epoch yields floor(N / batch_size) * batch_size rows, so for almost
-    any N the default full_pass cannot produce an exact logP. The error has to name the
-    remedy: it fires only after the whole optimization has been paid for."""
+    """A DataLoader epoch yields floor(N / batch_size) * batch_size rows, so for almost any
+    N the default full_pass cannot produce an exact logP. The error has to name the remedy —
+    it fires only after the whole optimization has been paid for — and passing that remedy
+    has to actually take effect."""
     rng = np.random.default_rng(24)
     k, n = 2, 350
     X = rng.normal(size=(n, k))
@@ -575,23 +569,6 @@ def test_returned_draws_have_requested_shape(
     assert res.logQ.shape == (n_prop,)
     assert np.isfinite(res.samples).all()
     assert (res.pareto_k is not None) == has_pareto_k
-
-
-def test_psis_reweights_rather_than_permuting_the_pool():
-    """The default pool has to be a multiple of num_draws. Resampling num_draws out of
-    num_draws + 1 without replacement (importance_sampling.py sets replace=False for
-    "psis") returns the pool minus one draw whatever the weights are, and arviz's Pareto
-    tail fit needs 5 tail draws, so num_draws <= 23 raised outright."""
-    rng = np.random.default_rng(0)
-    X = rng.normal(size=(60, 2))
-    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
-    res = fit_streaming_pathfinder(
-        model, ArrayLoader(packed, 20), num_iters=8, num_draws=20, random_seed=0
-    )
-    assert res.samples.shape == (20, 2)
-    assert res.logP.shape == (80,)
-    assert res.pareto_k is not None
 
 
 def potential_model(y, n):

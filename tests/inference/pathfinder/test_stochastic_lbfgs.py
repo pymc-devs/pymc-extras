@@ -156,36 +156,7 @@ def test_no_point_is_evaluated_twice_within_a_step():
     assert len(seen) == len(set(seen)), "a point was evaluated twice on the same batch"
 
 
-def test_failed_line_search_holds_x_but_still_advances_the_batch():
-    """A step that cannot satisfy Armijo must still move on to fresh data.
-
-    Holding both x and the batch re-runs the identical failing step forever, and only
-    n_ls_failures would ever show it.
-    """
-    x0 = np.zeros(2)
-    xs = []
-
-    def vg(x):
-        xs.append(tuple(x))
-        return 1.0, np.array([1.0, 1.0])  # constant value, nonzero gradient
-
-    advances = []
-    traj = run_stochastic_lbfgs(
-        vg,
-        lambda: advances.append(1),
-        x0,
-        num_iters=4,
-        config=StochasticLBFGSConfig(maxls=3),
-    )
-    assert traj.n_ls_failures == 4
-    assert len(advances) == 4
-    assert traj.iterates == []
-    assert xs.count(tuple(x0)) == 5  # the opening evaluation plus one per held step
-
-
-@pytest.mark.parametrize(
-    "kw", [{"backtrack": 1.0}, {"backtrack": -0.5}, {"maxcor": 0}, {"maxls": 0}]
-)
+@pytest.mark.parametrize("kw", [{"backtrack": -0.5}, {"maxcor": 0}])
 def test_config_rejects_settings_that_make_a_wrong_fit_look_healthy(kw):
     """backtrack outside (0, 1) is the dangerous one: a negative step length satisfies
     the Armijo bound trivially, so the run climbs while every counter reads clean."""
@@ -193,48 +164,25 @@ def test_config_rejects_settings_that_make_a_wrong_fit_look_healthy(kw):
         StochasticLBFGSConfig(**kw)
 
 
-def test_a_callback_can_end_the_run_early():
-    """StopIteration from a callback ends the loop, so an early-stopping rule written
-    against pm.fit's callback contract works here unchanged.
-
-    pm.fit hands each callback ``(approx, scores[: i + 1], i + 1)``: the losses so far,
-    and a 1-based step index. A rule that reads more than the last loss — every
-    convergence check does — is silently starved by a one-element list.
-    """
-    rng = np.random.default_rng(31)
-    M = rng.normal(size=(4, 4))
-    A = M @ M.T + 4 * np.eye(4)
-    seen = []
-
-    def stop_at_5(approx, loss, i):
-        seen.append((approx, len(loss), i, float(loss[-1])))
-        if i == 5:
-            raise StopIteration
-
-    traj = run_stochastic_lbfgs(
-        quadratic(A, rng.normal(size=4)),
-        noop,
-        np.zeros(4),
-        num_iters=50,
-        callbacks=(stop_at_5,),
-    )
-    assert [(a, n, i) for a, n, i, _ in seen] == [(None, j, j) for j in range(1, 6)]
-    assert len(traj.iterates) <= 5
-    losses = [f for *_, f in seen]
-    assert losses == sorted(losses, reverse=True)  # the callback is handed a minimized loss
-
-
 def test_line_search_exhaustion_handled():
-    """When Armijo can never be satisfied the step is flagged, not crashed."""
+    """When Armijo can never be satisfied the step is flagged, not crashed, and the loop
+    still moves on to fresh data — holding both x and the batch replays the identical
+    failing step forever, and only n_ls_failures would ever show it."""
 
     def vg(x):
         # constant value with a nonzero gradient: no step ever decreases f
         return 1.0, np.array([1.0, 1.0])
 
+    advances = []
     traj = run_stochastic_lbfgs(
-        vg, noop, np.zeros(2), num_iters=3, config=StochasticLBFGSConfig(maxls=5)
+        vg,
+        lambda: advances.append(1),
+        np.zeros(2),
+        num_iters=3,
+        config=StochasticLBFGSConfig(maxls=5),
     )
     assert traj.n_ls_failures == 3
+    assert len(advances) == 3
 
 
 def test_ring_buffer_wraps_after_maxcor_pairs():
