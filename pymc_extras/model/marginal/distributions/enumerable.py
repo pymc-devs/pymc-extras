@@ -90,8 +90,7 @@ def get_domain_of_finite_discrete_rv(rv: TensorVariable) -> TensorVariable:
 
     The domain is kept symbolic, so that RVs whose number of states is not known at graph
     construction time (e.g. a Categorical whose `p` has a model dim as its last axis) can
-    still be enumerated. Shapes are resolved and values folded when possible, which preserves
-    the static length of the domain for the common case.
+    still be enumerated. When the number of states is static, the usual rewrites recover it.
     """
     op = rv.owner.op
     dist_params = rv.owner.op.dist_params(rv.owner)
@@ -102,8 +101,10 @@ def get_domain_of_finite_discrete_rv(rv: TensorVariable) -> TensorVariable:
         [p_param_length] = resolve_shapes([p_param.shape[-1]])
         return pt.arange(p_param_length)
     elif isinstance(op, DiscreteUniform):
-        lower, upper = constant_fold(dist_params, raise_not_constant=False)
-        return pt.arange(lower, upper + 1)
+        # Batched bounds are enumerated over their envelope. States outside the bounds of a
+        # given entry have -inf logp, so they drop out of the enumeration.
+        lower, upper = dist_params
+        return pt.arange(lower.min(), upper.max() + 1)
     elif isinstance(op, DiscreteMarkovChain):
         P, *_ = dist_params
         [n_states] = resolve_shapes([P.shape[-1]])

@@ -67,3 +67,25 @@ def test_categorical_domain_from_dims():
 
     marginal_m = marginalize(m, ["idx"])
     np.testing.assert_allclose(marginal_m.compile_logp([marginal_m["y"]])(ip), ref_logp)
+
+
+def test_discrete_uniform_batched_bounds():
+    """Batched bounds are enumerated over their envelope, out of bounds states have -inf logp."""
+    lower, upper = [0, 10, 20], 40
+    y_data = np.array([0.5, 9.0, 21.0])
+
+    with pm.Model() as m:
+        sigma = pm.HalfNormal("sigma", 1.0)
+        mu = pm.DiscreteUniform("mu", lower=lower, upper=upper)
+        pm.Normal("y", mu=mu, sigma=sigma, observed=y_data)
+
+    ip = m.initial_point()
+    ip.pop("mu")
+    ref_logp_fn = m.compile_logp([m["mu"], m["y"]], sum=False)
+    ref_logp = logsumexp(
+        [sum(ref_logp_fn({**ip, "mu": np.full(3, state)})) for state in range(upper + 1)],
+        axis=0,
+    ).sum()
+
+    marginal_m = marginalize(m, ["mu"])
+    np.testing.assert_allclose(marginal_m.compile_logp([marginal_m["y"]])(ip), ref_logp)
