@@ -21,17 +21,13 @@ def quadratic(A, b):
     return vg
 
 
-def double_well():
-    """Return value_grad_fn for f(x) = sum(0.25 x^4 - x^2).
+def double_well(x):
+    """value_grad_fn for f(x) = sum(0.25 x^4 - x^2).
 
     The Hessian is negative definite inside ``|x| < sqrt(2/3)``, so descent steps taken
     from there routinely produce ``s . y < 0``.
     """
-
-    def vg(x):
-        return float(np.sum(0.25 * x**4 - x**2)), x**3 - 2 * x
-
-    return vg
+    return float(np.sum(0.25 * x**4 - x**2)), x**3 - 2 * x
 
 
 def dense_inverse_hessian(alpha, pairs):
@@ -105,9 +101,9 @@ def test_two_loop_direction_matches_dense_bfgs():
 
 def test_pair_rejected_when_curvature_violated():
     """A step crossing a negative-curvature region gives s.y < 0 and is rejected."""
-    traj = run_stochastic_lbfgs(double_well(), noop, np.array([0.3]), num_iters=8)
+    traj = run_stochastic_lbfgs(double_well, noop, np.array([0.3]), num_iters=8)
     assert traj.n_curvature_violations >= 1
-    assert traj.n_accepted + traj.n_curvature_violations + traj.n_null == traj.n_steps
+    assert traj.n_accepted + traj.n_curvature_violations + traj.n_null == 8
 
 
 def test_line_search_decreases_objective_each_step():
@@ -121,6 +117,91 @@ def test_line_search_decreases_objective_each_step():
     assert all(v2 <= v1 + 1e-9 for v1, v2 in itertools.pairwise(values))
 
 
+def test_no_point_is_evaluated_twice_within_a_step():
+    """The accepted trial's gradient comes from the call that tested it.
+
+    Re-evaluating the accepted point to fetch a gradient the joint value_grad_fn already
+    returned costs a full logp+grad pass per step, and no counter reports it.
+    """
+    rng = np.random.default_rng(30)
+    A = np.diag([1.0, 2.0, 4.0])
+    vg = quadratic(A, rng.normal(size=3))
+    state = {"batch": 0}
+    seen = []
+
+    def tagged(x):
+        seen.append((state["batch"], tuple(x)))
+        return vg(x)
+
+    def advance():
+        state["batch"] += 1
+
+    run_stochastic_lbfgs(tagged, advance, np.array([3.0, -3.0, 3.0]), num_iters=25)
+    assert len(seen) == len(set(seen)), "a point was evaluated twice on the same batch"
+
+
+def test_failed_line_search_holds_x_but_still_advances_the_batch():
+    """A step that cannot satisfy Armijo must still move on to fresh data.
+
+    Holding both x and the batch re-runs the identical failing step forever, and only
+    n_ls_failures would ever show it.
+    """
+    x0 = np.zeros(2)
+    xs = []
+
+    def vg(x):
+        xs.append(tuple(x))
+        return 1.0, np.array([1.0, 1.0])  # constant value, nonzero gradient
+
+    advances = []
+    traj = run_stochastic_lbfgs(
+        vg,
+        lambda: advances.append(1),
+        x0,
+        num_iters=4,
+        config=StochasticLBFGSConfig(maxls=3),
+    )
+    assert traj.n_ls_failures == 4
+    assert len(advances) == 4
+    assert traj.iterates == []
+    assert xs.count(tuple(x0)) == 5  # the opening evaluation plus one per held step
+
+
+@pytest.mark.parametrize(
+    "kw", [{"backtrack": 1.0}, {"backtrack": -0.5}, {"maxcor": 0}, {"maxls": 0}]
+)
+def test_config_rejects_settings_that_make_a_wrong_fit_look_healthy(kw):
+    """backtrack outside (0, 1) is the dangerous one: a negative step length satisfies
+    the Armijo bound trivially, so the run climbs while every counter reads clean."""
+    with pytest.raises(ValueError):
+        StochasticLBFGSConfig(**kw)
+
+
+def test_a_callback_can_end_the_run_early():
+    """StopIteration from a callback ends the loop, so an early-stopping rule written
+    against pm.fit's callback contract works here unchanged."""
+    rng = np.random.default_rng(31)
+    M = rng.normal(size=(4, 4))
+    A = M @ M.T + 4 * np.eye(4)
+    losses = []
+
+    def stop_at_5(approx, loss, i):
+        losses.append(float(loss[-1]))
+        if i == 5:
+            raise StopIteration
+
+    traj = run_stochastic_lbfgs(
+        quadratic(A, rng.normal(size=4)),
+        noop,
+        np.zeros(4),
+        num_iters=50,
+        callbacks=(stop_at_5,),
+    )
+    assert len(losses) == 5
+    assert len(traj.iterates) <= 5
+    assert losses == sorted(losses, reverse=True)  # the callback is handed a minimized loss
+
+
 def test_line_search_exhaustion_handled():
     """When Armijo can never be satisfied the step is flagged, not crashed."""
 
@@ -132,7 +213,6 @@ def test_line_search_exhaustion_handled():
         vg, noop, np.zeros(2), num_iters=3, config=StochasticLBFGSConfig(maxls=5)
     )
     assert traj.n_ls_failures == 3
-    assert traj.n_steps == 3
 
 
 def test_ring_buffer_wraps_after_maxcor_pairs():
@@ -262,7 +342,7 @@ def test_both_gradients_of_every_accepted_pair_come_from_one_batch():
         np.testing.assert_array_equal(it["s_win"][:, newest], it["x"] - x_first)
         np.testing.assert_array_equal(it["z_win"][:, newest], it["g"] - g_first)
 
-    assert sorted({b for b, _, _ in log}) == list(range(traj.n_steps + 1))
+    assert sorted({b for b, _, _ in log}) == list(range(41))
 
 
 @pytest.mark.parametrize("J, n_pairs", [(1, 1), (2, 5), (3, 2), (3, 3), (3, 7), (6, 4), (6, 13)])
@@ -292,7 +372,7 @@ def test_history_holds_only_pairs_that_passed_the_curvature_test():
     """
     cfg = StochasticLBFGSConfig(maxcor=4)
     traj = run_stochastic_lbfgs(
-        double_well(), noop, np.array([0.05, -0.05, 0.6]), num_iters=30, config=cfg
+        double_well, noop, np.array([0.05, -0.05, 0.6]), num_iters=30, config=cfg
     )
     for it in traj.iterates:
         for s, y in zip(it["s_win"].T, it["z_win"].T):
@@ -301,10 +381,7 @@ def test_history_holds_only_pairs_that_passed_the_curvature_test():
             assert s @ y > 1e-16
             assert s @ y >= cfg.epsilon * (s @ s)
     assert traj.n_accepted == len(traj.iterates)
-    assert (
-        traj.n_accepted + traj.n_curvature_violations + traj.n_null + traj.n_ls_failures
-        == traj.n_steps
-    )
+    assert traj.n_accepted + traj.n_curvature_violations + traj.n_null + traj.n_ls_failures == 30
     assert traj.n_curvature_violations >= 1, "the objective produced no rejections to check"
 
 
@@ -327,7 +404,7 @@ def test_window_layout_holds_before_the_ring_wraps():
         num_iters=9,
         config=StochasticLBFGSConfig(maxcor=J),
     )
-    assert traj.n_accepted == traj.n_steps > J, "every step must be accepted for xs to line up"
+    assert traj.n_accepted == 9 > J, "every step must be accepted for xs to line up"
     xs = [x0, *[it["x"] for it in traj.iterates]]
     for k, it in enumerate(traj.iterates):
         n_valid = min(k + 1, J)

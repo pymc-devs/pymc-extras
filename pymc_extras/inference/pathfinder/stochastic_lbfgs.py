@@ -18,14 +18,9 @@ the difference (unlike differencing across two batches, which leaves the noise a
 routinely produces ``s . y < 0``). Pairs still failing the curvature condition are
 skipped, not forced into the history.
 
-The trajectory records, at every accepted step, exactly the state the pathfinder
-sampler consumes — ``x, g, alpha, s_win, z_win`` — with the ``(N, J)`` ring-buffer
-layout of ``pymc_extras.inference.pathfinder.lbfgs.LBFGSStreamingCallback`` and the
-diagonal update ``alpha_step_numpy`` from ``bfgs_sample``, so ``streaming_pathfinder``
-can feed each iterate straight into ``make_pathfinder_sample_fn``.
-
-The optimizer loop is pure numpy and testable on analytic objectives; only the
-diagonal update is imported from ``bfgs_sample``.
+Each accepted step records the ``(x, g, alpha, s_win, z_win)`` that
+``make_pathfinder_sample_fn`` consumes, with the window ordered oldest-to-newest
+rather than in the physical ring order ``LBFGSStreamingCallback`` hands on.
 """
 
 from dataclasses import dataclass, field
@@ -64,6 +59,14 @@ class StochasticLBFGSConfig:
     maxls: int = 20
     epsilon: float = 1e-8
 
+    def __post_init__(self):
+        # A backtrack outside (0, 1) flips the step direction, which makes the Armijo
+        # bound trivially true: the run then climbs with every counter reading healthy.
+        if not 0.0 < self.backtrack < 1.0:
+            raise ValueError(f"backtrack must be in (0, 1), got {self.backtrack}")
+        if self.maxcor < 1 or self.maxls < 1:
+            raise ValueError(f"maxcor and maxls must be >= 1, got {self.maxcor}, {self.maxls}")
+
 
 @dataclass
 class Trajectory:
@@ -75,7 +78,6 @@ class Trajectory:
     """
 
     iterates: list = field(default_factory=list)
-    n_steps: int = 0
     n_accepted: int = 0
     n_curvature_violations: int = 0
     n_null: int = 0
@@ -83,11 +85,8 @@ class Trajectory:
 
     @property
     def violation_rate(self):
-        """Curvature-rejection rate among steps that actually moved (target < 20%).
-
-        Null steps (the optimizer has effectively stopped, so ``s`` is below the
-        floor) are excluded — they signal convergence, not a curvature failure.
-        """
+        """Curvature-rejection rate among steps that moved. Null steps are excluded:
+        they signal convergence, not a curvature failure."""
         moved = self.n_accepted + self.n_curvature_violations
         return self.n_curvature_violations / moved if moved else 0.0
 
@@ -102,7 +101,9 @@ def _two_loop_direction(g, alpha, s_win, z_win, order):
     for c in order:
         s_c, y_c = s_win[:, c], z_win[:, c]
         sy = s_c @ y_c
-        if not np.isfinite(sy) or sy < 1e-16:  # skip a numerically degenerate pair
+        # s_win columns are strided views, so sy can differ in the last ulp from the
+        # value that passed the acceptance test; rho = 1 / sy must not see a zero.
+        if not np.isfinite(sy) or sy < 1e-16:
             continue
         rho = 1.0 / sy
         a = rho * (s_c @ q)
@@ -116,7 +117,7 @@ def _two_loop_direction(g, alpha, s_win, z_win, order):
     return -r
 
 
-def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=None):
+def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=None, callbacks=()):
     """Run stochastic L-BFGS, recording a Gaussian-ready iterate at each accepted step.
 
     Parameters
@@ -134,6 +135,10 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
     num_iters : int
         Number of optimization steps.
     config : StochasticLBFGSConfig, optional
+    callbacks : iterable of callable, optional
+        Called as ``(approx, losses, i)`` after each step with the minibatch objective,
+        matching ``pm.fit``'s contract; one raising ``StopIteration`` ends the run.
+        There is no ``Approximation`` here, so ``approx`` is ``None``.
 
     Returns
     -------
@@ -153,9 +158,7 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
     traj = Trajectory()
     f, g = value_grad_fn(x)
 
-    for _ in range(num_iters):
-        traj.n_steps += 1
-
+    for i in range(num_iters):
         if n_valid == 0:
             d = -alpha * g
         else:
@@ -169,61 +172,59 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
 
         # Backtracking Armijo line search on the *fixed* current batch.
         t = config.init_step
-        f_new, x_new, g_new = f, x, g
-        ls_ok = False
-        for _ls in range(config.maxls):
+        x_new = g_new = None
+        for _ in range(config.maxls):
             x_trial = x + t * d
-            f_trial = value_grad_fn(x_trial)[0]
+            f_trial, g_trial = value_grad_fn(x_trial)
             if np.isfinite(f_trial) and f_trial <= f + config.armijo_c1 * t * gd:
-                f_new, x_new = f_trial, x_trial
-                g_new = value_grad_fn(x_new)[1]
-                ls_ok = True
+                x_new, g_new = x_trial, g_trial
                 break
             t *= config.backtrack
-        if not ls_ok:
+
+        if x_new is None:
+            # A failed line search gives no trusted step: forcing an untested move into
+            # the history pollutes the L-BFGS memory and lets violation_rate read 0% on
+            # a stuck run. Hold x and retry on fresh data.
             traj.n_ls_failures += 1
-            # A failed line search gives no trusted step: never force an untested
-            # move into the curvature history (that both pollutes the L-BFGS memory
-            # and lets violation_rate read 0% on a stuck run). Hold x, advance the
-            # batch, and try again on fresh data.
-            on_batch_advance()
-            f, g = value_grad_fn(x)
-            continue
-
-        s = x_new - x
-        y = g_new - g
-        s2 = s @ s
-        sy = s @ y
-
-        if s2 < 1e-16:
-            # Null step: the optimizer has effectively stopped moving. Not a
-            # curvature failure; just don't extend the history.
-            traj.n_null += 1
-        elif np.isfinite(sy) and sy > 1e-16 and sy >= config.epsilon * s2:
-            alpha = alpha_step_numpy(alpha, s, y)
-            win_idx = (win_idx + 1) % J
-            s_win[:, win_idx] = s
-            z_win[:, win_idx] = y
-            n_valid = min(n_valid + 1, J)
-            traj.n_accepted += 1
-            # The sampler reads the window as a chronological sequence and has no
-            # ring index, so hand it oldest-to-newest. Before the ring wraps the
-            # physical layout already is that, with the unused columns last.
-            shift = -(win_idx + 1) % J if n_valid == J else 0
-            traj.iterates.append(
-                {
-                    "x": x_new.copy(),
-                    "g": g_new.copy(),
-                    "alpha": alpha.copy(),
-                    "s_win": np.roll(s_win, shift, axis=1),
-                    "z_win": np.roll(z_win, shift, axis=1),
-                }
-            )
         else:
-            traj.n_curvature_violations += 1
+            s = x_new - x
+            y = g_new - g
+            s2 = s @ s
+            sy = s @ y
+            if s2 < 1e-16:
+                traj.n_null += 1  # stopped moving, which is not a curvature failure
+            # 1e-16 keeps rho = 1 / sy finite, epsilon tests curvature scale-free
+            elif np.isfinite(sy) and sy > 1e-16 and sy >= config.epsilon * s2:
+                alpha = alpha_step_numpy(alpha, s, y)
+                win_idx = (win_idx + 1) % J
+                s_win[:, win_idx] = s
+                z_win[:, win_idx] = y
+                n_valid = min(n_valid + 1, J)
+                traj.n_accepted += 1
+                # bfgs_sample reads E = triu(S.T @ Z), which is the textbook recursion
+                # only when the columns run oldest-to-newest; the roll puts the oldest
+                # resident pair first. An unfilled ring already reads that way.
+                shift = -(win_idx + 1) % J if n_valid == J else 0
+                traj.iterates.append(
+                    {
+                        "x": x_new.copy(),
+                        "g": g_new.copy(),
+                        "alpha": alpha.copy(),
+                        "s_win": np.roll(s_win, shift, axis=1),
+                        "z_win": np.roll(z_win, shift, axis=1),
+                    }
+                )
+            else:
+                traj.n_curvature_violations += 1
+            x = x_new
 
-        x, f, g = x_new, f_new, g_new
         on_batch_advance()
-        f, g = value_grad_fn(x)  # re-evaluate on the freshly advanced batch
+        f, g = value_grad_fn(x)  # f must be on the batch the next Armijo test uses
+
+        try:
+            for cb in callbacks:
+                cb(None, [f], i + 1)
+        except StopIteration:
+            break
 
     return traj

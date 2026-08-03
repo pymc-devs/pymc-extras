@@ -234,25 +234,6 @@ def test_batch_size_robustness():
     assert np.all(np.abs(means[256] - means[2000]) < 0.25 + 0.15 * np.abs(means[2000]))
 
 
-@pytest.mark.slow
-def test_violation_rate_below_20pct():
-    """Same-batch pairing keeps the curvature-violation rate under the proposal's 20%."""
-    rng = np.random.default_rng(12)
-    X, y, _ = sample_logistic(k=4, n=4000, rng=rng)
-    model, packed = logistic_regression(X, y)
-    loader = ArrayLoader(packed, batch_size=256, shuffle=True, seed=1)
-    res = fit_streaming_pathfinder(
-        model,
-        loader,
-        num_iters=200,
-        num_draws=500,
-        eval_rows=1000,
-        random_seed=0,
-        lbfgs_config=CFG,
-    )
-    assert res.violation_rate < 0.20, f"violation rate {res.violation_rate:.3f}"
-
-
 def test_full_data_logp_exact_with_tail():
     """Streaming full-data logP equals model.logp over the whole dataset, including the
     trailing partial batch a drop-last training loader would skip."""
@@ -338,6 +319,34 @@ def test_full_data_logp_invariant_to_batch_order_and_size():
         np.testing.assert_allclose(value, truth, atol=1e-8, err_msg=name)
 
 
+def test_a_drop_last_loader_is_refused_and_told_what_to_pass():
+    """A DataLoader epoch yields floor(N / batch_size) * batch_size rows, so for almost
+    any N the default full_pass cannot produce an exact logP. The error has to name the
+    remedy: it fires only after the whole optimization has been paid for."""
+    rng = np.random.default_rng(24)
+    k, n = 2, 350
+    X = rng.normal(size=(n, k))
+    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=n)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+
+    class DropLastLoader(ArrayLoader):
+        def __iter__(self):
+            for start in range(0, len(self) - self.batch_size + 1, self.batch_size):
+                yield self.data[start : start + self.batch_size]
+
+    loader = DropLastLoader(packed, batch_size=128)
+    assert sum(b.shape[0] for b in loader) == 256 < len(loader)
+
+    kwargs = dict(num_iters=5, num_draws=50, eval_rows=60, random_seed=0, lbfgs_config=CFG)
+    with pytest.raises(RuntimeError, match=r"pass full_pass=<the loader's dataset source>"):
+        fit_streaming_pathfinder(model, loader, **kwargs)
+
+    res = fit_streaming_pathfinder(
+        model, loader, full_pass=[packed[i : i + 97] for i in range(0, n, 97)], **kwargs
+    )
+    assert res.samples.shape == (50, k)
+
+
 def test_incomplete_full_pass_is_refused():
     """A pass that does not visit every row is rejected rather than returning a
     subset-rescaled density that silently looks like the full-data one."""
@@ -357,9 +366,9 @@ def test_incomplete_full_pass_is_refused():
     [
         (None, None, 50, False),
         (None, 137, 137, False),
-        ("identity", None, 200, False),
+        ("identity", None, 51, False),
         ("identity", 137, 137, False),
-        ("psis", None, 200, True),
+        ("psis", None, 51, True),
         ("psis", 137, 137, True),
     ],
     ids=["none", "none-pool", "identity", "identity-pool", "psis", "psis-pool"],
@@ -370,9 +379,9 @@ def test_returned_draws_have_requested_shape(
     """samples is (num_draws, N) for every weighting method and proposal-pool size, while
     logP and logQ stay the length of the proposal pool they were computed on.
 
-    The pool defaults to 4x num_draws when resampling and to num_draws otherwise; an
-    explicit num_proposal_draws overrides both, and none of that may leak into the
-    returned draw count.
+    The pool defaults to num_draws, plus one when resampling so PSIS reweights instead of
+    permuting; an explicit num_proposal_draws overrides both, and none of that may leak
+    into the returned draw count.
     """
     num_draws = 50
     rng = np.random.default_rng(23)
@@ -519,9 +528,7 @@ def test_full_data_logp_installs_every_batch():
     model.set_data("batch", packed)
     truth = np.array([-nlp(row.astype(np.float64))[0] for row in phi])
 
-    prior_fn = _compile_batched_logp(
-        model, [*model.free_RVs, *model.potentials], jacobian=True
-    )
+    prior_fn = _compile_batched_logp(model, [*model.free_RVs, *model.potentials], jacobian=True)
     obs_fn = _compile_batched_logp(model, model.observed_RVs, jacobian=False)
     model.set_data("batch", packed[:chunk])  # the stale batch a finished fit leaves behind
     got = _full_data_logp(
