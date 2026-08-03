@@ -15,9 +15,10 @@
 
 from __future__ import annotations
 
+import numbers
 import warnings
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 
 import numpy as np
 
@@ -32,8 +33,8 @@ from pymc_extras.variational.dataloader import DataLoader
 __all__ = ["Trainer"]
 
 
-def _cycle(loader: DataLoader) -> Iterator[np.ndarray]:
-    """Repeat the loader's epochs forever. A pass that yields nothing never ends."""
+def _cycle(loader: Iterable[np.ndarray]) -> Iterator[np.ndarray]:
+    """Repeat the loader's epochs forever, raising rather than spinning on an empty pass."""
     while True:
         empty = True
         for batch in loader:
@@ -153,7 +154,7 @@ class Trainer:
         :class:`Approximation`
             The fitted approximation, as returned by :func:`pymc.fit`.
         """
-        if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+        if not isinstance(n, numbers.Integral) or isinstance(n, bool) or n <= 0:
             raise ValueError(f"n must be a positive integer (the number of fit steps), got {n!r}")
         loader = self.dataloader
         if not isinstance(loader, DataLoader):

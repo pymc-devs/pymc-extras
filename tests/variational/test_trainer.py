@@ -41,6 +41,24 @@ def loud(n, rows=4, spacing=1000.0):
     return [np.full((rows, 1), spacing * (i + 1)) for i in range(n)]
 
 
+def one_epoch_then_empty(rows=4):
+    """A source that streams one epoch and then comes back empty.
+
+    The third pass raises so that a ``_cycle`` which spins over the empty second one
+    fails the test instead of hanging it.
+    """
+    calls = {"n": 0}
+
+    def factory():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            yield np.zeros((rows, 1))
+        elif calls["n"] > 2:
+            raise AssertionError("_cycle restarted an exhausted source instead of raising")
+
+    return factory
+
+
 def record_installed(model, log):
     """Log the marker of every batch ``set_data`` installs, in order."""
     original = model.set_data
@@ -67,14 +85,7 @@ def test_cycle_replays_the_loaders_own_epochs():
 
 def test_cycle_raises_instead_of_spinning_on_an_empty_pass():
     """A source that cannot be replayed would make the cycle loop forever."""
-    calls = {"n": 0}
-
-    def factory():
-        calls["n"] += 1
-        if calls["n"] == 1:
-            yield np.zeros((2, 1))
-
-    loader = DataLoader(factory, batch_size=2, total_size=2)
+    loader = DataLoader(one_epoch_then_empty(rows=2), batch_size=2, total_size=2)
     batches = _cycle(loader)
     assert next(batches).shape == (2, 1)
     with pytest.raises(RuntimeError, match="yielded no batches"):
@@ -156,14 +167,7 @@ def test_trainer_streams_into_placeholder():
 def test_trainer_raises_when_loader_cannot_restart():
     """A source that streams one epoch and then comes back empty cannot be cycled;
     the Trainer surfaces a clear error instead of training on stale data."""
-    calls = {"n": 0}
-
-    def factory():
-        calls["n"] += 1
-        if calls["n"] == 1:
-            yield np.zeros((4, 1))
-
-    loader = DataLoader(factory, batch_size=4, total_size=4)
+    loader = DataLoader(one_epoch_then_empty(), batch_size=4, total_size=4)
     with pm.Model():
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
@@ -496,6 +500,18 @@ def test_fit_rejects_nonpositive_n(n):
         pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
         with pytest.raises(ValueError, match="positive integer"):
             Trainer(method="advi", dataloader=loader).fit(n)
+
+
+def test_fit_accepts_a_numpy_integer_step_count():
+    """A numpy integer is not an ``int``, so the two modules would otherwise disagree:
+    the DataLoader takes one for ``batch_size`` and fit would refuse one for ``n``."""
+    loader = DataLoader(lambda: iter(marked(10, rows=2)), batch_size=np.int64(2), total_size=20)
+    with pm.Model():
+        mu = pm.Normal("mu", 0, 1)
+        batch = pm.Data("batch", np.zeros((2, 1)))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        approx = Trainer(method="advi", dataloader=loader).fit(np.int64(3), random_seed=0)
+    assert len(approx.hist) == 3
 
 
 def test_progressbar_defaults_off_and_yields_to_an_explicit_setting(monkeypatch):
