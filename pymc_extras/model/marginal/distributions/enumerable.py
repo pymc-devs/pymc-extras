@@ -2,13 +2,12 @@ import warnings
 
 from collections.abc import Sequence
 
-import numpy as np
 import pytensor.tensor as pt
 
 from pymc.distributions import Bernoulli, Categorical, DiscreteUniform
 from pymc.logprob.abstract import _logprob
 from pymc.logprob.basic import conditional_logp
-from pymc.pytensorf import constant_fold, resolve_shapes
+from pymc.pytensorf import resolve_shapes
 from pytensor.compile.mode import Mode
 from pytensor.graph import Op, node_rewriter, vectorize_graph
 from pytensor.graph.replace import graph_replace
@@ -86,22 +85,29 @@ class MarginalFiniteDiscreteRV(EnumerableMarginalRV):
     """Base class for Marginalized Finite Discrete RVs"""
 
 
-def get_domain_of_finite_discrete_rv(rv: TensorVariable) -> tuple[int, ...]:
+def get_domain_of_finite_discrete_rv(rv: TensorVariable) -> TensorVariable:
+    """Return the support of a finite discrete RV as a vector.
+
+    The domain is kept symbolic, so that RVs whose number of states is not known at graph
+    construction time (e.g. a Categorical whose `p` has a model dim as its last axis) can
+    still be enumerated. Shapes are resolved and values folded when possible, which preserves
+    the static length of the domain for the common case.
+    """
     op = rv.owner.op
     dist_params = rv.owner.op.dist_params(rv.owner)
     if isinstance(op, Bernoulli):
-        return (0, 1)
+        return pt.arange(2)
     elif isinstance(op, Categorical):
         [p_param] = dist_params
-        [p_param_length] = constant_fold([p_param.shape[-1]])
-        return tuple(range(p_param_length))
+        [p_param_length] = resolve_shapes([p_param.shape[-1]])
+        return pt.arange(p_param_length)
     elif isinstance(op, DiscreteUniform):
-        lower, upper = constant_fold(dist_params)
-        return tuple(np.arange(lower, upper + 1))
+        lower, upper = constant_fold(dist_params, raise_not_constant=False)
+        return pt.arange(lower, upper + 1)
     elif isinstance(op, DiscreteMarkovChain):
         P, *_ = dist_params
-        [n_states] = constant_fold(resolve_shapes([P.shape[-1]]))
-        return tuple(range(n_states))
+        [n_states] = resolve_shapes([P.shape[-1]])
+        return pt.arange(n_states)
 
     raise NotImplementedError(f"Cannot compute domain for op {op}")
 
@@ -182,11 +188,11 @@ def finite_discrete_marginal_rv_logp(op: MarginalFiniteDiscreteRV, values, *inpu
     # batched dimensions of the marginalized RV
 
     # PyMC does not allow RVs in the logp graph, even if we are just using the shape
-    marginalized_rv_shape = constant_fold(tuple(marginalized_rv.shape), raise_not_constant=False)
+    marginalized_rv_shape = resolve_shapes(tuple(marginalized_rv.shape))
     marginalized_rv_domain = get_domain_of_finite_discrete_rv(marginalized_rv)
     marginalized_rv_domain_tensor = pt.moveaxis(
         pt.full(
-            (*marginalized_rv_shape, len(marginalized_rv_domain)),
+            (*marginalized_rv_shape, marginalized_rv_domain.size),
             marginalized_rv_domain,
             dtype=marginalized_rv.dtype,
         ),
@@ -254,11 +260,11 @@ def finite_discrete_marginalized_conditional(op, inputs, dep_rvs):
         dependent_logps,
     )
 
-    rv_shape = constant_fold(tuple(marginalized.shape), raise_not_constant=False)
+    rv_shape = resolve_shapes(tuple(marginalized.shape))
     rv_domain = get_domain_of_finite_discrete_rv(marginalized)
     rv_domain_tensor = pt.moveaxis(
         pt.full(
-            (*rv_shape, len(rv_domain)),
+            (*rv_shape, rv_domain.size),
             rv_domain,
             dtype=marginalized.dtype,
         ),
