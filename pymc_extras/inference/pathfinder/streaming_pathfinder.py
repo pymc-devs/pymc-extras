@@ -14,8 +14,10 @@ unchanged from the deterministic Pathfinder (``bfgs_sample``, ``importance_sampl
 The draws it returns are a proposal, not a posterior; the measured operating range, in both
 dataset size and dimension, is on :func:`fit_streaming_pathfinder`.
 
-What streaming does buy is memory: 6.4x less resident memory than ``fit_pathfinder`` at
-N=4e5 and 11.4x at N=1.6e6, at comparable wall clock for a matched proposal pool.
+What streaming buys is memory: the optimizer only ever holds one minibatch, and the final
+exact ``logP`` is accumulated block by block over ``full_pass``, so nothing here is sized by
+the row count. ``fit_pathfinder`` materializes the whole dataset instead. No ratio is quoted
+because the earlier one did not say what it measured.
 """
 
 from dataclasses import dataclass
@@ -44,8 +46,13 @@ from pymc_extras.inference.pathfinder.stochastic_lbfgs import (
 __all__ = ["StreamingPathfinderResult", "fit_streaming_pathfinder"]
 
 # Fraction of the trajectory's iterate positions that the tail average covers. Not a
-# keyword: 0.50 and 0.75 are indistinguishable and the 0.50-0.90 basin is flat, so the
-# only thing a user could learn from the knob is that 1.00 is broken.
+# keyword. Swept over one trajectory per seed at the Notes k=8, N=1e5 configuration, 8 seeds,
+# scoring worst-coordinate |x_avg - full-data MAP| in reference-sd: the medians over
+# 0.50/0.60/0.75/0.90 are 0.86/0.80/0.68/0.80, a spread of 1.26x, while 1.00 is 5.06 (7.4x the
+# best) and 0.10 is 3.17. So the interior is shallow and the endpoint is the cliff. 0.50 vs
+# 0.75 paired per seed differs by +0.13 ref-sd (95% CI -0.05 to +0.31), which 8 seeds do not
+# resolve; 0.75 is the better point estimate and the only thing the knob reliably teaches is
+# that 1.00 is broken.
 _TAIL_AVERAGE_FRAC = 0.75
 
 
@@ -167,8 +174,9 @@ def fit_streaming_pathfinder(
         Defaults to ``4 * num_draws`` when resampling, matching ``fit_pathfinder``'s
         ``num_paths=4`` x ``num_draws_per_path=1000`` pool, and to ``num_draws`` when
         ``importance_sampling=None``. The pool's exact full-data ``logP`` is one
-        O(``num_proposal_draws`` x N) pass and was 85-94% of wall clock at N=1e5, so this
-        setting is very nearly the cost of the fit.
+        O(``num_proposal_draws`` x N) pass, against an optimizer that only ever touches
+        ``num_iters`` x batch rows, so on any large dataset this setting dominates the cost
+        of the fit.
     full_pass : iterable, optional
         An iterable of row blocks visiting every row exactly once, for the final exact
         full-data ``logP``; consumed once. Defaults to iterating ``loader``, which is
@@ -190,9 +198,8 @@ def fit_streaming_pathfinder(
     importance_sampling : {"psis", "psir", "identity", None}
         Post-hoc reweighting of the returned draws; ``None`` returns the proposal
         draws unweighted. ``"identity"`` weights by the raw log ratio, so like
-        ``"psis"``/``"psir"`` it resamples from a larger pool. At the Notes configuration
-        it cost 3.4-3.7x the wall clock of ``None``, which draws a pool of ``num_draws``
-        only.
+        ``"psis"``/``"psir"`` it resamples from a 4x pool, so it pays the ``logP`` pass on
+        four times as many draws as ``None``, which draws ``num_draws`` only.
     lbfgs_config : StochasticLBFGSConfig, optional
     callbacks : iterable of callable, optional
         ``pm.fit`` callbacks, called ``(None, losses, i)`` after each optimizer step;
@@ -207,34 +214,21 @@ def fit_streaming_pathfinder(
 
     Notes
     -----
-    Measured operating range. Bayesian logistic regression, Normal(0, 2) prior, batch 2048
-    from a *shuffled* loader, ``num_iters=200``, ``maxcor=6``, ``jitter=2.0``,
-    ``num_draws=1000``, ``num_proposal_draws=4000``, PSIS, against an exact full-data
-    Laplace reference. Shuffling is part of the configuration, not a detail: an unshuffled
-    loader replays the same rows in the same order every epoch, and the table below was not
-    measured that way. With k=8 coefficients, worst-coordinate error in reference-sd:
+    Measured operating range. Bayesian logistic regression, Normal(0, 2) prior, batch 2048 from
+    a *shuffled* loader, ``num_iters=200``, ``maxcor=6``, ``jitter=2.0``, ``num_draws=1000``,
+    ``num_proposal_draws=4000``, PSIS, scored against an exact full-data Laplace reference.
+    Shuffling is part of the configuration: an unshuffled loader replays the same rows in the
+    same order every epoch, and none of this was measured that way.
 
-    ====== ===================== =========================
-    N      ``pareto_k``          worst coordinate (ref-sd)
-    ====== ===================== =========================
-    1e5    0.31-0.80 (med 0.69)  0.17-0.58
-    4e5    0.80-0.91 (med 0.87)  1.07-1.56
-    1.6e6  2.05-2.56 (med 2.52)  2.91-4.35
-    ====== ===================== =========================
+    With k=8 at N=1e5, over 12 seeds, ``pareto_k`` ran 0.60-0.80 (median 0.70, over 0.7 on half
+    of them) and the worst posterior-mean coordinate was 0.23-0.58 reference-sd out. Accuracy
+    degrades with N -- ``pareto_k`` 0.76-1.29 and error 0.53-2.24 ref-sd over 6 seeds at N=4e5 --
+    and much faster with dimension: at k=100, N=1e5 it was 2.0-3.8 and 13-64 ref-sd over 4 seeds,
+    and nothing raises, so that fit returns silently wrong draws.
 
-    On the same trajectories before tail averaging, N=1e5 gave ``pareto_k`` 5.80-7.00 and
-    9.71-11.13 ref-sd. But ``pareto_k`` still exceeds 0.7 on 6 of 12 seeds at N=1e5 and on
-    5 of 6 at N=4e5, so read it on every fit: these draws remain a *proposal*, not a
-    posterior, and in the large-N regime that gap is not small.
-
-    The range is in ``k`` as much as in ``N``. At k=100 the tail-averaged ``pareto_k`` is
-    2.2-4.5 and the error 4.6-17.4 ref-sd — unusable, and worse, quiet: with the
-    line-search gradient-finiteness guard the k=100 case no longer raises, it returns a
-    silently wrong posterior. Do not run this above a few tens of dimensions without
-    checking ``pareto_k``.
-
-    Averaging buys a level, not an exponent: the gap still grows roughly 3x per 4x in N.
-    ``violation_rate`` is an optimizer-health counter and read 0.0 on all of these runs.
+    These draws are a *proposal*, not a posterior. Read ``pareto_k`` on every fit, and do not run
+    this above a few tens of dimensions. ``violation_rate`` is an optimizer-health counter, not
+    an accuracy one; it read 0.0 with no line-search failures on every run above.
     """
     model = pm.modelcontext(model)
     if batch_var not in model.named_vars:
@@ -297,24 +291,14 @@ def fit_streaming_pathfinder(
             "smaller jitter, or a larger batch size."
         )
 
-    # Polyak-Ruppert tail averaging of the iterate positions. Each stochastic L-BFGS step is
-    # a full quasi-Newton step plus line search on ONE minibatch, so its accepted point is
-    # essentially that minibatch's MAP. Newton on 9 batches per size at the Notes k=8, N=1e5
-    # data puts that MAP about sqrt(N / b) full-data posterior-sd away in per-coordinate RMS
-    # (measured / sqrt(N / b) = 0.82, 0.92, 0.75 at b = 512, 2048, 8192; the max-coordinate
-    # norm is ~2x that, so the norm has to be named), while the same batch reproduces the
-    # posterior sd to a few percent (median over coordinates and runs 3.5%, 2.1%, 0.7%; worst
-    # coordinate 8.5%, 3.7%, 1.9%). The damage is in the location, not the covariance, which
-    # is why no rule that *picks* an iterate can fix it.
-    # g is zeroed because the sampler centres the Gaussian at mu = x - H_inv @ g; keeping the
-    # last iterate's gradient moved that centre 1.6-7.3x further from the full-data MAP over
-    # 12 seeds, worse on every one (worst coordinate, reference-sd). Curvature stays from the
-    # last iterate: averaged (s, z) pairs are not a valid L-BFGS memory.
-    # Ruppert 1988 (Cornell ORIE TR-781); Polyak & Juditsky 1992, SIAM J. Control Optim.
-    # 30(4):838-855; Jain et al., JMLR 18(223), 2018 (tail averaging the last c*n iterates);
-    # Mandt, Hoffman & Blei, JMLR 18(134), 2017; Dhaka et al., NeurIPS 2020 and Welandawe
-    # et al., JMLR 25(219), 2024 (iterate averaging in VI); Byrd, Hansen, Nocedal & Singer,
-    # SIAM J. Optim. 26(2):1008-1031, 2016 (averaged iterates inside stochastic L-BFGS).
+    # Polyak-Ruppert tail averaging of the iterate positions (Polyak & Juditsky 1992; Jain
+    # et al. 2018). Each step is a full quasi-Newton step plus line search on ONE minibatch, so
+    # its accepted point sits near that minibatch's MAP: measured roughly sqrt(N / b) full-data
+    # posterior-sd away in per-coordinate RMS, on a batch that still reproduces the posterior sd
+    # to within ~10%. The error is in the location, not the covariance, so no rule that *picks*
+    # an iterate removes it. g is zeroed because the sampler centres at mu = x - H_inv @ g, and
+    # keeping the last iterate's g moved that centre further from the full-data MAP on all of
+    # 12 seeds; curvature stays the last iterate's -- averaged (s, z) is not a valid memory.
     m = max(1, round(_TAIL_AVERAGE_FRAC * len(traj.iterates)))
     x_avg = np.mean([it["x"] for it in traj.iterates[-m:]], axis=0)
     last = traj.iterates[-1]

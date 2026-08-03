@@ -99,9 +99,8 @@ def test_two_loop_direction_matches_dense_bfgs():
     assert np.allclose(d, -H @ g, atol=1e-10)
 
 
-def test_a_pair_with_zero_curvature_drops_out_of_the_recursion():
-    """The recursion divides by ``s . y``, so an exactly orthogonal pair has to be
-    skipped rather than contribute an infinite coefficient."""
+def test_zero_curvature_pair_skipped():
+    """The recursion divides by s.y, so an orthogonal pair is skipped, not divided by."""
     s_win = np.zeros((3, 2))
     z_win = np.zeros((3, 2))
     s_win[:, 0], z_win[:, 0] = [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]
@@ -133,12 +132,8 @@ def test_line_search_decreases_objective_each_step():
     assert all(v2 <= v1 + 1e-9 for v1, v2 in itertools.pairwise(values))
 
 
-def test_no_point_is_evaluated_twice_within_a_step():
-    """The accepted trial's gradient comes from the call that tested it.
-
-    Re-evaluating the accepted point to fetch a gradient the joint value_grad_fn already
-    returned costs a full logp+grad pass per step, and no counter reports it.
-    """
+def test_no_duplicate_gradient_evaluations():
+    """The accepted trial's gradient comes from the call that tested it, not a re-evaluation."""
     rng = np.random.default_rng(30)
     A = np.diag([1.0, 2.0, 4.0])
     vg = quadratic(A, rng.normal(size=3))
@@ -157,17 +152,15 @@ def test_no_point_is_evaluated_twice_within_a_step():
 
 
 @pytest.mark.parametrize("kw", [{"backtrack": -0.5}, {"maxcor": 0}])
-def test_config_rejects_settings_that_make_a_wrong_fit_look_healthy(kw):
-    """backtrack outside (0, 1) is the dangerous one: a negative step length satisfies
-    the Armijo bound trivially, so the run climbs while every counter reads clean."""
+def test_config_rejects_invalid_settings(kw):
+    """Settings that would silently break the line search or the history are refused."""
     with pytest.raises(ValueError):
         StochasticLBFGSConfig(**kw)
 
 
 def test_line_search_exhaustion_handled():
-    """When Armijo can never be satisfied the step is flagged, not crashed, and the loop
-    still moves on to fresh data — holding both x and the batch replays the identical
-    failing step forever, and only n_ls_failures would ever show it."""
+    """When Armijo can never be satisfied the step is flagged, not crashed, and the batch
+    still advances so the next step does not replay the same failure."""
 
     def vg(x):
         # constant value with a nonzero gradient: no step ever decreases f
@@ -280,6 +273,7 @@ def test_both_gradients_of_every_accepted_pair_come_from_one_batch():
     rng = np.random.default_rng(20)
     A = np.diag([1.0, 2.0, 5.0])
     J = 4
+    num_iters = 40
     state = {"batch": 0, "b": rng.normal(0, 0.3, size=3)}
     log = []
 
@@ -296,7 +290,7 @@ def test_both_gradients_of_every_accepted_pair_come_from_one_batch():
         vg,
         advance,
         np.array([4.0, -4.0, 4.0]),
-        num_iters=40,
+        num_iters=num_iters,
         config=StochasticLBFGSConfig(maxcor=J),
     )
     assert traj.n_accepted > J
@@ -312,7 +306,7 @@ def test_both_gradients_of_every_accepted_pair_come_from_one_batch():
         np.testing.assert_array_equal(it["s_win"][:, newest], it["x"] - x_first)
         np.testing.assert_array_equal(it["z_win"][:, newest], it["g"] - g_first)
 
-    assert sorted({b for b, _, _ in log}) == list(range(41))
+    assert sorted({b for b, _, _ in log}) == list(range(num_iters + 1))
 
 
 @pytest.mark.parametrize("J, n_pairs", [(1, 1), (2, 5), (3, 2), (3, 3), (3, 7), (6, 4), (6, 13)])
@@ -384,3 +378,44 @@ def test_window_layout_holds_before_the_ring_wraps():
             )
         np.testing.assert_array_equal(it["s_win"][:, n_valid:], 0.0)
         np.testing.assert_array_equal(it["z_win"][:, n_valid:], 0.0)
+
+
+def test_recorded_loss_is_measured_after_the_batch_advance():
+    """``losses[i]`` is the objective at the position step ``i + 1`` reached, measured on
+    the batch installed *after* that step -- not the value its Armijo test accepted.
+
+    The two differ: the accepted value is measured on the batch the position was chosen to
+    minimize, so it reads low against the full-data objective, while the recorded one is
+    measured on a batch the step never saw. A monitor such as
+    ``pymc.variational.callbacks.CheckLossConvergence`` consumes exactly this series, so
+    which of the two it gets is part of the contract.
+
+    The objective carries a per-batch offset that the gradient does not, so the trajectory
+    is identical on every batch while each recorded value still names the batch it came
+    from: the offset cancels inside the Armijo test, which only ever compares two values on
+    one batch.
+    """
+    offset = 1000.0
+    centre = np.array([1.0, -2.0, 0.5])
+    curv = np.array([1.0, 3.0, 9.0])  # ill-conditioned: no single step reaches the minimum
+    state = {"b": 0}
+
+    def vg(x):
+        d = x - centre
+        return 0.5 * (d * curv) @ d + state["b"] * offset, curv * d
+
+    def advance():
+        state["b"] += 1
+
+    losses = []
+    traj = run_stochastic_lbfgs(
+        vg, advance, np.zeros(3), num_iters=5, callbacks=[lambda a, L, i: losses.append(L[-1])]
+    )
+
+    assert traj.n_accepted == 5, "every step must be accepted for the positions to line up"
+    assert len(losses) == 5
+    for i, it in enumerate(traj.iterates):
+        d = it["x"] - centre
+        quad = 0.5 * (d * curv) @ d
+        # batch (i + 1), not batch i: the advance has already run when the loss is recorded.
+        assert losses[i] == pytest.approx(quad + (i + 1) * offset, rel=1e-12)

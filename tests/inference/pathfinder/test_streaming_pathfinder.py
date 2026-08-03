@@ -100,14 +100,9 @@ def test_set_data_changes_compiled_objective():
     assert not np.allclose(g_all, g_sub), "gradient did not respond to set_data"
 
 
-def test_a_saturated_trial_point_cannot_poison_the_gradient():
-    """A logit past float64 saturation has a finite logp and a NaN gradient, so the
-    Armijo test on the value alone accepts it. The accepted gradient then becomes the
-    next step's ``g``: the direction is NaN, every later line search fails, and the run
-    ends with no accepted steps at all rather than with a visible error. Deterministic —
-    fixed data seed, fixed start, one batch installed throughout — and without the
-    finiteness guard it records ``n_accepted == 0``.
-    """
+def test_saturated_trial_point_rejected():
+    """A saturated logit has a finite logp and a NaN gradient, so Armijo on the value alone
+    would accept it and every later step would inherit the NaN direction."""
     from pymc_extras.inference.pathfinder.bfgs_sample import get_neg_logp_dlogp_of_ravel_inputs
     from pymc_extras.inference.pathfinder.stochastic_lbfgs import run_stochastic_lbfgs
 
@@ -172,49 +167,39 @@ def test_crn_determinism():
     np.testing.assert_array_equal(a.samples, b.samples)
 
 
-def capture_gaussian(monkeypatch):
-    """Record the (x, g, alpha, s_win, z_win) the final full-width draw is taken from."""
-    import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
+def test_gaussian_is_centred_on_tail_averaged_position(monkeypatch):
+    """The proposal centre is the mean of the last 75% of iterate positions, not one iterate.
 
-    seen = {}
-    original = sp.make_pathfinder_sample_fn
-
-    def wrapper(*args, **kwargs):
-        fn = original(*args, **kwargs)
-
-        def tapped(x, g, alpha, s_win, z_win, u):
-            seen["args"] = (x, g, alpha, s_win, z_win)
-            return fn(x, g, alpha, s_win, z_win, u)
-
-        return tapped
-
-    monkeypatch.setattr(sp, "make_pathfinder_sample_fn", wrapper)
-    return seen
-
-
-def test_the_gaussian_is_centred_on_the_tail_averaged_position(monkeypatch):
-    """The proposal centre is the mean of the last 75% of iterate *positions*, not any
-    single iterate.
-
-    Every stochastic step is a full quasi-Newton step plus line search on one minibatch, so
-    each iterate is near that minibatch's MAP rather than the full-data MAP. The error is in
-    the location, so it survives any rule that picks one iterate; averaging the positions is
-    what removes it. Picking the last iterate instead would pass a weaker shape-only check.
+    Each step's accepted point is near its own minibatch's MAP, so the error is in the
+    location and survives any rule that picks a single iterate.
     """
     import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
 
-    seen = capture_gaussian(monkeypatch)
+    from pymc_extras.inference.pathfinder.bfgs_sample import make_pathfinder_sample_fn
+
     rng = np.random.default_rng(4)
     X, y, _ = sample_logistic(k=2, n=300, rng=rng)
     model, packed = logistic_regression(X, y)
 
+    # Record the Gaussian the final draw is taken from, and the iterates it came from.
+    gaussian = {}
+    sample_fn = make_pathfinder_sample_fn(model, N=2, J=CFG.maxcor, jacobian=True)
+
+    def record_gaussian(x, g, alpha, s_win, z_win, u):
+        gaussian.update(x=x, g=g, alpha=alpha, s_win=s_win, z_win=z_win)
+        return sample_fn(x, g, alpha, s_win, z_win, u)
+
+    monkeypatch.setattr(sp, "make_pathfinder_sample_fn", lambda *a, **k: record_gaussian)
+
     iterates = []
     run = sp.run_stochastic_lbfgs
-    monkeypatch.setattr(
-        sp,
-        "run_stochastic_lbfgs",
-        lambda *a, **k: (lambda t: (iterates.extend(t.iterates), t)[1])(run(*a, **k)),
-    )
+
+    def record_iterates(*args, **kwargs):
+        traj = run(*args, **kwargs)
+        iterates.extend(traj.iterates)
+        return traj
+
+    monkeypatch.setattr(sp, "run_stochastic_lbfgs", record_iterates)
     fit_streaming_pathfinder(
         model,
         ArrayLoader(packed, batch_size=64),
@@ -227,19 +212,18 @@ def test_the_gaussian_is_centred_on_the_tail_averaged_position(monkeypatch):
 
     m = max(1, round(sp._TAIL_AVERAGE_FRAC * len(iterates)))
     assert 1 < m < len(iterates), "the average has to span several iterates to mean anything"
-    x, g, alpha, s_win, z_win = seen["args"]
+    x = gaussian["x"]
     np.testing.assert_allclose(x, np.mean([it["x"] for it in iterates[-m:]], axis=0))
     assert not np.allclose(x, iterates[-1]["x"]), "averaging collapsed to the last iterate"
     # mu = x - H_inv @ g, so only g = 0 centres the Gaussian on the averaged position.
-    np.testing.assert_array_equal(g, np.zeros_like(x))
+    np.testing.assert_array_equal(gaussian["g"], np.zeros_like(x))
     # Curvature is the last iterate's: averaged (s, z) pairs are not a valid L-BFGS memory.
-    for got, want in ((alpha, "alpha"), (s_win, "s_win"), (z_win, "z_win")):
-        np.testing.assert_array_equal(got, iterates[-1][want])
+    for key in ("alpha", "s_win", "z_win"):
+        np.testing.assert_array_equal(gaussian[key], iterates[-1][key])
 
 
-def test_optimizer_health_counters_reach_the_result(monkeypatch):
-    """Both counters are read off the trajectory, so a fit that struggled cannot come
-    back reporting a clean one."""
+def test_health_counters_reach_the_result(monkeypatch):
+    """violation_rate and n_ls_failures are read off the trajectory, not defaulted."""
     import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
 
     run = sp.run_stochastic_lbfgs
@@ -267,9 +251,8 @@ def test_optimizer_health_counters_reach_the_result(monkeypatch):
     assert result.n_ls_failures == 7
 
 
-def test_jitter_starts_two_seeds_at_different_points(monkeypatch):
-    """Without the jitter every fit starts at the same deterministic prior point, so a
-    second seed retraces the first trajectory and multi-path Pathfinder degenerates."""
+def test_jitter_varies_the_start_by_seed(monkeypatch):
+    """Without jitter every seed starts at the same prior point and retraces one trajectory."""
     import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
 
     rng = np.random.default_rng(0)
@@ -297,14 +280,8 @@ def test_jitter_starts_two_seeds_at_different_points(monkeypatch):
     assert not np.allclose(firsts[0], firsts[1])
 
 
-def test_callbacks_reach_the_optimizer():
-    """A pm.fit early-stopping rule has to run against a streaming fit unchanged, and the
-    fit has to finish on the trajectory the rule shortened.
-
-    pm.fit hands each callback ``(approx, scores[: i + 1], i + 1)``: the losses so far and
-    a 1-based step index. A rule reading more than the last loss — every convergence check
-    does — is silently starved by a one-element list.
-    """
+def test_callbacks_get_pm_fit_arguments():
+    """Callbacks see ``(None, losses_so_far, 1-based step)`` and one can stop the fit early."""
     rng = np.random.default_rng(0)
     X = rng.normal(size=(60, 2))
     y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
@@ -484,11 +461,8 @@ def test_full_data_logp_invariant_to_batch_order_and_size():
         np.testing.assert_allclose(value, truth, atol=1e-8, err_msg=name)
 
 
-def test_a_drop_last_loader_is_refused_and_told_what_to_pass():
-    """A DataLoader epoch yields floor(N / batch_size) * batch_size rows, so for almost any
-    N the default full_pass cannot produce an exact logP. The error has to name the remedy —
-    it fires only after the whole optimization has been paid for — and passing that remedy
-    has to actually take effect."""
+def test_drop_last_loader_is_refused():
+    """A drop-last epoch cannot give an exact logP; the error names full_pass, which works."""
     rng = np.random.default_rng(24)
     k, n = 2, 350
     X = rng.normal(size=(n, k))

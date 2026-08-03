@@ -64,8 +64,10 @@ class StochasticLBFGSConfig:
         # bound trivially true: the run then climbs with every counter reading healthy.
         if not 0.0 < self.backtrack < 1.0:
             raise ValueError(f"backtrack must be in (0, 1), got {self.backtrack}")
-        if self.maxcor < 1 or self.maxls < 1:
-            raise ValueError(f"maxcor and maxls must be >= 1, got {self.maxcor}, {self.maxls}")
+        if self.maxcor < 1:
+            raise ValueError(f"maxcor must be >= 1, got {self.maxcor}")
+        if self.maxls < 1:
+            raise ValueError(f"maxls must be >= 1, got {self.maxls}")
 
 
 @dataclass
@@ -137,10 +139,20 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
     config : StochasticLBFGSConfig, optional
     callbacks : iterable of callable, optional
         Called after each step as ``(approx, losses, i)``, ``pm.fit``'s contract:
-        ``losses`` holds every minibatch objective so far and ``i`` counts from 1. One
-        raising ``StopIteration`` ends the run. There is no ``Approximation`` here, so
+        ``losses`` holds one minibatch objective per step so far and ``i`` counts from 1.
+        One raising ``StopIteration`` ends the run. There is no ``Approximation`` here, so
         ``approx`` is ``None`` and a callback that inspects it, such as
         ``pymc.variational.callbacks.CheckParametersConvergence``, cannot be used.
+
+        ``losses[i - 1]`` is the objective at the position step ``i`` reached, evaluated on
+        the batch installed *after* that step -- deliberately not the value that step's
+        Armijo test accepted. The accepted value is measured on the very batch the position
+        was chosen to minimize and so reads low against the full-data objective, while the
+        recorded one is measured on a batch the step never saw. The offset between the two
+        is close to constant along a run, so a monitor that differences the series, such as
+        ``pymc.variational.callbacks.CheckLossConvergence``, is largely insensitive to the
+        choice; what changes is the level the series reports.
+        ``test_recorded_loss_is_measured_after_the_batch_advance`` pins the convention.
 
     Returns
     -------
