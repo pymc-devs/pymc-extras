@@ -157,6 +157,12 @@ def test_preliz() -> None:
     assert isinstance(dist, preliz_distributions.Distribution)
 
 
+def test_preliz_with_nested_prior() -> None:
+    var = Prior("Truncated", dist=Prior("Normal", mu=0, sigma=1), lower=0, upper=1)
+    dist = var.preliz
+    assert isinstance(dist, preliz_distributions.Distribution)
+
+
 @pytest.mark.parametrize(
     "var, expected",
     [
