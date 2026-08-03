@@ -162,6 +162,73 @@ def test_elbo_argmax_selects_max():
     assert res.elbo_argmax == int(np.argmax(res.elbo_trace))
 
 
+def test_a_degenerate_iterate_cannot_win_the_argmax():
+    """A draw with zero proposal density scores +inf, which would take the argmax
+    outright; a non-finite score has to fall to -inf instead."""
+    from pymc_extras.inference.pathfinder.streaming_pathfinder import _elbo
+
+    assert _elbo(np.array([1.0, 2.0]), np.array([-np.inf, 0.0])) == -np.inf
+    assert _elbo(np.array([1.0, 2.0]), np.array([0.0, 0.0])) == 1.5
+
+
+def test_evaluation_batch_holds_exactly_eval_rows(monkeypatch):
+    """Rows past eval_rows are ones the loader wrapped around the epoch to fetch again,
+    so the selection sweep would score iterates on a batch with duplicated rows."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(50, 2))
+    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=50)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+
+    set_data = model.set_data
+    installed = []
+    monkeypatch.setattr(
+        model,
+        "set_data",
+        lambda name, value, **kw: (installed.append(len(value)), set_data(name, value, **kw))[1],
+    )
+    fit_streaming_pathfinder(
+        model,
+        ArrayLoader(packed, batch_size=16),
+        num_iters=5,
+        num_draws=10,
+        eval_rows=40,
+        importance_sampling=None,
+        random_seed=0,
+    )
+    assert max(installed) == 40
+
+
+def test_optimizer_health_counters_reach_the_result(monkeypatch):
+    """Both counters are read off the trajectory, so a fit that struggled cannot come
+    back reporting a clean one."""
+    import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
+
+    run = sp.run_stochastic_lbfgs
+
+    def struggling(*args, **kwargs):
+        traj = run(*args, **kwargs)
+        traj.n_curvature_violations = traj.n_accepted
+        traj.n_ls_failures = 7
+        return traj
+
+    monkeypatch.setattr(sp, "run_stochastic_lbfgs", struggling)
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 2))
+    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    result = fit_streaming_pathfinder(
+        model,
+        ArrayLoader(packed, batch_size=20),
+        num_iters=6,
+        num_draws=10,
+        eval_rows=60,
+        importance_sampling=None,
+        random_seed=0,
+    )
+    assert result.violation_rate == 0.5
+    assert result.n_ls_failures == 7
+
+
 def test_missing_batch_var_raises():
     """A model without the named placeholder gives an actionable error."""
     rng = np.random.default_rng(6)

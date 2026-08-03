@@ -99,6 +99,22 @@ def test_two_loop_direction_matches_dense_bfgs():
     assert np.allclose(d, -H @ g, atol=1e-10)
 
 
+def test_a_pair_with_zero_curvature_drops_out_of_the_recursion():
+    """The recursion divides by ``s . y``, so an exactly orthogonal pair has to be
+    skipped rather than contribute an infinite coefficient."""
+    s_win = np.zeros((3, 2))
+    z_win = np.zeros((3, 2))
+    s_win[:, 0], z_win[:, 0] = [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]
+    s_win[:, 1], z_win[:, 1] = [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]
+    g, alpha = np.ones(3), np.ones(3)
+
+    d = _two_loop_direction(g, alpha, s_win, z_win, order=[1, 0])
+    assert np.all(np.isfinite(d))
+    np.testing.assert_allclose(
+        d, _two_loop_direction(g, alpha, s_win[:, [1]], z_win[:, [1]], order=[0])
+    )
+
+
 def test_pair_rejected_when_curvature_violated():
     """A step crossing a negative-curvature region gives s.y < 0 and is rejected."""
     traj = run_stochastic_lbfgs(double_well, noop, np.array([0.3]), num_iters=8)
