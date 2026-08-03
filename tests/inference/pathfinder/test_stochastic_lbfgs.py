@@ -386,9 +386,8 @@ def test_recorded_loss_is_measured_after_the_batch_advance():
 
     The two differ: the accepted value is measured on the batch the position was chosen to
     minimize, so it reads low against the full-data objective, while the recorded one is
-    measured on a batch the step never saw. A monitor such as
-    ``pymc.variational.callbacks.CheckLossConvergence`` consumes exactly this series, so
-    which of the two it gets is part of the contract.
+    measured on a batch the step never saw. Any loss-based convergence monitor consumes
+    exactly this series, so which of the two it gets is part of the contract.
 
     The objective carries a per-batch offset that the gradient does not, so the trajectory
     is identical on every batch while each recorded value still names the batch it came

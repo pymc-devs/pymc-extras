@@ -501,6 +501,61 @@ def test_incomplete_full_pass_is_refused():
         full_data_logp(phi, [packed[:25]], model, "batch", prior_fn, obs_fn, n)
 
 
+def _restore_case(seed):
+    """A model whose batch placeholder holds all n rows, plus a loader that does not
+    divide n, so any block the fit installs differs from the incoming value."""
+    rng = np.random.default_rng(seed)
+    k, n = 2, 300
+    X = rng.normal(size=(n, k))
+    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=n)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    loader = ArrayLoader(packed, batch_size=64)  # 300 = 4 x 64 + 44
+    assert [b.shape[0] for b in loader] == [64, 64, 64, 64, 44]
+    return model, packed, loader
+
+
+def test_fit_restores_the_batch_placeholder():
+    """The fit hands the model back with the placeholder the caller set up.
+
+    Without the restore it keeps whatever block the final logP pass installed last, so a
+    model.logp() or pm.sample() straight after a fit silently scores that block rescaled by
+    total_size instead of the dataset.
+    """
+    model, packed, loader = _restore_case(31)
+    point = {"beta": np.array([0.7, -0.4])}
+    logp_fn = model.compile_logp()
+    before = np.array(model["batch"].get_value(), copy=True)
+    logp_before = float(np.asarray(logp_fn(point)))
+    assert before.shape[0] == len(loader)
+
+    fit_streaming_pathfinder(
+        model, loader, num_iters=5, num_draws=50, random_seed=0, lbfgs_config=CFG
+    )
+
+    np.testing.assert_array_equal(model["batch"].get_value(), before)
+    assert float(np.asarray(logp_fn(point))) == logp_before
+
+
+def test_batch_placeholder_is_restored_when_the_fit_raises():
+    """The restore is on the exception path too, so a caller that catches the error and
+    goes on using the model is not handed a mutated one."""
+    model, packed, loader = _restore_case(32)
+    before = np.array(model["batch"].get_value(), copy=True)
+
+    with pytest.raises(RuntimeError, match=r"visited 50 rows but len\(loader\)=300"):
+        fit_streaming_pathfinder(
+            model,
+            loader,
+            num_iters=5,
+            num_draws=50,
+            full_pass=[packed[:50]],
+            random_seed=0,
+            lbfgs_config=CFG,
+        )
+
+    np.testing.assert_array_equal(model["batch"].get_value(), before)
+
+
 @pytest.mark.parametrize(
     "importance_sampling, num_proposal_draws, n_prop, has_pareto_k",
     [

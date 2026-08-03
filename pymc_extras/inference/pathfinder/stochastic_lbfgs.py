@@ -13,10 +13,20 @@ search remains valid, and forms each curvature pair from a **single minibatch**
 
     y_k = grad_{B_k}(x_{k+1}) - grad_{B_k}(x_k)
 
-Both gradients are evaluated on the same batch, so the minibatch noise cancels in
-the difference (unlike differencing across two batches, which leaves the noise and
-routinely produces ``s . y < 0``). Pairs still failing the curvature condition are
-skipped, not forced into the history.
+Both gradients are evaluated on the same batch, so the same noise enters both and
+cancels in the difference. Differencing across two batches leaves it, and ``y`` then
+estimates nothing in particular: the secant condition ``y ~= H s`` needs both gradients
+to be of the *same* objective. Schraudolph et al. give that form as their eq. (13), the
+one that lets sampling noise into the update, and report divergence below batch 1000 on
+their quadratic model.
+
+The sign violation this produces, ``s . y < 0``, is not the common case at the step lengths
+this loop runs at: over logistic and Gaussian trajectories at batches 4 to 512, same-batch
+pairing produced no negative ``s . y`` on any cell, and cross-batch produced 0.3% to 12% of
+steps. It becomes the common case as the step shrinks, because the cross-batch noise term
+scales with ``||s||`` while the curvature term scales with ``||s||^2``; at a fixed point the
+cross-batch rate is about one in two once ``||s||`` is below 1e-2. Pairs still failing the
+curvature condition are skipped, not forced into the history.
 
 Each accepted step records the ``(x, g, alpha, s_win, z_win)`` that
 ``make_pathfinder_sample_fn`` consumes, with the window ordered oldest-to-newest
@@ -148,10 +158,10 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
         the batch installed *after* that step -- deliberately not the value that step's
         Armijo test accepted. The accepted value is measured on the very batch the position
         was chosen to minimize and so reads low against the full-data objective, while the
-        recorded one is measured on a batch the step never saw. The offset between the two
-        is close to constant along a run, so a monitor that differences the series, such as
-        ``pymc.variational.callbacks.CheckLossConvergence``, is largely insensitive to the
-        choice; what changes is the level the series reports.
+        recorded one is measured on a batch the step never saw. The two differ by a level
+        shift on average only: over the 200 steps of the operating configuration in
+        ``fit_streaming_pathfinder`` the gap averaged +393 with an sd of 1661, so it is not
+        steady step to step and differencing the series does not cancel it.
         ``test_recorded_loss_is_measured_after_the_batch_advance`` pins the convention.
 
     Returns
@@ -215,8 +225,11 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
             sy = s @ y
             if s2 < 1e-16:
                 traj.n_null += 1  # stopped moving, which is not a curvature failure
-            # epsilon scales with s . s, so on a near-null step it admits pairs the
-            # two-loop then drops on its own sy floor, costing a history column.
+            # Two floors, and which one binds depends on the step length: at the default
+            # epsilon=1e-8, epsilon * s2 falls below the absolute 1e-16 once ||s|| < 1e-4.
+            # So the absolute floor is what decides short steps and the relative curvature
+            # test is what decides ordinary ones. That absolute floor is the same value
+            # _two_loop_direction re-applies to its strided window views.
             elif np.isfinite(sy) and sy > 1e-16 and sy >= config.epsilon * s2:
                 alpha = alpha_step_numpy(alpha, s, y)
                 win_idx = (win_idx + 1) % J

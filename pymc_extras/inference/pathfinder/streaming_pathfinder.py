@@ -15,9 +15,14 @@ The draws it returns are a proposal, not a posterior; the measured operating ran
 dataset size and dimension, is on :func:`fit_streaming_pathfinder`.
 
 What streaming buys is memory: the optimizer only ever holds one minibatch, and the final
-exact ``logP`` is accumulated block by block over ``full_pass``, so nothing here is sized by
-the row count. ``fit_pathfinder`` materializes the whole dataset instead. No ratio is quoted
-because the earlier one did not say what it measured.
+exact ``logP`` is accumulated block by block over ``full_pass``, so the peak is set by the
+block size rather than the row count. The caller sets that block size, though, and
+``full_pass`` defaults to ``loader`` -- hand the whole dataset over as a single block and the
+peak is O(N) again. It is also O(``num_proposal_draws`` x block rows), because each block's
+log-density is evaluated for the whole proposal pool at once: on a 200k-row dataset with 100
+proposal draws, peak traced allocation was 40 MB with 2048-row blocks and 231 MB with one
+block. ``fit_pathfinder`` materializes the whole dataset unconditionally. No ratio against it
+is quoted because the earlier one did not say what it measured.
 """
 
 from dataclasses import dataclass
@@ -47,12 +52,14 @@ __all__ = ["StreamingPathfinderResult", "fit_streaming_pathfinder"]
 
 # Fraction of the trajectory's iterate positions that the tail average covers. Not a
 # keyword. Swept over one trajectory per seed at the Notes k=8, N=1e5 configuration, 8 seeds,
-# scoring worst-coordinate |x_avg - full-data MAP| in reference-sd: the medians over
-# 0.50/0.60/0.75/0.90 are 0.86/0.80/0.68/0.80, a spread of 1.26x, while 1.00 is 5.06 (7.4x the
-# best) and 0.10 is 3.17. So the interior is shallow and the endpoint is the cliff. 0.50 vs
-# 0.75 paired per seed differs by +0.13 ref-sd (95% CI -0.05 to +0.31), which 8 seeds do not
-# resolve; 0.75 is the better point estimate and the only thing the knob reliably teaches is
-# that 1.00 is broken.
+# scoring worst-coordinate *position* error |x_avg - full-data MAP| in reference-sd. That is
+# a different quantity from the posterior-mean error the Notes quote, which scores the
+# resampled draws rather than the optimizer's position, and the two do not compare. The
+# medians over 0.50/0.60/0.75/0.90 are 0.86/0.80/0.68/0.80, a spread of 1.26x, while 1.00 is
+# 5.06 (7.4x the best) and 0.10 is 3.17. So the interior is shallow and the endpoint is the
+# cliff. 0.50 vs 0.75 paired per seed differs by +0.13 ref-sd (95% CI -0.05 to +0.31), which
+# 8 seeds do not resolve; 0.75 is the better point estimate and the only thing the knob
+# reliably teaches is that 1.00 is broken.
 _TAIL_AVERAGE_FRAC = 0.75
 
 
@@ -164,7 +171,10 @@ def fit_streaming_pathfinder(
         Yields minibatches (arrays whose leading axis is the batch rows) and
         supports ``len(loader) == N`` (the dataset row count).
     batch_var : str
-        Name of the ``pm.Data`` placeholder to stream into.
+        Name of the ``pm.Data`` placeholder to stream into. The fit installs batches into
+        it and restores the value it held on entry before returning, on the exception path
+        too, so a ``model.logp()`` or ``pm.sample()`` after the fit scores the data the
+        caller put there rather than the last block this function happened to install.
     num_iters : int
         Number of stochastic L-BFGS steps.
     num_draws : int
@@ -221,14 +231,17 @@ def fit_streaming_pathfinder(
     same order every epoch, and none of this was measured that way.
 
     With k=8 at N=1e5, over 12 seeds, ``pareto_k`` ran 0.60-0.80 (median 0.70, over 0.7 on half
-    of them) and the worst posterior-mean coordinate was 0.23-0.58 reference-sd out. Accuracy
+    of them) and the worst coordinate of the *resampled posterior mean* was 0.23-0.58
+    reference-sd from the reference mean -- a different quantity from the optimizer-position
+    error swept for ``_TAIL_AVERAGE_FRAC``, which scores ``x_avg`` against the MAP. Accuracy
     degrades with N -- ``pareto_k`` 0.76-1.29 and error 0.53-2.24 ref-sd over 6 seeds at N=4e5 --
     and much faster with dimension: at k=100, N=1e5 it was 2.0-3.8 and 13-64 ref-sd over 4 seeds,
     and nothing raises, so that fit returns silently wrong draws.
 
     These draws are a *proposal*, not a posterior. Read ``pareto_k`` on every fit, and do not run
     this above a few tens of dimensions. ``violation_rate`` is an optimizer-health counter, not
-    an accuracy one; it read 0.0 with no line-search failures on every run above.
+    an accuracy one; it read 0.0 on every run above. ``n_ls_failures`` did not stay at zero:
+    at k=100, N=1e5 two of four seeds came back with a nonzero count.
     """
     model = pm.modelcontext(model)
     if batch_var not in model.named_vars:
@@ -236,6 +249,11 @@ def fit_streaming_pathfinder(
             f"batch_var {batch_var!r} is not a variable in the model; add a "
             f"pm.Data({batch_var!r}, ...) placeholder that the data stream feeds."
         )
+    # Restored in the finally below. get_value() copies, so a caller that mutates its own
+    # array in place cannot corrupt the saved copy. If the incoming value was itself one
+    # batch rather than the whole dataset, putting it back still leaves the model in the
+    # state the caller built, which is what a restore can promise.
+    saved_batch = model[batch_var].get_value()
     cfg = lbfgs_config or StochasticLBFGSConfig()
     J = cfg.maxcor
 
@@ -275,65 +293,74 @@ def fit_streaming_pathfinder(
     n_total = len(loader)
     init_rng = np.random.default_rng(init_ss)
     x0 = x_base + init_rng.uniform(-jitter, jitter, size=N)
-    model.set_data(batch_var, next_batch())
+    try:
+        model.set_data(batch_var, next_batch())
 
-    traj = run_stochastic_lbfgs(
-        value_grad_fn,
-        lambda: model.set_data(batch_var, next_batch()),
-        x0,
-        num_iters,
-        cfg,
-        callbacks,
-    )
-    if not traj.iterates:
-        raise RuntimeError(
-            "Streaming L-BFGS produced no accepted steps; try more iterations, a "
-            "smaller jitter, or a larger batch size."
+        traj = run_stochastic_lbfgs(
+            value_grad_fn,
+            lambda: model.set_data(batch_var, next_batch()),
+            x0,
+            num_iters,
+            cfg,
+            callbacks,
         )
+        if not traj.iterates:
+            raise RuntimeError(
+                "Streaming L-BFGS produced no accepted steps; try more iterations, a "
+                "smaller jitter, or a larger batch size."
+            )
 
-    # Polyak-Ruppert tail averaging of the iterate positions (Polyak & Juditsky 1992; Jain
-    # et al. 2018). Each step is a full quasi-Newton step plus line search on ONE minibatch, so
-    # its accepted point sits near that minibatch's MAP: measured roughly sqrt(N / b) full-data
-    # posterior-sd away in per-coordinate RMS, on a batch that still reproduces the posterior sd
-    # to within ~10%. The error is in the location, not the covariance, so no rule that *picks*
-    # an iterate removes it. g is zeroed because the sampler centres at mu = x - H_inv @ g, and
-    # keeping the last iterate's g moved that centre further from the full-data MAP on all of
-    # 12 seeds; curvature stays the last iterate's -- averaged (s, z) is not a valid memory.
-    m = max(1, round(_TAIL_AVERAGE_FRAC * len(traj.iterates)))
-    x_avg = np.mean([it["x"] for it in traj.iterates[-m:]], axis=0)
-    last = traj.iterates[-1]
-    best = {
-        "x": x_avg,
-        "g": np.zeros_like(x_avg),
-        "alpha": last["alpha"],
-        "s_win": last["s_win"],
-        "z_win": last["z_win"],
-    }
+        # Polyak-Ruppert tail averaging of the iterate positions (Polyak & Juditsky 1992; Jain
+        # et al. 2018). Each step is a full quasi-Newton step plus line search on ONE minibatch,
+        # so its accepted point sits near that minibatch's MAP: measured roughly sqrt(N / b)
+        # full-data posterior-sd away in per-coordinate RMS, on a batch whose own rescaled
+        # posterior still reproduces the full-data posterior sd -- worst-coordinate relative
+        # error, median over 200 random batches, ran 9.1% at b=512, 4.3% at 2048 and 2.2% at
+        # 8192, though the b=512 tail reached 36%. The error is in the location, not the
+        # covariance, so
+        # no rule that *picks* an iterate removes it. g is zeroed because the sampler centres at
+        # mu = x - H_inv @ g, and keeping the last iterate's g moved that centre further from
+        # the full-data MAP on all of 12 seeds; curvature stays the last iterate's -- averaged
+        # (s, z) is not a valid memory.
+        m = max(1, round(_TAIL_AVERAGE_FRAC * len(traj.iterates)))
+        x_avg = np.mean([it["x"] for it in traj.iterates[-m:]], axis=0)
+        last = traj.iterates[-1]
+        best = {
+            "x": x_avg,
+            "g": np.zeros_like(x_avg),
+            "alpha": last["alpha"],
+            "s_win": last["s_win"],
+            "z_win": last["z_win"],
+        }
 
-    resample = importance_sampling is not None
-    if num_proposal_draws is None:
-        # fit_pathfinder resamples num_draws out of num_paths=4 x num_draws_per_path=1000;
-        # a single streaming path has to supply that 4x pool itself. Unresampled the extra
-        # draws are only dropped, and the pool's logP pass is most of the wall clock.
-        n_prop = 4 * num_draws if resample else num_draws
-    else:
-        n_prop = max(int(num_proposal_draws), num_draws)  # samples[:num_draws] must not be short
-    u_final = np.random.default_rng(final_ss).standard_normal((n_prop, N))
-    phi, logQ, _logP_subset, _ = sample_logp(
-        best["x"], best["g"], best["alpha"], best["s_win"], best["z_win"], u_final
-    )
-    samples = np.asarray(phi)
-    logQ = np.asarray(logQ)
-    # sample_logp's logP is the installed batch's pseudo-density; the weights need the exact one.
-    logP = _full_data_logp(
-        samples,
-        full_pass if full_pass is not None else loader,
-        model,
-        batch_var,
-        prior_logp_fn,
-        obs_logp_fn,
-        n_total,
-    )
+        resample = importance_sampling is not None
+        if num_proposal_draws is None:
+            # fit_pathfinder resamples num_draws out of num_paths=4 x num_draws_per_path=1000;
+            # a single streaming path has to supply that 4x pool itself. Unresampled the extra
+            # draws are only dropped, and the pool's logP pass is most of the wall clock.
+            n_prop = 4 * num_draws if resample else num_draws
+        else:
+            # samples[:num_draws] must not be short
+            n_prop = max(int(num_proposal_draws), num_draws)
+        u_final = np.random.default_rng(final_ss).standard_normal((n_prop, N))
+        phi, logQ, _logP_subset, _ = sample_logp(
+            best["x"], best["g"], best["alpha"], best["s_win"], best["z_win"], u_final
+        )
+        samples = np.asarray(phi)
+        logQ = np.asarray(logQ)
+        # sample_logp's logP is the installed batch's pseudo-density; the weights need the
+        # exact one.
+        logP = _full_data_logp(
+            samples,
+            full_pass if full_pass is not None else loader,
+            model,
+            batch_var,
+            prior_logp_fn,
+            obs_logp_fn,
+            n_total,
+        )
+    finally:
+        model.set_data(batch_var, saved_batch)
 
     pareto_k = None
     if resample:
