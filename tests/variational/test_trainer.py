@@ -22,7 +22,7 @@ import pymc as pm
 import pytest
 
 from pymc_extras.variational.dataloader import DataLoader
-from pymc_extras.variational.trainer import Trainer
+from pymc_extras.variational.trainer import Trainer, _cycle
 from tests.variational.dataloader_helpers import chunked_factory
 
 
@@ -55,6 +55,30 @@ def record_installed(model, log):
 def streamed(loader, k):
     """The first ``k`` markers a user iterating ``loader`` themselves gets, epoch after epoch."""
     return [float(batch[0, 0]) for batch in islice(chain.from_iterable(repeat(loader)), k)]
+
+
+def test_cycle_replays_the_loaders_own_epochs():
+    """_cycle is exactly "repeat the loader": no batch dropped, repeated or reordered
+    at the epoch seam."""
+    loader = DataLoader(lambda: iter(marked(3, rows=2)), batch_size=2, total_size=6)
+    got = [float(b[0, 0]) for b in islice(_cycle(loader), 8)]
+    assert got == streamed(loader, 8)
+
+
+def test_cycle_raises_instead_of_spinning_on_an_empty_pass():
+    """A source that cannot be replayed would make the cycle loop forever."""
+    calls = {"n": 0}
+
+    def factory():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            yield np.zeros((2, 1))
+
+    loader = DataLoader(factory, batch_size=2, total_size=2)
+    batches = _cycle(loader)
+    assert next(batches).shape == (2, 1)
+    with pytest.raises(RuntimeError, match="yielded no batches"):
+        next(batches)
 
 
 def test_trainer_end_to_end_matches_in_ram_minibatch():

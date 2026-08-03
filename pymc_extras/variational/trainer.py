@@ -27,9 +27,20 @@ from pymc.variational.inference import fit as _fit
 from pymc.variational.minibatch_rv import MinibatchRandomVariable
 from pytensor.graph.basic import Constant
 
-from pymc_extras.variational.dataloader import DataLoader, _is_positive_int
+from pymc_extras.variational.dataloader import DataLoader
 
 __all__ = ["Trainer"]
+
+
+def _cycle(loader: DataLoader) -> Iterator[np.ndarray]:
+    """Repeat the loader's epochs forever. A pass that yields nothing never ends."""
+    while True:
+        empty = True
+        for batch in loader:
+            empty = False
+            yield batch
+        if empty:
+            raise RuntimeError("dataloader yielded no batches")
 
 
 def _warn_if_scaling_mismatches(model, total_size: int) -> None:
@@ -94,13 +105,6 @@ class Trainer:
         Default keyword arguments forwarded to :func:`pymc.fit` (e.g.
         ``obj_optimizer``); per-call kwargs to :meth:`fit` override them.
 
-    Notes
-    -----
-    The per-step ``set_data`` currently lives in the ``Trainer``. Once the VI
-    rework's ``Inference.step(batch)`` lands it moves there, at which point the
-    ``total_size`` rescaling can be derived from ``len(dataloader)`` and dropped
-    from the model body entirely.
-
     Examples
     --------
     .. code-block:: python
@@ -149,7 +153,7 @@ class Trainer:
         :class:`Approximation`
             The fitted approximation, as returned by :func:`pymc.fit`.
         """
-        if not _is_positive_int(n):
+        if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
             raise ValueError(f"n must be a positive integer (the number of fit steps), got {n!r}")
         loader = self.dataloader
         if not isinstance(loader, DataLoader):
@@ -171,16 +175,7 @@ class Trainer:
         if loader.total_size is not None:
             _warn_if_scaling_mismatches(model, loader.total_size)
 
-        def _stream() -> Iterator[np.ndarray]:
-            while True:
-                empty = True
-                for batch in loader:
-                    empty = False
-                    yield batch
-                if empty:
-                    raise RuntimeError("dataloader yielded no batches")
-
-        batches = _stream()
+        batches = _cycle(loader)
         model.set_data(self.data_name, next(batches))
 
         def _advance(*_):
