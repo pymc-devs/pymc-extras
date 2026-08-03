@@ -195,14 +195,19 @@ def test_config_rejects_settings_that_make_a_wrong_fit_look_healthy(kw):
 
 def test_a_callback_can_end_the_run_early():
     """StopIteration from a callback ends the loop, so an early-stopping rule written
-    against pm.fit's callback contract works here unchanged."""
+    against pm.fit's callback contract works here unchanged.
+
+    pm.fit hands each callback ``(approx, scores[: i + 1], i + 1)``: the losses so far,
+    and a 1-based step index. A rule that reads more than the last loss — every
+    convergence check does — is silently starved by a one-element list.
+    """
     rng = np.random.default_rng(31)
     M = rng.normal(size=(4, 4))
     A = M @ M.T + 4 * np.eye(4)
-    losses = []
+    seen = []
 
     def stop_at_5(approx, loss, i):
-        losses.append(float(loss[-1]))
+        seen.append((approx, len(loss), i, float(loss[-1])))
         if i == 5:
             raise StopIteration
 
@@ -213,8 +218,9 @@ def test_a_callback_can_end_the_run_early():
         num_iters=50,
         callbacks=(stop_at_5,),
     )
-    assert len(losses) == 5
+    assert [(a, n, i) for a, n, i, _ in seen] == [(None, j, j) for j in range(1, 6)]
     assert len(traj.iterates) <= 5
+    losses = [f for *_, f in seen]
     assert losses == sorted(losses, reverse=True)  # the callback is handed a minimized loss
 
 

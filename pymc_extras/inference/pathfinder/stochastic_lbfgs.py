@@ -136,9 +136,11 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
         Number of optimization steps.
     config : StochasticLBFGSConfig, optional
     callbacks : iterable of callable, optional
-        Called as ``(approx, losses, i)`` after each step with the minibatch objective,
-        matching ``pm.fit``'s contract; one raising ``StopIteration`` ends the run.
-        There is no ``Approximation`` here, so ``approx`` is ``None``.
+        Called after each step as ``(approx, losses, i)``, ``pm.fit``'s contract:
+        ``losses`` holds every minibatch objective so far and ``i`` counts from 1. One
+        raising ``StopIteration`` ends the run. There is no ``Approximation`` here, so
+        ``approx`` is ``None`` and a callback that inspects it, such as
+        ``pymc.variational.callbacks.CheckParametersConvergence``, cannot be used.
 
     Returns
     -------
@@ -156,6 +158,7 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
     alpha = np.ones(N)
 
     traj = Trajectory()
+    losses = []
     f, g = value_grad_fn(x)
 
     for i in range(num_iters):
@@ -193,7 +196,8 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
             sy = s @ y
             if s2 < 1e-16:
                 traj.n_null += 1  # stopped moving, which is not a curvature failure
-            # 1e-16 keeps rho = 1 / sy finite, epsilon tests curvature scale-free
+            # epsilon scales with s . s, so on a near-null step it admits pairs the
+            # two-loop then drops on its own sy floor, costing a history column.
             elif np.isfinite(sy) and sy > 1e-16 and sy >= config.epsilon * s2:
                 alpha = alpha_step_numpy(alpha, s, y)
                 win_idx = (win_idx + 1) % J
@@ -221,9 +225,10 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
         on_batch_advance()
         f, g = value_grad_fn(x)  # f must be on the batch the next Armijo test uses
 
+        losses.append(f)
         try:
             for cb in callbacks:
-                cb(None, [f], i + 1)
+                cb(None, losses, i + 1)
         except StopIteration:
             break
 

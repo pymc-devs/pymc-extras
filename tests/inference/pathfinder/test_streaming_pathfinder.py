@@ -229,6 +229,66 @@ def test_optimizer_health_counters_reach_the_result(monkeypatch):
     assert result.n_ls_failures == 7
 
 
+def test_jitter_starts_two_seeds_at_different_points(monkeypatch):
+    """Without the jitter every fit starts at the same deterministic prior point, so a
+    second seed retraces the first trajectory and multi-path Pathfinder degenerates."""
+    import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 2))
+    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+
+    run, firsts = sp.run_stochastic_lbfgs, []
+
+    def record(*args, **kwargs):
+        traj = run(*args, **kwargs)
+        firsts.append(traj.iterates[0]["x"])
+        return traj
+
+    monkeypatch.setattr(sp, "run_stochastic_lbfgs", record)
+    for seed in (0, 1):
+        fit_streaming_pathfinder(
+            model,
+            ArrayLoader(packed, 20),  # unshuffled: the seed's only entry point is the jitter
+            num_iters=4,
+            num_draws=10,
+            eval_rows=60,
+            importance_sampling=None,
+            random_seed=seed,
+        )
+    assert not np.allclose(firsts[0], firsts[1])
+
+
+def test_callbacks_reach_the_optimizer():
+    """The optimizer's callback hook is only worth its lines if a user can reach it: a
+    pm.fit early-stopping rule has to run against a streaming fit unchanged."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 2))
+    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+
+    seen = []
+
+    def stop_at_3(approx, losses, i):
+        seen.append((approx, len(losses), i))
+        if i == 3:
+            raise StopIteration
+
+    res = fit_streaming_pathfinder(
+        model,
+        ArrayLoader(packed, 20),
+        num_iters=30,
+        num_draws=10,
+        eval_rows=60,
+        importance_sampling=None,
+        callbacks=[stop_at_3],
+        random_seed=0,
+    )
+    assert seen == [(None, 1, 1), (None, 2, 2), (None, 3, 3)]
+    assert res.elbo_trace.size <= 3
+
+
 def test_missing_batch_var_raises():
     """A model without the named placeholder gives an actionable error."""
     rng = np.random.default_rng(6)
@@ -433,9 +493,9 @@ def test_incomplete_full_pass_is_refused():
     [
         (None, None, 50, False),
         (None, 137, 137, False),
-        ("identity", None, 51, False),
+        ("identity", None, 200, False),
         ("identity", 137, 137, False),
-        ("psis", None, 51, True),
+        ("psis", None, 200, True),
         ("psis", 137, 137, True),
     ],
     ids=["none", "none-pool", "identity", "identity-pool", "psis", "psis-pool"],
@@ -446,9 +506,9 @@ def test_returned_draws_have_requested_shape(
     """samples is (num_draws, N) for every weighting method and proposal-pool size, while
     logP and logQ stay the length of the proposal pool they were computed on.
 
-    The pool defaults to num_draws, plus one when resampling so PSIS reweights instead of
-    permuting; an explicit num_proposal_draws overrides both, and none of that may leak
-    into the returned draw count.
+    The pool defaults to 4x num_draws when resampling, matching fit_pathfinder's
+    num_paths x num_draws_per_path, and to num_draws when not; an explicit
+    num_proposal_draws overrides both, and none of that may leak into the returned count.
     """
     num_draws = 50
     rng = np.random.default_rng(23)
@@ -471,6 +531,23 @@ def test_returned_draws_have_requested_shape(
     assert res.logQ.shape == (n_prop,)
     assert np.isfinite(res.samples).all()
     assert (res.pareto_k is not None) == has_pareto_k
+
+
+def test_psis_reweights_rather_than_permuting_the_pool():
+    """The default pool has to be a multiple of num_draws. Resampling num_draws out of
+    num_draws + 1 without replacement (importance_sampling.py sets replace=False for
+    "psis") returns the pool minus one draw whatever the weights are, and arviz's Pareto
+    tail fit needs 5 tail draws, so num_draws <= 23 raised outright."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 2))
+    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    res = fit_streaming_pathfinder(
+        model, ArrayLoader(packed, 20), num_iters=8, num_draws=20, eval_rows=60, random_seed=0
+    )
+    assert res.samples.shape == (20, 2)
+    assert res.logP.shape == (80,)
+    assert res.pareto_k is not None
 
 
 def potential_model(y, n):
