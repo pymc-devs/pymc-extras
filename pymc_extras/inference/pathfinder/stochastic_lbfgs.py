@@ -179,7 +179,14 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
         for _ in range(config.maxls):
             x_trial = x + t * d
             f_trial, g_trial = value_grad_fn(x_trial)
-            if np.isfinite(f_trial) and f_trial <= f + config.armijo_c1 * t * gd:
+            # A finite value is not enough: pymc's Bernoulli(logit_p) gradient divides by
+            # 1 - sigmoid(z), and sigmoid(37.0) == 1.0 in float64, so a saturated trial
+            # point passes Armijo and hands back a NaN gradient that stalls every step after.
+            if (
+                np.isfinite(f_trial)
+                and np.all(np.isfinite(g_trial))
+                and f_trial <= f + config.armijo_c1 * t * gd
+            ):
                 x_new, g_new = x_trial, g_trial
                 break
             t *= config.backtrack

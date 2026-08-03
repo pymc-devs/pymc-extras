@@ -100,6 +100,38 @@ def test_set_data_changes_compiled_objective():
     assert not np.allclose(g_all, g_sub), "gradient did not respond to set_data"
 
 
+def test_a_saturated_trial_point_cannot_poison_the_gradient():
+    """A logit past float64 saturation has a finite logp and a NaN gradient, so the
+    Armijo test on the value alone accepts it. The accepted gradient then becomes the
+    next step's ``g``: the direction is NaN, every later line search fails, and the run
+    ends with no accepted steps at all rather than with a visible error.
+
+    Deterministic: fixed data seed, fixed start, one fixed batch installed throughout.
+    Without the finiteness guard this configuration records ``n_accepted == 0``.
+    """
+    from pymc_extras.inference.pathfinder.bfgs_sample import get_neg_logp_dlogp_of_ravel_inputs
+    from pymc_extras.inference.pathfinder.stochastic_lbfgs import run_stochastic_lbfgs
+
+    k = 5
+    X, y, _ = sample_logistic(k=k, n=1000, rng=np.random.default_rng(1))
+    model, packed = logistic_regression(X, y)
+    model.set_data("batch", packed[:64])
+    neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True)
+
+    def value_grad(x):
+        value, grad = neg_logp_dlogp(np.asarray(x, dtype=np.float64))
+        return float(value), np.asarray(grad, dtype=np.float64)
+
+    x0 = np.random.default_rng(1).uniform(-6.0, 6.0, size=k)
+    assert np.all(np.isfinite(value_grad(x0)[1])), "the start itself must be usable"
+    traj = run_stochastic_lbfgs(value_grad, lambda: None, x0, 30, CFG)
+
+    assert traj.n_accepted > 0, "every line search failed; the trajectory is empty"
+    # mu = x - H_inv @ g, so an iterate carrying a NaN g is a NaN Gaussian mean.
+    for it in traj.iterates:
+        assert np.all(np.isfinite(it["g"]))
+
+
 def test_smoke_streaming_logistic():
     """A short streaming fit on logistic data returns finite, correctly shaped draws."""
     rng = np.random.default_rng(1)
@@ -111,13 +143,11 @@ def test_smoke_streaming_logistic():
         loader,
         num_iters=15,
         num_draws=500,
-        eval_rows=200,
         random_seed=2,
         lbfgs_config=CFG,
     )
     assert res.samples.shape == (500, 2)
     assert np.isfinite(res.samples).all()
-    assert res.elbo_trace.size == len(res.elbo_trace)
     assert 0.0 <= res.violation_rate <= 1.0
 
 
@@ -134,68 +164,78 @@ def test_crn_determinism():
             loader,
             num_iters=20,
             num_draws=400,
-            eval_rows=150,
             random_seed=7,
             lbfgs_config=CFG,
         )
 
     a, b = run(), run()
-    np.testing.assert_array_equal(a.elbo_trace, b.elbo_trace)
+    np.testing.assert_array_equal(a.logQ, b.logQ)
     np.testing.assert_array_equal(a.samples, b.samples)
 
 
-def test_elbo_argmax_selects_max():
-    """The reported argmax is the index of the largest ELBO in the trace."""
+def capture_gaussian(monkeypatch):
+    """Record the (x, g, alpha, s_win, z_win) the final full-width draw is taken from."""
+    import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
+
+    seen = {}
+    original = sp.make_pathfinder_sample_fn
+
+    def wrapper(*args, **kwargs):
+        fn = original(*args, **kwargs)
+
+        def tapped(x, g, alpha, s_win, z_win, u):
+            seen["args"] = (x, g, alpha, s_win, z_win)
+            return fn(x, g, alpha, s_win, z_win, u)
+
+        return tapped
+
+    monkeypatch.setattr(sp, "make_pathfinder_sample_fn", wrapper)
+    return seen
+
+
+def test_the_gaussian_is_centred_on_the_tail_averaged_position(monkeypatch):
+    """The proposal centre is the mean of the last 75% of iterate *positions*, not any
+    single iterate.
+
+    Every stochastic step is a full quasi-Newton step plus line search on one minibatch, so
+    each iterate is near that minibatch's MAP rather than the full-data MAP. The error is in
+    the location, so it survives any rule that picks one iterate; averaging the positions is
+    what removes it. Picking the last iterate instead would pass a weaker shape-only check.
+    """
+    import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
+
+    seen = capture_gaussian(monkeypatch)
     rng = np.random.default_rng(4)
     X, y, _ = sample_logistic(k=2, n=300, rng=rng)
     model, packed = logistic_regression(X, y)
-    loader = ArrayLoader(packed, batch_size=64)
-    res = fit_streaming_pathfinder(
-        model,
-        loader,
-        num_iters=25,
-        num_draws=300,
-        eval_rows=150,
-        random_seed=5,
-        lbfgs_config=CFG,
-    )
-    assert res.elbo_argmax == int(np.argmax(res.elbo_trace))
 
-
-def test_a_degenerate_iterate_cannot_win_the_argmax():
-    """A draw with zero proposal density scores +inf, which would take the argmax
-    outright; a non-finite score has to fall to -inf instead."""
-    from pymc_extras.inference.pathfinder.streaming_pathfinder import _elbo
-
-    assert _elbo(np.array([1.0, 2.0]), np.array([-np.inf, 0.0])) == -np.inf
-    assert _elbo(np.array([1.0, 2.0]), np.array([0.0, 0.0])) == 1.5
-
-
-def test_evaluation_batch_holds_exactly_eval_rows(monkeypatch):
-    """Rows past eval_rows are ones the loader wrapped around the epoch to fetch again,
-    so the selection sweep would score iterates on a batch with duplicated rows."""
-    rng = np.random.default_rng(0)
-    X = rng.normal(size=(50, 2))
-    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=50)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
-
-    set_data = model.set_data
-    installed = []
+    iterates = []
+    run = sp.run_stochastic_lbfgs
     monkeypatch.setattr(
-        model,
-        "set_data",
-        lambda name, value, **kw: (installed.append(len(value)), set_data(name, value, **kw))[1],
+        sp,
+        "run_stochastic_lbfgs",
+        lambda *a, **k: (lambda t: (iterates.extend(t.iterates), t)[1])(run(*a, **k)),
     )
     fit_streaming_pathfinder(
         model,
-        ArrayLoader(packed, batch_size=16),
-        num_iters=5,
-        num_draws=10,
-        eval_rows=40,
+        ArrayLoader(packed, batch_size=64),
+        num_iters=25,
+        num_draws=300,
         importance_sampling=None,
-        random_seed=0,
+        random_seed=5,
+        lbfgs_config=CFG,
     )
-    assert max(installed) == 40
+
+    m = max(1, round(sp._TAIL_AVERAGE_FRAC * len(iterates)))
+    assert 1 < m < len(iterates), "the average has to span several iterates to mean anything"
+    x, g, alpha, s_win, z_win = seen["args"]
+    np.testing.assert_allclose(x, np.mean([it["x"] for it in iterates[-m:]], axis=0))
+    assert not np.allclose(x, iterates[-1]["x"]), "averaging collapsed to the last iterate"
+    # mu = x - H_inv @ g, so only g = 0 centres the Gaussian on the averaged position.
+    np.testing.assert_array_equal(g, np.zeros_like(x))
+    # Curvature is the last iterate's: averaged (s, z) pairs are not a valid L-BFGS memory.
+    for got, want in ((alpha, "alpha"), (s_win, "s_win"), (z_win, "z_win")):
+        np.testing.assert_array_equal(got, iterates[-1][want])
 
 
 def test_optimizer_health_counters_reach_the_result(monkeypatch):
@@ -221,7 +261,6 @@ def test_optimizer_health_counters_reach_the_result(monkeypatch):
         ArrayLoader(packed, batch_size=20),
         num_iters=6,
         num_draws=10,
-        eval_rows=60,
         importance_sampling=None,
         random_seed=0,
     )
@@ -253,22 +292,30 @@ def test_jitter_starts_two_seeds_at_different_points(monkeypatch):
             ArrayLoader(packed, 20),  # unshuffled: the seed's only entry point is the jitter
             num_iters=4,
             num_draws=10,
-            eval_rows=60,
             importance_sampling=None,
             random_seed=seed,
         )
     assert not np.allclose(firsts[0], firsts[1])
 
 
-def test_callbacks_reach_the_optimizer():
+def test_callbacks_reach_the_optimizer(monkeypatch):
     """The optimizer's callback hook is only worth its lines if a user can reach it: a
-    pm.fit early-stopping rule has to run against a streaming fit unchanged."""
+    pm.fit early-stopping rule has to run against a streaming fit unchanged, and the
+    shortened trajectory has to be the one the fit then averages."""
+    import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
+
     rng = np.random.default_rng(0)
     X = rng.normal(size=(60, 2))
     y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
     model, packed, *_ = gaussian_regression(X, y, 1.0)
 
-    seen = []
+    seen, iterates = [], []
+    run = sp.run_stochastic_lbfgs
+    monkeypatch.setattr(
+        sp,
+        "run_stochastic_lbfgs",
+        lambda *a, **k: (lambda t: (iterates.extend(t.iterates), t)[1])(run(*a, **k)),
+    )
 
     def stop_at_3(approx, losses, i):
         seen.append((approx, len(losses), i))
@@ -280,13 +327,13 @@ def test_callbacks_reach_the_optimizer():
         ArrayLoader(packed, 20),
         num_iters=30,
         num_draws=10,
-        eval_rows=60,
         importance_sampling=None,
         callbacks=[stop_at_3],
         random_seed=0,
     )
     assert seen == [(None, 1, 1), (None, 2, 2), (None, 3, 3)]
-    assert res.elbo_trace.size <= 3
+    assert 0 < len(iterates) <= 3
+    assert res.samples.shape == (10, 2)
 
 
 def test_missing_batch_var_raises():
@@ -322,7 +369,6 @@ def test_gaussian_equivalence_to_analytic():
             loader,
             num_iters=60,
             num_draws=4000,
-            eval_rows=n,
             random_seed=seed,
             lbfgs_config=CFG,
         )
@@ -352,7 +398,6 @@ def test_batch_size_robustness():
             loader,
             num_iters=150,
             num_draws=3000,
-            eval_rows=1000,
             random_seed=0,
             lbfgs_config=CFG,
         )
@@ -464,7 +509,7 @@ def test_a_drop_last_loader_is_refused_and_told_what_to_pass():
     loader = DropLastLoader(packed, batch_size=128)
     assert sum(b.shape[0] for b in loader) == 256 < len(loader)
 
-    kwargs = dict(num_iters=5, num_draws=50, eval_rows=60, random_seed=0, lbfgs_config=CFG)
+    kwargs = dict(num_iters=5, num_draws=50, random_seed=0, lbfgs_config=CFG)
     with pytest.raises(RuntimeError, match=r"pass full_pass=<the loader's dataset source>"):
         fit_streaming_pathfinder(model, loader, **kwargs)
 
@@ -521,7 +566,6 @@ def test_returned_draws_have_requested_shape(
         num_iters=8,
         num_draws=num_draws,
         num_proposal_draws=num_proposal_draws,
-        eval_rows=60,
         importance_sampling=importance_sampling,
         random_seed=0,
         lbfgs_config=CFG,
@@ -543,7 +587,7 @@ def test_psis_reweights_rather_than_permuting_the_pool():
     y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
     model, packed, *_ = gaussian_regression(X, y, 1.0)
     res = fit_streaming_pathfinder(
-        model, ArrayLoader(packed, 20), num_iters=8, num_draws=20, eval_rows=60, random_seed=0
+        model, ArrayLoader(packed, 20), num_iters=8, num_draws=20, random_seed=0
     )
     assert res.samples.shape == (20, 2)
     assert res.logP.shape == (80,)
@@ -571,7 +615,6 @@ def test_final_target_includes_potentials():
         ArrayLoader(y, 5),
         num_iters=10,
         num_draws=25,
-        eval_rows=n,
         importance_sampling=None,  # keeps logP row-aligned with samples
         random_seed=0,
     )
@@ -618,7 +661,6 @@ def test_identity_is_a_weighting_method_not_an_off_switch(importance_sampling, r
             ArrayLoader(packed, 20),
             num_iters=8,
             num_draws=50,
-            eval_rows=60,
             importance_sampling=importance_sampling,
             random_seed=0,
         )
@@ -640,7 +682,6 @@ def test_proposal_pool_smaller_than_num_draws_still_returns_num_draws():
         num_iters=8,
         num_draws=200,
         num_proposal_draws=20,
-        eval_rows=60,
         importance_sampling=None,
         random_seed=0,
     )
@@ -650,7 +691,7 @@ def test_proposal_pool_smaller_than_num_draws_still_returns_num_draws():
 def test_full_data_logp_installs_every_batch():
     """The streaming pass must install each batch, not read whatever is already there.
 
-    A finished fit leaves the evaluation batch in the placeholder, so a loop that
+    A finished optimization leaves its last minibatch in the placeholder, so a loop that
     forgot ``set_data`` would sum that one subset n_batches times. Existing tests
     miss it because their fixtures happen to leave the full dataset installed, in
     which case the rescaled sum telescopes back to the right answer by accident.

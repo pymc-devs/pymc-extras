@@ -6,18 +6,13 @@ data in a ``pm.Data`` placeholder scaled with ``total_size=len(loader)``, so
 ``model.logp()`` already returns the correctly rescaled full-data log-density for
 whatever batch is currently set.
 
-The optimizer core is :func:`run_stochastic_lbfgs`; its stored iterates are scored
-against one fixed evaluation batch with shared Monte-Carlo draws, so the ELBO argmax is
-a paired comparison rather than a lottery over batches, and the winner is then drawn at
-full width and importance-resampled against the exact full-data ``logP``. The compiled
-log-density, Gaussian sampler and PSIS are reused unchanged from the deterministic
-Pathfinder (``bfgs_sample``, ``importance_sampling``).
+The optimizer core is :func:`run_stochastic_lbfgs`. Its iterate positions are tail-averaged
+into a single point, which is then drawn at full width and importance-resampled against the
+exact full-data ``logP``. The compiled log-density, Gaussian sampler and PSIS are reused
+unchanged from the deterministic Pathfinder (``bfgs_sample``, ``importance_sampling``).
 
-The draws it returns are a proposal, not a posterior; the measured operating range is on
-:func:`fit_streaming_pathfinder`. Two causes of the gap are known and neither is fixed
-here: the stochastic trajectory never approaches the MAP as closely as the deterministic
-one, and each iterate's stored gradient is one rescaled minibatch gradient whose noise
-lands directly in the Gaussian mean.
+The draws it returns are a proposal, not a posterior; the measured operating range, in both
+dataset size and dimension, is on :func:`fit_streaming_pathfinder`.
 
 What streaming does buy is memory: 6.4x less resident memory than ``fit_pathfinder`` at
 N=4e5 and 11.4x at N=1.6e6, at comparable wall clock for a matched proposal pool.
@@ -48,6 +43,11 @@ from pymc_extras.inference.pathfinder.stochastic_lbfgs import (
 
 __all__ = ["StreamingPathfinderResult", "fit_streaming_pathfinder"]
 
+# Fraction of the trajectory's iterate positions that the tail average covers. Not a
+# keyword: 0.50 and 0.75 are indistinguishable and the 0.50-0.90 basin is flat, so the
+# only thing a user could learn from the knob is that 1.00 is broken.
+_TAIL_AVERAGE_FRAC = 0.75
+
 
 @dataclass
 class StreamingPathfinderResult:
@@ -64,10 +64,6 @@ class StreamingPathfinderResult:
         resampling and are row-aligned with ``samples`` only when importance sampling
         is off (``None``); after resampling they are proposal-space diagnostics, not
         per-``samples``-row densities.
-    elbo_trace : ndarray
-        ELBO of every stored iterate, evaluated on the shared evaluation batch.
-    elbo_argmax : int
-        Index of the selected iterate within ``elbo_trace``.
     pareto_k : float or None
         PSIS Pareto shape diagnostic (None when importance sampling is disabled).
     violation_rate : float
@@ -81,23 +77,9 @@ class StreamingPathfinderResult:
     samples: np.ndarray
     logP: np.ndarray
     logQ: np.ndarray
-    elbo_trace: np.ndarray
-    elbo_argmax: int
     pareto_k: float | None
     violation_rate: float
     n_ls_failures: int
-
-
-def _elbo(logP, logQ):
-    """Mean ELBO over the draws, matching upstream ``LBFGSStreamingCallback``.
-
-    A single draw with non-finite ``logP`` (proposal mass where the target has zero
-    density) collapses the estimate to ``-inf`` rather than being dropped, so a
-    support-violating iterate cannot outscore a valid one.
-    """
-    logP_safe = np.where(np.isfinite(logP), np.asarray(logP), -np.inf)
-    elbo = float(np.mean(logP_safe - np.asarray(logQ)))
-    return elbo if np.isfinite(elbo) else -np.inf
 
 
 def _compile_batched_logp(model, terms, jacobian):
@@ -154,10 +136,8 @@ def fit_streaming_pathfinder(
     *,
     batch_var="batch",
     num_iters=200,
-    num_elbo_draws=10,
     num_draws=1000,
     num_proposal_draws=None,
-    eval_rows=2000,
     full_pass=None,
     jitter=2.0,
     jacobian_correction=True,
@@ -180,8 +160,6 @@ def fit_streaming_pathfinder(
         Name of the ``pm.Data`` placeholder to stream into.
     num_iters : int
         Number of stochastic L-BFGS steps.
-    num_elbo_draws : int
-        Monte-Carlo draws per iterate for ELBO selection.
     num_draws : int
         Draws returned from the selected Gaussian.
     num_proposal_draws : int, optional
@@ -191,8 +169,6 @@ def fit_streaming_pathfinder(
         ``importance_sampling=None``. The pool's exact full-data ``logP`` is one
         O(``num_proposal_draws`` x N) pass and was 85-94% of wall clock at N=1e5, so this
         setting is very nearly the cost of the fit.
-    eval_rows : int
-        Rows in the fixed evaluation batch used for iterate selection.
     full_pass : iterable, optional
         An iterable of row blocks visiting every row exactly once, for the final exact
         full-data ``logP``; consumed once. Defaults to iterating ``loader``, which is
@@ -214,12 +190,11 @@ def fit_streaming_pathfinder(
     importance_sampling : {"psis", "psir", "identity", None}
         Post-hoc reweighting of the returned draws; ``None`` returns the proposal
         draws unweighted. ``"identity"`` weights by the raw log ratio, so like
-        ``"psis"``/``"psir"`` it resamples from a larger pool. At the Pareto-k these fits
-        reach the weights are degenerate — the 4000-draw pool at N=1e5 had an effective
-        sample size of 1.0-1.2 — so resampling acts as selection of the highest-weight
-        draws: it moved the worst coordinate's mean from 12.9 to 11.8 reference-sd and
-        narrowed the worst marginal sd from 0.91-0.93 of the reference to 0.66-0.74, at
-        about 3x the wall clock.
+        ``"psis"``/``"psir"`` it resamples from a larger pool. At the Notes configuration
+        (k=8, N=1e5, three seeds) the 4000-draw pool carried a raw-weight effective sample
+        size of 449-1762, so the weights inform the resampling rather than collapsing onto
+        a few draws; it cost 3.4-3.7x the wall clock of ``None``, which draws a pool of
+        ``num_draws`` only.
     lbfgs_config : StochasticLBFGSConfig, optional
     callbacks : iterable of callable, optional
         ``pm.fit`` callbacks, called ``(None, losses, i)`` after each optimizer step;
@@ -234,15 +209,32 @@ def fit_streaming_pathfinder(
 
     Notes
     -----
-    Measured against an exact full-data Laplace reference on Bayesian logistic regression
-    (5 coefficients, three seeds, the defaults above): the draws are a proposal, not a
-    posterior, and the gap grows with the dataset. At N=1e5 the worst coordinate's mean
-    sits 7.1-13.3 reference-sd from the MAP at Pareto-k 4.3-6.6; at N=1.6e6, 57-101 sd at
-    Pareto-k 22-39. ``fit_pathfinder`` on the same N=1e5 data is within 0.10 reference-sd
-    at Pareto-k -0.6 to 0.4. Batch size is the lever that works (8192 rows instead of 512:
-    Pareto-k 3.2-3.9, 5.9-6.4 sd); iteration count is not (600 instead of 200 left the
-    selected iterate unchanged on two of three seeds). Read ``pareto_k``;
-    ``violation_rate`` read 0.0 on every one of these runs.
+    Measured operating range. Bayesian logistic regression, Normal(0, 2) prior, batch 2048,
+    ``num_iters=200``, ``maxcor=6``, ``jitter=2.0``, ``num_draws=1000``,
+    ``num_proposal_draws=4000``, PSIS, against an exact full-data Laplace reference. With
+    k=8 coefficients, worst-coordinate error in reference-sd:
+
+    ====== ===================== =========================
+    N      ``pareto_k``          worst coordinate (ref-sd)
+    ====== ===================== =========================
+    1e5    0.31-0.80 (med 0.69)  0.17-0.58
+    4e5    0.80-0.91 (med 0.87)  1.07-1.56
+    1.6e6  2.05-2.56 (med 2.52)  2.91-4.35
+    ====== ===================== =========================
+
+    On the same trajectories before tail averaging, N=1e5 gave ``pareto_k`` 5.80-7.00 and
+    9.71-11.13 ref-sd. But ``pareto_k`` still exceeds 0.7 on 6 of 12 seeds at N=1e5 and on
+    5 of 6 at N=4e5, so read it on every fit: these draws remain a *proposal*, not a
+    posterior, and in the large-N regime that gap is not small.
+
+    The range is in ``k`` as much as in ``N``. At k=100 the tail-averaged ``pareto_k`` is
+    2.2-4.5 and the error 4.6-17.4 ref-sd — unusable, and worse, quiet: with the
+    line-search gradient-finiteness guard the k=100 case no longer raises, it returns a
+    silently wrong posterior. Do not run this above a few tens of dimensions without
+    checking ``pareto_k``.
+
+    Averaging buys a level, not an exponent: the gap still grows roughly 3x per 4x in N.
+    ``violation_rate`` is an optimizer-health counter and read 0.0 on all of these runs.
     """
     model = pm.modelcontext(model)
     if batch_var not in model.named_vars:
@@ -253,7 +245,7 @@ def fit_streaming_pathfinder(
     cfg = lbfgs_config or StochasticLBFGSConfig()
     J = cfg.maxcor
 
-    init_ss, elbo_ss, final_ss, resample_ss = np.random.SeedSequence(random_seed).spawn(4)
+    init_ss, final_ss, resample_ss = np.random.SeedSequence(random_seed).spawn(3)
 
     # Compile once; all functions below close over the batch_var pm.Data shared variable.
     neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=jacobian_correction)
@@ -286,17 +278,7 @@ def fit_streaming_pathfinder(
             epoch = iter(loader)
             return next(epoch)
 
-    # One batch fixed for the whole selection sweep, so every iterate is scored on the
-    # same rows. Not held out: they come off the stream the optimizer also trains on.
     n_total = len(loader)
-    target_rows = min(eval_rows, n_total)
-    chunks, rows = [], 0
-    while rows < target_rows:
-        b = next_batch()
-        chunks.append(b)
-        rows += b.shape[0]
-    eval_batch = np.concatenate(chunks, axis=0)[:target_rows]
-
     init_rng = np.random.default_rng(init_ss)
     x0 = x_base + init_rng.uniform(-jitter, jitter, size=N)
     model.set_data(batch_var, next_batch())
@@ -315,16 +297,29 @@ def fit_streaming_pathfinder(
             "smaller jitter, or a larger batch size."
         )
 
-    model.set_data(batch_var, eval_batch)
-    u_elbo = np.random.default_rng(elbo_ss).standard_normal((num_elbo_draws, N))
-    elbo_trace = np.empty(len(traj.iterates))
-    for k, it in enumerate(traj.iterates):
-        _, logQ, logP, _ = sample_logp(
-            it["x"], it["g"], it["alpha"], it["s_win"], it["z_win"], u_elbo
-        )
-        elbo_trace[k] = _elbo(logP, logQ)
-    elbo_argmax = int(np.argmax(elbo_trace))
-    best = traj.iterates[elbo_argmax]
+    # Polyak-Ruppert tail averaging of the iterate positions. Each stochastic L-BFGS step is
+    # a full quasi-Newton step plus line search on ONE minibatch, so its accepted point is
+    # essentially that minibatch's MAP: ~sqrt(N / b) full-data posterior-sd off the true MAP
+    # (measured ratio 0.971 over 27 runs), while the same batch pins the posterior sd to
+    # within 1-2%. That makes it a location error, not a covariance one, which is why no rule
+    # that *picks* an iterate can fix it. g is zeroed because the sampler centres the Gaussian
+    # at mu = x - H_inv @ g; keeping the last iterate's gradient costs 2.0-6.6x. Curvature
+    # stays from the last iterate: averaged (s, z) pairs are not a valid L-BFGS memory.
+    # Ruppert 1988 (Cornell ORIE TR-781); Polyak & Juditsky 1992, SIAM J. Control Optim.
+    # 30(4):838-855; Jain et al., JMLR 18(223), 2018 (tail averaging the last c*n iterates);
+    # Mandt, Hoffman & Blei, JMLR 18(134), 2017; Dhaka et al., NeurIPS 2020 and Welandawe
+    # et al., JMLR 25(219), 2024 (iterate averaging in VI); Byrd, Hansen, Nocedal & Singer,
+    # SIAM J. Optim. 26(2):1008-1031, 2016 (averaged iterates inside stochastic L-BFGS).
+    m = max(1, round(_TAIL_AVERAGE_FRAC * len(traj.iterates)))
+    x_avg = np.mean([it["x"] for it in traj.iterates[-m:]], axis=0)
+    last = traj.iterates[-1]
+    best = {
+        "x": x_avg,
+        "g": np.zeros_like(x_avg),
+        "alpha": last["alpha"],
+        "s_win": last["s_win"],
+        "z_win": last["z_win"],
+    }
 
     resample = importance_sampling is not None
     if num_proposal_draws is None:
@@ -340,7 +335,7 @@ def fit_streaming_pathfinder(
     )
     samples = np.asarray(phi)
     logQ = np.asarray(logQ)
-    # sample_logp's logP is the eval-batch pseudo-density; the weights need the exact one.
+    # sample_logp's logP is the installed batch's pseudo-density; the weights need the exact one.
     logP = _full_data_logp(
         samples,
         full_pass if full_pass is not None else loader,
@@ -370,8 +365,6 @@ def fit_streaming_pathfinder(
         samples=samples,
         logP=logP,
         logQ=logQ,
-        elbo_trace=elbo_trace,
-        elbo_argmax=elbo_argmax,
         pareto_k=pareto_k,
         violation_rate=traj.violation_rate,
         n_ls_failures=traj.n_ls_failures,
