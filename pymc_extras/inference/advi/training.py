@@ -453,6 +453,26 @@ class Trainer:
         if to_observe:
             model = pm.observe(model, to_observe)
 
+        # When total_size is known, also rescale any pm.Data variables that appear
+        # in the batch but were not explicitly listed in observeds.  Without this,
+        # a torch-style DataLoader with __len__ would trigger no rescaling unless
+        # the user also passed observeds, which is surprising when the model already
+        # declares the observations via pm.Data.
+        if total_size is not None:
+            for name in first_batch:
+                if name in self._logp_scalings:
+                    continue  # already handled via observeds or a free RV above
+                var = model[name]
+                if not isinstance(var, SharedVariable):
+                    continue
+                for rv in model.observed_RVs:
+                    if isinstance(rv.owner.op, MinibatchRandomVariable):
+                        continue
+                    if var in ancestors([model.rvs_to_values[rv]]):
+                        value = np.asarray(first_batch[name])
+                        scale = total_size / (value.shape[0] if value.ndim else 1)
+                        self._logp_scalings[rv.name] = scale
+
         self._fit_model = model
         return model
 
