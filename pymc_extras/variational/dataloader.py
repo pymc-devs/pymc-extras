@@ -68,7 +68,6 @@ def _as_source(
         # distinction between a row and a block; hand it over whole instead.
         return lambda: iter((dataset,))
 
-    # A factory may return any iterable; normalize to a true iterator.
     make = dataset if callable(dataset) else (lambda: dataset)
     return lambda: iter(make())
 
@@ -190,7 +189,7 @@ def shuffle_buffer(
             else:
                 exhausted = True
             if have < batch_size:
-                return  # source exhausted: drop the final partial batch
+                return
             buf = np.concatenate(bufs, axis=0)
             rng.shuffle(buf)
             n_full = buf.shape[0] // batch_size
@@ -413,8 +412,6 @@ def _check_columns(schema, columns: list[str], path: str) -> None:
 
 
 class _ParquetDataset:
-    """Backs :func:`parquet_source`; see that docstring for what it yields."""
-
     def __init__(self, paths: list[str], columns: list[str], n_rows: int):
         self._paths = paths
         self._columns = columns
@@ -449,7 +446,7 @@ def parquet_source(
     metadata (no data scan) so ``total_size="auto"`` resolves the dataset size for
     free. Pass ``shuffle=True`` to the :class:`DataLoader` for shuffled batches.
     """
-    import pyarrow.parquet as pq  # optional dependency, so imported on use
+    import pyarrow.parquet as pq
 
     paths = sorted(glob.glob(os.path.join(directory, pattern)))
     if not paths:
