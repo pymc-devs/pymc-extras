@@ -161,28 +161,6 @@ def test_iter_yields_clean_batches_and_reiterates():
     np.testing.assert_array_equal(np.sort(np.concatenate([b.ravel() for b in e2])), data.ravel())
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [{"total_size": 0}, {"total_size": -100}, {"batch_size": True}],
-    ids=["zero", "negative", "bool"],
-)
-def test_nonpositive_sizes_rejected(kwargs):
-    """0 skips the rescaling, a negative N flips the logp sign, and bool is not a size."""
-    kw = {"batch_size": 4, "total_size": 8, **kwargs}
-    data = np.zeros((8, 1))
-    with pytest.raises(ValueError, match="positive integer"):
-        DataLoader(chunked_factory(data, 4), **kw)
-
-
-def test_shuffle_buffer_rejects_nonpositive_sizes():
-    """Zero or negative buffer/batch sizes raise at construction."""
-    data = np.zeros((10, 1))
-    with pytest.raises(ValueError, match="buffer_size"):
-        shuffle_buffer(chunked_factory(data, 5), buffer_size=0, batch_size=4)
-    with pytest.raises(ValueError, match="batch_size"):
-        shuffle_buffer(chunked_factory(data, 5), buffer_size=10, batch_size=0)
-
-
 def test_accepts_numpy_integer_sizes():
     """numpy ints pass the Integral check and are stored as plain Python ints."""
     data = np.zeros((8, 1))

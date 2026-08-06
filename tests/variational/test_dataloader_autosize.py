@@ -68,12 +68,12 @@ def test_auto_rejects_factory_returning_same_one_shot_iterator():
         DataLoader(lambda: one_shot, batch_size=4, total_size="auto")
 
 
-def test_auto_rejects_bad_n_rows():
-    """A non-positive source .n_rows is rejected instead of trusted."""
+def test_auto_accepts_any_n_rows():
+    """A source .n_rows is trusted as-is (like PyTorch)."""
     f = chunked_factory(np.zeros((8, 1)), 4)
     f.n_rows = 0
-    with pytest.raises(ValueError, match="n_rows must be a positive integer"):
-        DataLoader(f, batch_size=4, total_size="auto")
+    ds = DataLoader(f, batch_size=4, total_size="auto")
+    assert ds.total_size == 0
 
 
 @pytest.mark.parametrize(

@@ -34,7 +34,6 @@ batches, and/or pass ``shuffle=True``.
 from __future__ import annotations
 
 import glob
-import numbers
 import os
 import warnings
 
@@ -43,11 +42,6 @@ from collections.abc import Callable, Iterable, Iterator
 import numpy as np
 
 __all__ = ["DataLoader", "parquet_source", "shuffle_buffer"]
-
-
-def _is_positive_int(value: object) -> bool:
-    """True for a strictly positive integer (incl. numpy ints), excluding bool."""
-    return isinstance(value, numbers.Integral) and not isinstance(value, bool) and int(value) > 0
 
 
 def _as_source(
@@ -86,8 +80,6 @@ def _auto_total_size(
     """Resolve ``total_size="auto"``: trust a source ``.n_rows``, else count once."""
     n_rows = getattr(dataset, "n_rows", None)
     if n_rows is not None:
-        if not _is_positive_int(n_rows):
-            raise ValueError(f"source.n_rows must be a positive integer, got {n_rows!r}")
         return int(n_rows)
     if isinstance(dataset, Iterator):
         raise ValueError(
@@ -170,10 +162,6 @@ def shuffle_buffer(
     ``max(buffer_size, batch_size)`` plus one chunk. Blocks are copied as they fill
     the buffer, since a source may hand back a view into a buffer it overwrites.
     """
-    if not _is_positive_int(batch_size):
-        raise ValueError(f"batch_size must be a positive integer, got {batch_size!r}")
-    if not _is_positive_int(buffer_size):
-        raise ValueError(f"buffer_size must be a positive integer, got {buffer_size!r}")
     seed_seq = np.random.SeedSequence(seed)
 
     def factory() -> Iterator[np.ndarray]:
@@ -275,9 +263,6 @@ class DataLoader:
         total_size: int | str | None = "auto",
         preprocess_fn: Callable[[np.ndarray], np.ndarray] | None = None,
     ):
-        if not _is_positive_int(batch_size):
-            raise ValueError(f"batch_size must be a positive integer, got {batch_size!r}")
-
         self._new_iter = new_iter = _as_source(dataset)
         self._batch_size = int(batch_size)
         self._dtype = dtype
@@ -292,12 +277,6 @@ class DataLoader:
                 "biased. Pass total_size=N (the true dataset size) or total_size='auto'.",
                 UserWarning,
                 stacklevel=2,
-            )
-        elif not _is_positive_int(total_size):
-            raise ValueError(
-                "total_size must be a positive integer (the true dataset size N) so "
-                "the minibatch log-likelihood is rescaled by N / batch_size; got "
-                f"{total_size!r}."
             )
         self._total_size = None if total_size is None else int(total_size)
 
