@@ -97,9 +97,6 @@ def _auto_total_size(
         count += int(np.asarray(chunk).shape[0])
     if count <= 0:
         raise ValueError("total_size='auto' counted 0 rows (empty or non-re-readable source).")
-    # A genuine source yields a fresh, non-empty stream each call; one that returns
-    # the same exhausted iterator would leave nothing to stream. The probe costs one
-    # chunk, which the counting pass has already dwarfed.
     second = new_iter()
     if second is first or next(second, None) is None:
         raise ValueError(
