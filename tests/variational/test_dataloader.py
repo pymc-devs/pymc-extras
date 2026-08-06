@@ -17,7 +17,6 @@ import pytest
 
 from pymc_extras.variational.dataloader import (
     DataLoader,
-    IterableDataset,
     shuffle_buffer,
 )
 from tests.variational.dataloader_helpers import chunked_factory
@@ -227,12 +226,6 @@ def test_scalar_sample_shape_batches_scalars(data, batch_size, shapes):
     batches = list(ds)
     assert [b.shape for b in batches] == shapes
     np.testing.assert_array_equal(np.concatenate(batches), data.ravel()[: len(shapes) * batch_size])
-
-
-def test_iterable_dataset_base_is_abstract():
-    """The base class is a contract: __iter__ must be overridden."""
-    with pytest.raises(NotImplementedError):
-        iter(IterableDataset())
 
 
 def test_raw_2d_array_infers_sample_shape():

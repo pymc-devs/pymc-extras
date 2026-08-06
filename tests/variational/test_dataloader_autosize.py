@@ -18,7 +18,6 @@ import pytest
 
 from pymc_extras.variational.dataloader import (
     DataLoader,
-    IterableDataset,
     parquet_source,
 )
 from tests.variational.dataloader_helpers import chunked_factory, write_parquet
@@ -155,7 +154,6 @@ def test_parquet_source_n_rows_from_metadata(tmp_path):
         block = rng.normal(size=(n, 2))
         write_parquet(tmp_path / f"part_{i:02d}.parquet", {"a": block[:, 0], "b": block[:, 1]})
     src = parquet_source(str(tmp_path))
-    assert isinstance(src, IterableDataset)
     assert src.n_rows == total
 
     ds = DataLoader(src, batch_size=10, sample_shape=(2,), total_size="auto")

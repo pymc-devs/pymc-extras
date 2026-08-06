@@ -17,10 +17,9 @@ The full dataset never has to be resident: peak memory is set by the batch, not 
 the dataset size N. Iteration runs one batch ahead, so budget two batches plus the
 source chunks they hold and any shuffle buffer.
 
-The API mirrors ``torch.utils.data``: an :class:`IterableDataset` is a
-re-iterable source of rows (e.g. :func:`parquet_source` over a directory of
-shards, read a chunk at a time), and a :class:`DataLoader` turns it into
-fixed-size, optionally shuffled batches. One difference from torch:
+The API mirrors ``torch.utils.data``: a re-iterable source of rows
+(e.g. :func:`parquet_source` over a directory of shards, read a chunk at a time)
+is turned into fixed-size, optionally shuffled batches by a :class:`DataLoader`. One difference from torch:
 ``len(loader)`` is the row count ``N``, not the batch count.
 
 Every batch has exactly ``batch_size`` rows, so each pass drops the final
@@ -41,7 +40,7 @@ from collections.abc import Callable, Iterable, Iterator
 
 import numpy as np
 
-__all__ = ["DataLoader", "IterableDataset", "parquet_source", "shuffle_buffer"]
+__all__ = ["DataLoader", "parquet_source", "shuffle_buffer"]
 
 
 def _is_positive_int(value: object) -> bool:
@@ -62,25 +61,8 @@ def _promote_to_block(a: np.ndarray, sample_shape: tuple[int, ...]) -> np.ndarra
     return a
 
 
-class IterableDataset:
-    """A re-iterable, out-of-core source of rows, like ``torch.utils.data.IterableDataset``.
-
-    Subclass and implement :meth:`__iter__` to yield ``np.ndarray`` blocks of rows
-    (shape ``(rows, *sample_shape)``); a :class:`DataLoader` re-batches those into
-    fixed-size minibatches. ``__iter__`` must return a fresh iterator each call so
-    the dataset can be replayed across epochs. Set :attr:`n_rows` if the row count
-    is known cheaply (e.g. from file metadata) so ``total_size="auto"`` can skip a
-    counting pass.
-    """
-
-    n_rows: int | None = None
-
-    def __iter__(self) -> Iterator[np.ndarray]:
-        raise NotImplementedError("IterableDataset subclasses must implement __iter__")
-
-
 def _as_source(
-    dataset: IterableDataset | Iterable[np.ndarray] | Callable[[], Iterator[np.ndarray]],
+    dataset: Iterable[np.ndarray] | Callable[[], Iterator[np.ndarray]],
 ) -> Callable[[], Iterator[np.ndarray]]:
     """Normalize any accepted source into a zero-arg factory returning a fresh iterator."""
     if isinstance(dataset, Iterator):
@@ -104,7 +86,7 @@ def _as_source(
 
 
 def _auto_total_size(
-    dataset: IterableDataset | Iterable[np.ndarray] | Callable[[], Iterator[np.ndarray]],
+    dataset: Iterable[np.ndarray] | Callable[[], Iterator[np.ndarray]],
     new_iter: Callable[[], Iterator[np.ndarray]],
     sample_shape: tuple[int, ...],
 ) -> int:
@@ -247,7 +229,7 @@ class DataLoader:
 
     Parameters
     ----------
-    dataset : IterableDataset, iterable of ndarray, or zero-arg factory
+    dataset : iterable of ndarray, or zero-arg factory
         The source of rows. A factory is preferred: it restarts the stream each
         epoch. It may yield single samples or blocks of any size.
     batch_size : int
@@ -279,7 +261,7 @@ class DataLoader:
     .. code-block:: python
 
         loader = DataLoader(
-            parquet_source("shuffled/"),  # an IterableDataset over the shards
+            parquet_source("shuffled/"),  # a re-iterable source over the shards
             batch_size=4096,
             sample_shape=(4,),  # 3 features + 1 observed column
             total_size="auto",  # infer N from the source; N == len(loader)
@@ -299,7 +281,7 @@ class DataLoader:
 
     def __init__(
         self,
-        dataset: IterableDataset | Iterable[np.ndarray] | Callable[[], Iterator[np.ndarray]],
+        dataset: Iterable[np.ndarray] | Callable[[], Iterator[np.ndarray]],
         *,
         batch_size: int,
         shuffle: bool = False,
@@ -381,7 +363,9 @@ class DataLoader:
         batch = next(it, None)
         while batch is not None:
             following = next(it, None)
-            prepared = self._prepare(batch)
+            if self._preprocess_fn is not None:
+                batch = self._preprocess_fn(batch)
+            prepared = np.array(batch, dtype=self._dtype)
             seen += int(prepared.shape[0])
             if following is None:
                 self._maybe_warn_total_size(seen)
@@ -396,12 +380,6 @@ class DataLoader:
                 "total_size=None; construct it with total_size=N or total_size='auto'."
             )
         return self._total_size
-
-    def _prepare(self, batch: np.ndarray) -> np.ndarray:
-        """Apply ``preprocess_fn`` and cast; copies, since a source may reuse its buffer."""
-        if self._preprocess_fn is not None:
-            batch = self._preprocess_fn(batch)
-        return np.array(batch, dtype=self._dtype)
 
     def _maybe_warn_total_size(self, seen: int) -> None:
         """Warn once if ``total_size`` disagrees with the rows of one full pass."""
@@ -444,7 +422,7 @@ def _check_columns(schema, columns: list[str], path: str) -> None:
         )
 
 
-class _ParquetDataset(IterableDataset):
+class _ParquetDataset:
     """Backs :func:`parquet_source`; see that docstring for what it yields."""
 
     def __init__(self, paths: list[str], columns: list[str], n_rows: int):
@@ -471,7 +449,7 @@ def parquet_source(
     columns: list[str] | None = None,
     pattern: str = "*.parquet",
 ) -> _ParquetDataset:
-    """An :class:`IterableDataset` over a directory of Parquet files.
+    """A re-iterable source over a directory of Parquet files.
 
     Yields one ``(rows, n_columns)`` array per row group (one or more per file),
     so peak read memory is one row group, not one file. The column order is
