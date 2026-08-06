@@ -109,14 +109,9 @@ def _auto_total_size(
 
 
 def _rebatch(blocks: Iterable[np.ndarray], batch_size: int) -> Iterator[np.ndarray]:
-    """Slice a stream of row blocks into exact ``batch_size``-row batches, in order.
+    """Slice a stream of row blocks into exact ``batch_size``-row batches.
 
-    Blocks may be any number of rows; remainders carry across them so no row is
-    lost mid-stream. Trailing rows that do not fill a final batch are dropped when
-    the stream ends (``drop_last``; the model observes a fixed-shape placeholder).
-    A block that has to survive another pull is copied, since a source may hand
-    back a view into a buffer it overwrites; sources that already yield exact
-    ``batch_size`` blocks pass through uncopied.
+    Remainders carry across blocks; trailing rows that don't fill a batch are dropped.
     """
     buf: list[np.ndarray] = []
     have = 0
@@ -145,18 +140,8 @@ def shuffle_buffer(
 ) -> Callable[[], Iterator[np.ndarray]]:
     """Wrap a block source into a shuffled, fixed-size batch source.
 
-    Fills a buffer of at least ``buffer_size`` rows from ``chunk_source`` (a
-    zero-arg factory yielding blocks), shuffles it, and yields ``batch_size``
-    slices; a remainder carries into the next fill and a final partial batch is
-    dropped. Each epoch (each call of the returned factory) draws a fresh
-    permutation from ``seed``, reproducible per seed.
-
-    ``DataLoader(shuffle=True)`` calls this for you; use it directly only to control
-    ``buffer_size`` explicitly. A bounded buffer cannot fix strongly ordered data --
-    pre-shuffle on disk for that. ``buffer_size`` is a lower bound, and the chunk that
-    crosses it is kept whole, so peak allocation is about twice
-    ``max(buffer_size, batch_size)`` plus one chunk. Blocks are copied as they fill
-    the buffer, since a source may hand back a view into a buffer it overwrites.
+    Fills a buffer of at least ``buffer_size`` rows, shuffles, and yields
+    ``batch_size`` slices. Each epoch draws a fresh permutation from ``seed``.
     """
     seed_seq = np.random.SeedSequence(seed)
 
@@ -288,12 +273,7 @@ class DataLoader:
         self._warned_size = False
 
     def _blocks(self) -> Iterator[np.ndarray]:
-        """One epoch of source blocks, checked for a consistent trailing shape.
-
-        Rows are the leading axis, so ``block.shape[1:]`` is one sample. A source
-        that changes that shape mid-stream cannot be concatenated into batches, and
-        numpy would only say so once the shapes happened to collide.
-        """
+        """Yield source blocks, checking for a consistent trailing shape."""
         trailing = None
         for arr in self._new_iter():
             a = np.asarray(arr)
@@ -322,14 +302,7 @@ class DataLoader:
         return self._total_size
 
     def __iter__(self) -> Iterator[np.ndarray]:
-        """Yield one epoch of ``batch_size``-row minibatches.
-
-        Stream each into the model's ``pm.Data`` placeholder with ``model.set_data``
-        before a step; re-iterate for another epoch. The pass runs one batch ahead so
-        the ``total_size`` check still fires when a fit stops exactly at the epoch
-        boundary, which also means the source is pulled one batch further than the
-        last batch yielded.
-        """
+        """Yield one epoch of ``batch_size``-row minibatches."""
         seen = 0
         it = _rebatch(self._batch_source(), self._batch_size)
         batch = next(it, None)
@@ -387,11 +360,7 @@ class DataLoader:
 
 
 def _check_columns(schema, columns: list[str], path: str) -> None:
-    """Reject a shard whose schema cannot supply ``columns`` as a float batch.
-
-    ``read_row_group(columns=...)`` silently drops unknown names, and a non-numeric
-    column only blows up later at the float cast, so both are named against ``path``.
-    """
+    """Reject a shard whose schema cannot supply ``columns`` as a float batch."""
     import pyarrow as pa
 
     missing = [c for c in columns if c not in schema.names]
@@ -435,13 +404,8 @@ def parquet_source(
 ) -> _ParquetDataset:
     """A re-iterable source over a directory of Parquet files.
 
-    Yields one ``(rows, n_columns)`` array per row group (one or more per file),
-    so peak read memory is one row group, not one file. The column order is
-    frozen at construction (``columns`` if given, else the first file's schema
-    order) and every shard is read in that order, so a shard with a permuted
-    schema cannot silently reorder features. Carries an ``n_rows`` from Parquet
-    metadata (no data scan) so ``total_size="auto"`` resolves the dataset size for
-    free. Pass ``shuffle=True`` to the :class:`DataLoader` for shuffled batches.
+    Yields one ``(rows, n_columns)`` array per row group. Carries ``n_rows`` from
+    Parquet metadata so ``total_size="auto"`` is free.
     """
     import pyarrow.parquet as pq
 
