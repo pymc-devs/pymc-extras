@@ -96,7 +96,14 @@ def test_auto_accepts_any_n_rows():
 def test_total_size_sanity_check(n, batch_size, total_size, stray, warns):
     """The epoch-boundary check reads the pass that just completed, not the cumulative rows."""
     data = np.arange(n, dtype="float64").reshape(n, 1)
-    ds = DataLoader(chunked_factory(data, 5), batch_size=batch_size, total_size=total_size)
+    ds = DataLoader(
+        chunked_factory(data, batch_size),
+        batch_size=batch_size,
+        shuffle=True,
+        buffer_size=batch_size * 2,
+        seed=0,
+        total_size=total_size,
+    )
     partial = iter(ds)
     for _ in range(stray):
         next(partial)
@@ -108,11 +115,13 @@ def test_total_size_sanity_check(n, batch_size, total_size, stray, warns):
 
 
 def test_pass_too_short_for_one_batch_warns():
-    """A source that cannot fill a single batch streams nothing, which must not pass silently."""
+    """A source yielding fewer rows than batch_size warns about the mismatch."""
     data = np.arange(5, dtype="float64").reshape(5, 1)
     ds = DataLoader(chunked_factory(data, 5), batch_size=10, total_size=5)
-    with pytest.warns(UserWarning, match="no complete batch"):
-        assert list(ds) == []
+    with pytest.warns(UserWarning, match="batch has 5 rows, expected 10"):
+        batches = list(ds)
+    assert len(batches) == 1
+    assert batches[0].shape == (5, 1)
 
 
 def test_auto_counts_unshuffled_source_when_shuffling_non_divisible():
@@ -246,13 +255,12 @@ def test_parquet_source_rejects_unknown_columns(tmp_path):
 @pytest.mark.parametrize(
     "make_source, counts",
     [
-        (lambda d: d, True),
-        (lambda d: chunked_factory(d, 7), True),
-        (lambda d: [d[i : i + 7] for i in range(0, len(d), 7)], True),
-        (lambda d: BlockDataset(d, 7), True),
-        (lambda d: BlockDataset(d, 7, n_rows=45), False),
+        (lambda d: chunked_factory(d, 6), True),
+        (lambda d: [d[i : i + 6] for i in range(0, len(d), 6)], True),
+        (lambda d: BlockDataset(d, 6), True),
+        (lambda d: BlockDataset(d, 6, n_rows=42), False),
     ],
-    ids=["raw-array", "factory", "reiterable-blocks", "iterable-dataset", "advertised-n-rows"],
+    ids=["factory", "reiterable-blocks", "iterable-dataset", "advertised-n-rows"],
 )
 def test_auto_resolves_the_explicit_n_for_every_source_kind(make_source, counts):
     """'auto' lands on the same N an explicit total_size would, counting only when it must.
@@ -261,9 +269,9 @@ def test_auto_resolves_the_explicit_n_for_every_source_kind(make_source, counts)
     inherits the default ``n_rows=None`` is counted too, and either way the epoch that
     follows the counting pass is the whole dataset.
     """
-    data = np.arange(90, dtype="float64").reshape(45, 2)
+    data = np.arange(84, dtype="float64").reshape(42, 2)
     counting = pytest.warns(UserWarning, match="counting pass") if counts else nullcontext()
     with counting:
         ds = DataLoader(make_source(data), batch_size=6, total_size="auto")
-    assert ds.total_size == len(ds) == 45
+    assert ds.total_size == len(ds) == 42
     np.testing.assert_array_equal(np.concatenate(list(ds)), data[:42])

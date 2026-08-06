@@ -108,29 +108,6 @@ def _auto_total_size(
     return count
 
 
-def _rebatch(blocks: Iterable[np.ndarray], batch_size: int) -> Iterator[np.ndarray]:
-    """Slice a stream of row blocks into exact ``batch_size``-row batches.
-
-    Remainders carry across blocks; trailing rows that don't fill a batch are dropped.
-    """
-    buf: list[np.ndarray] = []
-    have = 0
-    for arr in blocks:
-        a = np.asarray(arr)
-        have += a.shape[0]
-        if have < batch_size:
-            buf.append(np.array(a))
-            continue
-        buf.append(a)
-        merged = np.concatenate(buf, axis=0) if len(buf) > 1 else buf[0]
-        n_full = merged.shape[0] // batch_size
-        for i in range(n_full):
-            yield merged[i * batch_size : (i + 1) * batch_size]
-        rem = merged.shape[0] - n_full * batch_size
-        buf = [merged[n_full * batch_size :].copy()] if rem else []
-        have = rem
-
-
 def shuffle_buffer(
     chunk_source: Callable[[], Iterator[np.ndarray]],
     *,
@@ -304,11 +281,18 @@ class DataLoader:
     def __iter__(self) -> Iterator[np.ndarray]:
         """Yield one epoch of ``batch_size``-row minibatches."""
         seen = 0
-        it = _rebatch(self._batch_source(), self._batch_size)
+        it = self._batch_source()
         batch = next(it, None)
         if batch is None:
             self._maybe_warn_total_size(0)
         while batch is not None:
+            if batch.shape[0] != self._batch_size:
+                warnings.warn(
+                    f"batch has {batch.shape[0]} rows, expected {self._batch_size}; "
+                    f"pass shuffle=True or ensure the source yields exact batch_size blocks.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             if self._preprocess_fn is not None:
                 batch = self._preprocess_fn(batch)
             prepared = np.array(batch, dtype=self._dtype)
