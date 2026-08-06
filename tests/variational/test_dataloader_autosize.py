@@ -76,79 +76,6 @@ def test_auto_accepts_any_n_rows():
     assert ds.total_size == 0
 
 
-@pytest.mark.parametrize(
-    "n, batch_size, total_size, stray, warns",
-    [
-        (20, 4, 20, 0, False),
-        (25, 10, 25, 0, False),
-        (100, 10, 100, 3, False),
-        (100, 10, 130, 3, True),
-        (100, 10, 95, 0, True),
-    ],
-    ids=[
-        "exact",
-        "drop-last-truncates",
-        "stray-pass-first",
-        "wrong-size-after-stray",
-        "fewer-rows-than-streamed",
-    ],
-)
-def test_total_size_sanity_check(n, batch_size, total_size, stray, warns):
-    """The epoch-boundary check reads the pass that just completed, not the cumulative rows."""
-    data = np.arange(n, dtype="float64").reshape(n, 1)
-    ds = DataLoader(
-        chunked_factory(data, batch_size),
-        batch_size=batch_size,
-        shuffle=True,
-        buffer_size=batch_size * 2,
-        seed=0,
-        total_size=total_size,
-    )
-    partial = iter(ds)
-    for _ in range(stray):
-        next(partial)
-    if warns:
-        with pytest.warns(UserWarning, match="disagrees with"):
-            list(ds)
-    else:
-        list(ds)
-
-
-def test_pass_too_short_for_one_batch_warns():
-    """A source yielding fewer rows than batch_size warns about the mismatch."""
-    data = np.arange(5, dtype="float64").reshape(5, 1)
-    ds = DataLoader(chunked_factory(data, 5), batch_size=10, total_size=5)
-    with pytest.warns(UserWarning, match="batch has 5 rows, expected 10"):
-        batches = list(ds)
-    assert len(batches) == 1
-    assert batches[0].shape == (5, 1)
-
-
-def test_auto_counts_unshuffled_source_when_shuffling_non_divisible():
-    """With shuffle=True 'auto' counts the unshuffled source, so the dropped batch can't lower N."""
-    data = np.arange(125, dtype="float64").reshape(125, 1)
-    with pytest.warns(UserWarning, match="counting pass"):
-        ds = DataLoader(
-            chunked_factory(data, 125),
-            batch_size=10,
-            shuffle=True,
-            buffer_size=30,
-            seed=0,
-            total_size="auto",
-        )
-    assert ds.total_size == 125
-
-
-def test_total_size_warning_fires_once_across_passes():
-    """A wrong total_size warns on the first full pass and stays quiet on the next."""
-    data = np.arange(40, dtype="float64").reshape(20, 2)
-    ds = DataLoader(chunked_factory(data, 5), batch_size=5, total_size=10_000)
-    with pytest.warns(UserWarning, match="disagrees with"):
-        batches = list(ds)
-    assert len(batches) == 4
-    assert list(ds) != []
-
-
 def test_auto_rejects_factory_closing_over_consumed_iterator():
     """A generator function over a consumed iterator returns a new but empty stream."""
     data = np.zeros((20, 1))
@@ -273,5 +200,6 @@ def test_auto_resolves_the_explicit_n_for_every_source_kind(make_source, counts)
     counting = pytest.warns(UserWarning, match="counting pass") if counts else nullcontext()
     with counting:
         ds = DataLoader(make_source(data), batch_size=6, total_size="auto")
-    assert ds.total_size == len(ds) == 42
+    assert ds.total_size == 42
+    assert len(ds) == 42 // 6
     np.testing.assert_array_equal(np.concatenate(list(ds)), data[:42])

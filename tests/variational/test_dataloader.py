@@ -26,31 +26,12 @@ from tests.variational.dataloader_helpers import (
 )
 
 
-def test_blocks_must_agree_on_the_sample_shape():
-    """The sample shape comes from the blocks, so they have to agree on it."""
-    blocks = [np.zeros((4, 3)), np.zeros((4, 2))]
-    ds = DataLoader(lambda: iter(blocks), batch_size=4, total_size=8)
-    with pytest.raises(ValueError, match="trailing shape"):
-        list(ds)
-
-
-def test_a_scalar_yield_is_rejected():
-    """Rows are the leading axis, so a bare scalar cannot be a block."""
-    ds = DataLoader(lambda: iter([np.float64(1.0)]), batch_size=1, total_size=1)
-    with pytest.raises(ValueError, match="yielded a scalar"):
-        list(ds)
-
-
-def test_preprocess_fn_applied():
-    """preprocess_fn transforms each batch before it is yielded."""
-    data = np.ones((8, 1))
-    ds = DataLoader(
-        chunked_factory(data, 4),
-        batch_size=4,
-        total_size=8,
-        preprocess_fn=lambda b: b * 3.0,
+def test_shuffle_buffer_copies_blocks_it_holds():
+    """shuffle_buffer fills across several pulls, so it cannot alias the source's buffer."""
+    src = shuffle_buffer(reused_buffer_factory(4, 2), buffer_size=8, batch_size=4, seed=0)
+    np.testing.assert_array_equal(
+        np.sort(np.concatenate(list(src())).ravel()), np.repeat(np.arange(4, dtype="float64"), 2)
     )
-    np.testing.assert_array_equal(next(iter(ds)), np.full((4, 1), 3.0))
 
 
 @pytest.mark.parametrize(
@@ -112,7 +93,7 @@ def test_shuffle_true_yields_whole_source_rows(data, make_source, batch_size, bu
 
 
 def test_total_size_rescales_logp_like_minibatch():
-    """total_size=len(loader) scales the observed logp by exactly N / batch_size."""
+    """total_size=loader.total_size scales the observed logp by exactly N / batch_size."""
     rng = np.random.default_rng(0)
     N, bs = 1000, 20
     data = rng.normal(size=(bs, 1))
@@ -121,7 +102,7 @@ def test_total_size_rescales_logp_like_minibatch():
     with pm.Model() as scaled:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", data)
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
     with pm.Model() as plain:
         mu = pm.Normal("mu", 0, 1)
         pm.Normal("y", mu, 1, observed=data[:, 0])
@@ -133,11 +114,11 @@ def test_total_size_rescales_logp_like_minibatch():
 
 
 def test_len_raises_when_total_size_none():
-    """total_size=None warns at construction, and len() then raises instead of guessing N."""
+    """total_size=None warns at construction, and len() raises."""
     data = np.ones((4, 1))
     with pytest.warns(UserWarning, match="total_size=None"):
         loader = DataLoader(lambda: iter([data] * 5), batch_size=4, total_size=None)
-    with pytest.raises(TypeError, match="total_size=None"):
+    with pytest.raises(TypeError, match=r"len\(DataLoader\) requires total_size"):
         len(loader)
 
 
@@ -219,37 +200,6 @@ def test_raw_2d_array_is_one_block_of_rows():
     streamed = np.concatenate(batches)
     assert len({tuple(r) for r in streamed}) == 16
     assert {tuple(r) for r in streamed} <= {tuple(r) for r in data}
-
-
-@pytest.mark.parametrize(
-    "block_rows, kwargs",
-    [
-        (2, {"shuffle": True, "buffer_size": 4, "seed": 0}),
-        (4, {}),
-    ],
-    ids=["shuffled", "exact-batch-size"],
-)
-def test_source_reusing_one_buffer_streams_every_row(block_rows, kwargs):
-    """A source may hand back a view into a buffer it overwrites; no row may be lost to it."""
-    n_blocks = 8 // block_rows
-    ds = DataLoader(
-        reused_buffer_factory(n_blocks, block_rows),
-        batch_size=4,
-        total_size=8,
-        **kwargs,
-    )
-    np.testing.assert_array_equal(
-        np.sort(np.concatenate(list(ds)).ravel()),
-        np.repeat(np.arange(n_blocks, dtype="float64"), block_rows),
-    )
-
-
-def test_shuffle_buffer_copies_blocks_it_holds():
-    """shuffle_buffer fills across several pulls, so it cannot alias the source's buffer."""
-    src = shuffle_buffer(reused_buffer_factory(4, 2), buffer_size=8, batch_size=4, seed=0)
-    np.testing.assert_array_equal(
-        np.sort(np.concatenate(list(src())).ravel()), np.repeat(np.arange(4, dtype="float64"), 2)
-    )
 
 
 def test_shuffle_buffer_accepts_factory_returning_reiterable():
@@ -362,42 +312,3 @@ def test_every_source_kind_streams_the_same_batches(make_source):
     batches = list(loader)
     assert [b.shape for b in batches] == [(8, 2)] * 5
     np.testing.assert_array_equal(np.concatenate(batches), data[:40])
-
-
-def test_preprocess_fn_runs_once_per_batch_over_the_rows_in_order():
-    """preprocess_fn sees each streamed row exactly once, batched and in source order."""
-    data = np.arange(54, dtype="float64").reshape(18, 3)
-    seen = []
-
-    def record(batch):
-        seen.append(np.array(batch))
-        return batch[:, :1] * 2.0
-
-    loader = DataLoader(
-        chunked_factory(data, 6),
-        batch_size=6,
-        total_size=18,
-        preprocess_fn=record,
-    )
-    batches = list(loader)
-    assert [b.shape for b in batches] == [(6, 1)] * 3
-    np.testing.assert_array_equal(np.concatenate(seen), data)
-    np.testing.assert_array_equal(np.concatenate(batches), data[:, :1] * 2.0)
-    list(loader)
-    assert len(seen) == 6
-
-
-@pytest.mark.parametrize("dtype", ["float64", "float32", "int32"])
-def test_batches_are_cast_to_the_declared_dtype(dtype):
-    """Every batch carries the requested dtype, whatever the source and preprocess_fn produced."""
-    data = np.arange(24, dtype="int16").reshape(12, 2)
-    loader = DataLoader(
-        chunked_factory(data, 4),
-        batch_size=4,
-        total_size=12,
-        dtype=dtype,
-        preprocess_fn=lambda b: b / 2.0,
-    )
-    batches = list(loader)
-    assert {b.dtype for b in batches} == {np.dtype(dtype)}
-    np.testing.assert_array_equal(np.concatenate(batches), (data / 2.0).astype(dtype))

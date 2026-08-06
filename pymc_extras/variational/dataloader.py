@@ -13,22 +13,9 @@
 #   limitations under the License.
 """Stream out-of-core data into a PyMC model, one batch at a time.
 
-The full dataset never has to be resident: peak memory is set by the batch, not by
-the dataset size N. Iteration runs one batch ahead, so budget two batches plus the
-source chunks they hold and any shuffle buffer.
-
-The API mirrors ``torch.utils.data``: a re-iterable source of rows
-(e.g. :func:`parquet_source` over a directory of shards, read a chunk at a time)
-is turned into fixed-size, optionally shuffled batches by a :class:`DataLoader`. A source yields blocks of rows: the
-leading axis is the rows, so ``block.shape[1:]`` is one sample and nothing has to
-be declared. One difference from torch: ``len(loader)`` is the row count ``N``,
-not the batch count.
-
-Every batch has exactly ``batch_size`` rows, so each pass drops the final
-``N mod batch_size`` rows (torch's ``drop_last``). Shuffling is only as good as
-the order the source yields rows in; a bounded buffer just block-shuffles
-time-ordered data, so pre-shuffle on disk (or interleave shards) for well-mixed
-batches, and/or pass ``shuffle=True``.
+The API mirrors ``torch.utils.data``: a re-iterable source of rows is turned into
+fixed-size, optionally shuffled batches by a :class:`DataLoader`. A source yields
+blocks of rows: the leading axis is the rows, so ``block.shape[1:]`` is one sample.
 """
 
 from __future__ import annotations
@@ -96,13 +83,12 @@ def _auto_total_size(
     for chunk in first:
         count += int(np.asarray(chunk).shape[0])
     if count <= 0:
-        raise ValueError("total_size='auto' counted 0 rows (empty or non-re-readable source).")
-    second = new_iter()
-    if second is first or next(second, None) is None:
+        raise ValueError("total_size='auto' counted 0 rows (empty source).")
+    if next(new_iter(), None) is None:
         raise ValueError(
-            "total_size='auto' counted rows but the source's next stream was empty "
-            "(it returns the same one-shot iterator, or closes over an already-"
-            "consumed one); pass a source that makes a fresh iterator each epoch, "
+            "total_size='auto' counted rows but the source is not re-readable "
+            "(it returns a one-shot iterator, or closes over an already-consumed one); "
+            "pass a source that makes a fresh iterator each epoch, "
             "or total_size=N explicitly."
         )
     return count
@@ -171,42 +157,37 @@ class DataLoader:
     batch_size : int
         Leading dimension of every yielded minibatch.
     shuffle : bool, default False
-        Wrap the source in a bounded :func:`shuffle_buffer`. See the module
-        docstring for what that does and does not fix, and for ``drop_last``.
+        Wrap the source in a bounded :func:`shuffle_buffer`.
     buffer_size : int, optional
         Shuffle-buffer size in rows when ``shuffle=True``; defaults to
-        ``50 * batch_size``. A buffer as large as the dataset is a full shuffle.
+        ``50 * batch_size``.
     seed : int, optional
         Seed for the shuffle buffer (ignored when ``shuffle=False``).
-    dtype : str, default "float64"
-        Dtype each batch is cast to; match the ``pm.Data`` placeholder's dtype.
     total_size : int or "auto", default "auto"
         The dataset size ``N``, or ``"auto"`` to infer it (from the source's
-        ``n_rows`` if available, else one counting pass). ``None`` warns and
-        disables the rescaling; a non-positive value raises.
-    preprocess_fn : callable, optional
-        Applied to each batch before it is yielded; must preserve the row count.
+        ``n_rows`` if available, else one counting pass). ``None`` disables
+        the rescaling.
 
     Examples
     --------
     .. code-block:: python
 
         loader = DataLoader(
-            parquet_source("shuffled/"),  # a re-iterable source over the shards
-            batch_size=4096,  # each row group is (rows, 4): 3 features + 1 observed
-            total_size="auto",  # infer N from the source; N == len(loader)
+            parquet_source("shuffled/"),
+            batch_size=4096,
+            total_size="auto",
         )
 
         with pm.Model() as model:
             b = pm.Normal("b", 0.0, 3.0, shape=4)
             batch = pm.Data("batch", np.zeros((4096, 4)))
             logit = b[0] + b[1] * batch[:, 0] + b[2] * batch[:, 1] + b[3] * batch[:, 2]
-            pm.Bernoulli("y", logit_p=logit, observed=batch[:, 3], total_size=len(loader))
+            pm.Bernoulli("y", logit_p=logit, observed=batch[:, 3], total_size=loader.total_size)
 
         with model:
-            for next_batch in loader:  # each epoch yields (batch_size, 4) arrays
+            for next_batch in loader:
                 model.set_data("batch", next_batch)
-                ...  # one optimization step over this batch
+                ...
     """
 
     def __init__(
@@ -217,14 +198,10 @@ class DataLoader:
         shuffle: bool = False,
         buffer_size: int | None = None,
         seed: int | None = None,
-        dtype: str = "float64",
         total_size: int | str | None = "auto",
-        preprocess_fn: Callable[[np.ndarray], np.ndarray] | None = None,
     ):
         self._new_iter = new_iter = _as_source(dataset)
         self._batch_size = int(batch_size)
-        self._dtype = dtype
-        self._preprocess_fn = preprocess_fn
 
         if total_size == "auto":
             total_size = _auto_total_size(dataset, new_iter)
@@ -242,32 +219,10 @@ class DataLoader:
             if buffer_size is None:
                 buffer_size = 50 * self._batch_size
             self._batch_source = shuffle_buffer(
-                self._blocks, buffer_size=buffer_size, batch_size=self._batch_size, seed=seed
+                self._new_iter, buffer_size=buffer_size, batch_size=self._batch_size, seed=seed
             )
         else:
-            self._batch_source = self._blocks
-
-        self._warned_size = False
-
-    def _blocks(self) -> Iterator[np.ndarray]:
-        """Yield source blocks, checking for a consistent trailing shape."""
-        trailing = None
-        for arr in self._new_iter():
-            a = np.asarray(arr)
-            if a.ndim == 0:
-                raise ValueError(
-                    "source yielded a scalar; blocks must be arrays whose leading "
-                    "axis is the rows, so a single sample of shape S is shape (1, *S)"
-                )
-            if trailing is None:
-                trailing = a.shape[1:]
-            elif a.shape[1:] != trailing:
-                raise ValueError(
-                    f"source yielded a block of shape {a.shape}, but earlier blocks had "
-                    f"trailing shape {trailing}; every block must be (rows, *sample_shape) "
-                    f"with the same sample shape"
-                )
-            yield a
+            self._batch_source = self._new_iter
 
     @property
     def batch_size(self) -> int:
@@ -280,67 +235,16 @@ class DataLoader:
 
     def __iter__(self) -> Iterator[np.ndarray]:
         """Yield one epoch of ``batch_size``-row minibatches."""
-        seen = 0
-        it = self._batch_source()
-        batch = next(it, None)
-        if batch is None:
-            self._maybe_warn_total_size(0)
-        while batch is not None:
-            if batch.shape[0] != self._batch_size:
-                warnings.warn(
-                    f"batch has {batch.shape[0]} rows, expected {self._batch_size}; "
-                    f"pass shuffle=True or ensure the source yields exact batch_size blocks.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-            if self._preprocess_fn is not None:
-                batch = self._preprocess_fn(batch)
-            prepared = np.array(batch, dtype=self._dtype)
-            seen += int(prepared.shape[0])
-            following = next(it, None)
-            if following is None:
-                self._maybe_warn_total_size(seen)
-            yield prepared
-            batch = following
+        yield from self._batch_source()
 
     def __len__(self) -> int:
-        """The dataset size ``N`` -- rows, not batches. Same value as :attr:`total_size`."""
+        """Number of batches per epoch."""
         if self._total_size is None:
             raise TypeError(
-                "len(DataLoader) is the dataset size N, but this loader was built with "
-                "total_size=None; construct it with total_size=N or total_size='auto'."
+                "len(DataLoader) requires total_size; "
+                "construct with total_size=N or total_size='auto'."
             )
-        return self._total_size
-
-    def _maybe_warn_total_size(self, seen: int) -> None:
-        """Warn once if ``total_size`` disagrees with the rows of one full pass.
-
-        A correct ``N`` satisfies ``seen <= N < seen + batch_size``, since the
-        trailing partial batch is dropped. Streaming more rows than ``N`` always
-        warns; over-declaring gets 10% slack to absorb approximate sizes.
-        """
-        if self._warned_size or self._total_size is None:
-            return
-        self._warned_size = True
-        if not seen:
-            warnings.warn(
-                f"the source yielded no complete batch of {self._batch_size} rows, so "
-                f"this pass streamed nothing. Lower batch_size, or check that the "
-                f"source is not empty.",
-                UserWarning,
-                stacklevel=3,
-            )
-            return
-        if seen <= self._total_size < seen + self._batch_size:
-            return
-        if self._total_size < seen or self._total_size - seen > 0.1 * seen:
-            warnings.warn(
-                f"total_size={self._total_size} disagrees with the {seen} rows streamed "
-                f"in one full pass; the N/batch_size rescaling is likely wrong. Pass the "
-                f"true dataset size, or fix the source's n_rows if 'auto' read it there.",
-                UserWarning,
-                stacklevel=3,
-            )
+        return self._total_size // self._batch_size
 
 
 def _check_columns(schema, columns: list[str], path: str) -> None:
