@@ -89,6 +89,33 @@ def sample_logistic(k, n, rng, beta_true=None):
     return X, y, beta_true
 
 
+def logistic_case(seed=0, k=2, n=200):
+    """Seeded logistic-regression model and its packed data (the Gaussian case's twin)."""
+    rng = np.random.default_rng(seed)
+    X, y, _ = sample_logistic(k, n, rng)
+    return logistic_regression(X, y)
+
+
+def record_trajectory(monkeypatch, edit=lambda traj: None):
+    """Return the list the driver's Trajectories land in, one per fit run after this call.
+
+    ``edit`` runs on each Trajectory before the fit reads it, for tests that need counters
+    the optimizer would not produce on its own.
+    """
+    import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
+
+    run, recorded = sp.run_stochastic_lbfgs, []
+
+    def wrapper(*args, **kwargs):
+        traj = run(*args, **kwargs)
+        edit(traj)
+        recorded.append(traj)
+        return traj
+
+    monkeypatch.setattr(sp, "run_stochastic_lbfgs", wrapper)
+    return recorded
+
+
 def test_set_data_changes_compiled_objective():
     """The compiled gradient closes over the pm.Data batch: set_data changes it.
 
@@ -97,9 +124,7 @@ def test_set_data_changes_compiled_objective():
     """
     from pymc_extras.inference.pathfinder.bfgs_sample import get_neg_logp_dlogp_of_ravel_inputs
 
-    rng = np.random.default_rng(0)
-    X, y, _ = sample_logistic(k=2, n=200, rng=rng)
-    model, packed = logistic_regression(X, y)
+    model, packed = logistic_case(seed=0, n=200)
     vg = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True)
 
     x = np.zeros(2)
@@ -116,8 +141,7 @@ def test_saturated_trial_point_rejected():
     from pymc_extras.inference.pathfinder.stochastic_lbfgs import run_stochastic_lbfgs
 
     k = 5
-    X, y, _ = sample_logistic(k=k, n=1000, rng=np.random.default_rng(1))
-    model, packed = logistic_regression(X, y)
+    model, packed = logistic_case(seed=1, k=k, n=1000)
     model.set_data("batch", packed[:64])
     neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True)
 
@@ -137,9 +161,7 @@ def test_saturated_trial_point_rejected():
 
 def test_smoke_streaming_logistic():
     """A short streaming fit on logistic data returns finite, correctly shaped draws."""
-    rng = np.random.default_rng(1)
-    X, y, _ = sample_logistic(k=2, n=400, rng=rng)
-    model, packed = logistic_regression(X, y)
+    model, packed = logistic_case(seed=1, n=400)
     loader = ArrayLoader(packed, batch_size=64)
     res = fit_streaming_pathfinder(
         model,
@@ -156,9 +178,7 @@ def test_smoke_streaming_logistic():
 
 def test_crn_determinism():
     """Same seed gives an identical fit (loader, optimizer, and draws are all seeded)."""
-    rng = np.random.default_rng(3)
-    X, y, _ = sample_logistic(k=2, n=300, rng=rng)
-    model, packed = logistic_regression(X, y)
+    model, packed = logistic_case(seed=3, n=300)
 
     def run():
         loader = ArrayLoader(packed, batch_size=64)
@@ -183,9 +203,7 @@ def test_gaussian_is_centred_on_tail_averaged_position(monkeypatch):
 
     from pymc_extras.inference.pathfinder.bfgs_sample import make_pathfinder_sample_fn
 
-    rng = np.random.default_rng(4)
-    X, y, _ = sample_logistic(k=2, n=300, rng=rng)
-    model, packed = logistic_regression(X, y)
+    model, packed = logistic_case(seed=4, n=300)
 
     # Record the Gaussian the final draw is taken from, and the iterates it came from.
     gaussian = {}
@@ -196,16 +214,7 @@ def test_gaussian_is_centred_on_tail_averaged_position(monkeypatch):
         return sample_fn(x, g, alpha, s_win, z_win, u)
 
     monkeypatch.setattr(sp, "make_pathfinder_sample_fn", lambda *a, **k: record_gaussian)
-
-    iterates = []
-    run = sp.run_stochastic_lbfgs
-
-    def record_iterates(*args, **kwargs):
-        traj = run(*args, **kwargs)
-        iterates.extend(traj.iterates)
-        return traj
-
-    monkeypatch.setattr(sp, "run_stochastic_lbfgs", record_iterates)
+    trajectories = record_trajectory(monkeypatch)
     fit_streaming_pathfinder(
         model,
         ArrayLoader(packed, batch_size=64),
@@ -216,31 +225,27 @@ def test_gaussian_is_centred_on_tail_averaged_position(monkeypatch):
         lbfgs_config=CFG,
     )
 
-    m = max(1, round(sp._TAIL_AVERAGE_FRAC * len(iterates)))
-    assert 1 < m < len(iterates), "the average has to span several iterates to mean anything"
+    (traj,) = trajectories  # the fit walks one path, so it builds one trajectory
+    m = max(1, round(sp._TAIL_AVERAGE_FRAC * len(traj.iterates)))
+    assert 1 < m < len(traj.iterates), "the average has to span several iterates to mean anything"
     x = gaussian["x"]
-    np.testing.assert_allclose(x, np.mean([it["x"] for it in iterates[-m:]], axis=0))
-    assert not np.allclose(x, iterates[-1]["x"]), "averaging collapsed to the last iterate"
+    np.testing.assert_allclose(x, np.mean([it["x"] for it in traj.iterates[-m:]], axis=0))
+    assert not np.allclose(x, traj.iterates[-1]["x"]), "averaging collapsed to the last iterate"
     # mu = x - H_inv @ g, so only g = 0 centres the Gaussian on the averaged position.
     np.testing.assert_array_equal(gaussian["g"], np.zeros_like(x))
     # Curvature is the last iterate's: averaged (s, z) pairs are not a valid L-BFGS memory.
     for key in ("alpha", "s_win", "z_win"):
-        np.testing.assert_array_equal(gaussian[key], iterates[-1][key])
+        np.testing.assert_array_equal(gaussian[key], traj.iterates[-1][key])
 
 
 def test_health_counters_reach_the_result(monkeypatch):
     """violation_rate and n_ls_failures are read off the trajectory, not defaulted."""
-    import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
 
-    run = sp.run_stochastic_lbfgs
-
-    def struggling(*args, **kwargs):
-        traj = run(*args, **kwargs)
+    def struggle(traj):
         traj.n_curvature_violations = traj.n_accepted
         traj.n_ls_failures = 7
-        return traj
 
-    monkeypatch.setattr(sp, "run_stochastic_lbfgs", struggling)
+    record_trajectory(monkeypatch, struggle)
     model, packed, _ = gaussian_case()
     result = fit_streaming_pathfinder(
         model,
@@ -256,17 +261,8 @@ def test_health_counters_reach_the_result(monkeypatch):
 
 def test_jitter_varies_the_start_by_seed(monkeypatch):
     """Without jitter every seed starts at the same prior point and retraces one trajectory."""
-    import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
-
     model, packed, _ = gaussian_case()
-    run, firsts = sp.run_stochastic_lbfgs, []
-
-    def record(*args, **kwargs):
-        traj = run(*args, **kwargs)
-        firsts.append(traj.iterates[0]["x"])
-        return traj
-
-    monkeypatch.setattr(sp, "run_stochastic_lbfgs", record)
+    trajectories = record_trajectory(monkeypatch)
     for seed in (0, 1):
         fit_streaming_pathfinder(
             model,
@@ -276,7 +272,8 @@ def test_jitter_varies_the_start_by_seed(monkeypatch):
             importance_sampling=None,
             random_seed=seed,
         )
-    assert not np.allclose(firsts[0], firsts[1])
+    first, second = (traj.iterates[0]["x"] for traj in trajectories)
+    assert not np.allclose(first, second)
 
 
 def test_callbacks_get_pm_fit_arguments():
@@ -304,9 +301,7 @@ def test_callbacks_get_pm_fit_arguments():
 
 def test_missing_batch_var_raises():
     """A model without the named placeholder gives an actionable error."""
-    rng = np.random.default_rng(6)
-    X, y, _ = sample_logistic(k=2, n=100, rng=rng)
-    model, packed = logistic_regression(X, y)
+    model, packed = logistic_case(seed=6, n=100)
     loader = ArrayLoader(packed, batch_size=32)
     with pytest.raises(KeyError, match=r"pm\.Data"):
         fit_streaming_pathfinder(model, loader, batch_var="nope", num_iters=3)
@@ -352,9 +347,7 @@ def test_gaussian_equivalence_to_analytic():
 @pytest.mark.slow
 def test_batch_size_robustness():
     """Posterior means agree across batch sizes, down to small minibatches."""
-    rng = np.random.default_rng(11)
-    X, y, _ = sample_logistic(k=3, n=2000, rng=rng)
-    model, packed = logistic_regression(X, y)
+    model, packed = logistic_case(seed=11, k=3, n=2000)
 
     means = {}
     for bs in (2000, 256):
@@ -425,7 +418,7 @@ def test_full_data_logp_invariant_to_batch_order_and_size():
 
 def test_drop_last_loader_is_refused():
     """A drop-last epoch cannot give an exact logP; the error names full_pass, which works."""
-    k, n = 2, 350
+    n = 350
     model, packed, _ = gaussian_case(seed=24, n=n)
 
     class DropLastLoader(ArrayLoader):
@@ -468,7 +461,7 @@ def test_fit_restores_the_batch_placeholder():
     model.logp() or pm.sample() straight after a fit silently scores that block rescaled by
     total_size instead of the dataset.
     """
-    model, packed, loader = _restore_case(31)
+    model, _, loader = _restore_case(31)
     before = np.array(model["batch"].get_value(), copy=True)
     assert before.shape[0] == len(loader)
 

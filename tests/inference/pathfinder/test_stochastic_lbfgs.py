@@ -30,6 +30,12 @@ def double_well(x):
     return float(np.sum(0.25 * x**4 - x**2)), x**3 - 2 * x
 
 
+def spd(n, rng, ridge):
+    """A random (n, n) SPD matrix ``M M' + ridge * I``; the ridge sets the conditioning."""
+    M = rng.normal(size=(n, n))
+    return M @ M.T + ridge * np.eye(n)
+
+
 def dense_inverse_hessian(alpha, pairs):
     """Textbook BFGS inverse-Hessian recursion from H0 = diag(alpha), oldest pair first."""
     ident = np.eye(alpha.size)
@@ -46,8 +52,7 @@ def fill_ring(J, n_pairs, rng, N=5):
 
     Returns ``(s_win, z_win, order)`` with ``order`` newest-first over the resident pairs.
     """
-    M = rng.normal(size=(N, N))
-    P = M @ M.T + N * np.eye(N)  # SPD, so y = P s guarantees s . y > 0
+    P = spd(N, rng, N)  # SPD, so y = P s guarantees s . y > 0
     s_win = np.zeros((N, J))
     z_win = np.zeros((N, J))
     win_idx = -1
@@ -67,8 +72,7 @@ def noop():
 def test_quadratic_full_batch_converges_to_optimum():
     """On a deterministic strongly-convex quadratic the iterate reaches the mode."""
     rng = np.random.default_rng(0)
-    M = rng.normal(size=(5, 5))
-    A = M @ M.T + 5 * np.eye(5)  # SPD, well-conditioned
+    A = spd(5, rng, 5)  # well-conditioned
     b = rng.normal(size=5)
     x_star = np.linalg.solve(A, b)
     traj = run_stochastic_lbfgs(quadratic(A, b), noop, np.zeros(5), num_iters=60)
@@ -152,8 +156,7 @@ def test_line_search_exhaustion_handled():
 def test_ring_buffer_wraps_after_maxcor_pairs():
     """The stored history never exceeds maxcor columns and stays two-loop usable."""
     rng = np.random.default_rng(3)
-    A = rng.normal(size=(6, 6))
-    A = A @ A.T + 6 * np.eye(6)
+    A = spd(6, rng, 6)
     b = rng.normal(size=6)
     cfg = StochasticLBFGSConfig(maxcor=3)
     traj = run_stochastic_lbfgs(quadratic(A, b), noop, np.zeros(6), num_iters=20, config=cfg)
@@ -181,8 +184,7 @@ def test_trajectory_records_expected_shapes():
 def test_reproducible_given_same_inputs():
     """A deterministic objective yields a bit-identical trajectory across runs."""
     rng = np.random.default_rng(5)
-    A = rng.normal(size=(4, 4))
-    A = A @ A.T + 4 * np.eye(4)
+    A = spd(4, rng, 4)
     b = rng.normal(size=4)
     x0 = rng.normal(size=4)
     a = run_stochastic_lbfgs(quadratic(A, b), noop, x0, num_iters=25)
@@ -328,8 +330,7 @@ def test_window_layout_holds_before_the_ring_wraps():
     sampler cannot distinguish from real pairs.
     """
     rng = np.random.default_rng(21)
-    M = rng.normal(size=(5, 5))
-    A = M @ M.T + 0.2 * np.eye(5)  # deliberately ill-conditioned: no early convergence
+    A = spd(5, rng, 0.2)  # deliberately ill-conditioned: no early convergence
     J = 4
     x0 = np.full(5, 3.0)
     traj = run_stochastic_lbfgs(
