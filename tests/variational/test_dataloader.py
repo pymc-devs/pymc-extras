@@ -17,7 +17,6 @@ import pytest
 
 from pymc_extras.variational.dataloader import (
     DataLoader,
-    IterableDataset,
     shuffle_buffer,
 )
 from tests.variational.dataloader_helpers import (
@@ -231,12 +230,6 @@ def test_a_one_dimensional_source_is_a_block_of_scalars(data, batch_size, shapes
     np.testing.assert_array_equal(np.concatenate(batches), data.ravel()[: len(shapes) * batch_size])
 
 
-def test_iterable_dataset_base_is_abstract():
-    """The base class is a contract: __iter__ must be overridden."""
-    with pytest.raises(NotImplementedError):
-        iter(IterableDataset())
-
-
 def test_raw_2d_array_is_one_block_of_rows():
     """A raw 2-D array is handed over whole, so its rows are the samples."""
     data = np.arange(40, dtype="float64").reshape(20, 2)
@@ -405,10 +398,10 @@ def test_shuffled_loader_is_a_seeded_shuffle_buffer(buffer_size, effective):
         lambda d: [d[i : i + 7] for i in range(0, len(d), 7)],
         lambda d: BlockDataset(d, 7),
     ],
-    ids=["raw-array", "factory", "reiterable-blocks", "iterable-dataset"],
+    ids=["raw-array", "factory", "reiterable-blocks", "block-dataset"],
 )
 def test_every_source_kind_streams_the_same_batches(make_source):
-    """One row per yield, a block factory, a re-iterable and an IterableDataset are interchangeable."""
+    """A raw array, a block factory, a re-iterable and a BlockDataset are interchangeable."""
     data = np.arange(84, dtype="float64").reshape(42, 2)
     loader = DataLoader(make_source(data), batch_size=8, total_size=42)
     batches = list(loader)

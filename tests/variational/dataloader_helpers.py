@@ -16,8 +16,6 @@
 import numpy as np
 import pytest
 
-from pymc_extras.variational.dataloader import IterableDataset
-
 
 def chunked_factory(data, size):
     """A zero-arg factory replaying ``data`` in ``size``-row chunks, fresh each epoch."""
@@ -29,12 +27,14 @@ def chunked_factory(data, size):
     return factory
 
 
-class BlockDataset(IterableDataset):
-    """An :class:`IterableDataset` subclass replaying ``data`` in ``size``-row blocks.
+class BlockDataset:
+    """A re-iterable source replaying ``data`` in ``size``-row blocks.
 
-    ``n_rows`` is left at the base-class default unless one is given, so a dataset
-    that knows its size and one that does not are both reachable.
+    ``n_rows`` is ``None`` unless one is given, so a dataset that knows its size
+    and one that does not are both reachable.
     """
+
+    n_rows = None
 
     def __init__(self, data, size, n_rows=None):
         self._data = data

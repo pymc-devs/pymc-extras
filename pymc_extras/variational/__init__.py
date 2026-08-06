@@ -13,14 +13,12 @@
 #   limitations under the License.
 from pymc_extras.variational.dataloader import (
     DataLoader,
-    IterableDataset,
     parquet_source,
     shuffle_buffer,
 )
 
 __all__ = [
     "DataLoader",
-    "IterableDataset",
     "parquet_source",
     "shuffle_buffer",
 ]

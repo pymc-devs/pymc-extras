@@ -20,7 +20,6 @@ import pytest
 
 from pymc_extras.variational.dataloader import (
     DataLoader,
-    IterableDataset,
     parquet_source,
 )
 from tests.variational.dataloader_helpers import BlockDataset, chunked_factory, write_parquet
@@ -166,7 +165,6 @@ def test_parquet_source_n_rows_from_metadata(tmp_path):
         block = rng.normal(size=(n, 2))
         write_parquet(tmp_path / f"part_{i:02d}.parquet", {"a": block[:, 0], "b": block[:, 1]})
     src = parquet_source(str(tmp_path))
-    assert isinstance(src, IterableDataset)
     assert src.n_rows == total
 
     ds = DataLoader(src, batch_size=10, total_size="auto")
@@ -259,8 +257,8 @@ def test_parquet_source_rejects_unknown_columns(tmp_path):
 def test_auto_resolves_the_explicit_n_for_every_source_kind(make_source, counts):
     """'auto' lands on the same N an explicit total_size would, counting only when it must.
 
-    A source that does not advertise n_rows is counted, an IterableDataset that
-    inherits the base-class default is counted too, and either way the epoch that
+    A source that does not advertise n_rows is counted, a BlockDataset that
+    inherits the default ``n_rows=None`` is counted too, and either way the epoch that
     follows the counting pass is the whole dataset.
     """
     data = np.arange(90, dtype="float64").reshape(45, 2)
