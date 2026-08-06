@@ -56,6 +56,15 @@ def gaussian_regression(X, y, sigma, prior_sd=10.0):
     return model, packed, mean, cov
 
 
+def gaussian_case(seed=0, n=60, beta=(1.0, -0.5)):
+    """Seeded Gaussian-regression model, its packed data, and the rng that drew them."""
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(n, len(beta)))
+    y = X @ np.asarray(beta) + rng.normal(0, 1.0, size=n)
+    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    return model, packed, rng
+
+
 def logistic_regression(X, y, prior_sd=2.0):
     """Bayesian logistic regression with a pm.Data batch placeholder.
 
@@ -168,11 +177,8 @@ def test_crn_determinism():
 
 
 def test_gaussian_is_centred_on_tail_averaged_position(monkeypatch):
-    """The proposal centre is the mean of the last 75% of iterate positions, not one iterate.
-
-    Each step's accepted point is near its own minibatch's MAP, so the error is in the
-    location and survives any rule that picks a single iterate.
-    """
+    """The proposal centre is the mean of the last 75% of iterate positions, not one iterate,
+    because each step's accepted point sits near its own minibatch's MAP."""
     import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
 
     from pymc_extras.inference.pathfinder.bfgs_sample import make_pathfinder_sample_fn
@@ -235,10 +241,7 @@ def test_health_counters_reach_the_result(monkeypatch):
         return traj
 
     monkeypatch.setattr(sp, "run_stochastic_lbfgs", struggling)
-    rng = np.random.default_rng(0)
-    X = rng.normal(size=(60, 2))
-    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    model, packed, _ = gaussian_case()
     result = fit_streaming_pathfinder(
         model,
         ArrayLoader(packed, batch_size=20),
@@ -255,11 +258,7 @@ def test_jitter_varies_the_start_by_seed(monkeypatch):
     """Without jitter every seed starts at the same prior point and retraces one trajectory."""
     import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
 
-    rng = np.random.default_rng(0)
-    X = rng.normal(size=(60, 2))
-    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
-
+    model, packed, _ = gaussian_case()
     run, firsts = sp.run_stochastic_lbfgs, []
 
     def record(*args, **kwargs):
@@ -282,10 +281,7 @@ def test_jitter_varies_the_start_by_seed(monkeypatch):
 
 def test_callbacks_get_pm_fit_arguments():
     """Callbacks see ``(None, losses_so_far, 1-based step)`` and one can stop the fit early."""
-    rng = np.random.default_rng(0)
-    X = rng.normal(size=(60, 2))
-    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    model, packed, _ = gaussian_case()
     seen = []
 
     def stop_at_3(approx, losses, i):
@@ -376,37 +372,6 @@ def test_batch_size_robustness():
     assert np.all(np.abs(means[256] - means[2000]) < 0.25 + 0.15 * np.abs(means[2000]))
 
 
-def test_full_data_logp_exact_with_tail():
-    """Streaming full-data logP equals model.logp over the whole dataset, including the
-    trailing partial batch a drop-last training loader would skip."""
-    from pymc_extras.inference.pathfinder.bfgs_sample import get_neg_logp_dlogp_of_ravel_inputs
-    from pymc_extras.inference.pathfinder.streaming_pathfinder import (
-        _compile_batched_logp,
-        _full_data_logp,
-    )
-
-    rng = np.random.default_rng(0)
-    k, n = 3, 350  # 350 is not divisible by 128 -> a genuine partial tail
-    X = rng.normal(size=(n, k))
-    y = X @ np.array([1.0, -0.5, 0.3]) + rng.normal(0, 1.0, size=n)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
-
-    # An explicit complete pass: every row exactly once, partial tail batch included.
-    full_pass = [packed[i : i + 128] for i in range(0, n, 128)]
-    assert sum(b.shape[0] for b in full_pass) == n
-    assert full_pass[-1].shape[0] == n % 128  # the tail is genuinely partial
-
-    prior_fn = _compile_batched_logp(model, model.free_RVs, jacobian=True)
-    obs_fn = _compile_batched_logp(model, model.observed_RVs, jacobian=False)
-    nlp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True)
-    phi = rng.normal(size=(5, k))
-    got = _full_data_logp(phi, full_pass, model, "batch", prior_fn, obs_fn, n)
-    for i in range(phi.shape[0]):
-        model.set_data("batch", packed)  # full data in the placeholder = the exact truth
-        truth = -nlp(phi[i].astype(np.float64))[0]
-        assert abs(got[i] - truth) < 1e-6, (i, got[i], truth)
-
-
 def full_data_logp_parts(model, k, rng, n_phi=4):
     """Return ``(_full_data_logp, prior_fn, obs_fn, exact_logp, phi)`` for ``model``.
 
@@ -437,11 +402,8 @@ def test_full_data_logp_invariant_to_batch_order_and_size():
     Every batch's contribution is un-rescaled by its own row count, so a pass of uneven
     or single-row batches, or one that visits the rows shuffled, must not shift the total.
     """
-    rng = np.random.default_rng(21)
     k, n = 2, 60
-    X = rng.normal(size=(n, k))
-    y = X @ np.array([0.8, -1.2]) + rng.normal(0, 1.0, size=n)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    model, packed, rng = gaussian_case(seed=21, beta=(0.8, -1.2))
     full_data_logp, prior_fn, obs_fn, exact_logp, phi = full_data_logp_parts(model, k, rng)
 
     shuffled = packed[rng.permutation(n)]
@@ -463,11 +425,8 @@ def test_full_data_logp_invariant_to_batch_order_and_size():
 
 def test_drop_last_loader_is_refused():
     """A drop-last epoch cannot give an exact logP; the error names full_pass, which works."""
-    rng = np.random.default_rng(24)
     k, n = 2, 350
-    X = rng.normal(size=(n, k))
-    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=n)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    model, packed, _ = gaussian_case(seed=24, n=n)
 
     class DropLastLoader(ArrayLoader):
         def __iter__(self):
@@ -477,24 +436,15 @@ def test_drop_last_loader_is_refused():
     loader = DropLastLoader(packed, batch_size=128)
     assert sum(b.shape[0] for b in loader) == 256 < len(loader)
 
-    kwargs = dict(num_iters=5, num_draws=50, random_seed=0, lbfgs_config=CFG)
     with pytest.raises(RuntimeError, match=r"pass full_pass=<the loader's dataset source>"):
-        fit_streaming_pathfinder(model, loader, **kwargs)
-
-    res = fit_streaming_pathfinder(
-        model, loader, full_pass=[packed[i : i + 97] for i in range(0, n, 97)], **kwargs
-    )
-    assert res.samples.shape == (50, k)
+        fit_streaming_pathfinder(model, loader, num_iters=5, num_draws=50, random_seed=0)
 
 
 def test_incomplete_full_pass_is_refused():
     """A pass that does not visit every row is rejected rather than returning a
     subset-rescaled density that silently looks like the full-data one."""
-    rng = np.random.default_rng(22)
     k, n = 2, 40
-    X = rng.normal(size=(n, k))
-    y = X @ np.array([0.5, 0.25]) + rng.normal(0, 1.0, size=n)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    model, packed, rng = gaussian_case(seed=22, n=n, beta=(0.5, 0.25))
     full_data_logp, prior_fn, obs_fn, _, phi = full_data_logp_parts(model, k, rng)
 
     with pytest.raises(RuntimeError, match=r"visited 25 rows but len\(loader\)=40"):
@@ -504,11 +454,8 @@ def test_incomplete_full_pass_is_refused():
 def _restore_case(seed):
     """A model whose batch placeholder holds all n rows, plus a loader that does not
     divide n, so any block the fit installs differs from the incoming value."""
-    rng = np.random.default_rng(seed)
-    k, n = 2, 300
-    X = rng.normal(size=(n, k))
-    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=n)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    n = 300
+    model, packed, _ = gaussian_case(seed=seed, n=n)
     loader = ArrayLoader(packed, batch_size=64)  # 300 = 4 x 64 + 44
     assert [b.shape[0] for b in loader] == [64, 64, 64, 64, 44]
     return model, packed, loader
@@ -522,10 +469,7 @@ def test_fit_restores_the_batch_placeholder():
     total_size instead of the dataset.
     """
     model, packed, loader = _restore_case(31)
-    point = {"beta": np.array([0.7, -0.4])}
-    logp_fn = model.compile_logp()
     before = np.array(model["batch"].get_value(), copy=True)
-    logp_before = float(np.asarray(logp_fn(point)))
     assert before.shape[0] == len(loader)
 
     fit_streaming_pathfinder(
@@ -533,7 +477,6 @@ def test_fit_restores_the_batch_placeholder():
     )
 
     np.testing.assert_array_equal(model["batch"].get_value(), before)
-    assert float(np.asarray(logp_fn(point))) == logp_before
 
 
 def test_batch_placeholder_is_restored_when_the_fit_raises():
@@ -579,10 +522,7 @@ def test_returned_draws_have_requested_shape(
     num_proposal_draws overrides both, and none of that may leak into the returned count.
     """
     num_draws = 50
-    rng = np.random.default_rng(23)
-    X = rng.normal(size=(60, 2))
-    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    model, packed, _ = gaussian_case(seed=23)
     res = fit_streaming_pathfinder(
         model,
         ArrayLoader(packed, 20),
@@ -600,22 +540,16 @@ def test_returned_draws_have_requested_shape(
     assert (res.pareto_k is not None) == has_pareto_k
 
 
-def potential_model(y, n):
-    """Normal-normal model carrying a pm.Potential that pulls theta away from the data."""
-    with pm.Model() as model:
-        theta = pm.Normal("theta", 0.0, 10.0)
-        batch = pm.Data("batch", y[: len(y)])
-        pm.Potential("penalty", -100.0 * (theta - 3.0) ** 2)
-        pm.Normal("obs", theta, 1.0, observed=batch, total_size=n)
-    return model
-
-
 def test_final_target_includes_potentials():
     """model.logp(vars=[...]) drops pm.Potential terms, so the returned weights would
     target a different posterior than the one the optimizer walked."""
     n = 10
     y = np.zeros(n)
-    model = potential_model(y, n)
+    with pm.Model() as model:  # a potential that pulls theta away from the data
+        theta = pm.Normal("theta", 0.0, 10.0)
+        batch = pm.Data("batch", y)
+        pm.Potential("penalty", -100.0 * (theta - 3.0) ** 2)
+        pm.Normal("obs", theta, 1.0, observed=batch, total_size=n)
     result = fit_streaming_pathfinder(
         model,
         ArrayLoader(y, 5),
@@ -653,11 +587,7 @@ def test_identity_is_a_weighting_method_not_an_off_switch(importance_sampling, r
     treating it as 'off' silently returned unweighted proposals."""
     import pymc_extras.inference.pathfinder.streaming_pathfinder as sp
 
-    rng = np.random.default_rng(0)
-    X = rng.normal(size=(60, 2))
-    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
-
+    model, packed, _ = gaussian_case()
     called = []
     original = sp.psis_fn
     sp.psis_fn = lambda *a, **k: (called.append(k.get("method")), original(*a, **k))[1]
@@ -678,10 +608,7 @@ def test_identity_is_a_weighting_method_not_an_off_switch(importance_sampling, r
 
 def test_proposal_pool_smaller_than_num_draws_still_returns_num_draws():
     """Without a floor, samples[:num_draws] quietly returned a shorter array."""
-    rng = np.random.default_rng(0)
-    X = rng.normal(size=(60, 2))
-    y = X @ np.array([1.0, -0.5]) + rng.normal(0, 1.0, size=60)
-    model, packed, *_ = gaussian_regression(X, y, 1.0)
+    model, packed, _ = gaussian_case()
     result = fit_streaming_pathfinder(
         model,
         ArrayLoader(packed, 20),

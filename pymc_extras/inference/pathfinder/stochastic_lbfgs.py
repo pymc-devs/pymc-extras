@@ -13,24 +13,17 @@ search remains valid, and forms each curvature pair from a **single minibatch**
 
     y_k = grad_{B_k}(x_{k+1}) - grad_{B_k}(x_k)
 
-Both gradients are evaluated on the same batch, so the same noise enters both and
-cancels in the difference. Differencing across two batches leaves it, and ``y`` then
-estimates nothing in particular: the secant condition ``y ~= H s`` needs both gradients
-to be of the *same* objective. Schraudolph et al. give that form as their eq. (13), the
-one that lets sampling noise into the update, and report divergence below batch 1000 on
-their quadratic model.
-
-The sign violation this produces, ``s . y < 0``, is not the common case at the step lengths
-this loop runs at: over logistic and Gaussian trajectories at batches 4 to 512, same-batch
-pairing produced no negative ``s . y`` on any cell, and cross-batch produced 0.3% to 12% of
-steps. It becomes the common case as the step shrinks, because the cross-batch noise term
-scales with ``||s||`` while the curvature term scales with ``||s||^2``; at a fixed point the
-cross-batch rate is about one in two once ``||s||`` is below 1e-2. Pairs still failing the
-curvature condition are skipped, not forced into the history.
-
-Each accepted step records the ``(x, g, alpha, s_win, z_win)`` that
-``make_pathfinder_sample_fn`` consumes, with the window ordered oldest-to-newest
-rather than in the physical ring order ``LBFGSStreamingCallback`` hands on.
+Both gradients are evaluated on the same batch, so the same noise enters both and cancels in
+the difference: the secant condition ``y ~= H s`` needs both gradients to be of the *same*
+objective. Differencing across two batches -- Schraudolph et al.'s eq. (13), for which they
+report divergence below batch 1000 on their quadratic model -- leaves the noise in. Measured
+over logistic and Gaussian trajectories at batches 4 to 512, same-batch pairing produced no
+negative ``s . y`` on any cell and cross-batch produced 0.3% to 12% of steps; the cross-batch
+rate rises to about one in two once ``||s||`` is below 1e-2, its noise term scaling with
+``||s||`` against the curvature term's ``||s||^2``. Pairs still failing the curvature condition
+are skipped, not forced into the history. Each accepted step records the
+``(x, g, alpha, s_win, z_win)`` that ``make_pathfinder_sample_fn`` consumes, with the window
+ordered oldest-to-newest rather than in physical ring order.
 """
 
 from dataclasses import dataclass, field
@@ -148,21 +141,13 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
         Number of optimization steps.
     config : StochasticLBFGSConfig, optional
     callbacks : iterable of callable, optional
-        Called after each step as ``(approx, losses, i)``, ``pm.fit``'s contract:
-        ``losses`` holds one minibatch objective per step so far and ``i`` counts from 1.
-        One raising ``StopIteration`` ends the run. There is no ``Approximation`` here, so
-        ``approx`` is ``None`` and a callback that inspects it, such as
-        ``pymc.variational.callbacks.CheckParametersConvergence``, cannot be used.
-
-        ``losses[i - 1]`` is the objective at the position step ``i`` reached, evaluated on
-        the batch installed *after* that step -- deliberately not the value that step's
-        Armijo test accepted. The accepted value is measured on the very batch the position
-        was chosen to minimize and so reads low against the full-data objective, while the
-        recorded one is measured on a batch the step never saw. The two differ by a level
-        shift on average only: over the 200 steps of the operating configuration in
-        ``fit_streaming_pathfinder`` the gap averaged +393 with an sd of 1661, so it is not
-        steady step to step and differencing the series does not cancel it.
-        ``test_recorded_loss_is_measured_after_the_batch_advance`` pins the convention.
+        Called after each step as ``(approx, losses, i)``, ``pm.fit``'s contract, with ``i``
+        counting from 1. One raising ``StopIteration`` ends the run. There is no
+        ``Approximation`` here, so ``approx`` is ``None`` and a callback that inspects it, such
+        as ``pymc.variational.callbacks.CheckParametersConvergence``, cannot be used.
+        ``losses[i - 1]`` is measured on the batch installed *after* step ``i``, not on the
+        value that step's Armijo test accepted: over the 200 steps of the operating
+        configuration the gap averaged +393 with an sd of 1661, so it is not a steady offset.
 
     Returns
     -------
@@ -201,9 +186,8 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
         for _ in range(config.maxls):
             x_trial = x + t * d
             f_trial, g_trial = value_grad_fn(x_trial)
-            # A finite value is not enough: pymc's Bernoulli(logit_p) gradient divides by
-            # 1 - sigmoid(z), and sigmoid(37.0) == 1.0 in float64, so a saturated trial
-            # point passes Armijo and hands back a NaN gradient that stalls every step after.
+            # pymc's Bernoulli(logit_p) gradient divides by 1 - sigmoid(z), and
+            # sigmoid(37.0) == 1.0 in float64, so a finite f_trial can carry a NaN gradient.
             if (
                 np.isfinite(f_trial)
                 and np.all(np.isfinite(g_trial))
@@ -225,11 +209,8 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
             sy = s @ y
             if s2 < 1e-16:
                 traj.n_null += 1  # stopped moving, which is not a curvature failure
-            # Two floors, and which one binds depends on the step length: at the default
-            # epsilon=1e-8, epsilon * s2 falls below the absolute 1e-16 once ||s|| < 1e-4.
-            # So the absolute floor is what decides short steps and the relative curvature
-            # test is what decides ordinary ones. That absolute floor is the same value
-            # _two_loop_direction re-applies to its strided window views.
+            # Absolute 1e-16 decides short steps (epsilon * s2 drops below it once ||s|| < 1e-4),
+            # relative epsilon * s2 the rest; _two_loop_direction re-applies the same floor.
             elif np.isfinite(sy) and sy > 1e-16 and sy >= config.epsilon * s2:
                 alpha = alpha_step_numpy(alpha, s, y)
                 win_idx = (win_idx + 1) % J

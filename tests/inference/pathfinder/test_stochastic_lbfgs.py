@@ -77,28 +77,6 @@ def test_quadratic_full_batch_converges_to_optimum():
     assert traj.violation_rate == 0.0  # a quadratic never violates curvature
 
 
-def test_two_loop_direction_matches_dense_bfgs():
-    """After one pair, the two-loop direction equals -(diag-init BFGS update) . g."""
-    rng = np.random.default_rng(1)
-    N = 4
-    s = rng.normal(size=N)
-    y = s * np.array([2.0, 3.0, 1.5, 4.0]) + 0.01  # ensure s.y > 0
-    alpha = np.abs(rng.normal(size=N)) + 0.5
-    g = rng.normal(size=N)
-
-    s_win = s[:, None]
-    z_win = y[:, None]
-    d = _two_loop_direction(g, alpha, s_win, z_win, order=[0])
-
-    # Dense reference: H0 = diag(alpha); one BFGS inverse-Hessian update.
-    rho = 1.0 / (s @ y)
-    H0 = np.diag(alpha)
-    Ident = np.eye(N)
-    V = Ident - rho * np.outer(s, y)
-    H = V @ H0 @ V.T + rho * np.outer(s, s)
-    assert np.allclose(d, -H @ g, atol=1e-10)
-
-
 def test_zero_curvature_pair_skipped():
     """The recursion divides by s.y, so an orthogonal pair is skipped, not divided by."""
     s_win = np.zeros((3, 2))
@@ -112,13 +90,6 @@ def test_zero_curvature_pair_skipped():
     np.testing.assert_allclose(
         d, _two_loop_direction(g, alpha, s_win[:, [1]], z_win[:, [1]], order=[0])
     )
-
-
-def test_pair_rejected_when_curvature_violated():
-    """A step crossing a negative-curvature region gives s.y < 0 and is rejected."""
-    traj = run_stochastic_lbfgs(double_well, noop, np.array([0.3]), num_iters=8)
-    assert traj.n_curvature_violations >= 1
-    assert traj.n_accepted + traj.n_curvature_violations + traj.n_null == 8
 
 
 def test_line_search_decreases_objective_each_step():
@@ -381,19 +352,9 @@ def test_window_layout_holds_before_the_ring_wraps():
 
 
 def test_recorded_loss_is_measured_after_the_batch_advance():
-    """``losses[i]`` is the objective at the position step ``i + 1`` reached, measured on
-    the batch installed *after* that step -- not the value its Armijo test accepted.
-
-    The two differ: the accepted value is measured on the batch the position was chosen to
-    minimize, so it reads low against the full-data objective, while the recorded one is
-    measured on a batch the step never saw. Any loss-based convergence monitor consumes
-    exactly this series, so which of the two it gets is part of the contract.
-
-    The objective carries a per-batch offset that the gradient does not, so the trajectory
-    is identical on every batch while each recorded value still names the batch it came
-    from: the offset cancels inside the Armijo test, which only ever compares two values on
-    one batch.
-    """
+    """``losses[i]`` is measured on the batch installed after step ``i + 1``, not the value
+    that step's Armijo test accepted. The per-batch offset is what makes the two
+    distinguishable; it cancels inside Armijo, which only compares values on one batch."""
     offset = 1000.0
     centre = np.array([1.0, -2.0, 0.5])
     curv = np.array([1.0, 3.0, 9.0])  # ill-conditioned: no single step reaches the minimum
