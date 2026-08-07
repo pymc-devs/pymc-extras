@@ -1,6 +1,7 @@
 import numpy as np
 import pymc as pm
 import pytensor
+import pytensor.tensor as pt
 import pytest
 
 mx = pytest.importorskip("mlx.core", reason="MCLMC requires mlx, which needs Apple Silicon")
@@ -366,3 +367,22 @@ def test_burn_in_is_dropped_from_both_the_draws_and_the_diagnostics(conjugate_mo
     assert idata["posterior"]["mu"].shape == (2, 200, 3)
     assert idata["sample_stats"]["energy_error"].shape == (2, 200)
     assert idata["sample_stats"]["diverging"].shape == (2, 200)
+
+
+def test_non_finite_initial_gradient_is_rejected(float32):
+    """A finite log-density with a non-finite gradient must fail loudly, not sample nans."""
+    with pm.Model() as model:
+        x = pm.Flat("x", shape=2)
+        pm.Potential("kink", pt.sqrt(pt.abs(x)).sum())
+
+    with pytest.raises(ValueError, match="gradient is not"):
+        fit_mlx_mclmc(draws=10, tune=100, chains=2, model=model)
+
+
+def test_non_finite_initial_logdensity_is_rejected(float32):
+    with pm.Model() as model:
+        x = pm.Flat("x", shape=2)
+        pm.Potential("undefined", pt.log(x).sum())
+
+    with pytest.raises(ValueError, match="log-density is not finite"):
+        fit_mlx_mclmc(draws=10, tune=100, chains=2, model=model)
