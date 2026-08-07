@@ -100,6 +100,19 @@ def _check_dim(dim: int) -> None:
         )
 
 
+def _batched_value_and_grad(logdensity_fn: Callable) -> Callable:
+    """
+    Build the batched value-and-gradient callable the dynamics use.
+
+    A ``logdensity_fn`` carrying its own ``value_and_grad`` supplies the gradient itself, which is
+    how :class:`~pymc_extras.inference.mlx_mclmc.logp.MLXLogp` hands over PyTensor's symbolic
+    gradient. Anything else is differentiated by MLX, whose reverse rules do not cover every op.
+    """
+    supplied = getattr(logdensity_fn, "value_and_grad", None)
+
+    return mx.vmap(supplied if callable(supplied) else mx.value_and_grad(logdensity_fn))
+
+
 def _normalize(vectors: mx.array) -> mx.array:
     norms = mx.linalg.norm(vectors, axis=-1, keepdims=True)
 
@@ -306,7 +319,8 @@ def sample(
     Parameters
     ----------
     logdensity_fn : callable
-        Maps an MLX array of shape ``(dim,)`` to a scalar log-density.
+        Maps an MLX array of shape ``(dim,)`` to a scalar log-density. If it also has a
+        ``value_and_grad`` method, that supplies the gradient instead of MLX autodiff.
     initial_positions : array
         Starting positions, of shape ``(chains, dim)``.
     L : float
@@ -348,7 +362,7 @@ def sample(
     position = mx.array(initial_positions, dtype=mx.float32)
     n_chains, dim = position.shape
     _check_dim(dim)
-    logp_and_grad = mx.vmap(mx.value_and_grad(logdensity_fn))
+    logp_and_grad = _batched_value_and_grad(logdensity_fn)
     dynamics = Dynamics(
         logp_and_grad=logp_and_grad,
         step_size=step_size,
@@ -590,7 +604,8 @@ def warmup(
     Parameters
     ----------
     logdensity_fn : callable
-        Maps an MLX array of shape ``(dim,)`` to a scalar log-density.
+        Maps an MLX array of shape ``(dim,)`` to a scalar log-density. If it also has a
+        ``value_and_grad`` method, that supplies the gradient instead of MLX autodiff.
     initial_position : array
         Starting point of the adapting chain, of shape ``(dim,)``.
     num_steps : int
@@ -632,7 +647,7 @@ def warmup(
     initial_position = np.asarray(initial_position, dtype=np.float32).ravel()
     dim = initial_position.shape[0]
     _check_dim(dim)
-    logp_and_grad = mx.vmap(mx.value_and_grad(logdensity_fn))
+    logp_and_grad = _batched_value_and_grad(logdensity_fn)
     decay_rate = (num_effective_samples - 1.0) / (num_effective_samples + 1.0)
 
     # Phases 1 and 2 hold L at sqrt(dim), so their refresh rate is a compile-time constant rather
