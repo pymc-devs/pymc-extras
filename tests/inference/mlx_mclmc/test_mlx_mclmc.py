@@ -6,12 +6,17 @@ import pytest
 mx = pytest.importorskip("mlx.core", reason="MCLMC requires mlx, which needs Apple Silicon")
 
 from pymc_extras.inference.mlx_mclmc import fit_mlx_mclmc
-from pymc_extras.inference.mlx_mclmc.kernel import sample, warmup_and_sample
+from pymc_extras.inference.mlx_mclmc.kernel import (
+    TunedParameters,
+    sample,
+    warmup_and_sample,
+)
 from pymc_extras.inference.mlx_mclmc.logp import (
     MLXLogp,
     check_model_is_sampleable,
     draws_to_datasets,
 )
+from pymc_extras.inference.mlx_mclmc.mlx_mclmc import _warn_if_adaptation_failed
 
 
 @pytest.fixture
@@ -51,14 +56,15 @@ def test_kernel_recovers_correlated_gaussian():
     def logdensity_fn(x):
         return -0.5 * mx.sum(x * (precision @ x))
 
-    samples, energy_errors, tuned = warmup_and_sample(
+    output, tuned = warmup_and_sample(
         logdensity_fn, mx.zeros((dim,)), num_tune=2000, draws=4000, chains=4, seed=0
     )
-    draws = np.asarray(samples).reshape(-1, dim)
+    draws = np.asarray(output.samples).reshape(-1, dim)
     true_sd = np.sqrt(np.diag(np.asarray(covariance)))
 
     assert tuned.step_size > 0
-    assert np.isfinite(np.asarray(energy_errors)).all()
+    assert np.isfinite(np.asarray(output.energy_errors)).all()
+    assert not np.asarray(output.diverging).any()
     np.testing.assert_allclose(draws.std(axis=0), true_sd, rtol=0.1)
     np.testing.assert_array_less(np.abs(draws.mean(axis=0)) / true_sd, 0.15)
 
@@ -247,3 +253,41 @@ def test_sampler_is_absent_from_the_inference_namespace():
     assert not hasattr(inference, "fit_mlx_mclmc")
     with pytest.raises(ValueError, match="not supported"):
         inference.fit(method="mlx_mclmc")
+
+
+def test_sample_reverts_and_reports_non_finite_steps():
+    """A step whose log-density comes back nan is reverted, as blackjax's kernel does."""
+
+    def logdensity_fn(x):
+        return mx.where(x[0] > 0, -0.5 * mx.sum(x**2), mx.array(float("nan")))
+
+    output = sample(
+        logdensity_fn,
+        np.array([[0.05, 0.0, 0.0]], dtype="float32"),
+        L=1.0,
+        step_size=0.8,
+        n_steps=200,
+        seed=1,
+    )
+
+    assert np.asarray(output.diverging).any(), "the target should push the chain out of support"
+    assert np.isfinite(np.asarray(output.samples)).all()
+    assert np.isfinite(np.asarray(output.energy_errors)).all()
+
+
+def test_warns_on_divergences_and_on_collapsed_adaptation():
+    healthy = TunedParameters(
+        position=mx.zeros((2,)),
+        L=1.0,
+        step_size=0.5,
+        inverse_mass_matrix=mx.ones((2,)),
+        num_tuning_steps=10,
+    )
+    with pytest.warns(RuntimeWarning, match="divergent"):
+        diverging = np.zeros((2, 100), dtype=bool)
+        diverging[0, :10] = True
+        _warn_if_adaptation_failed(healthy, diverging)
+
+    with pytest.warns(RuntimeWarning, match="collapsed"):
+        collapsed = healthy._replace(step_size=1e-12)
+        _warn_if_adaptation_failed(collapsed, np.zeros((2, 100), dtype=bool))

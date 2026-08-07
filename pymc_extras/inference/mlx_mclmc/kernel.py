@@ -38,6 +38,15 @@ _SAFE_DIVISOR = 1e-30
 _EVAL_EVERY = 64
 
 
+class ChainState(NamedTuple):
+    """Position of each chain and everything the next transition needs to continue from it."""
+
+    position: mx.array
+    momentum: mx.array
+    logdensity: mx.array
+    grad: mx.array
+
+
 class Dynamics(NamedTuple):
     """Everything a transition needs that does not change from one step to the next."""
 
@@ -63,6 +72,14 @@ class AdaptationState(NamedTuple):
     stream_weight: mx.array
     stream_mean: mx.array
     stream_mean_sq: mx.array
+
+
+class SamplerOutput(NamedTuple):
+    """Draws and per-step diagnostics returned by :func:`sample`."""
+
+    samples: mx.array
+    energy_errors: mx.array
+    diverging: mx.array
 
 
 class TunedParameters(NamedTuple):
@@ -189,31 +206,70 @@ def _partial_refresh(
     return _normalize(momentum + noise_scale * mx.random.normal(shape=momentum.shape, key=key))
 
 
+def _revert_nonfinite(
+    proposed: ChainState, previous: ChainState, energy_error: mx.array, key: mx.array
+) -> tuple[ChainState, mx.array, mx.array]:
+    """
+    Revert any chain whose step came out non-finite, and resample its momentum.
+
+    Matches blackjax's kernel-level ``handle_nans``. Reductions are per-chain, so one chain
+    diverging does not disturb the others.
+
+    Returns
+    -------
+    state : ChainState
+        ``proposed`` for the chains that stepped cleanly, ``previous`` with a fresh unit momentum
+        for the rest.
+    energy_error : mx.array
+        Zeroed for the reverted chains.
+    is_finite : mx.array
+        Per-chain flag, False where the step was reverted.
+    """
+    is_finite = (
+        mx.all(mx.isfinite(proposed.position), axis=-1)
+        & mx.all(mx.isfinite(proposed.momentum), axis=-1)
+        & mx.isfinite(proposed.logdensity)
+        & mx.isfinite(energy_error)
+    )
+    per_chain = is_finite[:, None]
+    resampled = _unit_vectors(shape=proposed.momentum.shape, key=key)
+
+    state = ChainState(
+        position=mx.where(per_chain, proposed.position, previous.position),
+        momentum=mx.where(per_chain, proposed.momentum, resampled),
+        logdensity=mx.where(is_finite, proposed.logdensity, previous.logdensity),
+        grad=mx.where(per_chain, proposed.grad, previous.grad),
+    )
+    energy_error = mx.where(is_finite, energy_error, mx.zeros_like(energy_error))
+
+    return state, energy_error, is_finite
+
+
 def _transition(
-    position: mx.array,
-    momentum: mx.array,
-    logdensity: mx.array,
-    grad: mx.array,
-    keys: tuple[mx.array, mx.array],
-    dynamics: Dynamics,
-) -> tuple[mx.array, mx.array, mx.array, mx.array, mx.array]:
+    state: ChainState, keys: tuple[mx.array, mx.array], dynamics: Dynamics
+) -> tuple[ChainState, mx.array]:
     """
     Take one MCLMC transition: half refresh, deterministic step, half refresh.
 
-    Returns the new position, momentum, log-density, and gradient, plus the step's energy error.
+    Returns
+    -------
+    state : ChainState
+        The chains after the transition.
+    energy_error : mx.array
+        Per-chain energy error of the step.
     """
     refresh_key, decohere_key = keys
     half_step = 0.5 * dynamics.step_size
 
     momentum = _partial_refresh(
-        momentum=momentum,
+        momentum=state.momentum,
         key=refresh_key,
         step_size=half_step,
         inverse_L=dynamics.inverse_L,
         dim=dynamics.dim,
     )
-    position, momentum, new_logdensity, grad, kinetic_energy_change = _integrate(
-        position=position, momentum=momentum, grad=grad, dynamics=dynamics
+    position, momentum, logdensity, grad, kinetic_energy_change = _integrate(
+        position=state.position, momentum=momentum, grad=state.grad, dynamics=dynamics
     )
     momentum = _partial_refresh(
         momentum=momentum,
@@ -222,9 +278,9 @@ def _transition(
         inverse_L=dynamics.inverse_L,
         dim=dynamics.dim,
     )
-    energy_error = kinetic_energy_change - new_logdensity + logdensity
+    energy_error = kinetic_energy_change - logdensity + state.logdensity
 
-    return position, momentum, new_logdensity, grad, energy_error
+    return ChainState(position, momentum, logdensity, grad), energy_error
 
 
 def sample(
@@ -239,7 +295,7 @@ def sample(
     discard: int = 0,
     seed: int = 0,
     compile_step: bool = True,
-) -> tuple[mx.array, mx.array]:
+) -> SamplerOutput:
     """
     Run unadjusted MCLMC from fixed parameters.
 
@@ -274,11 +330,10 @@ def sample(
 
     Returns
     -------
-    samples : mx.array
-        Positions, of shape ``(n_steps - discard, chains, dim)``.
-    energy_errors : mx.array
-        Per-step energy error, of shape ``(n_steps, chains)``. This is the diagnostic the
-        step-size adaptation steers by.
+    SamplerOutput
+        The ``samples`` of shape ``(n_steps - discard, chains, dim)``, the per-step
+        ``energy_errors`` of shape ``(n_steps, chains)`` that the step-size adaptation steers by,
+        and a ``diverging`` flag of the same shape marking the steps that were reverted.
 
     Raises
     ------
@@ -305,17 +360,22 @@ def sample(
 
     key = mx.random.key(seed)
     key, subkey = mx.random.split(key, num=2)
-    momentum = _unit_vectors(shape=(n_chains, dim), key=subkey)
     logdensity, grad = logp_and_grad(position)
+    state = ChainState(
+        position=position,
+        momentum=_unit_vectors(shape=(n_chains, dim), key=subkey),
+        logdensity=logdensity,
+        grad=grad,
+    )
 
-    def one_step(position, momentum, logdensity, grad, keys):
-        return _transition(
-            position=position,
-            momentum=momentum,
-            logdensity=logdensity,
-            grad=grad,
-            keys=keys,
-            dynamics=dynamics,
+    def one_step(state, keys):
+        refresh_key, decohere_key, resample_key = keys
+        proposed, energy_error = _transition(
+            state=state, keys=(refresh_key, decohere_key), dynamics=dynamics
+        )
+
+        return _revert_nonfinite(
+            proposed=proposed, previous=state, energy_error=energy_error, key=resample_key
         )
 
     step = mx.compile(one_step) if compile_step else one_step
@@ -323,28 +383,26 @@ def sample(
     # MLX has no scan primitive, so the trajectory is a Python loop over a single compiled step.
     # Lazy evaluation batches the graph between the periodic mx.eval, which hides the dispatch
     # cost of that loop.
-    kept, energy_errors = [], []
+    kept, energy_errors, diverging = [], [], []
     for t in range(n_steps):
-        key, refresh_key, decohere_key = mx.random.split(key, num=3)
-        position, momentum, logdensity, grad, energy_error = step(
-            position=position,
-            momentum=momentum,
-            logdensity=logdensity,
-            grad=grad,
-            keys=(refresh_key, decohere_key),
-        )
+        key, *step_keys = mx.random.split(key, num=4)
+        state, energy_error, is_finite = step(state, keys=tuple(step_keys))
 
         energy_errors.append(energy_error)
+        diverging.append(~is_finite)
         if t >= discard:
-            kept.append(position)
+            kept.append(state.position)
         if (t + 1) % _EVAL_EVERY == 0:
-            mx.eval(position, momentum, logdensity, grad)
+            mx.eval(state)
 
-    samples = mx.stack(kept, axis=0)
-    energy_errors = mx.stack(energy_errors, axis=0)
-    mx.eval(samples, energy_errors)
+    output = SamplerOutput(
+        samples=mx.stack(kept, axis=0),
+        energy_errors=mx.stack(energy_errors, axis=0),
+        diverging=mx.stack(diverging, axis=0),
+    )
+    mx.eval(output)
 
-    return samples, energy_errors
+    return output
 
 
 def tune_step_size(
@@ -380,7 +438,7 @@ def tune_step_size(
     step_size = 0.5 * math.sqrt(dim)
 
     for round_index in range(rounds):
-        _, energy_errors = sample(
+        energy_errors = sample(
             logdensity_fn,
             initial_positions,
             L=L,
@@ -390,7 +448,7 @@ def tune_step_size(
             integrator=integrator,
             inverse_mass_matrix=inverse_mass_matrix,
             seed=seed + round_index,
-        )
+        ).energy_errors
         energy_var = (mx.mean(mx.var(energy_errors, axis=0)) / dim).item()
         _log.debug(
             "tune round %d: step_size=%.4f energy_var/dim=%.2e", round_index, step_size, energy_var
@@ -601,27 +659,15 @@ def warmup(
             inverse_L=adaptation_inverse_L,
             dim=dim,
         )
-        position, momentum, logdensity, grad, energy_error = _transition(
-            position=state.position,
-            momentum=state.momentum,
-            logdensity=state.logdensity,
-            grad=state.grad,
-            keys=(refresh_key, decohere_key),
-            dynamics=dynamics,
+        previous = ChainState(state.position, state.momentum, state.logdensity, state.grad)
+        proposed, energy_error = _transition(
+            state=previous, keys=(refresh_key, decohere_key), dynamics=dynamics
         )
-
-        is_finite = (
-            mx.all(mx.isfinite(position))
-            & mx.all(mx.isfinite(momentum))
-            & mx.all(mx.isfinite(energy_error))
-            & mx.all(mx.isfinite(logdensity))
+        chain, energy_error, is_finite = _revert_nonfinite(
+            proposed=proposed, previous=previous, energy_error=energy_error, key=resample_key
         )
-        position = mx.where(is_finite, position, state.position)
-        momentum = mx.where(is_finite, momentum, _unit_vectors(shape=(1, dim), key=resample_key))
-        logdensity = mx.where(is_finite, logdensity, state.logdensity)
-        grad = mx.where(is_finite, grad, state.grad)
+        position, momentum, logdensity, grad = chain
         step_size_max = mx.where(is_finite, state.step_size_max, state.step_size * 0.8)
-        energy_error = mx.where(is_finite, energy_error, mx.zeros_like(energy_error))
 
         relative_error = energy_error**2 / (dim * desired_energy_var) + 1e-8
         weight = mx.exp(-0.5 * (mx.log(relative_error) / (6.0 * trust_in_estimate)) ** 2)
@@ -739,8 +785,7 @@ def warmup(
             mx.eval(state)
 
     step_size = float(np.asarray(state.step_size).reshape(-1)[0])
-    position, momentum = state.position, state.momentum
-    logdensity, grad = state.logdensity, state.grad
+    chain = ChainState(state.position, state.momentum, state.logdensity, state.grad)
 
     if num_steps3 >= 2:
         # Phase 3 runs at the L phase 2 settled on, which is sqrt(dim) only under diagonal
@@ -757,19 +802,12 @@ def warmup(
         positions = []
         for _ in range(num_steps3):
             key, refresh_key, decohere_key = mx.random.split(key, num=3)
-            position, momentum, logdensity, grad, _ = _transition(
-                position=position,
-                momentum=momentum,
-                logdensity=logdensity,
-                grad=grad,
-                keys=(refresh_key, decohere_key),
-                dynamics=dynamics,
-            )
+            chain, _ = _transition(state=chain, keys=(refresh_key, decohere_key), dynamics=dynamics)
 
-            positions.append(position)
+            positions.append(chain.position)
             num_tuning_steps += 1
             if num_tuning_steps % _EVAL_EVERY == 0:
-                mx.eval(position, momentum, logdensity, grad)
+                mx.eval(chain)
 
         samples = mx.stack(positions, axis=0).reshape(num_steps3, dim)
         mx.eval(samples)
@@ -777,7 +815,7 @@ def warmup(
         L = l_factor * step_size * float(np.mean(num_steps3 / np.clip(ess, 1e-8, None)))
 
     return TunedParameters(
-        position=mx.array(np.asarray(position).reshape(dim)),
+        position=mx.array(np.asarray(chain.position).reshape(dim)),
         L=float(L),
         step_size=step_size,
         inverse_mass_matrix=mx.array(inverse_mass_matrix),
@@ -797,7 +835,7 @@ def warmup_and_sample(
     seed: int = 0,
     compile_step: bool = True,
     **warmup_kwargs,
-) -> tuple[mx.array, mx.array, TunedParameters]:
+) -> tuple[SamplerOutput, TunedParameters]:
     """
     Adapt on one chain, then sample ``chains`` chains jittered around the tuned position.
 
@@ -815,10 +853,9 @@ def warmup_and_sample(
 
     Returns
     -------
-    samples : mx.array
-        Positions, of shape ``(draws, chains, dim)``.
-    energy_errors : mx.array
-        Per-step energy error, of shape ``(draws + discard, chains)``.
+    output : SamplerOutput
+        Draws of shape ``(draws, chains, dim)``, with per-step diagnostics covering all
+        ``draws + discard`` steps.
     tuned : TunedParameters
         The parameters :func:`warmup` settled on.
     """
@@ -837,7 +874,7 @@ def warmup_and_sample(
         shape=(chains, dim), key=mx.random.key(seed + 1)
     )
 
-    samples, energy_errors = sample(
+    output = sample(
         logdensity_fn,
         tuned.position[None, :] + jitter,
         L=tuned.L,
@@ -850,4 +887,4 @@ def warmup_and_sample(
         compile_step=compile_step,
     )
 
-    return samples, energy_errors, tuned
+    return output, tuned
