@@ -9,6 +9,8 @@ from pymc_extras.inference.mlx_mclmc import fit_mlx_mclmc
 from pymc_extras.inference.mlx_mclmc.kernel import (
     TunedParameters,
     sample,
+    tune_step_size,
+    warmup,
     warmup_and_sample,
 )
 from pymc_extras.inference.mlx_mclmc.logp import (
@@ -72,6 +74,12 @@ def test_kernel_recovers_correlated_gaussian():
 def test_sample_rejects_discarding_every_draw():
     with pytest.raises(ValueError, match="leaves no draws"):
         sample(mx.sum, mx.zeros((1, 2)), L=1.0, step_size=0.1, n_steps=10, discard=10)
+
+
+def test_sample_rejects_zero_decoherence_scale():
+    """L = 0 would silently become an infinite refresh rate via 1 / L."""
+    with pytest.raises(ValueError, match="L must be non-zero"):
+        sample(mx.sum, mx.zeros((1, 2)), L=0.0, step_size=0.1, n_steps=10)
 
 
 def test_logp_matches_pymc(conjugate_model):
@@ -160,20 +168,22 @@ def test_fit_mlx_mclmc_transformed_variable(float32):
     )
 
 
-def test_fit_mlx_mclmc_warmup_kwargs_override_named_arguments(conjugate_model):
-    """A warmup_kwargs entry that shadows a named argument must override it, not collide."""
+def test_fit_mlx_mclmc_warmup_kwargs_reach_the_adaptation(conjugate_model):
+    """warmup_kwargs must override the named arguments it shadows, not collide with them."""
     model, *_ = conjugate_model
+    settings = dict(draws=100, tune=400, chains=1, model=model, random_seed=0)
 
-    idata = fit_mlx_mclmc(
-        draws=100,
-        tune=400,
-        chains=1,
-        model=model,
-        random_seed=0,
-        warmup_kwargs={"desired_energy_var": 1e-3, "optimize_steps": 20},
+    default = fit_mlx_mclmc(**settings, warmup_kwargs={"optimize_steps": 20})
+    overridden = fit_mlx_mclmc(
+        **settings,
+        # desired_energy_var shadows a named argument; frac_tune3 makes the override observable
+        # by dropping the third adaptation phase from the step count.
+        warmup_kwargs={"desired_energy_var": 1e-3, "optimize_steps": 20, "frac_tune3": 0.0},
     )
 
-    assert idata["posterior"]["mu"].shape == (1, 100, 3)
+    assert overridden["posterior"].attrs["num_tuning_steps"] == (
+        default["posterior"].attrs["num_tuning_steps"] - 40
+    )
 
 
 @pytest.mark.parametrize(
@@ -291,3 +301,68 @@ def test_warns_on_divergences_and_on_collapsed_adaptation():
     with pytest.warns(RuntimeWarning, match="collapsed"):
         collapsed = healthy._replace(step_size=1e-12)
         _warn_if_adaptation_failed(collapsed, np.zeros((2, 100), dtype=bool))
+
+
+def test_warmup_recovers_the_diagonal_metric():
+    """Diagonal preconditioning exists to put the marginal variances in the mass matrix."""
+    variances = np.array([0.25, 1.0, 4.0, 16.0], dtype="float32")
+    precision = mx.array(np.diag(1.0 / variances))
+
+    def logdensity_fn(x):
+        return -0.5 * mx.sum(x * (precision @ x))
+
+    tuned = warmup(logdensity_fn, np.zeros(len(variances)), num_steps=8000, seed=0)
+
+    # A streaming estimate over a short window, so the tolerance is wide -- the point is that it
+    # tracks a 64x spread in scale rather than that it nails any one coordinate.
+    np.testing.assert_allclose(np.asarray(tuned.inverse_mass_matrix), variances, rtol=0.35)
+
+
+def test_tune_step_size_reaches_the_target_energy_variance():
+    dim = 4
+    precision = mx.eye(dim)
+
+    def logdensity_fn(x):
+        return -0.5 * mx.sum(x * (precision @ x))
+
+    initial_positions = mx.random.normal(shape=(4, dim), key=mx.random.key(0))
+    step_size = tune_step_size(
+        logdensity_fn, initial_positions, L=1.5 * np.sqrt(dim), desired_energy_var=5e-4
+    )
+
+    energy_errors = sample(
+        logdensity_fn,
+        initial_positions,
+        L=1.5 * np.sqrt(dim),
+        step_size=step_size,
+        n_steps=600,
+        discard=300,
+        seed=1,
+    ).energy_errors
+    energy_var = float(mx.mean(mx.var(energy_errors, axis=0)) / dim)
+
+    assert 0.5 * 5e-4 < energy_var < 2.0 * 5e-4
+
+
+def test_initial_point_accepts_a_dict_or_a_flat_vector(conjugate_model):
+    """The flat form is in value_vars order, which is not the order the model declares."""
+    model, *_ = conjugate_model
+    settings = dict(draws=100, tune=400, chains=1, model=model, random_seed=0)
+    start = {"mu": np.array([0.5, -0.5, 1.5], dtype="float32")}
+
+    from_dict = fit_mlx_mclmc(**settings, initial_point=start)
+    from_vector = fit_mlx_mclmc(**settings, initial_point=start["mu"])
+
+    np.testing.assert_array_equal(
+        from_dict["posterior"]["mu"].values, from_vector["posterior"]["mu"].values
+    )
+
+
+def test_burn_in_is_dropped_from_both_the_draws_and_the_diagnostics(conjugate_model):
+    model, *_ = conjugate_model
+
+    idata = fit_mlx_mclmc(draws=200, tune=400, burn_in=300, chains=2, model=model, random_seed=0)
+
+    assert idata["posterior"]["mu"].shape == (2, 200, 3)
+    assert idata["sample_stats"]["energy_error"].shape == (2, 200)
+    assert idata["sample_stats"]["diverging"].shape == (2, 200)
