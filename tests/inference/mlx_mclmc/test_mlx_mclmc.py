@@ -9,6 +9,7 @@ mx = pytest.importorskip("mlx.core", reason="MCLMC requires mlx, which needs App
 from pymc_extras.inference.mlx_mclmc import fit_mlx_mclmc
 from pymc_extras.inference.mlx_mclmc.kernel import (
     TunedParameters,
+    _optimize_to_mode,
     sample,
     tune_step_size,
     warmup,
@@ -386,3 +387,30 @@ def test_non_finite_initial_logdensity_is_rejected(float32):
 
     with pytest.raises(ValueError, match="log-density is not finite"):
         fit_mlx_mclmc(draws=10, tune=100, chains=2, model=model)
+
+
+def test_ascent_skips_non_finite_steps_instead_of_absorbing_them():
+    """A nan gradient must leave the position and the Adam moments untouched, not poison them."""
+
+    def logdensity_fn(x):
+        in_band = (x[0] > 1.0) & (x[0] < 1.2)
+        return mx.where(in_band, mx.array(float("nan")), -0.5 * mx.sum((x - 3.0) ** 2))
+
+    reached = _optimize_to_mode(
+        mx.vmap(mx.value_and_grad(logdensity_fn)),
+        mx.array([[0.0]]),
+        steps=400,
+        learning_rate=0.05,
+    )
+
+    # Absorbing the nan into the moments would freeze the ascent short of the band at 1.0.
+    np.testing.assert_allclose(np.asarray(reached).ravel(), [3.0], atol=1e-2)
+
+
+def test_ascent_gives_up_when_the_gradient_never_becomes_finite():
+    always_nan = mx.vmap(mx.value_and_grad(lambda x: mx.sum(x) * mx.array(float("nan"))))
+    start = mx.array([[0.7, -0.3]])
+
+    unchanged = _optimize_to_mode(always_nan, start, steps=400, learning_rate=0.05)
+
+    np.testing.assert_array_equal(np.asarray(unchanged), np.asarray(start))
