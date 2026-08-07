@@ -15,6 +15,7 @@ ETS_SEASONAL_DIM = "seasonal_lag"
 FACTOR_DIM = "factor"
 ERROR_AR_PARAM_DIM = "error_lag_ar"
 EXOG_STATE_DIM = "exogenous"
+BATCH_DIM = "batch"
 
 MISSING_FILL = -9999.0
 JITTER_DEFAULT = 1e-8 if pytensor.config.floatX.endswith("64") else 1e-6

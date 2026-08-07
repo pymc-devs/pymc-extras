@@ -1397,3 +1397,287 @@ class TestTimeVaryingTransition:
         assert "irf" in result
         assert result["irf"].shape[2] == 20
         assert not np.any(np.isnan(result["irf"].values))
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+@pytest.mark.filterwarnings("ignore:No start date provided")
+@pytest.mark.parametrize("batch_dims", [(2,), (5,), (7,)])
+def test_batch_ssm(batch_dims: tuple[int], rng, mock_pymc_sample) -> pm.Model:
+    mod = st.LevelTrend(order=2, innovations_order=[0, 1])
+    mod += st.Autoregressive(name="ar", order=1)
+    mod += st.MeasurementError(name="obs")
+    ssm = mod.build(name="batch_ssm", mode="NUMBA")
+
+    if len(batch_dims) > 1:
+        raise NotImplementedError
+
+    batched_data = np.random.normal(0, 1, size=(*batch_dims, 100, 1))
+
+    with pm.Model(
+        coords=ssm.coords | {"batch": [f"batch_{i}" for i in range(batch_dims[0])]}
+    ) as pymc_mod:
+        P0 = pm.Deterministic(
+            "P0", pt.tile(pt.eye(3) * 1, (*batch_dims, 1, 1)), dims=("batch", "state", "state_aux")
+        )
+
+        initial_level_trend = pm.Normal("initial_level_trend", dims=("batch", "state_level_trend"))
+        params_ar = pm.Beta("params_ar", alpha=3, beta=3, dims=("batch", "lag_ar"))
+
+        sigma_level_trend = pm.Gamma(
+            "sigma_level_trend", alpha=2, beta=50, dims=("batch", "shock_level_trend")
+        )
+        sigma_ar = pm.Gamma("sigma_ar", alpha=2, beta=5, shape=(*batch_dims,))
+        sigma_obs = pm.HalfNormal("sigma_obs", sigma=0.05, shape=(*batch_dims,))
+
+        ssm.build_statespace_graph(data=batched_data)
+
+    coord_dimensions = {k: len(v) for k, v in pymc_mod.coords.items()}
+
+    with pymc_mod:
+        prior = pm.sample_prior_predictive(compile_kwargs={"mode": "NUMBA"}, random_seed=rng)
+        idata = pm.sample(tune=10, draws=10, compile_kwargs={"mode": "NUMBA"}, random_seed=rng)
+
+    unconditional_prior = ssm.sample_unconditional_prior(
+        prior, mvn_method="cholesky", random_seed=rng
+    )
+    conditional_prior = ssm.sample_conditional_prior(prior, mvn_method="cholesky", random_seed=rng)
+
+    prior_chain = prior.prior.dims["chain"]
+    prior_draw = prior.prior.dims["draw"]
+
+    assert prior.prior["params_ar"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["lag_ar"],
+    )
+    assert prior.prior["sigma_ar"].shape == (prior_chain, prior_draw, coord_dimensions["batch"])
+    assert prior.prior["initial_level_trend"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["state_level_trend"],
+    )
+    assert prior.prior["sigma_level_trend"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["shock_level_trend"],
+    )
+    assert prior.prior["sigma_obs"].shape == (prior_chain, prior_draw, coord_dimensions["batch"])
+    assert prior.prior["P0"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["state"],
+        coord_dimensions["state_aux"],
+    )
+
+    assert conditional_prior["filtered_prior"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["state"],
+    )
+    assert conditional_prior["filtered_prior_observed"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["observed_state"],
+    )
+    assert conditional_prior["predicted_prior"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["state"],
+    )
+    assert conditional_prior["predicted_prior_observed"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["observed_state"],
+    )
+    assert conditional_prior["smoothed_prior"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["state"],
+    )
+    assert conditional_prior["smoothed_prior_observed"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["observed_state"],
+    )
+
+    assert unconditional_prior["prior_latent"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["time"],
+        coord_dimensions["batch"],
+        coord_dimensions["state"],
+    )
+    assert unconditional_prior["prior_observed"].shape == (
+        prior_chain,
+        prior_draw,
+        coord_dimensions["time"],
+        coord_dimensions["batch"],
+        coord_dimensions["observed_state"],
+    )
+
+    posterior_chain = idata.posterior.dims["chain"]
+    posterior_draw = idata.posterior.dims["draw"]
+
+    assert idata.posterior["params_ar"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["lag_ar"],
+    )
+    assert idata.posterior["sigma_ar"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+    )
+    assert idata.posterior["initial_level_trend"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["state_level_trend"],
+    )
+    assert idata.posterior["sigma_level_trend"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["shock_level_trend"],
+    )
+    assert idata.posterior["sigma_obs"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+    )
+    assert idata.posterior["P0"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["state"],
+        coord_dimensions["state_aux"],
+    )
+
+    irf = ssm.impulse_response_function(idata, random_seed=rng)
+    irf_steps = irf.dims["time"]
+    assert irf.irf.shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        irf_steps,
+        coord_dimensions["state"],
+    )
+
+    T_sample = ssm.sample_statespace_matrices(idata, matrix_names=["T"])
+    assert T_sample.posterior_predictive.T.shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["state"],
+        coord_dimensions["state_aux"],
+    )
+
+    filtered_covariance_sample = ssm.sample_filter_outputs(
+        idata, filter_output_names=["filtered_covariances"]
+    )
+    assert filtered_covariance_sample.posterior_predictive.filtered_covariances.shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["state"],
+        coord_dimensions["state_aux"],
+    )
+
+    forecast = ssm.forecast(idata, periods=10, random_seed=rng)
+    forecast_steps = forecast.dims["time"]
+    assert forecast.forecast_latent.shape == (
+        posterior_chain,
+        posterior_draw,
+        forecast_steps,
+        coord_dimensions["batch"],
+        coord_dimensions["state"],
+    )
+    assert forecast.forecast_observed.shape == (
+        posterior_chain,
+        posterior_draw,
+        forecast_steps,
+        coord_dimensions["batch"],
+        coord_dimensions["observed_state"],
+    )
+
+    unconditional_post = ssm.sample_unconditional_posterior(
+        idata, mvn_method="cholesky", random_seed=rng
+    )
+    assert unconditional_post.posterior_latent.shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["time"],
+        coord_dimensions["batch"],
+        coord_dimensions["state"],
+    )
+    assert unconditional_post.posterior_observed.shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["time"],
+        coord_dimensions["batch"],
+        coord_dimensions["observed_state"],
+    )
+
+    conditional_post = ssm.sample_conditional_posterior(
+        idata, mvn_method="cholesky", random_seed=rng
+    )
+    assert conditional_post["filtered_posterior"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["state"],
+    )
+    assert conditional_post["filtered_posterior_observed"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["observed_state"],
+    )
+    assert conditional_post["predicted_posterior"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["state"],
+    )
+    assert conditional_post["predicted_posterior_observed"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["observed_state"],
+    )
+    assert conditional_post["smoothed_posterior"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["state"],
+    )
+    assert conditional_post["smoothed_posterior_observed"].shape == (
+        posterior_chain,
+        posterior_draw,
+        coord_dimensions["batch"],
+        coord_dimensions["time"],
+        coord_dimensions["observed_state"],
+    )

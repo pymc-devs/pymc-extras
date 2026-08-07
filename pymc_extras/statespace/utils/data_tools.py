@@ -10,11 +10,7 @@ from pymc import modelcontext
 from pymc.exceptions import ImputationWarning
 from pytensor.tensor.sharedvar import TensorSharedVariable
 
-from pymc_extras.statespace.utils.constants import (
-    MISSING_FILL,
-    OBS_STATE_DIM,
-    TIME_DIM,
-)
+from pymc_extras.statespace.utils.constants import BATCH_DIM, MISSING_FILL, OBS_STATE_DIM, TIME_DIM
 
 NO_TIME_INDEX_WARNING = (
     "No time index found on the supplied data. A simple range index will be automatically "
@@ -36,11 +32,13 @@ def get_data_dims(data):
     return data_dims
 
 
-def _validate_data_shape(data_shape, n_obs, obs_coords=None, check_col_names=False, col_names=None):
+def _validate_data_shape(
+    data_shape, n_obs, obs_coords=None, check_col_names=False, col_names=None, batched=False
+):
     if col_names is None:
         col_names = []
 
-    if len(data_shape) != 2:
+    if not batched and len(data_shape) != 2:
         raise ValueError("Data must be a 2d matrix")
 
     if data_shape[-1] != n_obs:
@@ -59,22 +57,27 @@ def _validate_data_shape(data_shape, n_obs, obs_coords=None, check_col_names=Fal
             )
 
 
-def preprocess_tensor_data(data, n_obs, obs_coords=None):
+def preprocess_tensor_data(data, n_obs, obs_coords=None, batched=False):
     data_shape = data.shape.eval()
-    _validate_data_shape(data_shape, n_obs, obs_coords)
+    _validate_data_shape(data_shape, n_obs, obs_coords, batched=batched)
     if obs_coords is not None:
         warnings.warn(NO_TIME_INDEX_WARNING)
-    index = np.arange(data_shape[0], dtype="int")
+
+    index = (
+        np.arange(data_shape[0], dtype="int")
+        if not batched
+        else np.arange(data_shape[1], dtype="int")
+    )
 
     return data.eval(), index
 
 
-def preprocess_numpy_data(data, n_obs, obs_coords=None):
-    _validate_data_shape(data.shape, n_obs, obs_coords)
+def preprocess_numpy_data(data, n_obs, obs_coords=None, batched=False):
+    _validate_data_shape(data.shape, n_obs, obs_coords, batched=batched)
     if obs_coords is not None:
         warnings.warn(NO_TIME_INDEX_WARNING)
 
-    index = np.arange(data.shape[0], dtype="int")
+    index = np.arange(data.shape[0], dtype="int") if not batched else np.arange(data.shape[1])
 
     return data, index
 
@@ -122,11 +125,15 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
         return preprocess_numpy_data(data.values, n_obs, obs_coords)
 
 
-def add_data_to_active_model(values, index, data_dims=None):
+def add_data_to_active_model(values, index, data_dims=None, batched=False):
     pymc_mod = modelcontext(None)
     if data_dims is None:
-        data_dims = [TIME_DIM, OBS_STATE_DIM]
-    time_dim = data_dims[0]
+        if not batched:
+            data_dims = [TIME_DIM, OBS_STATE_DIM]
+        else:
+            data_dims = [BATCH_DIM, TIME_DIM, OBS_STATE_DIM]
+
+    time_dim = data_dims[0] if not batched else data_dims[1]
 
     if isinstance(index, pd.Index):
         index = index.rename(time_dim)
@@ -145,10 +152,14 @@ def add_data_to_active_model(values, index, data_dims=None):
 
     # If the data has just one column, we need to specify the shape as (None, 1), or else the JAX backend will
     # raise a broadcasting error.
-    if values.shape[-1] == 1 or values.ndim == 1:
+    if (values.shape[-1] == 1 or values.ndim == 1) and not batched:
         data_shape = (None, 1)
-    else:
+    elif (values.shape[-1] == 1 or values.ndim == 1) and batched:
+        data_shape = (values.shape[0], None, 1)
+    elif not batched:
         data_shape = (None, values.shape[-1])
+    else:
+        data_shape = (values.shape[0], None, *values.shape[2:])
 
     data = pm.Data("data", values, dims=data_dims, shape=data_shape)
 
@@ -184,10 +195,14 @@ def mask_missing_values_in_data(values, missing_fill_value=None):
 def register_data_with_pymc(
     data, n_obs, obs_coords, register_data=True, missing_fill_value=None, data_dims=None
 ):
+    batched = False
+    if data_dims and BATCH_DIM in data_dims:
+        batched = True
+
     if isinstance(data, pt.TensorVariable | TensorSharedVariable):
-        values, index = preprocess_tensor_data(data, n_obs, obs_coords)
+        values, index = preprocess_tensor_data(data, n_obs, obs_coords, batched)
     elif isinstance(data, np.ndarray):
-        values, index = preprocess_numpy_data(data, n_obs, obs_coords)
+        values, index = preprocess_numpy_data(data, n_obs, obs_coords, batched)
     elif isinstance(data, pd.DataFrame | pd.Series):
         values, index = preprocess_pandas_data(data, n_obs, obs_coords)
     else:
@@ -196,7 +211,7 @@ def register_data_with_pymc(
     data, nan_mask = mask_missing_values_in_data(values, missing_fill_value)
 
     if register_data:
-        data = add_data_to_active_model(data, index, data_dims)
+        data = add_data_to_active_model(data, index, data_dims, batched)
     else:
         data = pytensor.shared(data, name="data")
     return data, nan_mask

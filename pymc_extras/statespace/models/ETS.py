@@ -289,7 +289,7 @@ class BayesianETS(PyMCStateSpace):
             k_endog,
             k_states,
             k_posdef,
-            filter_type,
+            filter_type=filter_type,
             verbose=verbose,
             measurement_error=measurement_error,
             mode=mode,
