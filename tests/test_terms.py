@@ -412,6 +412,29 @@ def test_register_data_skips_literals(simple_ds):
         register_data(terms, ds=simple_ds)  # should not raise
 
 
+def test_product_rmul():
+    p = Product(Intercept(name="a"), 2.0)
+    result = 3 * p
+    assert isinstance(result, Product)
+
+
+def test_sum_rmul():
+    s = Sum([Intercept(name="a")])
+    result = 3 * s
+    assert isinstance(result, Product)
+
+
+def test_modelterm_set_data_default():
+    t = Intercept(name="x")
+    t.set_data(xr.Dataset(), model=None)  # should not raise
+
+
+def test_modelterm_add_coords_default():
+    t = Intercept(name="x")
+    with pm.Model():
+        t.add_coords(xr.Dataset())  # should not raise
+
+
 def test_custom_term():
     @dataclass
     class _Custom(ModelTerm):

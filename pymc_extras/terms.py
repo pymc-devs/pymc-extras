@@ -282,6 +282,12 @@ class Product:
             **get_coords(self.right, ds),
         }
 
+    def __mul__(self, other: Any) -> Product:
+        return Product(self, other)
+
+    def __rmul__(self, other: Any) -> Product:
+        return Product(other, self)
+
     def register_data(self, ds: xr.Dataset) -> None:
         """Register shared data for both operands."""
         register_data(self, ds=ds)
