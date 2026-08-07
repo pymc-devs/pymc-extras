@@ -58,7 +58,7 @@ Examples
         register_data,
     )
 
-    mu = Intercept(name="mu") + Dot("x", prior=Prior("Normal", dims="feature"))
+    mu = Intercept(name="mu") + Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     sigma = Transform(Intercept(name="sigma"), func=ptx.exp)
 
     coords = collect_coords(mu, sigma, ds=ds)
@@ -74,11 +74,11 @@ Gotchas
   (via ``pmd.Normal`` with ``xdist=True``, or ``pytensor.xtensor``).
   Mixing non-xtensor output (e.g., regular ``pm.Normal``) with xtensor
   output in a ``Sum`` will fail when ``build_param`` composes them.
-- Two ``Dot`` terms referencing the same ``data_var`` will share the
+- Two ``Dot`` terms referencing the same ``var_name`` will share the
   ``pmd.Data`` variable automatically (duplicate registration is skipped).
-- Two ``Dot`` terms with the same ``data_var`` will also create identically
-  named beta variables (``{data_var}_beta``), causing a PyMC "already
-  exists" error. Use different ``data_var`` values to avoid this.
+- Two ``Dot`` terms with the same ``var_name`` will also create identically
+  named beta variables (``{var_name}_beta``), causing a PyMC "already
+  exists" error. Use different ``var_name`` values to avoid this.
 - ``build_param`` is not idempotent --- call it once to create PyMC
   variables, then sample. Calling it a second time tries to create
   variables with the same name, causing a PyMC error.
@@ -324,7 +324,7 @@ class Intercept(ModelTerm):
         return self.prior.create_variable(self.name, xdist=True)
 
 
-@dataclass
+@dataclass(kw_only=True)
 class Dot(ModelTerm):
     """Linear predictor term: ``data @ beta``.
 
@@ -332,7 +332,7 @@ class Dot(ModelTerm):
 
     Parameters
     ----------
-    data_var : str
+    var_name : str
         Name of the data variable in the dataset.
     prior : VariableFactory
         Prior for the beta coefficients. Any ``VariableFactory`` is
@@ -340,31 +340,31 @@ class Dot(ModelTerm):
         data variable.
     """
 
-    data_var: str
+    var_name: str
     prior: VariableFactory
 
     def get_coords(self, ds: xr.Dataset) -> dict[str, Any]:
         """Extract coordinates from the data variable."""
-        return {k: v.values.tolist() for k, v in ds[self.data_var].coords.items()}
+        return {k: v.values.tolist() for k, v in ds[self.var_name].coords.items()}
 
     def register_data(self, ds: xr.Dataset) -> None:
         """Register the data variable as ``pmd.Data``."""
         model = pm.modelcontext(None)
-        if self.data_var not in model:
-            pmd.Data(self.data_var, ds[self.data_var])
+        if self.var_name not in model:
+            pmd.Data(self.var_name, ds[self.var_name])
 
     def set_data(self, ds: xr.Dataset, model: pm.Model | None = None) -> None:
         """Update ``pmd.Data`` for prediction."""
-        if self.data_var in ds:
-            da = ds[self.data_var]
+        if self.var_name in ds:
+            da = ds[self.var_name]
             coords = {dim: ds[dim].values for dim in da.dims if dim in ds.coords}
-            pm.set_data({self.data_var: da.values}, model=model, coords=coords)
+            pm.set_data({self.var_name: da.values}, model=model, coords=coords)
 
     def create_variable(self) -> pt.TensorVariable:
         """Build ``data @ beta`` tensor."""
         model = pm.modelcontext(None)
-        data = model[self.data_var]
-        beta = self.prior.create_variable(f"{self.data_var}_beta", xdist=True)
+        data = model[self.var_name]
+        beta = self.prior.create_variable(f"{self.var_name}_beta", xdist=True)
         return data @ beta
 
 

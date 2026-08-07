@@ -119,7 +119,7 @@ def test_sum_add_sum():
 
 
 def test_sum_add_term():
-    result = Sum([Intercept(name="a")]) + Dot("x", prior=Prior("Normal", dims="feature"))
+    result = Sum([Intercept(name="a")]) + Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     assert len(result.terms) == 2
 
 
@@ -140,7 +140,7 @@ def test_sum_mul():
 
 
 def test_sum_get_coords(simple_ds):
-    tl = Sum([Dot("x", prior=Prior("Normal", dims="feature"))])
+    tl = Sum([Dot(var_name="x", prior=Prior("Normal", dims="feature"))])
     coords = tl.get_coords(simple_ds)
     assert "feature" in coords
 
@@ -152,7 +152,7 @@ def test_intercept_create_variable():
 
 
 def test_dot_register_data(simple_ds):
-    dot = Dot("x", prior=Prior("Normal", dims="feature"))
+    dot = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     coords = dot.get_coords(simple_ds)
     with pm.Model(coords=coords):
         dot.register_data(simple_ds)
@@ -161,7 +161,7 @@ def test_dot_register_data(simple_ds):
 
 
 def test_dot_create_variable(simple_ds):
-    dot = Dot("x", prior=Prior("Normal", dims="feature"))
+    dot = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     coords = dot.get_coords(simple_ds)
     with pm.Model(coords=coords):
         dot.register_data(simple_ds)
@@ -171,7 +171,7 @@ def test_dot_create_variable(simple_ds):
 
 def test_dot_set_data(simple_ds):
     ds2 = simple_ds.copy()
-    dot = Dot("x", prior=Prior("Normal", dims="feature"))
+    dot = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     coords = dot.get_coords(simple_ds)
     with pm.Model(coords=coords):
         dot.register_data(simple_ds)
@@ -187,7 +187,7 @@ def test_transform_create_variable():
 
 
 def test_transform_with_dot(simple_ds):
-    dot = Dot("x", prior=Prior("Normal", dims="feature"))
+    dot = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     transformed = Transform(dot, func=ptx.exp)
     coords = transformed.get_coords(simple_ds)
     with pm.Model(coords=coords):
@@ -219,7 +219,7 @@ def test_build_param_intercept():
 
 
 def test_build_param_dot(simple_ds):
-    dot = Dot("x", prior=Prior("Normal", dims="feature"))
+    dot = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     coords = dot.get_coords(simple_ds)
     with pm.Model(coords=coords):
         dot.register_data(simple_ds)
@@ -228,7 +228,7 @@ def test_build_param_dot(simple_ds):
 
 
 def test_build_param_sum(simple_ds):
-    terms = Intercept(name="intercept") + Dot("x", prior=Prior("Normal", dims="feature"))
+    terms = Intercept(name="intercept") + Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     coords = get_coords(terms, simple_ds)
     with pm.Model(coords=coords):
         register_data(terms, ds=simple_ds)
@@ -289,7 +289,7 @@ def test_collect_terms_flat():
 
 
 def test_collect_terms_nested():
-    terms = [Intercept(name="a") + Dot("x", prior=Prior("Normal", dims="feature"))]
+    terms = [Intercept(name="a") + Dot(var_name="x", prior=Prior("Normal", dims="feature"))]
     result = collect_terms(terms)
     assert len(result) == 2
 
@@ -314,7 +314,7 @@ def test_collect_terms_includes_transform():
 
 def test_collect_coords(simple_ds):
     """collect_coords merges coordinates from multiple term trees."""
-    mu = Intercept(name="mu") + Dot("x", prior=Prior("Normal", dims="feature"))
+    mu = Intercept(name="mu") + Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     sigma = Transform(Intercept(name="sigma"), func=ptx.exp)
     coords = collect_coords(mu, sigma, ds=simple_ds)
     assert "feature" in coords
@@ -322,8 +322,8 @@ def test_collect_coords(simple_ds):
 
 def test_dot_dedup_data(simple_ds):
     """Two Dot terms with same data_var share the pmd.Data."""
-    dot_a = Dot("x", prior=Prior("Normal", dims="feature"))
-    dot_b = Dot("x", prior=Prior("Normal", dims="feature"))
+    dot_a = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
+    dot_b = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     terms = dot_a + dot_b
     coords = get_coords(terms, simple_ds)
     with pm.Model(coords=coords) as m:
@@ -333,8 +333,8 @@ def test_dot_dedup_data(simple_ds):
 
 def test_dot_duplicate_prior_name_errors(simple_ds):
     """Same data_var AND same prior name clash on variable names."""
-    dot_a = Dot("x", prior=Prior("Normal", dims="feature"))
-    dot_b = Dot("x", prior=Prior("Normal", dims="feature"))
+    dot_a = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
+    dot_b = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     terms = dot_a + dot_b
     coords = get_coords(terms, simple_ds)
     with pm.Model(coords=coords) as m:
@@ -377,7 +377,7 @@ def test_dot_set_data_renamed_dim(simple_ds):
     ds2 = simple_ds.copy()
     ds2 = ds2.assign_coords(feature=["X", "Y", "Z"])
 
-    dot = Dot("x", prior=Prior("Normal", dims="feature"))
+    dot = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     coords = get_coords(dot, simple_ds)
     with pm.Model(coords=coords):
         dot.register_data(simple_ds)
@@ -398,7 +398,7 @@ def test_collect_terms_deep_nesting(simple_ds):
     """collect_terms flattens deeply nested structures."""
     terms = Product(
         Intercept(name="a"),
-        Sum([Intercept(name="b"), Dot("x", prior=Prior("Normal", dims="feature"))]),
+        Sum([Intercept(name="b"), Dot(var_name="x", prior=Prior("Normal", dims="feature"))]),
     )
     result = collect_terms([terms])
     assert len(result) == 3
