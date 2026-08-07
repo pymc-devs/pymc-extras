@@ -9,7 +9,7 @@ from pymc.util import RandomSeed, _get_seeds_per_chain
 from xarray import DataTree
 
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
-from pymc_extras.inference.mlx_mclmc.kernel import warmup_and_sample
+from pymc_extras.inference.mlx_mclmc.kernel import TunedParameters, warmup_and_sample
 from pymc_extras.inference.mlx_mclmc.logp import (
     MLXLogp,
     check_model_is_sampleable,
@@ -20,6 +20,9 @@ _log = logging.getLogger(__name__)
 
 # The step-size controller clamps at 1e-12, so anything at that floor means it gave up.
 _COLLAPSED_STEP_SIZE = 1e-11
+
+# Unadjusted MCLMC should not diverge at all on a well-behaved target, so the bar is low.
+_MAX_DIVERGING_FRACTION = 0.01
 
 
 def fit_mlx_mclmc(
@@ -95,8 +98,8 @@ def fit_mlx_mclmc(
     Returns
     -------
     idata : DataTree
-        Posterior draws, per-step energy errors under ``sample_stats``, and the adapted sampler
-        parameters in the posterior group's attributes.
+        Posterior draws, per-step energy errors and divergence flags under ``sample_stats``, and
+        the adapted sampler parameters in the posterior group's attributes.
 
     References
     ----------
@@ -136,7 +139,7 @@ def fit_mlx_mclmc(
     }
 
     _log.info("Sampling %d chains of %d draws in %d dimensions", chains, draws, logdensity_fn.dim)
-    samples, energy_errors, tuned = warmup_and_sample(
+    output, tuned = warmup_and_sample(
         logdensity_fn,
         start,
         num_tune=tune,
@@ -150,11 +153,12 @@ def fit_mlx_mclmc(
     )
 
     # The kernel stacks draws first; InferenceData wants chains first.
-    flat_draws = np.asarray(samples, dtype="float32").transpose(1, 0, 2)
-    # The kernel reports an energy error for the burn-in steps too; drop those so sample_stats
-    # lines up with the posterior's draw axis.
-    energy_errors = np.asarray(energy_errors, dtype="float32").T[:, burn_in:]
-    _warn_if_adaptation_failed(tuned, energy_errors)
+    flat_draws = np.asarray(output.samples, dtype="float32").transpose(1, 0, 2)
+    # The kernel reports diagnostics for the burn-in steps too; drop those so sample_stats lines
+    # up with the posterior's draw axis.
+    energy_errors = np.asarray(output.energy_errors, dtype="float32").T[:, burn_in:]
+    diverging = np.asarray(output.diverging).T[:, burn_in:]
+    _warn_if_adaptation_failed(tuned, diverging)
 
     posterior, unconstrained_posterior = draws_to_datasets(
         flat_draws,
@@ -173,7 +177,10 @@ def fit_mlx_mclmc(
         {
             "posterior": posterior,
             "sample_stats": dict_to_dataset(
-                {"energy_error": energy_errors}, coords={}, dims={}, inference_library=pm
+                {"energy_error": energy_errors, "diverging": diverging},
+                coords={},
+                dims={},
+                inference_library=pm,
             ),
         }
     )
@@ -185,18 +192,20 @@ def fit_mlx_mclmc(
     )
 
 
-def _warn_if_adaptation_failed(tuned, energy_errors: np.ndarray) -> None:
+def _warn_if_adaptation_failed(tuned: TunedParameters, diverging: np.ndarray) -> None:
     """
-    Warn when the adapted parameters or the energy errors say the draws are not usable.
+    Warn when the divergence rate or the adapted parameters say the draws are not usable.
 
-    A collapsed step size or a non-finite energy error means the chains never moved, or moved to
-    somewhere the log-density is undefined. Both produce draws that look like an ordinary
-    posterior, so they are worth saying out loud.
+    The sampler reverts a step whose log-density comes back non-finite, so a diverging chain
+    keeps producing draws rather than nans. A collapsed step size means the chains never moved
+    at all. Both leave something that looks like an ordinary posterior.
     """
-    if not np.isfinite(energy_errors).all():
+    diverging_fraction = float(diverging.mean())
+    if diverging_fraction > _MAX_DIVERGING_FRACTION:
         warnings.warn(
-            "MCLMC produced non-finite energy errors, so the draws are not usable. This usually "
-            "means the log-density returned nan somewhere the chain visited.",
+            f"MCLMC reverted {diverging_fraction:.1%} of steps as divergent. The draws are "
+            "unreliable; the log-density is likely returning nan in the region the chains "
+            "reached.",
             RuntimeWarning,
             stacklevel=3,
         )
