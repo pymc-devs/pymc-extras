@@ -113,6 +113,27 @@ def _batched_value_and_grad(logdensity_fn: Callable) -> Callable:
     return mx.vmap(supplied if callable(supplied) else mx.value_and_grad(logdensity_fn))
 
 
+def _check_initial_state(logdensity: mx.array, grad: mx.array) -> None:
+    """
+    Raise ValueError unless the log-density and its gradient are finite at the starting point.
+
+    A finite log-density with a non-finite gradient is the diagnostic case: the point sits on a
+    boundary or a removable singularity of the model, where the value is defined but the
+    derivative is not.
+    """
+    if not bool(mx.all(mx.isfinite(logdensity))):
+        raise ValueError(
+            "The log-density is not finite at the initial point, so MCLMC cannot start. Pass an "
+            "`initial_point` inside the support of the model."
+        )
+    if not bool(mx.all(mx.isfinite(grad))):
+        raise ValueError(
+            "The log-density is finite at the initial point but its gradient is not, so MCLMC "
+            "cannot start. The point is most likely on a boundary or a removable singularity of "
+            "the model; pass an `initial_point` away from it."
+        )
+
+
 def _normalize(vectors: mx.array) -> mx.array:
     norms = mx.linalg.norm(vectors, axis=-1, keepdims=True)
 
@@ -375,6 +396,7 @@ def sample(
     key = mx.random.key(seed)
     key, subkey = mx.random.split(key, num=2)
     logdensity, grad = logp_and_grad(position)
+    _check_initial_state(logdensity, grad)
     state = ChainState(
         position=position,
         momentum=_unit_vectors(shape=(n_chains, dim), key=subkey),
@@ -727,11 +749,14 @@ def warmup(
     key = mx.random.key(seed)
     key, subkey = mx.random.split(key, num=2)
 
+    position = mx.array(initial_position).reshape(1, dim)
+    _check_initial_state(*logp_and_grad(position))
+
     # Without this ascent the chain wanders under the large initial step while the diagonal
     # variances are collected, which inflates the metric and forces a step size too small to mix.
     position = _optimize_to_mode(
         logp_and_grad=logp_and_grad,
-        position=mx.array(initial_position).reshape(1, dim),
+        position=position,
         steps=optimize_steps,
         learning_rate=optimize_learning_rate,
     )
