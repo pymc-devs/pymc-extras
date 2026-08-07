@@ -411,43 +411,49 @@ def _ess_per_dim(samples: np.ndarray) -> np.ndarray:
     """
     Estimate the single-chain effective sample size of each column of ``samples``.
 
-    Applies the Geyer initial-monotone rule to an FFT autocovariance of ``samples``, which has
-    shape ``(n_samples, dim)``. This is an approximation of
-    ``blackjax.diagnostics.effective_sample_size``, not a reimplementation of it, and is used
-    only to set ``L``, where the difference does not matter.
+    A NumPy port of ``blackjax.diagnostics.effective_sample_size`` specialized to one chain of
+    shape ``(n_samples, dim)``: Geyer's initial positive sequence over an FFT autocovariance,
+    followed by his initial monotone sequence.
     """
     n_samples, dim = samples.shape
+    columns = np.arange(dim)
+
     centered = samples - samples.mean(axis=0, keepdims=True)
     padded_length = 1 << int(np.ceil(np.log2(2 * n_samples)))
-
     spectrum = np.fft.rfft(centered, n=padded_length, axis=0)
     autocov = (
         np.fft.irfft(spectrum * np.conjugate(spectrum), n=padded_length, axis=0)[:n_samples].real
         / n_samples
     )
 
-    ess = np.empty(dim)
-    for d in range(dim):
-        variance = autocov[0, d]
-        if variance <= 0:
-            ess[d] = float(n_samples)
-            continue
+    # With one chain the between-chain term drops out, leaving weighted_var == autocov[0].
+    var0 = autocov[0] * n_samples / (n_samples - 1.0)
+    weighted_var = autocov[0]
+    n_even = n_samples - n_samples % 2
+    autocorr = np.concatenate([np.ones((1, dim)), 1.0 - (var0 - autocov[1:n_even]) / weighted_var])
+    even, odd = autocorr[0::2], autocorr[1::2]
 
-        autocorr = autocov[:, d] / variance
-        pairwise = []
-        k = 0
-        while 2 * k + 1 <= n_samples - 1:
-            pair_sum = autocorr[2 * k] + autocorr[2 * k + 1]
-            if pair_sum <= 0:
-                break
-            pairwise.append(pair_sum)
-            k += 1
+    # Geyer's initial positive sequence: keep the leading run of positive pair sums.
+    positive = np.logical_and.accumulate((even + odd) > 0.0, axis=0)
+    last = np.maximum(positive.sum(axis=0) - 1, 0)
+    cutoff = np.minimum(last + 1, len(even) - 1)
 
-        monotone = np.minimum.accumulate(pairwise) if pairwise else np.array([1.0])
-        autocorr_time = max(-1.0 + 2.0 * float(monotone.sum()), 1e-8)
-        ess[d] = min(n_samples / autocorr_time, float(n_samples))
+    odd = np.where(positive, odd, 0.0)
+    positive_even = positive.copy()
+    positive_even[cutoff, columns] = even[cutoff, columns] > 0
+    even = np.where(positive_even, even, 0.0)
 
-    return ess
+    # Geyer's initial monotone sequence: clip the pair sums to their running minimum.
+    pair_sum = even + odd
+    running_min = np.minimum.accumulate(pair_sum, axis=0)
+    clipped = pair_sum > np.concatenate([pair_sum[:1], running_min[:-1]])
+    even = np.where(clipped, running_min / 2.0, even)
+    odd = np.where(clipped, running_min / 2.0, odd)
+
+    autocorr_time = -1.0 + 2.0 * np.sum(even + odd, axis=0) - even[cutoff, columns]
+    autocorr_time = np.maximum(autocorr_time, 1.0 / np.log10(n_samples))
+
+    return n_samples / autocorr_time
 
 
 def _optimize_to_mode(
