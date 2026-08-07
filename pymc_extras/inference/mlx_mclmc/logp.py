@@ -7,7 +7,7 @@ from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import get_untransformed_name, is_transformed_name
 from pytensor.compile import mode
-from pytensor.graph import vectorize_graph
+from pytensor.graph import graph_replace, vectorize_graph
 from pytensor.graph.fg import FunctionGraph
 from pytensor.link.mlx.dispatch import mlx_funcify
 from xarray import Dataset
@@ -38,12 +38,13 @@ def _mlxify(inputs, outputs):
 
 class MLXLogp:
     """
-    A ``logdensity_fn(x) -> scalar`` over a PyMC model, for a flat MLX vector ``x``.
+    The log-density of a PyMC model and its gradient, as one MLX callable over a flat vector.
 
-    The model's free value variables are packed into one flat unconstrained vector in
-    ``model.value_vars`` order, and the density carries the transform Jacobian. The graph is
-    funcified straight to ``mlx.core`` rather than compiled by ``pytensor.function``, so
-    ``mx.grad``, ``mx.vmap``, and ``mx.compile`` see through it.
+    The free value variables are packed into a single unconstrained vector, and the density
+    carries the transform Jacobian. Both the packing and the gradient live in the PyTensor graph,
+    which is then funcified straight to ``mlx.core``: the gradient is PyTensor's own, so ops whose
+    reverse rule MLX lacks -- matrix inverse and Cholesky among them -- still differentiate, and
+    ``mx.vmap`` and ``mx.compile`` see through the result.
 
     Parameters
     ----------
@@ -51,7 +52,7 @@ class MLXLogp:
         The model whose log-density is compiled. Its dim lengths and data are frozen, and the
         frozen copy is exposed as :attr:`model`.
     negative : bool
-        Whether to return the negative log-density. Default is False.
+        Whether to return the negative log-density and its gradient. Default is False.
 
     Attributes
     ----------
@@ -77,26 +78,25 @@ class MLXLogp:
         self.shapes = [tuple(np.shape(initial_point[name])) for name in self.names]
         self.sizes = [int(np.prod(shape)) if shape else 1 for shape in self.shapes]
         self.dim = int(sum(self.sizes))
-
-        self._offsets = np.cumsum([0, *self.sizes])[:-1]
         self._initial_point = initial_point
 
-        logp = model.logp()
-        self._raw = _mlxify(model.value_vars, [-logp if negative else logp])
+        flat = pt.vector("flat_value", shape=(self.dim,), dtype=model.value_vars[0].dtype)
+        value_vars = pt.unpack(flat, packed_shapes=self.shapes)
+        logp = graph_replace(model.logp(), dict(zip(model.value_vars, value_vars, strict=True)))
+        if negative:
+            logp = -logp
+        grad, _ = pt.pack(*pt.grad(logp, value_vars))
 
-    def unflatten(self, x: mx.array) -> list[mx.array]:
-        """Split a flat vector into shaped blocks, in ``model.value_vars`` order."""
-        blocks = []
-        for shape, start, size in zip(self.shapes, self._offsets, self.sizes, strict=True):
-            segment = x[start : start + size]
-            blocks.append(segment.reshape(shape) if shape else segment.reshape(()))
-
-        return blocks
+        self._raw = _mlxify([flat], [logp, grad])
 
     def __call__(self, x: mx.array) -> mx.array:
-        out = self._raw(*self.unflatten(x))
+        return self._raw(x)[0]
 
-        return out[0] if isinstance(out, list | tuple) else out
+    def value_and_grad(self, x: mx.array) -> tuple[mx.array, mx.array]:
+        """Return the log-density and its gradient with respect to the flat vector ``x``."""
+        value, grad = self._raw(x)
+
+        return value, grad
 
     def flat_initial_point(self) -> np.ndarray:
         """Return the model's initial point as one flat float32 vector."""
