@@ -65,6 +65,9 @@ dask_histogram = [
 histogram = [
   "xhistogram",
 ]
+mlx_mclmc = [
+  "mlx>=0.32; platform_machine == 'arm64' and sys_platform == 'darwin'",
+]
 
 [project.urls]
 Documentation = "https://pymc-extras.readthedocs.io/"
