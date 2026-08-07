@@ -556,31 +556,69 @@ def _optimize_to_mode(
     steps: int,
     learning_rate: float,
     tolerance: float = 1e-4,
+    max_consecutive_skips: int = 5,
 ) -> mx.array:
     """
     Ascend the log-density with Adam, to concentrate the adapting chain near the mode.
 
+    A step whose gradient or proposal is not finite is skipped whole -- the position and both Adam
+    moments keep their previous values, as ``optax.apply_if_finite`` does -- because folding a nan
+    gradient into the moments would poison every later step. The ascent gives up once that many
+    steps in a row are skipped.
+
     Stops early once a block of steps improves the log-density by less than ``tolerance``. A
     log-density unbounded above, as a centered hierarchical model has, never triggers that stop,
     so ``steps`` remains a hard cap.
+
+    Parameters
+    ----------
+    tolerance : float
+        Smallest log-density improvement over a block of steps that counts as progress. Default
+        is 1e-4.
+    max_consecutive_skips : int
+        How many consecutive non-finite steps to tolerate before giving up. The count is exact
+        but only inspected when the lazy graph is forced, so the ascent can overshoot it slightly.
+        Default is 5.
     """
     beta1, beta2 = 0.9, 0.999
     mean = mx.zeros_like(position)
     mean_sq = mx.zeros_like(position)
     previous_logdensity = -mx.inf
 
-    for t in range(1, steps + 1):
-        logdensity, grad = logp_and_grad(position)
-        mean = beta1 * mean + (1 - beta1) * grad
-        mean_sq = beta2 * mean_sq + (1 - beta2) * grad * grad
-        mean_hat = mean / (1 - beta1**t)
-        mean_sq_hat = mean_sq / (1 - beta2**t)
-        position = position + learning_rate * mean_hat / (mx.sqrt(mean_sq_hat) + 1e-8)
+    # Both counters are MLX arrays so the loop body stays lazy between the periodic mx.eval.
+    updates = mx.zeros(())
+    consecutive_skips = mx.zeros(())
 
-        if t % _EVAL_EVERY == 0:
-            mx.eval(position, mean, mean_sq, logdensity)
-            improvement = float(mx.max(logdensity - previous_logdensity))
-            if improvement < tolerance:
+    for step in range(1, steps + 1):
+        logdensity, grad = logp_and_grad(position)
+        usable = mx.all(mx.isfinite(grad))
+
+        # A skipped step must not advance the moments or their bias correction, so the optimizer
+        # resumes from exactly where it was rather than from a nan-contaminated state.
+        next_updates = updates + 1
+        next_mean = beta1 * mean + (1 - beta1) * grad
+        next_mean_sq = beta2 * mean_sq + (1 - beta2) * grad * grad
+        mean_hat = next_mean / (1 - mx.power(beta1, next_updates))
+        mean_sq_hat = next_mean_sq / (1 - mx.power(beta2, next_updates))
+        proposed = position + learning_rate * mean_hat / (mx.sqrt(mean_sq_hat) + 1e-8)
+
+        applied = usable & mx.all(mx.isfinite(proposed))
+        position = mx.where(applied, proposed, position)
+        mean = mx.where(applied, next_mean, mean)
+        mean_sq = mx.where(applied, next_mean_sq, mean_sq)
+        updates = mx.where(applied, next_updates, updates)
+        consecutive_skips = mx.where(applied, mx.zeros(()), consecutive_skips + 1)
+
+        if step % _EVAL_EVERY == 0:
+            mx.eval(position, mean, mean_sq, updates, consecutive_skips, logdensity)
+            if float(consecutive_skips) >= max_consecutive_skips:
+                _log.warning(
+                    "Adam ascent to the mode stopped after %d steps: the log-density gradient "
+                    "kept coming back non-finite.",
+                    step,
+                )
+                break
+            if float(mx.max(logdensity - previous_logdensity)) < tolerance:
                 break
             previous_logdensity = logdensity
 
