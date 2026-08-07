@@ -583,7 +583,6 @@ def warmup(
 
     num_steps1 = round(num_steps * frac_tune1)
     num_steps2 = round(num_steps * frac_tune2)
-    num_steps2 += int(diagonal_preconditioning) * (num_steps2 // 3)
     num_steps3 = round(num_steps * frac_tune3)
 
     def adapt_step(state, sqrt_inverse_mass, mask, keys):
