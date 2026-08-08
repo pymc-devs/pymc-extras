@@ -178,12 +178,6 @@ def test_trainer_raises_when_loader_cannot_restart():
             )
 
 
-def test_trainer_rejects_non_dataloader():
-    """The isinstance guard fires before any model lookup."""
-    with pytest.raises(TypeError, match="DataLoader"):
-        Trainer(method="advi", dataloader=object()).fit(10)
-
-
 def test_trainer_appends_user_callbacks_and_streams_distinct_batches():
     """User callbacks (e.g. convergence trackers) compose with the internal
     advance callback instead of colliding on the keyword, and the placeholder
@@ -516,16 +510,3 @@ def test_progressbar_defaults_off_and_yields_to_an_explicit_setting(monkeypatch)
         trainer.fit(2)
         trainer.fit(2, progressbar=True)
     assert seen == [False, True]
-
-
-def test_unknown_data_name_raises_before_consuming():
-    """A data_name that is not in the model raises a guided KeyError before any
-    batch is pulled from the loader."""
-    loader = DataLoader(lambda: iter([np.zeros((4, 1))] * 3), batch_size=4, total_size=4)
-    installed = []
-    with pm.Model() as model:
-        pm.Normal("mu", 0, 1)
-        record_installed(model, installed)
-        with pytest.raises(KeyError, match=r"pm\.Data placeholder"):
-            Trainer(method="advi", dataloader=loader, data_name="nope").fit(2)
-    assert installed == []

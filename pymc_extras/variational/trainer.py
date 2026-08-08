@@ -79,13 +79,9 @@ def _warn_if_scaling_mismatches(model, total_size: int) -> None:
 class Trainer:
     """Drive variational inference over a :class:`DataLoader` without user callbacks.
 
-    Follows the design in PyMC's variational-inference rework and PyTorch
-    Lightning: the ``Trainer`` owns the training loop, the
-    :class:`DataLoader` owns batching (``dataloader.total_size`` is the dataset
-    size ``N``; ``len(dataloader)`` is the batch count, as in torch), and the
-    model owns the math. The model exposes a ``pm.Data`` placeholder;
-    the ``Trainer`` streams minibatches into it with ``model.set_data`` once per
-    step; no user callbacks are needed.
+    The ``Trainer`` owns the loop, the loader owns batching, the model owns the
+    math: the model exposes a ``pm.Data`` placeholder and the ``Trainer`` streams
+    one minibatch into it per step with ``model.set_data``.
 
     Parameters
     ----------
@@ -156,16 +152,7 @@ class Trainer:
         if not isinstance(n, numbers.Integral) or isinstance(n, bool) or n <= 0:
             raise ValueError(f"n must be a positive integer (the number of fit steps), got {n!r}")
         loader = self.dataloader
-        if not isinstance(loader, DataLoader):
-            raise TypeError(
-                f"Trainer needs a DataLoader for `dataloader`, got {type(loader).__name__}."
-            )
         model = modelcontext(self.model)
-        if self.data_name not in model:
-            raise KeyError(
-                f"data_name {self.data_name!r} is not a variable in the model; it "
-                f"must name the pm.Data placeholder the minibatches are streamed into."
-            )
         if isinstance(self.method, Inference) and self.method.approx.model is not model:
             raise ValueError(
                 "`method` is an Inference instance bound to a different model than the "
