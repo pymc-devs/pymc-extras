@@ -32,7 +32,6 @@ from pymc.testing import (
     seeded_scipy_distribution_builder,
 )
 from pytensor import config, function
-from pytensor.utils import lazy_scipy_module
 
 from pymc_extras.distributions import (
     BetaNegativeBinomial,
@@ -40,9 +39,6 @@ from pymc_extras.distributions import (
     GeneralizedPoisson,
     Skellam,
 )
-
-stats = lazy_scipy_module("stats")
-
 
 pytestmark = pytest.mark.filterwarnings(
     # "ignore:Numba will use object mode to run generalized_poisson_rv:UserWarning"
@@ -167,7 +163,9 @@ class TestFisherNoncentralHypergeometric(BaseTestDistributionRandom):
                 "n": Nat,
                 "odds": Domain([0.01, 0.1, 0.9, 1, 1.5, 2, np.inf]),
             },
-            lambda value, N, k, n, odds: stats.nchypergeom_fisher.logpmf(value, N, k, n, odds),
+            lambda value, N, k, n, odds: scipy.stats.nchypergeom_fisher.logpmf(
+                value, N, k, n, odds
+            ),
         )
         check_logcdf(
             FisherNoncentralHypergeometric,
@@ -178,7 +176,9 @@ class TestFisherNoncentralHypergeometric(BaseTestDistributionRandom):
                 "n": Nat,
                 "odds": Domain([0.01, 0.1, 0.9, 1, 1.5, 2, np.inf]),
             },
-            lambda value, N, k, n, odds: stats.nchypergeom_fisher.logcdf(value, N, k, n, odds),
+            lambda value, N, k, n, odds: scipy.stats.nchypergeom_fisher.logcdf(
+                value, N, k, n, odds
+            ),
         )
         check_selfconsistency_discrete_logcdf(
             FisherNoncentralHypergeometric,
