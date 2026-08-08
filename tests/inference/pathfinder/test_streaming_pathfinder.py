@@ -653,3 +653,16 @@ def test_full_data_logp_installs_every_batch():
         n,
     )
     np.testing.assert_allclose(got, truth, rtol=1e-9)
+
+
+def test_loader_without_total_size_is_refused():
+    """A loader that cannot report N would leave the driver guessing the scale of
+    the likelihood; it must refuse up front rather than mis-weight silently."""
+    model, packed, _ = gaussian_case()
+
+    class UnsizedLoader:
+        def __iter__(self):
+            return iter([packed[:20]])
+
+    with pytest.raises(TypeError, match="total_size"):
+        fit_streaming_pathfinder(model, UnsizedLoader(), num_iters=4, random_seed=0)
