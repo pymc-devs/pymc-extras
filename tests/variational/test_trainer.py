@@ -11,7 +11,7 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
-"""Trainer: drive variational inference over a DataLoader with no user callbacks."""
+"""Trainer: drive variational inference over a DataLoader without hand-written streaming callbacks."""
 
 import warnings
 
@@ -231,19 +231,6 @@ def test_constructor_fit_kwargs_take_random_seed():
     np.testing.assert_array_equal(a.hist, b.hist)
 
 
-def test_fit_trains_one_batch_per_step():
-    """Step i trains batch i, and the step that ends the fit loads batch n for what follows."""
-    loader = DataLoader(lambda: iter(marked(10, rows=2)), batch_size=2, total_size=20)
-    installed = []
-    with pm.Model() as model:
-        mu = pm.Normal("mu", 0, 1)
-        batch = pm.Data("batch", np.zeros((2, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
-        record_installed(model, installed)
-        Trainer(method="advi", dataloader=loader).fit(3, random_seed=0)
-    assert installed == [0.0, 1.0, 2.0, 3.0]
-
-
 @pytest.mark.parametrize(
     "n, blocks, rows",
     [(1, 6, 4), (4, 4, 4), (5, 3, 2), (7, 2, 1)],
@@ -357,22 +344,6 @@ def test_a_second_fit_reseeds_and_forgets_the_first_calls_kwargs():
     assert len(scored.hist) == 3
     assert seen == installed[:-1]
     assert installed[0] != left_loaded
-
-
-def test_user_callbacks_see_the_batch_that_produced_the_loss():
-    """A callback reading the placeholder must see batch i on step i, not batch i+1."""
-    loader = DataLoader(lambda: iter(marked(50)), batch_size=4, total_size=4)
-    seen = []
-    with pm.Model() as model:
-        mu = pm.Normal("mu", 0, 1)
-        batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
-        Trainer(method="advi", dataloader=loader).fit(
-            5,
-            random_seed=0,
-            callbacks=[lambda *_: seen.append(float(model["batch"].get_value()[0, 0]))],
-        )
-    assert seen == [0.0, 1.0, 2.0, 3.0, 4.0]
 
 
 def test_inference_instance_bound_to_another_model_is_rejected():

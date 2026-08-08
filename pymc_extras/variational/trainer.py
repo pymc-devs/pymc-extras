@@ -11,7 +11,7 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
-"""Drive variational inference over a :class:`DataLoader` with no user callbacks."""
+"""Drive variational inference over a :class:`DataLoader` without hand-written streaming callbacks."""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def _warn_if_scaling_mismatches(model, total_size: int) -> None:
 
 
 class Trainer:
-    """Drive variational inference over a :class:`DataLoader` without user callbacks.
+    """Drive variational inference over a :class:`DataLoader`.
 
     The ``Trainer`` owns the loop, the loader owns batching, the model owns the
     math: the model exposes a ``pm.Data`` placeholder and the ``Trainer`` streams
