@@ -46,8 +46,8 @@ __all__ = ["StreamingPathfinderResult", "fit_streaming_pathfinder"]
 
 # Fraction of the trajectory's iterate positions that the tail average covers. Not a keyword.
 # Swept over 0.50/0.60/0.75/0.90 at the Notes k=8, N=1e5 configuration, scoring worst-coordinate
-# position error |x_avg - full-data MAP| in reference-sd: medians over 8 seeds 0.86/0.80/0.68/0.80,
-# against 5.06 at 1.00. The interior is flat; the only firm result is that 1.00 is broken.
+# position error |x_avg - full-data MAP| in reference-sd: the interior is flat, and the only firm
+# result is that 1.00 (a plain mean of every iterate) is several times worse.
 _TAIL_AVERAGE_FRAC = 0.75
 
 
@@ -205,11 +205,11 @@ def fit_streaming_pathfinder(
     Measured operating range. Bayesian logistic regression, Normal(0, 2) prior, batch 2048 from a
     *shuffled* loader (part of the configuration, not an aside), ``num_iters=200``, ``maxcor=6``,
     ``jitter=2.0``, ``num_draws=1000``, ``num_proposal_draws=4000``, PSIS, scored against an exact
-    full-data Laplace reference. At k=8, N=1e5 over 12 seeds ``pareto_k`` ran 0.60-0.80 (median
-    0.70, over 0.7 on half of them) and the worst coordinate of the *resampled posterior mean* was
-    0.23-0.58 reference-sd from the reference mean. At N=4e5 over 6 seeds that was 0.76-1.29 and
-    0.53-2.24. At k=100, N=1e5 over 4 seeds it was 2.0-3.8 and 13-64, nothing raises, and two of
-    the four came back with a nonzero ``n_ls_failures``; ``violation_rate`` read 0.0 throughout.
+    full-data Laplace reference. At k=8, N=1e5 over 12 seeds ``pareto_k`` ran 0.26-0.58 and the
+    worst coordinate of the *resampled posterior mean* was 0.05-0.30 reference-sd from the
+    reference mean. At N=4e5 over 6 seeds that was 0.48-1.04 and 0.15-1.58. At k=100, N=1e5 over
+    4 seeds it was 2.7-4.3 and 52-59, nothing raises, and two of the four came back with a
+    nonzero ``n_ls_failures``; ``violation_rate`` read 0.0 throughout.
 
     These draws are a *proposal*, not a posterior. Read ``pareto_k`` on every fit, and do not run
     this above a few tens of dimensions.
@@ -269,9 +269,9 @@ def fit_streaming_pathfinder(
     n_total = getattr(loader, "total_size", None)
     if n_total is None:
         raise TypeError(
-            "loader must expose total_size (the dataset row count N), as "
-            "pymc_extras DataLoader does; wrap a plain iterable in "
-            "DataLoader(source, batch_size=..., total_size=N)."
+            "loader must expose an integer total_size (the dataset row count N); "
+            "construct DataLoader(..., total_size=N or 'auto'), or wrap a plain "
+            "iterable in DataLoader(source, batch_size=..., total_size=N)."
         )
     n_total = int(n_total)
     init_rng = np.random.default_rng(init_ss)
@@ -294,10 +294,11 @@ def fit_streaming_pathfinder(
             )
 
         # Polyak-Ruppert tail averaging of the iterate positions. Each step's accepted point sits
-        # near its own minibatch's MAP -- worst-coordinate relative error, median over 200 random
-        # batches, ran 9.1% at b=512, 4.3% at 2048 and 2.2% at 8192, with the b=512 tail at 36% --
-        # and that error is in the location, not the covariance, so no rule that *picks* an
-        # iterate removes it. g is zeroed because the sampler centres at mu = x - H_inv @ g, and
+        # near its own minibatch's MAP, whose error is in the location, not the covariance:
+        # worst-coordinate, median over 200 random batches against the full-data posterior, the
+        # relative *sd* error ran 9.1% at b=512, 4.3% at 2048 and 2.2% at 8192 (b=512 tail 36%)
+        # while the MAP sat 25/12/6 reference-sd off. No rule that *picks* an iterate removes a
+        # location error. g is zeroed because the sampler centres at mu = x - H_inv @ g, and
         # keeping the last iterate's g moved that centre further from the full-data MAP on all of
         # 12 seeds; curvature stays the last iterate's -- averaged (s, z) is not a valid memory.
         m = max(1, round(_TAIL_AVERAGE_FRAC * len(traj.iterates)))
