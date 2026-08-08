@@ -62,8 +62,8 @@ def _warn_if_scaling_mismatches(model, total_size: int) -> None:
         warnings.warn(
             "no observed variable declares total_size, so the minibatch "
             "log-likelihood is never rescaled and is underweighted against the prior "
-            "by about N / batch_size. Pass total_size=len(dataloader) to the observed "
-            "distribution.",
+            "by about N / batch_size. Pass total_size=dataloader.total_size to the "
+            "observed distribution.",
             UserWarning,
             stacklevel=3,
         )
@@ -81,8 +81,9 @@ class Trainer:
 
     Follows the design in PyMC's variational-inference rework and PyTorch
     Lightning: the ``Trainer`` owns the training loop, the
-    :class:`DataLoader` owns batching (and ``len(dataloader)`` is the dataset size
-    ``N``), and the model owns the math. The model exposes a ``pm.Data`` placeholder;
+    :class:`DataLoader` owns batching (``dataloader.total_size`` is the dataset
+    size ``N``; ``len(dataloader)`` is the batch count, as in torch), and the
+    model owns the math. The model exposes a ``pm.Data`` placeholder;
     the ``Trainer`` streams minibatches into it with ``model.set_data`` once per
     step; no user callbacks are needed.
 
@@ -95,8 +96,8 @@ class Trainer:
         an instance is already bound to a model, so configure it at construction
         (e.g. ``ADVI(random_seed=...)``).
     dataloader : DataLoader
-        The minibatch source. ``len(dataloader)`` is ``N``; the model should pass
-        it to the observed distribution's ``total_size``.
+        The minibatch source. The model should pass ``dataloader.total_size`` to
+        the observed distribution's ``total_size``.
     model : pymc.Model, optional
         Defaults to the model on the context stack.
     data_name : str, default "batch"
@@ -110,14 +111,12 @@ class Trainer:
     --------
     .. code-block:: python
 
-        loader = DataLoader(
-            parquet_source("shuffled/"), batch_size=4096, sample_shape=(4,), total_size="auto"
-        )
+        loader = DataLoader(parquet_source("shuffled/"), batch_size=4096, total_size="auto")
         with pm.Model() as model:
             b = pm.Normal("b", 0.0, 3.0, shape=4)
             batch = pm.Data("batch", np.zeros((4096, 4)))  # placeholder
             logit = b[0] + b[1] * batch[:, 0] + b[2] * batch[:, 1] + b[3] * batch[:, 2]
-            pm.Bernoulli("y", logit_p=logit, observed=batch[:, 3], total_size=len(loader))
+            pm.Bernoulli("y", logit_p=logit, observed=batch[:, 3], total_size=loader.total_size)
             approx = Trainer(method="advi", dataloader=loader, data_name="batch").fit(20_000)
     """
 

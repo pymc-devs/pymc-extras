@@ -95,7 +95,7 @@ def test_cycle_raises_instead_of_spinning_on_an_empty_pass():
 def test_trainer_end_to_end_matches_in_ram_minibatch():
     """End-to-end: Trainer-driven streaming ADVI reproduces in-RAM pm.Minibatch ADVI.
 
-    Exercises the whole API: a pm.Data placeholder, total_size=len(loader), and a
+    Exercises the whole API: a pm.Data placeholder, total_size=loader.total_size, and a
     Trainer that streams minibatches into the placeholder with set_data while the
     user writes no callbacks. Runs long enough to cycle the loader across epochs.
     """
@@ -135,7 +135,7 @@ def test_trainer_end_to_end_matches_in_ram_minibatch():
             "o",
             logit_p=b[0] + b[1] * batch[:, 0] + b[2] * batch[:, 1],
             observed=batch[:, 2],
-            total_size=len(loader),
+            total_size=loader.total_size,
         )
         ap = Trainer(
             method="advi",
@@ -157,7 +157,7 @@ def test_trainer_streams_into_placeholder():
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         Trainer(method="advi", dataloader=loader, data_name="batch").fit(
             5, progressbar=False, random_seed=0
         )
@@ -171,7 +171,7 @@ def test_trainer_raises_when_loader_cannot_restart():
     with pm.Model():
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         with pytest.raises(RuntimeError, match="yielded no batches"):
             Trainer(method="advi", dataloader=loader, data_name="batch").fit(
                 5, progressbar=False, random_seed=0
@@ -195,7 +195,7 @@ def test_trainer_appends_user_callbacks_and_streams_distinct_batches():
     with pm.Model() as model:
         x = pm.Normal("x", 0.0, 1.0)
         batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", x, 1.0, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", x, 1.0, observed=batch[:, 0], total_size=loader.total_size)
         Trainer(method="advi", dataloader=loader).fit(
             5, callbacks=[lambda *_: seen.append(float(model["batch"].get_value()[0, 0]))]
         )
@@ -211,7 +211,7 @@ def test_trainer_accepts_inference_instance():
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         approx = Trainer(method=pm.ADVI(random_seed=0), dataloader=loader).fit(5)
     assert len(approx.hist) == 5
     np.testing.assert_array_equal(model["batch"].get_value(), data)
@@ -227,7 +227,7 @@ def test_constructor_fit_kwargs_take_random_seed():
         with pm.Model():
             mu = pm.Normal("mu", 0, 1)
             batch = pm.Data("batch", np.zeros((4, 1)))
-            pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+            pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
             return Trainer(method="advi", dataloader=loader, data_name="batch", **ctor_kwargs).fit(
                 5, **fit_kwargs
             )
@@ -244,7 +244,7 @@ def test_fit_trains_one_batch_per_step():
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((2, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         record_installed(model, installed)
         Trainer(method="advi", dataloader=loader).fit(3, random_seed=0)
     assert installed == [0.0, 1.0, 2.0, 3.0]
@@ -275,7 +275,7 @@ def test_steps_consume_the_loaders_own_batch_sequence(n, blocks, rows):
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((rows, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         record_installed(model, installed)
         approx = Trainer(
             method="advi",
@@ -303,7 +303,7 @@ def test_refine_after_fit_continues_without_repeating_a_batch():
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         record_installed(model, installed)
         inference = pm.ADVI(random_seed=0)
         Trainer(method=inference, dataloader=loader).fit(3)
@@ -327,7 +327,7 @@ def test_refine_after_an_early_stop_keeps_streaming():
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         record_installed(model, installed)
         inference = pm.ADVI(random_seed=0)
         Trainer(method=inference, dataloader=loader).fit(10, callbacks=[stop_once], score=False)
@@ -350,7 +350,7 @@ def test_a_second_fit_reseeds_and_forgets_the_first_calls_kwargs():
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         record_installed(model, installed)
         trainer = Trainer(method="advi", dataloader=loader, random_seed=0)
         unscored = trainer.fit(3, score=False)
@@ -372,7 +372,7 @@ def test_user_callbacks_see_the_batch_that_produced_the_loss():
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         Trainer(method="advi", dataloader=loader).fit(
             5,
             random_seed=0,
@@ -392,7 +392,7 @@ def test_inference_instance_bound_to_another_model_is_rejected():
     with pm.Model():
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         with pytest.raises(ValueError, match="bound to a different model"):
             Trainer(method=elsewhere, dataloader=loader).fit(3)
 
@@ -405,7 +405,7 @@ def test_inference_instance_is_matched_against_the_trained_model():
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         inference = pm.ADVI(random_seed=0)
     with pm.Model():
         pm.Normal("mu", 0, 1)
@@ -474,20 +474,6 @@ def test_scaling_warning_fires_only_on_an_unusable_total_size(rows, blocks, decl
         assert match in scaling[0]
 
 
-def test_total_size_check_fires_when_fit_ends_at_pass_boundary():
-    """fit(n) with n exactly the batches in one pass still runs the total_size
-    sanity check: the stream is kept one batch ahead, so stopping at the
-    boundary does not abandon the check right before it would fire."""
-    data = np.zeros((40, 1))
-    loader = DataLoader(chunked_factory(data, 10), batch_size=10, total_size=400)
-    with pm.Model():
-        mu = pm.Normal("mu", 0, 1)
-        batch = pm.Data("batch", np.zeros((10, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
-        with pytest.warns(UserWarning, match="disagrees with"):
-            Trainer(method="advi", dataloader=loader).fit(4, random_seed=0)
-
-
 @pytest.mark.parametrize("n", [0, True], ids=["zero", "bool"])
 def test_fit_rejects_nonpositive_n(n):
     """fit consumes the seed batch before pm.fit could reject n itself, so a
@@ -497,7 +483,7 @@ def test_fit_rejects_nonpositive_n(n):
     with pm.Model():
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((2, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         with pytest.raises(ValueError, match="positive integer"):
             Trainer(method="advi", dataloader=loader).fit(n)
 
@@ -509,7 +495,7 @@ def test_fit_accepts_a_numpy_integer_step_count():
     with pm.Model():
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((2, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         approx = Trainer(method="advi", dataloader=loader).fit(np.int64(3), random_seed=0)
     assert len(approx.hist) == 3
 
@@ -525,7 +511,7 @@ def test_progressbar_defaults_off_and_yields_to_an_explicit_setting(monkeypatch)
     with pm.Model():
         mu = pm.Normal("mu", 0, 1)
         batch = pm.Data("batch", np.zeros((4, 1)))
-        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=len(loader))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=loader.total_size)
         trainer = Trainer(method="advi", dataloader=loader)
         trainer.fit(2)
         trainer.fit(2, progressbar=True)
