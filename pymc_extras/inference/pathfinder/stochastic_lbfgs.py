@@ -15,15 +15,12 @@ search remains valid, and forms each curvature pair from a **single minibatch**
 
 Both gradients are evaluated on the same batch, so the same noise enters both and cancels in
 the difference: the secant condition ``y ~= H s`` needs both gradients to be of the *same*
-objective. Differencing across two batches -- Schraudolph et al.'s eq. (13), for which they
-report divergence below batch 1000 on their quadratic model -- leaves the noise in. Measured
-over logistic and Gaussian trajectories at batches 4 to 512, same-batch pairing produced no
-negative ``s . y`` on any cell and cross-batch produced 0.3% to 12% of steps; the cross-batch
-rate rises to about one in two once ``||s||`` is below 1e-2, its noise term scaling with
-``||s||`` against the curvature term's ``||s||^2``. Pairs still failing the curvature condition
-are skipped, not forced into the history. Each accepted step records the
-``(x, g, alpha, s_win, z_win)`` that ``make_pathfinder_sample_fn`` consumes, with the window
-ordered oldest-to-newest rather than in physical ring order.
+objective. Differencing across batches (Schraudolph et al.'s eq. (13), for which they report
+divergence) leaves the noise in, and its violation rate grows as the iterates settle, since
+the noise term scales with ``||s||`` against the curvature term's ``||s||^2``. Pairs failing
+the curvature condition are skipped, not forced into the history. Each accepted step records
+the ``(x, g, alpha, s_win, z_win)`` that ``make_pathfinder_sample_fn`` consumes, with the
+window ordered oldest-to-newest rather than in physical ring order.
 """
 
 from dataclasses import dataclass, field
@@ -146,8 +143,7 @@ def run_stochastic_lbfgs(value_grad_fn, on_batch_advance, x0, num_iters, config=
         ``Approximation`` here, so ``approx`` is ``None`` and a callback that inspects it, such
         as ``pymc.variational.callbacks.CheckParametersConvergence``, cannot be used.
         ``losses[i - 1]`` is measured on the batch installed *after* step ``i``, not on the
-        value that step's Armijo test accepted: over the 200 steps of the operating
-        configuration the gap averaged +393 with an sd of 1661, so it is not a steady offset.
+        value that step's Armijo test accepted.
 
     Returns
     -------

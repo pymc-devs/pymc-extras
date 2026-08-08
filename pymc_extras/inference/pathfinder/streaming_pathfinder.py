@@ -61,11 +61,9 @@ class StreamingPathfinderResult:
         Posterior draws in the model's raveled unconstrained space. When importance
         sampling is active these are resampled from a larger proposal pool.
     logP, logQ : ndarray
-        Target and proposal log-densities of the *proposal* draws (length equals the
-        proposal pool, ``num_proposal_draws``). They are the weights behind the
-        resampling and are row-aligned with ``samples`` only when importance sampling
-        is off (``None``); after resampling they are proposal-space diagnostics, not
-        per-``samples``-row densities.
+        Target and proposal log-densities of the proposal pool. Row-aligned with
+        ``samples`` only when importance sampling is ``None``; after resampling they
+        are proposal-space diagnostics, not per-``samples``-row densities.
     pareto_k : float or None
         PSIS Pareto shape diagnostic (None when importance sampling is disabled).
     violation_rate : float
