@@ -510,3 +510,21 @@ def test_progressbar_defaults_off_and_yields_to_an_explicit_setting(monkeypatch)
         trainer.fit(2)
         trainer.fit(2, progressbar=True)
     assert seen == [False, True]
+
+
+def test_trainer_accepts_a_duck_typed_loader():
+    """The loader contract is duck-typed -- iterable plus total_size -- so a
+    source that is not the concrete DataLoader class still trains."""
+
+    class SizedSource:
+        total_size = 4
+
+        def __iter__(self):
+            return iter([np.zeros((4, 1))] * 50)
+
+    with pm.Model():
+        mu = pm.Normal("mu", 0, 1)
+        batch = pm.Data("batch", np.zeros((4, 1)))
+        pm.Normal("y", mu, 1, observed=batch[:, 0], total_size=4)
+        approx = Trainer(method="advi", dataloader=SizedSource()).fit(3, random_seed=0)
+    assert len(approx.hist) == 3
