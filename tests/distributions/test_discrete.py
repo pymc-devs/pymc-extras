@@ -168,7 +168,6 @@ class TestFisherNoncentralHypergeometric(BaseTestDistributionRandom):
                 "odds": Domain([0.01, 0.1, 0.9, 1, 1.5, 2, np.inf]),
             },
             lambda value, N, k, n, odds: stats.nchypergeom_fisher.logpmf(value, N, k, n, odds),
-            n_samples=-1,
         )
         check_logcdf(
             FisherNoncentralHypergeometric,
@@ -180,7 +179,6 @@ class TestFisherNoncentralHypergeometric(BaseTestDistributionRandom):
                 "odds": Domain([0.01, 0.1, 0.9, 1, 1.5, 2, np.inf]),
             },
             lambda value, N, k, n, odds: stats.nchypergeom_fisher.logcdf(value, N, k, n, odds),
-            n_samples=-1,
         )
         check_selfconsistency_discrete_logcdf(
             FisherNoncentralHypergeometric,
@@ -191,7 +189,6 @@ class TestFisherNoncentralHypergeometric(BaseTestDistributionRandom):
                 "n": Nat,
                 "odds": Domain([0.01, 0.1, 0.9, 1, 1.5, 2, np.inf]),
             },
-            n_samples=-1,
         )
 
     @pytest.mark.parametrize(
