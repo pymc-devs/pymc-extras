@@ -2,7 +2,7 @@
 
 Runs Pathfinder where the log-density gradients come from minibatches yielded by
 a sized re-iterable loader, rather than the full dataset. The model carries the
-data in a ``pm.Data`` placeholder scaled with ``total_size=len(loader)``, so
+data in a ``pm.Data`` placeholder scaled with ``total_size=loader.total_size``, so
 ``model.logp()`` already returns the correctly rescaled full-data log-density for
 whatever batch is currently set.
 
@@ -124,9 +124,9 @@ def _full_data_logp(phi, full_pass, model, batch_var, prior_fn, obs_fn, n_total)
         seen += b.shape[0]
     if seen != n_total:
         raise RuntimeError(
-            f"full-data logp pass visited {seen} rows but len(loader)={n_total}; the "
-            "pass must yield every row exactly once for an exact logP. A loader epoch "
-            "that drops its trailing partial batch cannot do that, so pass full_pass="
+            f"full-data logp pass visited {seen} rows but total_size={n_total}; the "
+            "pass must yield every row exactly once for an exact logP. A shuffled "
+            "DataLoader epoch drops its trailing partial batch, so pass full_pass="
             "<the loader's dataset source> instead."
         )
     return lp
@@ -154,10 +154,11 @@ def fit_streaming_pathfinder(
     ----------
     model : pymc.Model
         A model whose data enter through a ``pm.Data`` placeholder named
-        ``batch_var`` and whose likelihood passes ``total_size=len(loader)``.
+        ``batch_var`` and whose likelihood passes ``total_size=loader.total_size``.
     loader : iterable
         Yields minibatches (arrays whose leading axis is the batch rows) and
-        supports ``len(loader) == N`` (the dataset row count).
+        exposes ``loader.total_size == N`` (the dataset row count), as
+        :class:`pymc_extras.variational.DataLoader` does.
     batch_var : str
         Name of the ``pm.Data`` placeholder to stream into. The value it held on entry is
         restored before returning, on the exception path too.
@@ -173,8 +174,10 @@ def fit_streaming_pathfinder(
         any large dataset this setting dominates the cost of the fit.
     full_pass : iterable, optional
         Row blocks visiting every row exactly once, for the final exact full-data ``logP``;
-        consumed once. Defaults to iterating ``loader``, and a loader epoch that drops its
-        trailing rows raises rather than return a subset-rescaled ``logP``. Block sizes need
+        consumed once. Defaults to iterating ``loader``: an unshuffled DataLoader passes its
+        source through verbatim and is a valid exact pass, while a shuffled epoch drops its
+        trailing partial batch and raises here rather than return a subset-rescaled ``logP``
+        — pass the underlying source in that case. Block sizes need
         not match the loader's. Blocks are installed in ``batch_var`` unchanged, so if
         ``loader`` transforms its batches, ``full_pass`` must apply the identical transform:
         untransformed rows give a wrong ``logP`` and wrong draws, with no error to say so.
@@ -265,7 +268,14 @@ def fit_streaming_pathfinder(
             epoch = iter(loader)
             return next(epoch)
 
-    n_total = len(loader)
+    n_total = getattr(loader, "total_size", None)
+    if n_total is None:
+        raise TypeError(
+            "loader must expose total_size (the dataset row count N), as "
+            "pymc_extras DataLoader does; wrap a plain iterable in "
+            "DataLoader(source, batch_size=..., total_size=N)."
+        )
+    n_total = int(n_total)
     init_rng = np.random.default_rng(init_ss)
     x0 = x_base + init_rng.uniform(-jitter, jitter, size=N)
     try:

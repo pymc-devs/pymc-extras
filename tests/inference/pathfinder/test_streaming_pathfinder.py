@@ -13,7 +13,7 @@ CFG = StochasticLBFGSConfig(maxcor=6)
 class ArrayLoader:
     """Minimal sized re-iterable batch source over a dense (N, cols) array.
 
-    ``len(loader)`` is the dataset row count N (what the model passes as
+    ``total_size`` is the dataset row count N (what the model passes as
     ``total_size``), and every ``iter()`` is a fresh complete pass over all rows
     (no dropped tail), so the loader can serve as its own ``full_pass``.
     """
@@ -24,7 +24,8 @@ class ArrayLoader:
         self.shuffle = shuffle
         self.rng = np.random.default_rng(seed)
 
-    def __len__(self):
+    @property
+    def total_size(self):
         return self.data.shape[0]
 
     def __iter__(self):
@@ -423,11 +424,11 @@ def test_drop_last_loader_is_refused():
 
     class DropLastLoader(ArrayLoader):
         def __iter__(self):
-            for start in range(0, len(self) - self.batch_size + 1, self.batch_size):
+            for start in range(0, self.total_size - self.batch_size + 1, self.batch_size):
                 yield self.data[start : start + self.batch_size]
 
     loader = DropLastLoader(packed, batch_size=128)
-    assert sum(b.shape[0] for b in loader) == 256 < len(loader)
+    assert sum(b.shape[0] for b in loader) == 256 < loader.total_size
 
     with pytest.raises(RuntimeError, match=r"pass full_pass=<the loader's dataset source>"):
         fit_streaming_pathfinder(model, loader, num_iters=5, num_draws=50, random_seed=0)
@@ -440,7 +441,7 @@ def test_incomplete_full_pass_is_refused():
     model, packed, rng = gaussian_case(seed=22, n=n, beta=(0.5, 0.25))
     full_data_logp, prior_fn, obs_fn, _, phi = full_data_logp_parts(model, k, rng)
 
-    with pytest.raises(RuntimeError, match=r"visited 25 rows but len\(loader\)=40"):
+    with pytest.raises(RuntimeError, match=r"visited 25 rows but total_size=40"):
         full_data_logp(phi, [packed[:25]], model, "batch", prior_fn, obs_fn, n)
 
 
@@ -463,7 +464,7 @@ def test_fit_restores_the_batch_placeholder():
     """
     model, _, loader = _restore_case(31)
     before = np.array(model["batch"].get_value(), copy=True)
-    assert before.shape[0] == len(loader)
+    assert before.shape[0] == loader.total_size
 
     fit_streaming_pathfinder(
         model, loader, num_iters=5, num_draws=50, random_seed=0, lbfgs_config=CFG
@@ -478,7 +479,7 @@ def test_batch_placeholder_is_restored_when_the_fit_raises():
     model, packed, loader = _restore_case(32)
     before = np.array(model["batch"].get_value(), copy=True)
 
-    with pytest.raises(RuntimeError, match=r"visited 50 rows but len\(loader\)=300"):
+    with pytest.raises(RuntimeError, match=r"visited 50 rows but total_size=300"):
         fit_streaming_pathfinder(
             model,
             loader,
