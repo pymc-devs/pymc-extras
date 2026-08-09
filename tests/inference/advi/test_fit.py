@@ -3,7 +3,7 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
-from pymc_extras.inference.advi import EarlyStopping, Trainer, fit_advi
+from pymc_extras.inference.advi import Trainer, fit_advi
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
 
 
@@ -39,20 +39,6 @@ def test_fit_advi_random_seed(conjugate_model):
 
     np.testing.assert_array_equal(draws_a, draws_b)
     assert not np.array_equal(draws_a, draws_c)
-
-
-def test_fit_advi_early_stopping(conjugate_model):
-    model, *_ = conjugate_model
-
-    idata = fit_advi(
-        model=model,
-        n_steps=1_000,
-        random_seed=1,
-        callbacks=[EarlyStopping(window=50, tolerance=10.0)],
-    )
-
-    # With a huge tolerance, training stops at the first convergence check
-    assert idata["fit"].dataset.sizes["step"] == 100
 
 
 def test_guide_built_inside_model_context():

@@ -15,15 +15,13 @@ from pymc_extras.inference.advi.optimizers import (
     clipped_adam,
     linear_onecycle_schedule,
 )
-from pymc_extras.inference.advi.training import Callback, EarlyStopping, SVIState, Trainer
+from pymc_extras.inference.advi.training import SVIState, Trainer
 
 __all__ = [
     "AutoDiagonalNormal",
     "AutoGuideModel",
     "AutoLowRankMultivariateNormal",
     "AutoMultivariateNormal",
-    "Callback",
-    "EarlyStopping",
     "GradientTransformation",
     "SVIState",
     "Trainer",
