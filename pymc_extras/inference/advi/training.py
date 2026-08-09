@@ -14,7 +14,6 @@ from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.progress_bar import CustomProgress, default_progress_theme
 from pymc.pytensorf import resolve_backend_compile_kwargs
 from pymc.variational.minibatch_rv import MinibatchRandomVariable
-from pytensor import config as pytensor_config
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import ancestors
 from pytensor.tensor.random.type import RandomType
@@ -35,14 +34,12 @@ from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideMo
 from pymc_extras.inference.advi.compile import (
     TrainingFn,
     compile_sampling_fn,
-    compile_svi_step_fn,
     compile_svi_training_fn,
 )
 from pymc_extras.inference.advi.optimizers import (
     GradientTransformation,
-    ScalarOrSchedule,
     apply_updates,
-    linear_onecycle_schedule,
+    clipped_adam,
 )
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 
@@ -143,18 +140,7 @@ class Trainer:
         model (mean-field ADVI).
     optimizer : GradientTransformation, optional
         An optax-like optimizer (actual optax optimizers are compatible). By default
-        a clipped-Adam update on ``learning_rate`` is compiled *into* the step
-        function, so no parameters or gradients round-trip through Python per step
-        (fast path); passing an explicit optimizer switches to a Python-side update
-        loop.
-    learning_rate : float or callable, optional
-        Learning rate, or a schedule mapping the step number to one, for the default
-        compiled optimizer. Defaults to a :func:`linear_onecycle_schedule` peaking at
-        0.008 over the ``n`` steps of each :meth:`fit` call. Ignored when
-        ``optimizer`` is given (set the learning rate on the optimizer itself).
-    clip_norm : float, optional
-        Clip gradients to this global norm in the default compiled optimizer, by
-        default 10. None disables clipping. Ignored when ``optimizer`` is given.
+        a :func:`clipped_adam` optimizer is used.
     n_particles : int, optional
         Number of guide draws per step used to estimate the ELBO gradient, by
         default 1.
@@ -197,8 +183,6 @@ class Trainer:
         *,
         guide: AutoGuideModel | Callable[[Model], AutoGuideModel] | None = None,
         optimizer: GradientTransformation | None = None,
-        learning_rate: ScalarOrSchedule | None = None,
-        clip_norm: float | None = 10.0,
         n_particles: int = 1,
         path_derivative_gradient: bool = True,
         convergence_window: int | None = 200,
@@ -210,8 +194,6 @@ class Trainer:
     ):
         self.guide = guide
         self.optimizer = optimizer
-        self.learning_rate = learning_rate
-        self.clip_norm = clip_norm
         self.n_particles = n_particles
         self.path_derivative_gradient = path_derivative_gradient
         self.convergence_window = convergence_window
@@ -227,8 +209,6 @@ class Trainer:
         self._stream_shareds: dict[str, SharedVariable] = {}
         self._logp_scalings: dict[str, float] = {}
         self._training_fn: TrainingFn | None = None
-        self._step_fn: TrainingFn | None = None
-        self._step_shared_params: dict | None = None
         self._sampling_fn: TrainingFn | None = None
         self._sampling_draws: int | None = None
 
@@ -324,73 +304,6 @@ class Trainer:
             return loss, new_state
 
         return step_fn, state, lambda final_state: final_state
-
-    def _make_compiled_step(
-        self, model: Model, n: int, state: SVIState | None, random_seed
-    ) -> tuple[StepFn, SVIState, Callable[[SVIState], SVIState]]:
-        """Set up the fast path: clipped-Adam updates compiled into the step function.
-
-        The guide parameters and the optimizer state live in shared variables updated
-        in place by the compiled function, so nothing round-trips through Python per
-        step. The function's only input is the learning rate; a resumed ``state`` only
-        restores the parameters (the Adam moments are not part of ``SVIState``).
-        """
-        if self._step_fn is None:
-            self._step_fn, self._step_shared_params = compile_svi_step_fn(
-                model,
-                self._guide,
-                draws=self.n_particles,
-                path_derivative_gradient=self.path_derivative_gradient,
-                logp_scalings=self._logp_scalings_for(model),
-                clip_norm=self.clip_norm,
-                **self.compile_kwargs,
-            )
-
-        if random_seed is not None:
-            _reseed_function_rngs(self._step_fn, random_seed)
-
-        shared_params = self._step_shared_params
-        if state is not None:
-            for name, shared in shared_params.items():
-                shared.set_value(np.asarray(state.params[name]))
-            loss_history = list(state.loss_history)
-            start_step = state.step
-        else:
-            loss_history = []
-            start_step = 0
-
-        learning_rate = self.learning_rate
-        if learning_rate is None:
-            learning_rate = linear_onecycle_schedule(
-                transition_steps=n, peak_value=0.008, pct_start=0.2
-            )
-        schedule = learning_rate if callable(learning_rate) else (lambda step: learning_rate)
-        lr_dtype = np.dtype(pytensor_config.floatX)
-
-        state = SVIState(
-            params={name: shared.get_value() for name, shared in shared_params.items()},
-            optimizer_state=None,
-            step=start_step,
-            loss_history=loss_history,
-        )
-
-        compiled_step = self._step_fn
-
-        def step_fn(step: int, state: SVIState) -> tuple[np.ndarray, SVIState]:
-            loss = np.asarray(compiled_step(np.asarray(schedule(step), dtype=lr_dtype)))
-            return loss, SVIState(state.params, None, state.step + 1, loss_history)
-
-        def finalize(final_state: SVIState) -> SVIState:
-            # The per-step states carry stale params; read the trained values out of
-            # the shared variables once at the end
-            return SVIState(
-                params={name: shared.get_value().copy() for name, shared in shared_params.items()},
-                optimizer_state=None,
-                step=final_state.step,
-                loss_history=loss_history,
-            )
-
-        return step_fn, state, finalize
 
     def _prepare_data_stream(
         self,
@@ -505,10 +418,8 @@ class Trainer:
         """
         Fit the model using SVI for ``n`` steps.
 
-        With the default compiled optimizer the guide parameters and the Adam state
-        live in shared variables updated in place by the compiled step function; with
-        an explicit ``optimizer`` each step round-trips the parameters and gradients
-        through a Python-side update.
+        Parameters and gradients round-trip through a Python-side optimizer update
+        each step.
 
         Parameters
         ----------
@@ -575,9 +486,8 @@ class Trainer:
         self._resolve_guide(model)
 
         if self.optimizer is None:
-            step_fn, state, finalize = self._make_compiled_step(model, n, state, random_seed)
-        else:
-            step_fn, state, finalize = self._make_python_step(model, state, random_seed)
+            self.optimizer = clipped_adam()
+        step_fn, state, finalize = self._make_python_step(model, state, random_seed)
         loss_history = state.loss_history
 
         progress = make_advi_progress_bar(theme=default_progress_theme)

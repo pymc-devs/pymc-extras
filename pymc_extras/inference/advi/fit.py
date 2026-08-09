@@ -41,9 +41,7 @@ def fit_advi(
         Number of posterior draws to sample from the fitted guide, by default 1_000.
     optimizer : GradientTransformation, optional
         An optax-like optimizer (actual optax optimizers are compatible). By default,
-        clipped Adam on a :func:`linear_onecycle_schedule` peaking at 0.008 over
-        ``n_steps`` is compiled *into* the step function (fast path); passing an explicit
-        optimizer uses the Python-side update loop instead.
+        :func:`clipped_adam` is used.
     path_derivative_gradient : bool, optional
         Whether to use the lower-variance path-derivative ("sticking the landing")
         gradient estimator, by default True. It is an unbiased variance reduction (it changes

@@ -89,17 +89,22 @@ def scale_by_learning_rate(learning_rate: ScalarOrSchedule) -> GradientTransform
 
 
 def adam(
-    learning_rate: ScalarOrSchedule, b1: float = 0.9, b2: float = 0.999, eps: float = 1e-8
+    learning_rate: ScalarOrSchedule = 0.01, b1: float = 0.9, b2: float = 0.999, eps: float = 1e-8
 ) -> GradientTransformation:
     """Adam optimizer."""
     return chain(scale_by_adam(b1=b1, b2=b2, eps=eps), scale_by_learning_rate(learning_rate))
 
 
 def clipped_adam(
-    learning_rate: ScalarOrSchedule, clip_norm: float = 10.0, **adam_kwargs
+    learning_rate: ScalarOrSchedule = 0.01, clip_norm: float = 10.0, **adam_kwargs
 ) -> GradientTransformation:
     """Adam with gradient clipping by global norm, as numpyro's ClippedAdam."""
     return chain(clip_by_global_norm(clip_norm), adam(learning_rate, **adam_kwargs))
+
+
+def sgd(learning_rate: ScalarOrSchedule = 0.01) -> GradientTransformation:
+    """Stochastic gradient descent optimizer."""
+    return scale_by_learning_rate(learning_rate)
 
 
 def linear_onecycle_schedule(
