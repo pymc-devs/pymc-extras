@@ -84,7 +84,7 @@ def idata(pymc_mod, rng, mock_pymc_sample):
             )
         with freeze_dims_and_data(pymc_mod):
             idata_prior = pm.sample_prior_predictive(
-                samples=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
+                draws=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
             )
 
     idata.update(idata_prior)
@@ -108,7 +108,7 @@ def idata_exog(exog_pymc_mod, rng, mock_pymc_sample):
             )
         with freeze_dims_and_data(pymc_mod):
             idata_prior = pm.sample_prior_predictive(
-                samples=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
+                draws=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
             )
 
     idata.update(idata_prior)
