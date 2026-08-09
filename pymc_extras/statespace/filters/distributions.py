@@ -365,9 +365,6 @@ class KalmanFilterRV(SymbolicRandomVariable):
 
 
 class SequenceMvNormal(Continuous):
-    def __new__(cls, *args, **kwargs):
-        return super().__new__(cls, *args, **kwargs)
-
     @classmethod
     def dist(cls, mus, covs, logp, method="svd", **kwargs):
         mus, covs, logp = map(pt.as_tensor_variable, (mus, covs, logp))
