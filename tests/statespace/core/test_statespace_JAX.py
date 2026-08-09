@@ -121,11 +121,12 @@ def test_no_nans_in_sampling_output(ss_mod, group, matrix, idata):
     assert not np.any(np.isnan(idata[group][matrix].values))
 
 
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables:UserWarning")
 @pytest.mark.parametrize("group", ["prior", "posterior"])
 @pytest.mark.parametrize("kind", ["conditional", "unconditional"])
 def test_sampling_methods(group, kind, ss_mod, idata, rng):
     f = getattr(ss_mod, f"sample_{kind}_{group}")
-    test_idata = f(idata, random_seed=rng)
+    test_idata = f(idata, random_seed=rng, compile_kwargs={"mode": "JAX"})
 
     if kind == "conditional":
         for output in ["filtered", "predicted", "smoothed"]:
