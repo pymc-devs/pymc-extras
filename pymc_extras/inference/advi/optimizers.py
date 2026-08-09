@@ -1,15 +1,41 @@
 from collections.abc import Callable
-from typing import Any, NamedTuple
 
 import numpy as np
+import pytensor
+
+from pytensor import config
+from pytensor import tensor as pt
 
 Schedule = Callable[[int], float]
 ScalarOrSchedule = float | Schedule
 
 
-class GradientTransformation(NamedTuple):
-    init: Callable[[dict[str, np.ndarray]], Any]
-    update: Callable[..., tuple[dict[str, np.ndarray], Any]]
+class GradientTransformation:
+    """An optax-style gradient transformation with optional PyTensor implementation.
+
+    Parameters
+    ----------
+    init :
+        Function ``(params: dict[str, np.ndarray]) -> state`` that initializes the
+        optimizer state from the initial parameter values.
+    update :
+        Function ``(updates, state, params=None) -> (new_updates, new_state)`` that
+        applies the transformation to a dictionary of numpy gradient updates.
+    pytensor :
+        Optional function ``(grads, shared_params) -> (new_grads, updates_dict)``
+        that applies the transformation in a PyTensor graph.  ``grads`` is a list
+        of symbolic gradient variables and ``shared_params`` the corresponding
+        shared parameter variables.  Returns transformed gradients and a
+        dictionary of ``{shared_var: new_value}`` updates for
+        :func:`pytensor.compile`.  Transformations that depend on a schedule
+        (callable learning rate) leave this ``None`` and use the Python update
+        path instead.
+    """
+
+    def __init__(self, init, update, pytensor=None):
+        self.init = init
+        self.update = update
+        self.pytensor = pytensor
 
 
 def apply_updates(
@@ -17,6 +43,19 @@ def apply_updates(
 ) -> dict[str, np.ndarray]:
     """Add the updates to the parameters."""
     return {name: np.asarray(param + updates[name]) for name, param in params.items()}
+
+
+def _chain_pt(*fns):
+    """Compose PyTensor update functions."""
+
+    def composed(grads, shared_params):
+        all_updates = {}
+        for fn in fns:
+            grads, updates = fn(grads, shared_params)
+            all_updates.update(updates)
+        return grads, all_updates
+
+    return composed
 
 
 def chain(*transforms: GradientTransformation) -> GradientTransformation:
@@ -32,7 +71,10 @@ def chain(*transforms: GradientTransformation) -> GradientTransformation:
             new_state.append(transform_state)
         return updates, tuple(new_state)
 
-    return GradientTransformation(init, update)
+    pytensor_fns = [t.pytensor for t in transforms if t.pytensor is not None]
+    pytensor = _chain_pt(*pytensor_fns) if len(pytensor_fns) == len(transforms) else None
+
+    return GradientTransformation(init, update, pytensor)
 
 
 def clip_by_global_norm(max_norm: float) -> GradientTransformation:
@@ -46,7 +88,12 @@ def clip_by_global_norm(max_norm: float) -> GradientTransformation:
         scale = np.minimum(1.0, max_norm / (global_norm + 1e-12))
         return {name: g * scale for name, g in updates.items()}, state
 
-    return GradientTransformation(init, update)
+    def _pytensor_impl(grads, shared_params):
+        global_norm = pt.sqrt(pt.sum([pt.sum(pt.square(g)) for g in grads]))
+        scale = pt.minimum(1.0, max_norm / (global_norm + 1e-12))
+        return [g * scale for g in grads], {}
+
+    return GradientTransformation(init, update, _pytensor_impl)
 
 
 def scale_by_adam(b1: float = 0.9, b2: float = 0.999, eps: float = 1e-8) -> GradientTransformation:
@@ -71,7 +118,25 @@ def scale_by_adam(b1: float = 0.9, b2: float = 0.999, eps: float = 1e-8) -> Grad
             new_updates[name] = mu_hat / (np.sqrt(nu_hat) + eps)
         return new_updates, {"mu": mu, "nu": nu, "count": count}
 
-    return GradientTransformation(init, update)
+    def _pytensor_impl(grads, shared_params):
+        t = pytensor.shared(np.zeros((), dtype="int64"), name="adam_t")
+        t_new = t + 1
+        t_new_float = t_new.astype(config.floatX)
+        updates = {t: t_new}
+        new_grads = []
+        for param, grad in zip(shared_params, grads):
+            value = param.get_value(borrow=True)
+            m = pytensor.shared(np.zeros_like(value), name=f"adam_m_{param.name}")
+            v = pytensor.shared(np.zeros_like(value), name=f"adam_v_{param.name}")
+            m_new = b1 * m + (1 - b1) * grad
+            v_new = b2 * v + (1 - b2) * pt.square(grad)
+            m_hat = m_new / (1 - b1**t_new_float)
+            v_hat = v_new / (1 - b2**t_new_float)
+            new_grads.append(m_hat / (pt.sqrt(v_hat) + eps))
+            updates.update({m: m_new, v: v_new})
+        return new_grads, updates
+
+    return GradientTransformation(init, update, _pytensor_impl)
 
 
 def scale_by_learning_rate(learning_rate: ScalarOrSchedule) -> GradientTransformation:
@@ -85,11 +150,24 @@ def scale_by_learning_rate(learning_rate: ScalarOrSchedule) -> GradientTransform
         lr = learning_rate(count) if callable(learning_rate) else learning_rate
         return {name: -lr * g for name, g in updates.items()}, {"count": count + 1}
 
-    return GradientTransformation(init, update)
+    # PyTensor path: only works with a constant learning rate (schedules are
+    # Python callables and cannot be baked into the graph).
+    if callable(learning_rate):
+        _pytensor_impl = None
+    else:
+        lr = learning_rate
+
+        def _pytensor_impl(grads, shared_params):
+            return [g * (-lr) for g in grads], {}
+
+    return GradientTransformation(init, update, _pytensor_impl)
 
 
 def adam(
-    learning_rate: ScalarOrSchedule = 0.01, b1: float = 0.9, b2: float = 0.999, eps: float = 1e-8
+    learning_rate: ScalarOrSchedule = 0.01,
+    b1: float = 0.9,
+    b2: float = 0.999,
+    eps: float = 1e-8,
 ) -> GradientTransformation:
     """Adam optimizer."""
     return chain(scale_by_adam(b1=b1, b2=b2, eps=eps), scale_by_learning_rate(learning_rate))

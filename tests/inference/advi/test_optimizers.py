@@ -1,11 +1,16 @@
 import numpy as np
+import pytensor
+import pytensor.tensor as pt
 
 from pymc_extras.inference.advi.optimizers import (
     adam,
     apply_updates,
+    chain,
     clip_by_global_norm,
     clipped_adam,
     linear_onecycle_schedule,
+    scale_by_learning_rate,
+    sgd,
 )
 
 
@@ -63,3 +68,63 @@ def test_linear_onecycle_schedule_shape():
     assert schedule(100) < schedule(200)  # warmup
     assert schedule(500) < schedule(200)  # anneal
     assert schedule(1000) < schedule(0)  # final decay below init
+
+
+# ---------------------------------------------------------------------------
+# PyTensor-backed optimizer tests
+# ---------------------------------------------------------------------------
+
+
+def _make_quadratic_step(optimizer, init_value=5.0):
+    """Compile a single step that minimises f(x) = x² with the given optimizer."""
+    x = pytensor.shared(np.array(init_value), name="x")
+    loss = x**2
+    grads = pt.grad(loss, wrt=[x])
+    new_grads, updates = optimizer.pytensor(grads, [x])
+    updates[x] = x + new_grads[0]
+    return pytensor.compile.function(inputs=[], outputs=loss, updates=updates)
+
+
+def test_adam_pytensor_minimizes_quadratic():
+    step = _make_quadratic_step(adam(0.1))
+    for _ in range(500):
+        step()
+    assert abs(step()) < 1e-3
+
+
+def test_clipped_adam_pytensor_minimizes_quadratic():
+    step = _make_quadratic_step(clipped_adam(0.1))
+    for _ in range(500):
+        step()
+    assert abs(step()) < 1e-3
+
+
+def test_sgd_pytensor_minimizes_quadratic():
+    step = _make_quadratic_step(sgd(0.1))
+    for _ in range(500):
+        step()
+    assert abs(step()) < 1e-3
+
+
+def test_chain_pytensor_composes():
+    """chain() composes PyTensor implementations: clip + adam."""
+    opt = chain(clip_by_global_norm(1.0), adam(0.1))
+    assert opt.pytensor is not None
+    step = _make_quadratic_step(opt, init_value=3.0)
+    for _ in range(500):
+        step()
+    assert abs(step()) < 1e-3
+
+
+def test_schedule_has_no_pytensor():
+    """A learning-rate schedule cannot be baked into the graph, so pytensor is None."""
+    schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.1)
+    opt = scale_by_learning_rate(schedule)
+    assert opt.pytensor is None
+
+
+def test_chain_with_schedule_has_no_pytensor():
+    """If any link in the chain lacks a PyTensor impl, the whole chain's pytensor is None."""
+    schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.1)
+    opt = chain(clip_by_global_norm(1.0), adam(0.1), scale_by_learning_rate(schedule))
+    assert opt.pytensor is None

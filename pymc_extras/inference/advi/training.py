@@ -34,11 +34,10 @@ from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideMo
 from pymc_extras.inference.advi.compile import (
     TrainingFn,
     compile_sampling_fn,
-    compile_svi_training_fn,
+    compile_svi_step_fn,
 )
 from pymc_extras.inference.advi.optimizers import (
     GradientTransformation,
-    apply_updates,
     clipped_adam,
 )
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
@@ -204,11 +203,11 @@ class Trainer:
         self.state: SVIState | None = None
 
         self._guide: AutoGuideModel | None = guide if isinstance(guide, AutoGuideModel) else None
-        self._param_names: list[str] | None = None
         self._fit_model: Model | None = None
         self._stream_shareds: dict[str, SharedVariable] = {}
         self._logp_scalings: dict[str, float] = {}
-        self._training_fn: TrainingFn | None = None
+        self._step_fn: TrainingFn | None = None
+        self._step_shared_params: dict | None = None
         self._sampling_fn: TrainingFn | None = None
         self._sampling_draws: int | None = None
 
@@ -222,25 +221,6 @@ class Trainer:
                     self._guide = self.guide(model)
                 else:
                     self._guide = AutoDiagonalNormal(model, random_seed=self.random_seed)
-        if self._param_names is None:
-            self._param_names = [p.name for p in self._guide.params]
-
-    def _compile_training_fn(self, model: Model) -> None:
-        """Compile the training function, reusing a previous one if available.
-
-        ``n_particles`` is baked into the compiled function as a constant, because
-        backends like JAX cannot handle inputs that determine random variable shapes.
-        """
-        if self._training_fn is not None:
-            return
-        self._training_fn = compile_svi_training_fn(
-            model,
-            self._guide,
-            draws=self.n_particles,
-            path_derivative_gradient=self.path_derivative_gradient,
-            logp_scalings=self._logp_scalings_for(model),
-            **self.compile_kwargs,
-        )
 
     def _compile_sampling_fn(self, model: Model, draws: int) -> None:
         """Compile the posterior sampling function, reusing a previous one when draws match."""
@@ -263,47 +243,62 @@ class Trainer:
         previous = np.mean(loss_history[-2 * window : -window])
         return bool(abs(recent - previous) < self.relative_tolerance * (abs(previous) + 1e-8))
 
-    def _make_python_step(
+    def _make_compiled_step(
         self, model: Model, state: SVIState | None, random_seed
     ) -> tuple[StepFn, SVIState, Callable[[SVIState], SVIState]]:
-        """Set up the Python-side update loop for a user-provided optax-like optimizer."""
-        self._compile_training_fn(model)
-        if random_seed is not None:
-            _reseed_function_rngs(self._training_fn, random_seed)
+        """Set up the compiled step: optimizer updates baked into the PyTensor graph.
 
-        if state is None:
-            init_params = {p.name: v for p, v in self._guide.params_init_values.items()}
-            state = SVIState(
-                params=init_params,
-                optimizer_state=self.optimizer.init(init_params),
-                step=0,
-                loss_history=[],
+        The guide parameters and the optimizer state live in shared variables updated
+        in place by the compiled function, so nothing round-trips through Python per
+        step.  A resumed ``state`` only restores the parameters (the optimizer
+        moments are not part of ``SVIState``).
+        """
+        if self._step_fn is None:
+            self._step_fn, self._step_shared_params = compile_svi_step_fn(
+                model,
+                self._guide,
+                self.optimizer,
+                draws=self.n_particles,
+                path_derivative_gradient=self.path_derivative_gradient,
+                logp_scalings=self._logp_scalings_for(model),
+                **self.compile_kwargs,
             )
-        # Mutated in place each step and shared by every per-step state: rebuilding it
-        # on each new SVIState would be quadratic in the number of steps
-        loss_history = list(state.loss_history)
-        state = SVIState(state.params, state.optimizer_state, state.step, loss_history)
 
-        optimizer = self.optimizer
-        param_names = self._param_names
+        if random_seed is not None:
+            _reseed_function_rngs(self._step_fn, random_seed)
+
+        shared_params = self._step_shared_params
+        if state is not None:
+            for name, shared in shared_params.items():
+                shared.set_value(np.asarray(state.params[name]))
+            loss_history = list(state.loss_history)
+            start_step = state.step
+        else:
+            loss_history = []
+            start_step = 0
+
+        state = SVIState(
+            params={name: shared.get_value() for name, shared in shared_params.items()},
+            optimizer_state=None,
+            step=start_step,
+            loss_history=loss_history,
+        )
+
+        compiled_step = self._step_fn
 
         def step_fn(step: int, state: SVIState) -> tuple[np.ndarray, SVIState]:
-            # The compiled function uses trust_input=True, so scalar params must be
-            # passed as 0d arrays, not python/numpy scalars
-            params = {name: np.asarray(value) for name, value in state.params.items()}
-            outputs = self._training_fn(**params)
-            # Backends may return their own array types (e.g. JAX); convert once here
-            # so the optimizer update runs on numpy arrays
-            loss, *grads = (np.asarray(out) for out in outputs)
-            updates, optimizer_state = optimizer.update(
-                dict(zip(param_names, grads)), state.optimizer_state, state.params
-            )
-            new_state = SVIState(
-                apply_updates(state.params, updates), optimizer_state, state.step + 1, loss_history
-            )
-            return loss, new_state
+            loss = np.asarray(compiled_step())
+            return loss, SVIState(state.params, None, state.step + 1, loss_history)
 
-        return step_fn, state, lambda final_state: final_state
+        def finalize(final_state: SVIState) -> SVIState:
+            return SVIState(
+                params={name: shared.get_value().copy() for name, shared in shared_params.items()},
+                optimizer_state=None,
+                step=final_state.step,
+                loss_history=loss_history,
+            )
+
+        return step_fn, state, finalize
 
     def _prepare_data_stream(
         self,
@@ -487,7 +482,7 @@ class Trainer:
 
         if self.optimizer is None:
             self.optimizer = clipped_adam()
-        step_fn, state, finalize = self._make_python_step(model, state, random_seed)
+        step_fn, state, finalize = self._make_compiled_step(model, state, random_seed)
         loss_history = state.loss_history
 
         progress = make_advi_progress_bar(theme=default_progress_theme)
