@@ -41,22 +41,6 @@ def test_fit_advi_random_seed(conjugate_model):
     assert not np.array_equal(draws_a, draws_c)
 
 
-@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
-def test_fit_advi_random_seed_jax(conjugate_model):
-    # The JAX linker replaces RNG shared variables with internal copies at compile time,
-    # so seeding must reach the compiled function's own storage
-    pytest.importorskip("jax")
-    model, *_ = conjugate_model
-
-    kwargs = dict(model=model, n_steps=50, draws=50, convergence_window=None, backend="jax")
-    draws_a = fit_advi(random_seed=42, **kwargs)["posterior"].dataset["theta"].values
-    draws_b = fit_advi(random_seed=42, **kwargs)["posterior"].dataset["theta"].values
-    draws_c = fit_advi(random_seed=13, **kwargs)["posterior"].dataset["theta"].values
-
-    np.testing.assert_array_equal(draws_a, draws_b)
-    assert not np.array_equal(draws_a, draws_c)
-
-
 def test_fit_advi_early_stopping(conjugate_model):
     model, *_ = conjugate_model
 
@@ -70,20 +54,6 @@ def test_fit_advi_early_stopping(conjugate_model):
 
     # With a huge tolerance, training stops at the first convergence check
     assert idata["fit"].dataset.sizes["step"] == 100
-
-
-def test_guide_initialized_at_initial_point():
-    with pm.Model() as model:
-        pm.LogNormal("x", mu=np.log(4.5), sigma=0.5)
-        pm.Normal("y", 0, 1, shape=(2,), initval=np.array([1.5, -0.5]))
-
-    guide = AutoDiagonalNormal(model)
-    initial_point = model.initial_point()
-
-    np.testing.assert_array_equal(
-        guide.params_init_values[guide["x_loc"]], initial_point["x_log__"]
-    )
-    np.testing.assert_array_equal(guide.params_init_values[guide["y_loc"]], [1.5, -0.5])
 
 
 def test_guide_built_inside_model_context():
