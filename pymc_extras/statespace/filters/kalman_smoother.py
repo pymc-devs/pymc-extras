@@ -1,3 +1,5 @@
+import copy
+
 import pytensor
 import pytensor.tensor as pt
 
@@ -19,6 +21,10 @@ class KalmanSmoother:
         self.cov_jitter = JITTER_DEFAULT
         self.seq_names = []
         self.non_seq_names = []
+
+    def copy(self) -> "KalmanSmoother":
+        """Return a shallow copy whose ``seq_names``/``non_seq_names`` are independent."""
+        return copy.copy(self)
 
     def unpack_args(self, args):
         """
@@ -71,7 +77,7 @@ class KalmanSmoother:
     ):
         self.cov_jitter = cov_jitter
 
-        n, k = filtered_states.type.shape
+        k = filtered_states.type.shape[1]
 
         a_last = pt.specify_shape(filtered_states[-1], (k,))
         P_last = pt.specify_shape(filtered_covariances[-1], (k, k))
