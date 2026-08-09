@@ -14,6 +14,9 @@ from pymc_extras.inference.advi.optimizers import (
     clip_by_global_norm,
     clipped_adam,
     linear_onecycle_schedule,
+    rmsprop,
+    scale_by_rmsprop,
+    sgd,
 )
 from pymc_extras.inference.advi.training import SVIState, Trainer
 
@@ -33,4 +36,7 @@ __all__ = [
     "fit_advi",
     "get_value_shapes_and_dims",
     "linear_onecycle_schedule",
+    "rmsprop",
+    "scale_by_rmsprop",
+    "sgd",
 ]

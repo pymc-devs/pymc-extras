@@ -185,6 +185,46 @@ def sgd(learning_rate: ScalarOrSchedule = 0.01) -> GradientTransformation:
     return scale_by_learning_rate(learning_rate)
 
 
+def scale_by_rmsprop(decay: float = 0.9, eps: float = 1e-8) -> GradientTransformation:
+    """Rescale the gradients by the RMSProp preconditioner (Tieleman & Hinton, 2012)."""
+
+    def init(params):
+        return {"avg_sq": {name: np.zeros_like(value) for name, value in params.items()}}
+
+    def update(updates, state, params=None):
+        avg_sq = state["avg_sq"]
+        new_avg_sq = {}
+        new_updates = {}
+        for k, g in updates.items():
+            v = avg_sq[k]
+            v_new = decay * v + (1.0 - decay) * (g * g)
+            new_avg_sq[k] = v_new
+            new_updates[k] = g / (np.sqrt(v_new) + eps)
+        return new_updates, {"avg_sq": new_avg_sq}
+
+    def _pytensor_impl(grads, shared_params):
+        updates = {}
+        new_grads = []
+        for param, grad in zip(shared_params, grads):
+            value = param.get_value(borrow=True)
+            v = pytensor.shared(np.zeros_like(value), name=f"rmsprop_v_{param.name}")
+            v_new = decay * v + (1.0 - decay) * pt.square(grad)
+            new_grads.append(grad / (pt.sqrt(v_new) + eps))
+            updates[v] = v_new
+        return new_grads, updates
+
+    return GradientTransformation(init, update, _pytensor_impl)
+
+
+def rmsprop(
+    learning_rate: ScalarOrSchedule = 0.01,
+    decay: float = 0.9,
+    eps: float = 1e-8,
+) -> GradientTransformation:
+    """RMSProp optimizer."""
+    return chain(scale_by_rmsprop(decay=decay, eps=eps), scale_by_learning_rate(learning_rate))
+
+
 def linear_onecycle_schedule(
     transition_steps: int,
     peak_value: float,

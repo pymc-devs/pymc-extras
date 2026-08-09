@@ -9,7 +9,9 @@ from pymc_extras.inference.advi.optimizers import (
     clip_by_global_norm,
     clipped_adam,
     linear_onecycle_schedule,
+    rmsprop,
     scale_by_learning_rate,
+    scale_by_rmsprop,
     sgd,
 )
 
@@ -123,3 +125,22 @@ def test_chain_with_schedule_has_no_pytensor():
     schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.1)
     opt = chain(clip_by_global_norm(1.0), adam(0.1), scale_by_learning_rate(schedule))
     assert opt.pytensor is None
+
+
+def test_rmsprop_pytensor_minimizes_quadratic():
+    """RMSProp with a PyTensor impl should reduce a simple quadratic.
+
+    RMSProp can oscillate on deterministic quadratics because the effective
+    step size ``lr * g / sqrt(v)`` becomes constant when ``v`` tracks ``g^2``.
+    We therefore only check that the loss decreases substantially.
+    """
+    step = _make_quadratic_step(rmsprop(0.1))
+    for _ in range(500):
+        step()
+    assert abs(step()) < 0.1
+
+
+def test_scale_by_rmsprop_has_pytensor():
+    """scale_by_rmsprop provides a PyTensor implementation."""
+    opt = scale_by_rmsprop(decay=0.9, eps=1e-8)
+    assert opt.pytensor is not None
