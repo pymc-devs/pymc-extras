@@ -43,6 +43,45 @@ from pymc_extras.inference.advi.optimizers import (
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 
 
+class Callback:
+    """Base class for fit callbacks.
+
+    Override :meth:`on_step_end` to inspect progress or stop training early.
+    """
+
+    def on_step_end(self, step: int, loss: float, state: "SVIState") -> bool | None:
+        """Called after each training step.  Return ``True`` to stop early."""
+        return None
+
+
+class EarlyStopping(Callback):
+    """Stop training when the loss stops improving.
+
+    Parameters
+    ----------
+    window :
+        Number of steps per convergence window.
+    tolerance :
+        Relative loss change between consecutive windows under which training stops.
+    """
+
+    def __init__(self, window: int = 200, tolerance: float = 1e-3):
+        self.window = window
+        self.tolerance = tolerance
+
+    def on_step_end(self, step: int, loss: float, state: "SVIState") -> bool | None:
+        if self.window is None or step % self.window != 0:
+            return None
+        history = state.loss_history
+        if len(history) < 2 * self.window:
+            return None
+        recent = np.mean(history[-self.window :])
+        previous = np.mean(history[-2 * self.window : -self.window])
+        if abs(recent - previous) < self.tolerance * (abs(previous) + 1e-8):
+            return True
+        return None
+
+
 def _reseed_function_rngs(fn, random_seed) -> None:
     """Reseed the RNG inputs of a compiled function.
 
@@ -118,7 +157,6 @@ class SVIState:
     loss_history: list[float] = field(default_factory=list)
 
 
-# One training step: maps (step number, state) to (loss, new state).
 StepFn = Callable[[int, SVIState], tuple[np.ndarray, SVIState]]
 
 
@@ -146,13 +184,8 @@ class Trainer:
     path_derivative_gradient : bool, optional
         Whether to use the lower-variance path-derivative ("sticking the landing")
         gradient estimator, by default True.
-    convergence_window : int, optional
-        Number of steps per convergence window, by default 200. Training stops early
-        when the mean loss over the last window is within ``relative_tolerance`` of
-        the mean over the window before it. Set to None to disable early stopping.
-    relative_tolerance : float, optional
-        Relative loss change between consecutive windows under which training stops,
-        by default 1e-3.
+    callbacks : list of Callback, optional
+        Callbacks to run during :meth:`fit`.  No callbacks by default.
     model : Model, optional
         The PyMC model to fit. If None, the model is taken from the context stack
         when :meth:`fit` or :meth:`sample_posterior` is called.
@@ -184,8 +217,7 @@ class Trainer:
         optimizer: GradientTransformation | None = None,
         n_particles: int = 1,
         path_derivative_gradient: bool = True,
-        convergence_window: int | None = 200,
-        relative_tolerance: float = 1e-3,
+        callbacks: list[Callback] | None = None,
         model: Model | None = None,
         backend: str | None = None,
         compile_kwargs: dict | None = None,
@@ -195,12 +227,15 @@ class Trainer:
         self.optimizer = optimizer
         self.n_particles = n_particles
         self.path_derivative_gradient = path_derivative_gradient
-        self.convergence_window = convergence_window
-        self.relative_tolerance = relative_tolerance
         self.model = model
         self.compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
         self.random_seed = random_seed
         self.state: SVIState | None = None
+
+        if callbacks is not None:
+            self.callbacks = list(callbacks)
+        else:
+            self.callbacks = []
 
         self._guide: AutoGuideModel | None = guide if isinstance(guide, AutoGuideModel) else None
         self._fit_model: Model | None = None
@@ -233,15 +268,6 @@ class Trainer:
             **self.compile_kwargs,
         )
         self._sampling_draws = draws
-
-    def _should_stop(self, step: int, loss_history: list[float]) -> bool:
-        """Window-based convergence check, see ``convergence_window``."""
-        window = self.convergence_window
-        if window is None or step % window != 0 or len(loss_history) < 2 * window:
-            return False
-        recent = np.mean(loss_history[-window:])
-        previous = np.mean(loss_history[-2 * window : -window])
-        return bool(abs(recent - previous) < self.relative_tolerance * (abs(previous) + 1e-8))
 
     def _make_compiled_step(
         self, model: Model, state: SVIState | None, random_seed
@@ -420,8 +446,8 @@ class Trainer:
         ----------
         n : int, optional
             Maximum number of optimization steps, by default 10_000. Training may
-            stop earlier, controlled by ``convergence_window`` and
-            ``relative_tolerance``, or by the ``data`` iterator running out.
+            stop earlier, controlled by ``callbacks``, or by the ``data`` iterator
+            running out.
         data : iterable of dict, optional
             A stream of batches, one per step, each a dictionary mapping variable
             names to data. Every step, each entry is reassigned on the model with
@@ -518,7 +544,7 @@ class Trainer:
                         start_time = time.perf_counter()
                     loss_history.append(loss)
 
-                    if self._should_stop(state.step, loss_history):
+                    if any(cb.on_step_end(state.step, float(loss), state) for cb in self.callbacks):
                         break
 
                     if step % progress_every == 0:

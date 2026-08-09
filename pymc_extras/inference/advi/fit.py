@@ -5,7 +5,7 @@ from pymc import Model, modelcontext
 from xarray import DataTree
 
 from pymc_extras.inference.advi.optimizers import GradientTransformation
-from pymc_extras.inference.advi.training import Trainer
+from pymc_extras.inference.advi.training import Callback, Trainer
 
 
 def fit_advi(
@@ -16,8 +16,7 @@ def fit_advi(
     draws: int = 1_000,
     optimizer: GradientTransformation | None = None,
     path_derivative_gradient: bool = True,
-    convergence_window: int | None = 200,
-    relative_tolerance: float = 1e-3,
+    callbacks: list[Callback] | None = None,
     random_seed=None,
     backend: str | None = None,
     compile_kwargs: dict | None = None,
@@ -34,7 +33,7 @@ def fit_advi(
         The PyMC model to fit. If None, the model is inferred from context.
     n_steps : int, optional
         Maximum number of optimization steps, by default 10_000. Training may stop
-        earlier, controlled by ``convergence_window`` and ``relative_tolerance``.
+        earlier, controlled by ``callbacks``.
     n_particles : int, optional
         Number of guide draws per step used to estimate the ELBO gradient, by default 1.
     draws : int, optional
@@ -46,12 +45,8 @@ def fit_advi(
         Whether to use the lower-variance path-derivative ("sticking the landing")
         gradient estimator, by default True. It is an unbiased variance reduction (it changes
         only the gradient, not the ELBO); numpyro's ``Trace_ELBO`` does not offer it.
-    convergence_window : int, optional
-        Number of steps per convergence window, by default 200. Set to None to always
-        run for ``n_steps``.
-    relative_tolerance : float, optional
-        Relative loss change between consecutive windows under which training stops,
-        by default 1e-3.
+    callbacks : list of Callback, optional
+        Callbacks to run during training.  No callbacks by default.
     random_seed : optional
         Seed for the guide initialization, the training draws, and the posterior draws.
     backend : str, optional
@@ -78,8 +73,7 @@ def fit_advi(
         optimizer=optimizer,
         n_particles=n_particles,
         path_derivative_gradient=path_derivative_gradient,
-        convergence_window=convergence_window,
-        relative_tolerance=relative_tolerance,
+        callbacks=callbacks,
         model=model,
         backend=backend,
         compile_kwargs=compile_kwargs,
