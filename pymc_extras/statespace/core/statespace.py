@@ -1562,7 +1562,9 @@ class PyMCStateSpace:
                 pm.Data(**self._fit_exog_data[name])
 
             self._insert_data_variables()
-            matrices = self._insert_constant_timestep(self.unpack_statespace(), step=steps)
+            # The unconditional trajectory spans ``steps + 1`` timesteps, and time-varying
+            # matrices carry one row per timestep.
+            matrices = self._insert_constant_timestep(self.unpack_statespace(), step=steps + 1)
             x0, P0, c, d, T, Z, R, H, Q = matrices
 
             if not self.measurement_error:
@@ -2427,8 +2429,10 @@ class PyMCStateSpace:
 
             forecast_names = MATRIX_NAMES[2:]  # c, d, T, Z, R, H, Q
             time_varying_names = self.ssm.time_varying_names
+            # Start one step early: the transition into the first forecast period uses the
+            # matrices of the last training period, and its observation is discarded.
             forecast_matrices = [
-                m[n_train:] if SHORT_NAME_TO_LONG[name] in time_varying_names else m
+                m[n_train - 1 :] if SHORT_NAME_TO_LONG[name] in time_varying_names else m
                 for m, name in zip(forecast_matrices, forecast_names)
             ]
 
