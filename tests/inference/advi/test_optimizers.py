@@ -70,11 +70,6 @@ def test_linear_onecycle_schedule_shape():
     assert schedule(1000) < schedule(0)  # final decay below init
 
 
-# ---------------------------------------------------------------------------
-# PyTensor-backed optimizer tests
-# ---------------------------------------------------------------------------
-
-
 def _make_quadratic_step(optimizer, init_value=5.0):
     """Compile a single step that minimises f(x) = x² with the given optimizer."""
     x = pytensor.shared(np.array(init_value), name="x")
