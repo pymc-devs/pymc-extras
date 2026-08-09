@@ -10,6 +10,8 @@ from pymc.pytensorf import intX, normalize_rng_param
 from pytensor.graph.basic import Node
 from pytensor.tensor.random import multivariate_normal
 
+from pymc_extras.statespace.utils.constants import SHORT_NAME_TO_LONG
+
 floatX = pytensor.config.floatX
 COV_ZERO_TOL = 0
 
@@ -19,32 +21,53 @@ lgss_shape_message = (
 )
 
 
-def make_signature(sequence_names):
-    states = "s"
-    obs = "p"
-    exog = "r"
-    time = "t"
-    state_and_obs = "n"
+# Core-shape axis labels used to build gufunc signatures: state, observed, exogenous
+# (shock), time, and the concatenated state+observed axis.
+STATES, OBS, EXOG, TIME, STATE_AND_OBS = "s", "p", "r", "t", "n"
 
-    matrix_to_shape = {
-        "x0": (states,),
-        "P0": (states, states),
-        "c": (states,),
-        "d": (obs,),
-        "T": (states, states),
-        "Z": (obs, states),
-        "R": (states, exog),
-        "H": (obs, obs),
-        "Q": (exog, exog),
-    }
+STATESPACE_CORE_SHAPES = {
+    "x0": (STATES,),
+    "P0": (STATES, STATES),
+    "c": (STATES,),
+    "d": (OBS,),
+    "T": (STATES, STATES),
+    "Z": (OBS, STATES),
+    "R": (STATES, EXOG),
+    "H": (OBS, OBS),
+    "Q": (EXOG, EXOG),
+}
 
+
+def _build_signature(core_shapes, sequence_names, output_shape):
+    """Assemble an extended gufunc signature, prefixing a time axis onto time-varying matrices.
+
+    Parameters
+    ----------
+    core_shapes : dict mapping str to tuple of str
+        Matrix name to its static core-shape axis labels, in signature order.
+    sequence_names : iterable of str
+        Names of the matrices that vary over time.
+    output_shape : tuple of str
+        Core-shape axis labels of the single output.
+
+    Returns
+    -------
+    signature : str
+        Extended signature in pymc's ``[rng]``-aware gufunc format.
+    """
+    matrix_to_shape = dict(core_shapes)
     for matrix in sequence_names:
-        base_shape = matrix_to_shape[matrix]
-        matrix_to_shape[matrix] = (time, *base_shape)
+        matrix_to_shape[matrix] = (TIME, *matrix_to_shape[matrix])
 
-    signature = ",".join(["(" + ",".join(shapes) + ")" for shapes in matrix_to_shape.values()])
+    inputs = ",".join("(" + ",".join(shapes) + ")" for shapes in matrix_to_shape.values())
 
-    return f"{signature},[rng]->[rng],({time},{state_and_obs})"
+    return f"{inputs},[rng]->[rng],({','.join(output_shape)})"
+
+
+def make_signature(sequence_names):
+    return _build_signature(
+        STATESPACE_CORE_SHAPES, sequence_names, output_shape=(TIME, STATE_AND_OBS)
+    )
 
 
 def _forward_simulate_latent_and_obs(
@@ -468,3 +491,223 @@ def sequence_mvnormal_logp(op, values, mus, covs, logp, rng, **kwargs):
         pt.eq(covs.shape[0], mus.shape[0]),
         msg="Observed data and parameters must have the same number of timesteps (dimension 0)",
     )
+
+
+def _simulation_smoother_signature(sequence_names):
+    """Extended gufunc signature for :class:`SimulationSmootherRV`.
+
+    Adds a leading ``a_smooth`` input to the state-space core shapes and outputs the
+    sampled latent trajectory.
+    """
+    return _build_signature(
+        {"a_smooth": (TIME, STATES), **STATESPACE_CORE_SHAPES},
+        sequence_names,
+        output_shape=(TIME, STATES),
+    )
+
+
+class SimulationSmootherRV(SymbolicRandomVariable):
+    default_output = 1
+    _print_name = ("SimulationSmoother", "\\operatorname{SimSmooth}")
+
+    def update(self, node: Node):
+        return {node.inputs[-1]: node.outputs[0]}
+
+
+class SimulationSmoother(Continuous):
+    r"""Durbin-Koopman simulation smoother for a linear Gaussian state-space model.
+
+    Draws a joint sample of the full latent trajectory :math:`\alpha_{1:T}` from
+    the smoothing posterior :math:`p(\alpha_{1:T} | y_{1:T})` using the algorithm
+    of Durbin and Koopman (2002) [1]_:
+
+    1. Forward-simulate :math:`(\alpha^+, y^+)` from the prior at the current
+       parameters.
+    2. Filter and smooth :math:`y^+` to obtain :math:`\hat\alpha^+`.
+    3. Return :math:`\alpha^{\text{sample}} = \alpha^+ - \hat\alpha^+ + \hat\alpha`,
+       where :math:`\hat\alpha` is the smoothed mean of the real data.
+
+    Draws have marginal mean ``a_smooth`` and the full joint posterior covariance,
+    including cross-time correlations. Sampling each step's marginal independently with
+    :class:`SequenceMvNormal` reproduces the former but not the latter.
+
+    Parameters
+    ----------
+    a_smooth : TensorVariable
+        Real-data smoothed state mean, shape ``(T, k_states)``.
+    x0, P0, c, d, T, Z, R, H, Q : TensorVariable
+        State-space matrices defining the model.
+    kalman_filter : BaseFilter
+        Filter object exposing ``build_graph``, called once while building the sampling
+        graph. A Python-side graph builder, not a random-variable input.
+    kalman_smoother : KalmanSmoother
+        Smoother object exposing ``build_graph``, used the same way as ``kalman_filter``.
+    sequence_names : iterable of str, optional
+        Short names of time-varying matrices, mirroring
+        ``LinearGaussianStateSpace``'s ``sequence_names`` argument.
+    method : str, optional
+        Multivariate-normal sampling method. Default ``"svd"``.
+
+    References
+    ----------
+    .. [1] Durbin, J. and Koopman, S. J. (2002). A simple and efficient
+       simulation smoother for state space time series analysis. Biometrika 89,
+       603-616.
+    """
+
+    rv_type = SimulationSmootherRV
+
+    @classmethod
+    def dist(
+        cls,
+        a_smooth,
+        x0,
+        P0,
+        c,
+        d,
+        T,
+        Z,
+        R,
+        H,
+        Q,
+        *,
+        kalman_filter,
+        kalman_smoother,
+        sequence_names=(),
+        method="svd",
+        **kwargs,
+    ):
+        return super().dist(
+            [a_smooth, x0, P0, c, d, T, Z, R, H, Q],
+            kalman_filter=kalman_filter,
+            kalman_smoother=kalman_smoother,
+            sequence_names=tuple(sequence_names),
+            method=method,
+            **kwargs,
+        )
+
+    @classmethod
+    def rv_op(
+        cls,
+        a_smooth,
+        x0,
+        P0,
+        c,
+        d,
+        T,
+        Z,
+        R,
+        H,
+        Q,
+        *,
+        kalman_filter,
+        kalman_smoother,
+        sequence_names=(),
+        method="svd",
+        size=None,
+        rng=None,
+    ):
+        sequence_names = tuple(sequence_names)
+        a_smooth_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = (
+            x.type() for x in (a_smooth, x0, P0, c, d, T, Z, R, H, Q)
+        )
+
+        a_smooth_.name = "a_smooth"
+        c_.name = "c"
+        d_.name = "d"
+        T_.name = "T"
+        Z_.name = "Z"
+        R_.name = "R"
+        H_.name = "H"
+        Q_.name = "Q"
+
+        rng = normalize_rng_param(rng)
+
+        # Prefer the static type-shape so the inner scan sequence length is a
+        # Python int (JAX requires static lengths for ``lax.scan``); fall back to
+        # the symbolic shape only if the model didn't pin it.
+        T_static = a_smooth_.type.shape[0]
+        steps = T_static if T_static is not None else a_smooth_.shape[0]
+
+        # 1. Forward sim of (alpha_plus, y_plus). The Kalman filter uses the
+        # Durbin-Koopman convention where (a0, P0) is the prediction for alpha_1
+        # (not the distribution of alpha_0). To produce alpha_1..alpha_T we sample
+        # init = alpha_1 ~ N(a0, P0), then run T-1 transition steps and prepend
+        # the init.
+        alpha_plus, y_plus, mid_rng = _forward_simulate_latent_and_obs(
+            x0_,
+            P0_,
+            c_,
+            d_,
+            T_,
+            Z_,
+            R_,
+            H_,
+            Q_,
+            steps=steps - 1,
+            rng=rng,
+            sequence_names=sequence_names,
+            method=method,
+            append_x0=True,
+        )
+
+        if T_static is not None:
+            y_plus = pt.specify_shape(y_plus, (T_static, *y_plus.type.shape[1:]))
+            alpha_plus = pt.specify_shape(alpha_plus, (T_static, *alpha_plus.type.shape[1:]))
+
+        # 2. Filter + smooth y_plus under the same theta. The build_graph helpers
+        # consume long names; translate once.
+        long_names = {SHORT_NAME_TO_LONG[s] for s in sequence_names}
+        a_filt_plus, _, _, P_filt_plus, *_ = kalman_filter.build_graph(
+            y_plus,
+            x0_,
+            P0_,
+            c_,
+            d_,
+            T_,
+            Z_,
+            R_,
+            H_,
+            Q_,
+            time_varying_names=long_names,
+        )
+
+        # The smoother only ever iterates over (T, R, Q); intersect.
+        smoother_long_names = long_names & {"transition", "selection", "state_cov"}
+        a_smooth_plus, _ = kalman_smoother.build_graph(
+            T_,
+            R_,
+            Q_,
+            a_filt_plus,
+            P_filt_plus,
+            time_varying_names=smoother_long_names,
+        )
+
+        if T_static is not None:
+            a_smooth_plus = pt.specify_shape(
+                a_smooth_plus, (T_static, *a_smooth_plus.type.shape[1:])
+            )
+
+        # 3. DK identity. The c-term and d-term cancel because alpha_plus and
+        # a_smooth_plus are produced under the same parameters.
+        alpha_sample = alpha_plus - a_smooth_plus + a_smooth_
+
+        # ``inline=True`` splices the inner scans into the parent fgraph at compile
+        # time, so shape inference reaches through them. The JAX backend needs the
+        # resulting static ``n_steps`` to dispatch its scan.
+        op = SimulationSmootherRV(
+            inputs=[a_smooth_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_, rng],
+            outputs=[mid_rng, alpha_sample],
+            extended_signature=_simulation_smoother_signature(sequence_names),
+            inline=True,
+        )
+
+        return op(a_smooth, x0, P0, c, d, T, Z, R, H, Q, rng)
+
+
+@_logprob.register(SimulationSmootherRV)
+def simulation_smoother_logp(op, values, *inputs, **kwargs):
+    # The simulation smoother is only ever sampled (during posterior predictive),
+    # never scored. Return a zero matching the output's shape so PyMC's logp
+    # introspection succeeds.
+    return pt.zeros_like(values[0])

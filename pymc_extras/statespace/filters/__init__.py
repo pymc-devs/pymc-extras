@@ -1,4 +1,7 @@
-from pymc_extras.statespace.filters.distributions import LinearGaussianStateSpace
+from pymc_extras.statespace.filters.distributions import (
+    LinearGaussianStateSpace,
+    SimulationSmoother,
+)
 from pymc_extras.statespace.filters.kalman_filter import (
     SquareRootFilter,
     StandardFilter,
@@ -9,6 +12,7 @@ from pymc_extras.statespace.filters.kalman_smoother import KalmanSmoother
 __all__ = [
     "KalmanSmoother",
     "LinearGaussianStateSpace",
+    "SimulationSmoother",
     "SquareRootFilter",
     "StandardFilter",
     "UnivariateFilter",
