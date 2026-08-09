@@ -1,13 +1,3 @@
-"""Optax-like gradient transformations operating on dicts of numpy parameters.
-
-The API follows optax: an optimizer is a ``GradientTransformation`` with
-``init(params) -> state`` and ``update(grads, state, params) -> (updates, state)``,
-where updates are increments added to the parameters with :func:`apply_updates`.
-Actual optax optimizers are plug-compatible.
-"""
-
-from __future__ import annotations
-
 from collections.abc import Callable
 from typing import Any, NamedTuple
 

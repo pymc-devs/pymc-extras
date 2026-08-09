@@ -182,12 +182,14 @@ class Trainer:
 
     Example
     -------
-    >>> with pm.Model() as model:
-    ...     mu = pm.Normal("mu", 0, 1)
-    ...     pm.Normal("y", mu, 1, observed=[0.5, 1.5])
-    ...     trainer = Trainer()
-    ...     state = trainer.fit(10_000)
-    ...     idata = trainer.sample_posterior(1_000)
+    .. code-block:: python
+
+        with pm.Model() as model:
+            mu = pm.Normal("mu", 0, 1)
+            pm.Normal("y", mu, 1, observed=[0.5, 1.5])
+            trainer = Trainer()
+            state = trainer.fit(10_000)
+            idata = trainer.sample_posterior(1_000)
     """
 
     def __init__(
