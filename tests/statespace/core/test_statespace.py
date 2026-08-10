@@ -7,8 +7,10 @@ import pytest
 from numpy.testing import assert_allclose
 from pymc.exceptions import ImputationWarning
 
+from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
+from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
 from pymc_extras.statespace.utils.constants import MISSING_FILL
 from tests.statespace.shared_fixtures import (
     rng,
@@ -152,13 +154,11 @@ def test_missing_fill_value_reaches_post_estimation_graphs(rng):
 
 
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
-def test_filter_config_is_set_on_the_model_and_overridable_at_build():
-    """Filter settings live on the model; a build-time argument overrides them."""
+def test_filter_config_is_overridable_at_build():
+    """A build-time argument overrides the model's filter settings; others are left alone."""
     ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(
         verbose=False, cov_jitter=1e-4, missing_fill_value=-1234.0
     )
-    assert ss_mod.cov_jitter == 1e-4
-    assert ss_mod.missing_fill_value == -1234.0
 
     with pm.Model(coords=ss_mod.coords):
         pm.Normal("initial_trend", shape=(1,))
@@ -168,3 +168,36 @@ def test_filter_config_is_set_on_the_model_and_overridable_at_build():
 
     assert ss_mod.cov_jitter == 1e-2
     assert ss_mod.missing_fill_value == -1234.0
+
+
+@pytest.mark.parametrize(
+    "make_model",
+    [
+        pytest.param(
+            lambda **kw: BayesianSARIMAX(order=(1, 0, 1), stationary_initialization=True, **kw),
+            id="SARIMAX",
+        ),
+        pytest.param(
+            lambda **kw: BayesianVARMAX(order=(1, 0), endog_names=["a", "b"], **kw), id="VARMAX"
+        ),
+        pytest.param(
+            lambda **kw: BayesianETS(order=("A", "N", "N"), endog_names=["a"], **kw), id="ETS"
+        ),
+        pytest.param(
+            lambda **kw: BayesianDynamicFactor(
+                k_factors=1, factor_order=1, endog_names=["a", "b"], **kw
+            ),
+            id="DFM",
+        ),
+        pytest.param(
+            lambda **kw: st.LevelTrend(name="trend", order=1, innovations_order=1).build(**kw),
+            id="structural",
+        ),
+    ],
+)
+def test_shipped_models_accept_filter_config(make_model):
+    """Every shipped model exposes the filter settings its post-estimation graphs will use."""
+    ss_mod = make_model(verbose=False, cov_jitter=1e-3, missing_fill_value=-777.0)
+
+    assert ss_mod.cov_jitter == 1e-3
+    assert ss_mod.missing_fill_value == -777.0
