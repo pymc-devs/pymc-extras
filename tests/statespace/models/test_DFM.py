@@ -476,16 +476,13 @@ class TestDFMConfiguration:
             ),
             FACTOR_DIM: ("factor_1", "factor_2"),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, error_order + 1)),
         }
 
         assert mod.param_names == expected_param_names
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order
         assert mod.observed_states == ("y0", "y1", "y2")
         assert len(mod.shock_names) == k_factors + k_endog
 
@@ -545,16 +542,13 @@ class TestDFMConfiguration:
             ),
             FACTOR_DIM: ("factor_1",),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1)),
         }
 
         assert mod.param_names == expected_param_names
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order
         assert mod.observed_states == ("y0", "y1", "y2")
         assert len(mod.shock_names) == k_factors + k_endog
 
@@ -623,9 +617,7 @@ class TestDFMConfiguration:
             ),
             FACTOR_DIM: ("factor_1", "factor_2"),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, error_order + 1)),
             EXOG_STATE_DIM: ("x0", "x1"),
             EXOG_COEF_STATE_DIM: ("beta_x0[shared]", "beta_x1[shared]"),
             NON_EXOG_STATE_DIM: (
@@ -641,12 +633,15 @@ class TestDFMConfiguration:
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order + (
-            k_exog if shared_exog_states else k_exog * k_endog
-        )
         assert mod.observed_states == ("y0", "y1", "y2")
-        assert len(mod.shock_names) == k_factors + k_endog + (
-            k_exog if shared_exog_states else k_exog * k_endog
+        assert mod.shock_names == (
+            "factor_shock_1",
+            "factor_shock_2",
+            "error_shock_1",
+            "error_shock_2",
+            "error_shock_3",
+            "exog_shock_x0[shared]",
+            "exog_shock_x1[shared]",
         )
 
     def test_exog_not_shared_no_exog_innovations(self):
@@ -712,9 +707,7 @@ class TestDFMConfiguration:
             ),
             FACTOR_DIM: ("factor_1",),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, error_order + 1)),
             EXOG_STATE_DIM: ("x0",),
             EXOG_COEF_STATE_DIM: ("beta_x0[y0]", "beta_x0[y1]", "beta_x0[y2]"),
             NON_EXOG_STATE_DIM: (
@@ -730,12 +723,15 @@ class TestDFMConfiguration:
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order + (
-            k_exog if shared_exog_states else k_exog * k_endog
-        )
         assert mod.observed_states == ("y0", "y1", "y2")
-        assert len(mod.shock_names) == k_factors + k_endog + (
-            k_exog if shared_exog_states else k_exog * k_endog
+        assert mod.shock_names == (
+            "factor_shock_1",
+            "error_shock_1",
+            "error_shock_2",
+            "error_shock_3",
+            "exog_shock_x0[y0]",
+            "exog_shock_x0[y1]",
+            "exog_shock_x0[y2]",
         )
 
 
