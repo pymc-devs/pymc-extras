@@ -81,9 +81,10 @@ def test_fit_streams_batches_into_data():
         batch = pm.Data("batch", np.zeros(64))
         pm.Normal("y", theta, 1, observed=batch)
 
-    trainer = Trainer(model=model)
-    trainer.fit(1_000, batches(), random_seed=1)
-    idata = trainer.sample_posterior(1_000, random_seed=2)
+    trainer = Trainer()
+    with model:
+        trainer.fit(1_000, batches(), random_seed=1)
+        idata = trainer.sample_posterior(1_000, random_seed=2)
 
     theta_draws = idata["posterior"].dataset["theta"].values.ravel()
     np.testing.assert_allclose(theta_draws.mean(), 1.0, atol=0.1)
@@ -102,9 +103,10 @@ def test_fit_streams_observations_into_free_rv():
         theta = pm.Normal("theta", 0, 10)
         pm.Normal("y", theta, 1, shape=(64,))
 
-    trainer = Trainer(model=model)
-    trainer.fit(1_000, batches(), observeds=["y"], random_seed=1)
-    idata = trainer.sample_posterior(1_000, random_seed=2)
+    trainer = Trainer()
+    with model:
+        trainer.fit(1_000, batches(), observeds=["y"], random_seed=1)
+        idata = trainer.sample_posterior(1_000, random_seed=2)
 
     # y was observed, so the posterior contains only theta
     assert set(idata["posterior"].dataset.data_vars) == {"theta"}
@@ -132,9 +134,10 @@ def test_fit_rescales_likelihood_when_stream_has_len():
         theta = pm.Normal("theta", 0, 1)
         pm.Normal("y", theta, 1, shape=(50,))
 
-    trainer = Trainer(model=model)
-    trainer.fit(3_000, Loader(), observeds=["y"], random_seed=1)
-    idata = trainer.sample_posterior(2_000, random_seed=2)
+    trainer = Trainer()
+    with model:
+        trainer.fit(3_000, Loader(), observeds=["y"], random_seed=1)
+        idata = trainer.sample_posterior(2_000, random_seed=2)
     theta_draws = idata["posterior"].dataset["theta"].values.ravel()
 
     # Reference: the same fit with the full dataset observed at once
@@ -158,8 +161,9 @@ def test_fit_stops_when_stream_runs_out():
         pm.Normal("y", theta, 1, shape=(4,))
 
     data = ({"y": np.ones(4)} for _ in range(5))
-    trainer = Trainer(model=model)
-    state = trainer.fit(1_000, data, observeds=["y"], random_seed=1)
+    trainer = Trainer()
+    with model:
+        state = trainer.fit(1_000, data, observeds=["y"], random_seed=1)
 
     assert state.step == 5
 
@@ -170,7 +174,8 @@ def test_fit_observeds_without_data_raises():
         pm.Normal("y", theta, 1, shape=(4,))
 
     with pytest.raises(ValueError, match="observeds requires a data iterator"):
-        Trainer(model=model).fit(10, observeds=["y"])
+        with model:
+            Trainer().fit(10, observeds=["y"])
 
 
 def test_discrete_free_rv_raises():
@@ -194,8 +199,9 @@ def test_sample_posterior_with_explicit_model_after_streaming():
         theta = pm.Normal("theta", 0, 10)
         pm.Normal("y", theta, 1, shape=(64,))
 
-    trainer = Trainer(model=model)
-    trainer.fit(500, batches(), observeds=["y"], random_seed=1)
+    trainer = Trainer()
+    with model:
+        trainer.fit(500, batches(), observeds=["y"], random_seed=1)
 
     with model:
         idata = trainer.sample_posterior(500, random_seed=2)

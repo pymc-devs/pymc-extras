@@ -175,7 +175,6 @@ class Trainer:
         optimizer: GradientTransformation | None = None,
         n_particles: int = 1,
         path_derivative_gradient: bool = True,
-        model: Model | None = None,
         backend: str | None = None,
         compile_kwargs: dict | None = None,
         random_seed=None,
@@ -184,7 +183,6 @@ class Trainer:
         self.optimizer = optimizer
         self.n_particles = n_particles
         self.path_derivative_gradient = path_derivative_gradient
-        self.model = model
         self.compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
         self.random_seed = random_seed
         self.state: SVIState | None = None
@@ -384,6 +382,7 @@ class Trainer:
         n: int = 10_000,
         data: Iterable[dict[str, Any]] | None = None,
         *,
+        model: Model | None = None,
         observeds: list | None = None,
         state: SVIState | None = None,
         random_seed=None,
@@ -434,7 +433,7 @@ class Trainer:
         if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
             raise ValueError(f"n must be a positive integer (the number of fit steps), got {n!r}")
 
-        model = modelcontext(self.model)
+        model = modelcontext(model)
 
         stream = None
         if data is not None:
@@ -545,7 +544,7 @@ class Trainer:
         random_seed : optional
             Seed for the posterior draws.
         model : pymc.Model, optional
-            Model context to sample within. Defaults to ``modelcontext(self.model)``.
+            Model context to sample within. Defaults to the active model context.
 
         Returns
         -------
@@ -557,14 +556,14 @@ class Trainer:
         if state is None or self._guide is None:
             raise RuntimeError("The trainer has not been fitted yet.")
 
-        guide_model = self._fit_model if self._fit_model is not None else modelcontext(self.model)
+        guide_model = self._fit_model if self._fit_model is not None else modelcontext(model)
         self._compile_sampling_fn(guide_model, draws)
 
         if random_seed is not None:
             _reseed_function_rngs(self._sampling_fn, random_seed)
 
         params = {name: np.asarray(value) for name, value in state.params.items()}
-        _model = model if model is not None else modelcontext(self.model)
+        _model = model if model is not None else modelcontext(None)
         with _model:
             samples = self._sampling_fn(**params)
 

@@ -69,13 +69,12 @@ def fit_advi(
         optimizer=optimizer,
         n_particles=n_particles,
         path_derivative_gradient=path_derivative_gradient,
-        model=model,
         backend=backend,
         compile_kwargs=compile_kwargs,
         random_seed=init_seed,
     )
-    state = trainer.fit(n_steps, random_seed=train_seed)
-    idata = trainer.sample_posterior(draws, random_seed=sampling_seed)
+    state = trainer.fit(n_steps, model=model, random_seed=train_seed)
+    idata = trainer.sample_posterior(draws, model=model, random_seed=sampling_seed)
     idata["fit"] = DataTree(
         dataset=xr.Dataset({"elbo": ("step", -np.asarray(state.loss_history, dtype=float))})
     )
