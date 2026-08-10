@@ -557,11 +557,13 @@ class BayesianDynamicFactor(PyMCStateSpace):
         names = [
             f"L{lag}.factor_{i}"
             for lag in range(max(self.factor_order, 1))
-            for i in range(self.k_factors)
+            for i in range(1, self.k_factors + 1)
         ]
 
         names.extend(
-            f"L{lag}.error_{i}" for lag in range(self.error_order) for i in range(self.k_endog)
+            f"L{lag}.error_{i}"
+            for lag in range(self.error_order)
+            for i in range(1, self.k_endog + 1)
         )
 
         if self.has_exog:
@@ -582,20 +584,22 @@ class BayesianDynamicFactor(PyMCStateSpace):
         return *hidden_states, *observed_states
 
     def set_shocks(self) -> Shock | tuple[Shock, ...] | None:
-        shock_names = [f"factor_shock_{i}" for i in range(self.k_factors)]
+        shock_names = [f"factor_shock_{i}" for i in range(1, self.k_factors + 1)]
 
         if self.error_order > 0:
-            shock_names.extend(f"error_shock_{i}" for i in range(self.k_endog))
+            shock_names.extend(f"error_shock_{i}" for i in range(1, self.k_endog + 1))
 
         if self.has_exog:
+            # Each exogenous shock drives one coefficient state, so it carries that state's name.
             if self.shared_exog_states:
-                shock_names.extend(f"exog_shock_{i}.shared" for i in range(self.k_exog))
-            else:
-                # Ordered to match the exogenous states in set_states, which are endog-major.
                 shock_names.extend(
-                    f"exog_shock_{i}.endog_{j}"
-                    for j in range(self.k_endog)
-                    for i in range(self.k_exog)
+                    f"exog_shock_{exog_name}[shared]" for exog_name in self.exog_state_names
+                )
+            else:
+                shock_names.extend(
+                    f"exog_shock_{exog_name}[{endog_name}]"
+                    for endog_name in self.endog_names
+                    for exog_name in self.exog_state_names
                 )
 
         return tuple(Shock(name=name) for name in shock_names)
