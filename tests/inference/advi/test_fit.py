@@ -180,3 +180,28 @@ def test_discrete_free_rv_raises():
 
     with pytest.raises(ValueError, match="continuous"):
         AutoDiagonalNormal(model)
+
+
+def test_sample_posterior_with_explicit_model_after_streaming():
+    """sample_posterior uses the active model context when no model argument is given."""
+    rng = np.random.default_rng(0)
+
+    def batches():
+        while True:
+            yield {"y": rng.normal(1.0, 1.0, size=64)}
+
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        pm.Normal("y", theta, 1, shape=(64,))
+
+    trainer = Trainer(model=model)
+    trainer.fit(500, batches(), observeds=["y"], random_seed=1)
+
+    with model:
+        idata = trainer.sample_posterior(500, random_seed=2)
+
+    assert set(idata["posterior"].dataset.data_vars) == {"theta"}
+    theta_draws = idata["posterior"].dataset["theta"].values.ravel()
+    np.testing.assert_allclose(theta_draws.mean(), 1.0, atol=0.15)
+    # The user's model is untouched
+    assert "y" not in [rv.name for rv in model.observed_RVs]

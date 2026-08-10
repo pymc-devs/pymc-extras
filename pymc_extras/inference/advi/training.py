@@ -530,6 +530,7 @@ class Trainer:
         *,
         state: SVIState | None = None,
         random_seed=None,
+        model=None,
     ) -> DataTree:
         """
         Sample from the guide posterior using the trained parameters.
@@ -543,6 +544,8 @@ class Trainer:
             of the last :meth:`fit` call.
         random_seed : optional
             Seed for the posterior draws.
+        model : pymc.Model, optional
+            Model context to sample within. Defaults to ``modelcontext(self.model)``.
 
         Returns
         -------
@@ -554,33 +557,37 @@ class Trainer:
         if state is None or self._guide is None:
             raise RuntimeError("The trainer has not been fitted yet.")
 
-        # The guide was built on the fit model, which differs from the user's model
-        # when fit streamed observations into it with pm.observe
-        model = self._fit_model if self._fit_model is not None else modelcontext(self.model)
-        self._compile_sampling_fn(model, draws)
+        guide_model = self._fit_model if self._fit_model is not None else modelcontext(self.model)
+        self._compile_sampling_fn(guide_model, draws)
 
         if random_seed is not None:
             _reseed_function_rngs(self._sampling_fn, random_seed)
 
         params = {name: np.asarray(value) for name, value in state.params.items()}
-        samples = self._sampling_fn(**params)
+        _model = model if model is not None else modelcontext(self.model)
+        with _model:
+            samples = self._sampling_fn(**params)
+
         posterior = {
             rv.name: np.expand_dims(sample, axis=0)
             for rv, sample in zip(
-                (rv for rv in model.rvs_to_values.keys() if rv not in model.observed_RVs), samples
+                (
+                    rv
+                    for rv in guide_model.rvs_to_values.keys()
+                    if rv not in guide_model.observed_RVs
+                ),
+                samples,
             )
         }
 
-        model_coords, model_dims = coords_and_dims_for_inferencedata(model)
+        model_coords, model_dims = coords_and_dims_for_inferencedata(_model)
         posterior_dataset = dict_to_dataset(
             posterior, coords=model_coords, dims=model_dims, inference_library=pm
         )
 
         idata = DataTree.from_dict({"posterior": posterior_dataset})
-        # Forward the chosen backend so model deterministics are computed on the same
-        # backend as the rest of the fit, not pytensor's default.
         idata = add_data_to_inference_data(
-            idata=idata, progressbar=False, model=model, compile_kwargs=self.compile_kwargs
+            idata=idata, progressbar=False, model=_model, compile_kwargs=self.compile_kwargs
         )
 
         return idata
