@@ -1,11 +1,4 @@
-import re
-
-from collections.abc import Sequence
-from functools import partial
-from typing import Any
-
 import numpy as np
-import pandas as pd
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
@@ -13,31 +6,19 @@ import pytest
 
 from numpy.testing import assert_allclose
 from pymc.exceptions import ImputationWarning
-from pymc.testing import mock_sample_setup_and_teardown
-from pytensor.compile import SharedVariable
-from pytensor.graph.traversal import graph_inputs
 
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
-from pymc_extras.statespace.utils.constants import (
-    FILTER_OUTPUT_NAMES,
-    MATRIX_NAMES,
-    SMOOTHER_OUTPUT_NAMES,
-)
 from tests.statespace.shared_fixtures import (
     rng,
 )
 from tests.statespace.test_utilities import (
     fast_eval,
-    load_nile_test_data,
     make_statespace_mod,
     make_test_inputs,
 )
 
 floatX = pytensor.config.floatX
-nile = load_nile_test_data()
-ALL_SAMPLE_OUTPUTS = MATRIX_NAMES + FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES
-mock_pymc_sample = pytest.fixture(scope="module")(mock_sample_setup_and_teardown)
 
 
 def test_invalid_filter_name_raises():

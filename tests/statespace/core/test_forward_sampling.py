@@ -3,7 +3,6 @@ import re
 import numpy as np
 import pandas as pd
 import pymc as pm
-import pytensor
 import pytest
 
 from numpy.testing import assert_allclose
@@ -14,12 +13,7 @@ from pymc_extras.statespace.utils.constants import (
     MATRIX_NAMES,
     SMOOTHER_OUTPUT_NAMES,
 )
-from tests.statespace.test_utilities import (
-    load_nile_test_data,
-)
 
-floatX = pytensor.config.floatX
-nile = load_nile_test_data()
 ALL_SAMPLE_OUTPUTS = MATRIX_NAMES + FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES
 
 

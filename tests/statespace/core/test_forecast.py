@@ -3,7 +3,6 @@ from functools import partial
 import numpy as np
 import pandas as pd
 import pymc as pm
-import pytensor
 import pytest
 
 from numpy.testing import assert_allclose
@@ -15,7 +14,6 @@ from tests.statespace.test_utilities import (
     make_statespace_mod,
 )
 
-floatX = pytensor.config.floatX
 nile = load_nile_test_data()
 
 
