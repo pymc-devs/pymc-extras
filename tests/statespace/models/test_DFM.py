@@ -262,7 +262,7 @@ def test_DFM_exog_betas_random_walk(n_obs, n_runs):
         endog_names=["endogenous_0", "endogenous_1"],
         error_order=1,
         error_var=False,
-        exog_names=["exogenous_0", "exogenous_1"],
+        exog_state_names=["exogenous_0", "exogenous_1"],
         shared_exog_states=False,
         exog_innovations=True,
         error_cov_type="diagonal",
@@ -319,7 +319,7 @@ def test_DFM_exog_shared_vs_not(shared):
         factor_order=1,
         endog_names=["endogenous_0", "endogenous_1"],
         error_order=1,
-        exog_names=["exogenous_0", "exogenous_1"],
+        exog_state_names=["exogenous_0", "exogenous_1"],
         shared_exog_states=shared,
         exog_innovations=False,
         error_cov_type="diagonal",
@@ -572,7 +572,7 @@ class TestDFMConfiguration:
             endog_names=["y0", "y1", "y2"],
             error_order=error_order,
             error_var=error_var,
-            exog_names=["x0", "x1"],
+            exog_state_names=["x0", "x1"],
             shared_exog_states=shared_exog_states,
             exog_innovations=True,
             error_cov_type="diagonal",
@@ -663,7 +663,7 @@ class TestDFMConfiguration:
             endog_names=["y0", "y1", "y2"],
             error_order=error_order,
             error_var=error_var,
-            exog_names=["x0"],
+            exog_state_names=["x0"],
             shared_exog_states=shared_exog_states,
             exog_innovations=False,
             error_cov_type="scalar",
@@ -835,12 +835,12 @@ def test_lagged_state_names_match_transition_shifts(
 def test_exog_state_names_match_design_columns(shared_exog_states, rng):
     """A state called ``beta_x[y]`` has to be the column of Z carrying x onto series y."""
     endog_names = ["y0", "y1", "y2"]
-    exog_names = ["a", "b"]
+    exog_state_names = ["a", "b"]
     mod = BayesianDynamicFactor(
         k_factors=1,
         factor_order=1,
         endog_names=endog_names,
-        exog_names=exog_names,
+        exog_state_names=exog_state_names,
         shared_exog_states=shared_exog_states,
         verbose=False,
     )
@@ -849,7 +849,7 @@ def test_exog_state_names_match_design_columns(shared_exog_states, rng):
     Z = evaluate_matrices(mod, random_param_values(mod, rng), data_dict={"exog_data": exog_data})[
         "Z"
     ][0]
-    exog_values = dict(zip(exog_names, exog_data[0]))
+    exog_values = dict(zip(exog_state_names, exog_data[0]))
 
     beta_states = [(i, name) for i, name in enumerate(mod.state_names) if name.startswith("beta_")]
     assert len(beta_states) == mod.k_exog_states
@@ -961,7 +961,7 @@ def test_exog_model_builds_from_advertised_dims(shared_exog_states, rng):
         k_factors=1,
         factor_order=1,
         endog_names=["y0", "y1", "y2"],
-        exog_names=["a", "b"],
+        exog_state_names=["a", "b"],
         shared_exog_states=shared_exog_states,
         exog_innovations=True,
         verbose=False,

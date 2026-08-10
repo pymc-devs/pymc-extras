@@ -308,7 +308,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         k_factors: int,
         factor_order: int,
         endog_names: Sequence[str] | None = None,
-        exog_names: Sequence[str] | None = None,
+        exog_state_names: Sequence[str] | None = None,
         shared_exog_states: bool = False,
         exog_innovations: bool = False,
         error_order: int = 0,
@@ -337,7 +337,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         endog_names : Sequence of str, optional
             Names of the observed time series.
 
-        exog_names : Sequence of str, optional
+        exog_state_names : Sequence of str, optional
             Names of the exogenous variables.
 
         shared_exog_states: bool, optional
@@ -395,15 +395,15 @@ class BayesianDynamicFactor(PyMCStateSpace):
         self.error_var = error_var
         self.error_cov_type = error_cov_type
 
-        if exog_names is not None:
+        if exog_state_names is not None:
             self.shared_exog_states = shared_exog_states
             self.exog_innovations = exog_innovations
             validate_names(
-                exog_names, var_name="exog_names", optional=True
+                exog_state_names, var_name="exog_state_names", optional=True
             )  # Not sure if this adds anything
-            k_exog = len(exog_names)
+            k_exog = len(exog_state_names)
             self.k_exog = k_exog
-            self.exog_names = exog_names
+            self.exog_state_names = exog_state_names
         else:
             self.k_exog = 0
 
@@ -583,12 +583,12 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         if self.exog_flag:
             if self.shared_exog_states:
-                names.extend([f"beta_{exog_name}[shared]" for exog_name in self.exog_names])
+                names.extend([f"beta_{exog_name}[shared]" for exog_name in self.exog_state_names])
             else:
                 names.extend(
                     f"beta_{exog_name}[{endog_name}]"
                     for endog_name in self.endog_names
-                    for exog_name in self.exog_names
+                    for exog_name in self.exog_state_names
                 )
 
         hidden_states = [State(name=name, observed=False, shared=False) for name in names]
@@ -656,7 +656,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         # Exogenous coords
         if self.exog_flag:
             k_non_exog_states = self.k_states - self.k_exog_states
-            coords.append(Coord(dimension=EXOG_STATE_DIM, labels=tuple(self.exog_names)))
+            coords.append(Coord(dimension=EXOG_STATE_DIM, labels=tuple(self.exog_state_names)))
             coords.append(
                 Coord(dimension=EXOG_COEF_STATE_DIM, labels=self.state_names[k_non_exog_states:])
             )
