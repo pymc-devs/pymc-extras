@@ -105,7 +105,7 @@ def test_build_statespace_graph(pymc_mod):
         assert name in [x.name for x in pymc_mod.deterministics]
 
 
-def test_build_smoother_graph(ss_mod, pymc_mod):
+def test_build_smoother_graph(pymc_mod):
     names = ["smoothed_states", "smoothed_covariances"]
     for name in names:
         assert name in [x.name for x in pymc_mod.deterministics]
