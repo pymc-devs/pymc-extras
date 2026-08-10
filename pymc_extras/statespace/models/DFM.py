@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 
+import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
@@ -27,6 +28,76 @@ from pymc_extras.statespace.utils.constants import (
 )
 
 floatX = pytensor.config.floatX
+
+
+def _make_var_companion_matrix(ar_coeffs, k_series: int, p: int):
+    r"""
+    Build the VAR(p) companion matrix for a block of jointly modeled series.
+
+    Parameters
+    ----------
+    ar_coeffs : TensorVariable
+        Autoregressive coefficients of shape ``(k_series, p * k_series)``, the horizontal
+        concatenation :math:`[A_1 | A_2 | \cdots | A_p]`.
+    k_series : int
+        Number of series in the block.
+    p : int
+        Lag order.
+
+    Returns
+    -------
+    companion : TensorVariable
+        Companion matrix of shape ``(k_series * p, k_series * p)``, ordered lag-major so the first
+        ``k_series`` rows are the current values of each series.
+    """
+    size = k_series * p
+    companion = pt.zeros((size, size), dtype=floatX)
+    companion = companion[:k_series].set(ar_coeffs)
+
+    if p > 1:
+        companion = companion[k_series:, : k_series * (p - 1)].set(
+            pt.eye(k_series * (p - 1), dtype=floatX)
+        )
+
+    return companion
+
+
+def _make_independent_ar_companion_matrix(ar_coeffs, k_series: int, p: int):
+    r"""
+    Build the companion matrix for ``k_series`` independent AR(p) processes.
+
+    Each series evolves on its own coefficients with no cross-series terms, but the states are
+    interleaved lag-major, matching :func:`_make_var_companion_matrix`.
+
+    Parameters
+    ----------
+    ar_coeffs : TensorVariable
+        Autoregressive coefficients of shape ``(k_series, p)``, one row per series.
+    k_series : int
+        Number of independent series.
+    p : int
+        Lag order.
+
+    Returns
+    -------
+    companion : TensorVariable
+        Companion matrix of shape ``(k_series * p, k_series * p)``.
+    """
+    size = k_series * p
+    companion = pt.zeros((size, size), dtype=floatX)
+
+    # Row j of the first block row carries series j's own coefficients, each placed in the column
+    # holding that lag's copy of series j. Flattened lag-major, those are ar_coeffs.T.ravel().
+    rows = np.tile(np.arange(k_series), p)
+    cols = np.arange(size)
+    companion = companion[rows, cols].set(ar_coeffs.T.ravel())
+
+    if p > 1:
+        companion = companion[k_series:, : k_series * (p - 1)].set(
+            pt.eye(k_series * (p - 1), dtype=floatX)
+        )
+
+    return companion
 
 
 class BayesianDynamicFactor(PyMCStateSpace):
@@ -570,231 +641,33 @@ class BayesianDynamicFactor(PyMCStateSpace):
         return tuple(coords)
 
     def make_symbolic_graph(self):
-        if not self.exog_flag:
-            x0 = self.make_and_register_variable("x0", shape=(self.k_states,), dtype=floatX)
-        else:
-            initial_factor_loadings = self.make_and_register_variable(
+        if self.exog_flag:
+            # Regression coefficients are states, so their prior is the tail of the initial state.
+            initial_factor_states = self.make_and_register_variable(
                 "x0", shape=(self.k_states - self.k_exog_states,), dtype=floatX
             )
             initial_betas = self.make_and_register_variable(
                 "beta", shape=(self.k_exog_states,), dtype=floatX
             )
-            x0 = pt.concatenate([initial_factor_loadings, initial_betas], axis=0)
+            x0 = pt.concatenate([initial_factor_states, initial_betas], axis=0)
+        else:
+            x0 = self.make_and_register_variable("x0", shape=(self.k_states,), dtype=floatX)
 
         self.ssm["initial_state", :] = x0
 
-        # Initial covariance
         P0 = self.make_and_register_variable(
             "P0", shape=(self.k_states, self.k_states), dtype=floatX
         )
         self.ssm["initial_state_cov", :, :] = P0
 
-        # Design matrix (Z)
-        # Construction with block structure:
-        # When factor_order <= 1 and error_order = 0:
-        #   [ A ]               A is the factor loadings matrix with shape (k_endog, k_factors)
-        #
-        # When factor_order > 1, add block of zeros for the factors lags:
-        #   [ A | 0 ]           the zero block has shape (k_endog, k_factors * (factor_order - 1))
-        #
-        # When error_order > 0, add identity matrix and additional zero block for errors lags:
-        #   [ A | 0 | I | 0 ]   I is the identity matrix (k_endog, k_endog) and the final zero block
-        #                       has shape (k_endog, k_endog * (error_order - 1))
-        #
-        # When exog_flag=True, exogenous data (exog_data) is included and the design
-        # matrix becomes 3D with the first dimension indexing time:
-        #   - shared_exog_states=True: exog_data is broadcast across all endogenous series
-        #       → shape (n_timepoints, k_endog, k_exog)
-        #   - shared_exog_states=False: each endogenous series gets its own exog block
-        #       → block-diagonal structure with shape (n_timepoints, k_endog, k_exog * k_endog)
-        # In this case, the base design matrix (factors + errors) is repeated over
-        # time and concatenated with the exogenous block. The final design matrix
-        # has shape (n_timepoints, k_endog, n_columns) and combines all components.
-        factor_loadings = self.make_and_register_variable(
-            "factor_loadings", shape=(self.k_endog, self.k_factors), dtype=floatX
-        )
-        # Add factor loadings (A matrix)
-        matrix_parts = [factor_loadings]
-
-        # Add zero block for the factors lags when factor_order > 1
-        if self.factor_order > 1:
-            matrix_parts.append(
-                pt.zeros((self.k_endog, self.k_factors * (self.factor_order - 1)), dtype=floatX)
-            )
-        # Add identity and zero blocks for error lags when error_order > 0
-        if self.error_order > 0:
-            error_matrix = pt.eye(self.k_endog, dtype=floatX)
-            matrix_parts.append(error_matrix)
-            matrix_parts.append(
-                pt.zeros((self.k_endog, self.k_endog * (self.error_order - 1)), dtype=floatX)
-            )
-        if len(matrix_parts) == 1:
-            design_matrix = factor_loadings * 1.0  # copy to ensure a new PyTensor variable
-            design_matrix.name = "design"
-            # TODO: This is a hack to ensure the design matrix isn't identically equal to the factor_loadings when error_order=0 and factor_order=0
-        else:
-            design_matrix = pt.concatenate(matrix_parts, axis=1)
-            design_matrix.name = "design"
-        # Handle exogenous variables (if any)
-        if self.exog_flag:
-            exog_data = self.make_and_register_data("exog_data", shape=(None, self.k_exog))
-            if self.shared_exog_states:
-                # Shared exogenous states: same exog data is used across all endogenous variables
-                # Shape becomes (n_timepoints, k_endog, k_exog)
-                Z_exog = pt.join(1, *[pt.expand_dims(exog_data, 1) for _ in range(self.k_endog)])
-            else:
-                # Separate exogenous states: each endogenous variable gets its own exog block
-                # Create block-diagonal structure and reshape to (n_timepoints, k_endog, k_exog * k_endog)
-                Z_exog = pt.linalg.block_diag(
-                    *[pt.expand_dims(exog_data, 1) for _ in range(self.k_endog)]
-                )
-
-            # Repeat base design_matrix over time dimension to match exogenous time series
-            n_timepoints = Z_exog.shape[0]
-            design_matrix_time = pt.tile(design_matrix, (n_timepoints, 1, 1))
-            # Concatenate the repeated design matrix with exogenous matrix along the last axis
-            # Final shape: (n_timepoints, k_endog, n_columns + n_exog_columns)
-            design_matrix = pt.concatenate([design_matrix_time, Z_exog], axis=2)
-
-        self.ssm["design"] = design_matrix
+        self.ssm["design"] = self._build_design_matrix()
         if self.exog_flag:
             self.ssm.declare_time_varying("design")
 
-        # Transition matrix (T)
-        # Construction with block-diagonal structure:
-        # Each latent component (factors, errors, exogenous states) contributes its own transition block,
-        # and the full transition matrix is assembled with block_diag.
-        #   T = block_diag(A, B, C)
-        #
-        # - Factors (block A):
-        #   If factor_order > 0, the factor AR coefficients are organized into a
-        #   VAR(p) companion matrix of size (k_factors * factor_order, k_factors * factor_order).
-        #   This block shifts lagged factor states and applies AR coefficients.
-        #   If factor_order = 0, a zero matrix is used instead.
-        #
-        # - Errors (block B):
-        #   If error_order > 0:
-        #     * error_var=True → build a full VAR(p) companion matrix (cross-series correlations allowed).
-        #     * error_var=False → build independent AR(p) companion matrices (no cross-series effects).
-        #
-        # - Exogenous states (block C):
-        #   If exog_flag=True, exogenous states are either constant or follow a random walk, modeled with an identity
-        #       transition block of size (k_exog_states, k_exog_states).
-        #
-        # The final transition matrix is block-diagonal, combining all active components:
-        #   Transition = block_diag(Factors, Errors, Exogenous)
+        self.ssm["transition", :, :] = pt.linalg.block_diag(*self._build_transition_blocks())
 
-        # auxiliary functions to build transition matrix block
-        def build_var_block_matrix(ar_coeffs, k_series, p):
-            """
-            Build the VAR(p) companion matrix for the factors.
+        self._build_selection_matrix()
 
-            ar_coeffs: PyTensor matrix of shape (k_series, p * k_series)
-                    [A1 | A2 | ... | Ap] horizontally concatenated.
-            k_series: number of series
-            p: lag order
-            """
-            size = k_series * p
-            block = pt.zeros((size, size), dtype=floatX)
-
-            # First block row: the AR coefficient matrices for each lag
-            block = block[0:k_series, 0 : k_series * p].set(ar_coeffs)
-
-            # Sub-diagonal identity blocks (shift structure)
-            if p > 1:
-                # Create the identity pattern for all sub-diagonal blocks
-                identity_pattern = pt.eye(k_series * (p - 1), dtype=floatX)
-                block = block[k_series:, : k_series * (p - 1)].set(identity_pattern)
-
-            return block
-
-        def build_independent_var_block_matrix(ar_coeffs, k_series, p):
-            """
-            Build a VAR(p)-style companion matrix for independent AR(p) processes
-            with interleaved state ordering:
-            (x1(t), x2(t), ..., x1(t-1), x2(t-1), ...).
-
-            ar_coeffs: PyTensor matrix of shape (k_series, p)
-            k_series: number of independent series
-            p: lag order
-            """
-            size = k_series * p
-            block = pt.zeros((size, size), dtype=floatX)
-
-            # First block row: AR coefficients per series (block diagonal)
-            for j in range(k_series):
-                for lag in range(p):
-                    col_idx = lag * k_series + j
-                    block = pt.set_subtensor(block[j, col_idx], ar_coeffs[j, lag])
-
-            # Sub-diagonal identity blocks (shift)
-            if p > 1:
-                identity_pattern = pt.eye(k_series * (p - 1), dtype=floatX)
-                block = pt.set_subtensor(block[k_series:, : k_series * (p - 1)], identity_pattern)
-            return block
-
-        transition_blocks = []
-        # Block A: Factors
-        if self.factor_order > 0:
-            factor_ar = self.make_and_register_variable(
-                "factor_ar",
-                shape=(self.k_factors, self.factor_order * self.k_factors),
-                dtype=floatX,
-            )
-            transition_blocks.append(
-                build_var_block_matrix(factor_ar, self.k_factors, self.factor_order)
-            )
-        else:
-            transition_blocks.append(pt.zeros((self.k_factors, self.k_factors), dtype=floatX))
-        # Block B: Errors
-        if self.error_order > 0 and self.error_var:
-            error_ar = self.make_and_register_variable(
-                "error_ar", shape=(self.k_endog, self.error_order * self.k_endog), dtype=floatX
-            )
-            transition_blocks.append(
-                build_var_block_matrix(error_ar, self.k_endog, self.error_order)
-            )
-        elif self.error_order > 0 and not self.error_var:
-            error_ar = self.make_and_register_variable(
-                "error_ar", shape=(self.k_endog, self.error_order), dtype=floatX
-            )
-            transition_blocks.append(
-                build_independent_var_block_matrix(error_ar, self.k_endog, self.error_order)
-            )
-        # Block C: Exogenous states
-        if self.exog_flag:
-            transition_blocks.append(pt.eye(self.k_exog_states, dtype=floatX))
-
-        self.ssm["transition", :, :] = pt.linalg.block_diag(*transition_blocks)
-
-        # Selection matrix (R)
-        for i in range(self.k_factors):
-            self.ssm["selection", i, i] = 1.0
-
-        if self.error_order > 0:
-            for i in range(self.k_endog):
-                row = max(self.factor_order, 1) * self.k_factors + i
-                col = self.k_factors + i
-                self.ssm["selection", row, col] = 1.0
-
-        if self.exog_flag and self.exog_innovations:
-            row_start = self.k_states - self.k_exog_states
-            row_end = self.k_states
-
-            if self.error_order > 0:
-                col_start = self.k_factors + self.k_endog
-                col_end = self.k_factors + self.k_endog + self.k_exog_states
-            else:
-                col_start = self.k_factors
-                col_end = self.k_factors + self.k_exog_states
-
-            self.ssm["selection", row_start:row_end, col_start:col_end] = pt.eye(
-                self.k_exog_states, dtype=floatX
-            )
-
-        factor_cov = pt.eye(self.k_factors, dtype=floatX)
-
-        # Handle error_sigma and error_cov depending on error_cov_type
         if self.error_cov_type == "scalar":
             error_sigma = self.make_and_register_variable("error_sigma", shape=(), dtype=floatX)
             error_cov = pt.eye(self.k_endog) * error_sigma
@@ -808,33 +681,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 "error_cov", shape=(self.k_endog, self.k_endog), dtype=floatX
             )
 
-        # State covariance matrix (Q)
-        if self.error_order > 0:
-            if self.exog_flag and self.exog_innovations:
-                # Include AR noise in state vector
-                beta_sigma = self.make_and_register_variable(
-                    "beta_sigma", shape=(self.k_exog_states,), dtype=floatX
-                )
-                exog_cov = pt.diag(beta_sigma)
-                self.ssm["state_cov", :, :] = pt.linalg.block_diag(factor_cov, error_cov, exog_cov)
-            elif self.exog_flag and not self.exog_innovations:
-                exog_cov = pt.zeros((self.k_exog_states, self.k_exog_states), dtype=floatX)
-                self.ssm["state_cov", :, :] = pt.linalg.block_diag(factor_cov, error_cov, exog_cov)
-            elif not self.exog_flag:
-                self.ssm["state_cov", :, :] = pt.linalg.block_diag(factor_cov, error_cov)
-        else:
-            if self.exog_flag and self.exog_innovations:
-                beta_sigma = self.make_and_register_variable(
-                    "beta_sigma", shape=(self.k_exog_states,), dtype=floatX
-                )
-                exog_cov = pt.diag(beta_sigma)
-                self.ssm["state_cov", :, :] = pt.linalg.block_diag(factor_cov, exog_cov)
-            elif self.exog_flag and not self.exog_innovations:
-                exog_cov = pt.zeros((self.k_exog_states, self.k_exog_states), dtype=floatX)
-                self.ssm["state_cov", :, :] = pt.linalg.block_diag(factor_cov, exog_cov)
-            elif not self.exog_flag:
-                # Only latent factor in the state
-                self.ssm["state_cov", :, :] = factor_cov
+        self._build_state_cov(error_cov)
 
         # Observation covariance matrix (H)
         if self.error_order > 0:
@@ -856,3 +703,138 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 self.ssm["obs_cov", :, :] = pt.diag(pt.sqrt(total_obs_var))
             else:
                 self.ssm["obs_cov", :, :] = pt.diag(error_sigma)
+
+    def _build_design_matrix(self):
+        r"""
+        Assemble the design matrix :math:`Z`.
+
+        The factor and error components give the block row :math:`[\Lambda | 0 | I | 0]`, where
+        :math:`\Lambda` are the factor loadings, :math:`I` picks out the current error states, and
+        the zero blocks cover lagged states. With exogenous regressors the result gains a leading
+        time axis and the exogenous block is concatenated on the right.
+        """
+        factor_loadings = self.make_and_register_variable(
+            "factor_loadings", shape=(self.k_endog, self.k_factors), dtype=floatX
+        )
+        matrix_parts = [factor_loadings]
+
+        if self.factor_order > 1:
+            matrix_parts.append(
+                pt.zeros((self.k_endog, self.k_factors * (self.factor_order - 1)), dtype=floatX)
+            )
+
+        if self.error_order > 0:
+            matrix_parts.append(pt.eye(self.k_endog, dtype=floatX))
+            matrix_parts.append(
+                pt.zeros((self.k_endog, self.k_endog * (self.error_order - 1)), dtype=floatX)
+            )
+
+        if len(matrix_parts) == 1:
+            # Copy so the design matrix is its own node rather than an alias of the registered
+            # factor_loadings variable, which the matrix substitution machinery relies on.
+            design_matrix = factor_loadings.copy()
+        else:
+            design_matrix = pt.concatenate(matrix_parts, axis=1)
+        design_matrix.name = "design"
+
+        if not self.exog_flag:
+            return design_matrix
+
+        exog_data = self.make_and_register_data("exog_data", shape=(None, self.k_exog))
+        if self.shared_exog_states:
+            # One set of coefficients seen by every observed series: (time, k_endog, k_exog).
+            Z_exog = pt.join(1, *[pt.expand_dims(exog_data, 1) for _ in range(self.k_endog)])
+        else:
+            # Each observed series gets its own block of coefficients, laid out endog-major:
+            # (time, k_endog, k_exog * k_endog).
+            Z_exog = pt.linalg.block_diag(
+                *[pt.expand_dims(exog_data, 1) for _ in range(self.k_endog)]
+            )
+
+        design_matrix_time = pt.tile(design_matrix, (Z_exog.shape[0], 1, 1))
+        design_matrix = pt.concatenate([design_matrix_time, Z_exog], axis=2)
+        design_matrix.name = "design"
+
+        return design_matrix
+
+    def _build_transition_blocks(self) -> list[pt.TensorVariable]:
+        r"""
+        Build the per-component blocks of the transition matrix :math:`T`.
+
+        Returns
+        -------
+        blocks : list of TensorVariable
+            Companion matrices for the factor and error components and, when exogenous regressors
+            are present, an identity block for the coefficient states. Assembling these with
+            :func:`pytensor.tensor.linalg.block_diag` gives :math:`T`.
+        """
+        blocks = []
+
+        if self.factor_order > 0:
+            factor_ar = self.make_and_register_variable(
+                "factor_ar",
+                shape=(self.k_factors, self.factor_order * self.k_factors),
+                dtype=floatX,
+            )
+            blocks.append(_make_var_companion_matrix(factor_ar, self.k_factors, self.factor_order))
+        else:
+            blocks.append(pt.zeros((self.k_factors, self.k_factors), dtype=floatX))
+
+        if self.error_order > 0:
+            if self.error_var:
+                error_ar = self.make_and_register_variable(
+                    "error_ar", shape=(self.k_endog, self.error_order * self.k_endog), dtype=floatX
+                )
+                blocks.append(_make_var_companion_matrix(error_ar, self.k_endog, self.error_order))
+            else:
+                error_ar = self.make_and_register_variable(
+                    "error_ar", shape=(self.k_endog, self.error_order), dtype=floatX
+                )
+                blocks.append(
+                    _make_independent_ar_companion_matrix(error_ar, self.k_endog, self.error_order)
+                )
+
+        # Exogenous coefficients are constant, or a random walk when exog_innovations is set. Either
+        # way the transition is the identity; only the shock loading differs.
+        if self.exog_flag:
+            blocks.append(pt.eye(self.k_exog_states, dtype=floatX))
+
+        return blocks
+
+    def _build_selection_matrix(self) -> None:
+        """Wire each shock into the state it enters, in the order the shocks are declared."""
+        for i in range(self.k_factors):
+            self.ssm["selection", i, i] = 1.0
+
+        if self.error_order > 0:
+            for i in range(self.k_endog):
+                row = max(self.factor_order, 1) * self.k_factors + i
+                col = self.k_factors + i
+                self.ssm["selection", row, col] = 1.0
+
+        if self.exog_flag and self.exog_innovations:
+            col_start = self.k_factors + (self.k_endog if self.error_order > 0 else 0)
+            self.ssm[
+                "selection",
+                self.k_states - self.k_exog_states : self.k_states,
+                col_start : col_start + self.k_exog_states,
+            ] = pt.eye(self.k_exog_states, dtype=floatX)
+
+    def _build_state_cov(self, error_cov) -> None:
+        r"""Build the state covariance :math:`Q` from the blocks the model actually has."""
+        # Factor innovations are standardized to identity in order to identify the factors.
+        blocks = [pt.eye(self.k_factors, dtype=floatX)]
+
+        if self.error_order > 0:
+            blocks.append(error_cov)
+
+        if self.exog_flag:
+            if self.exog_innovations:
+                beta_sigma = self.make_and_register_variable(
+                    "beta_sigma", shape=(self.k_exog_states,), dtype=floatX
+                )
+                blocks.append(pt.diag(beta_sigma))
+            else:
+                blocks.append(pt.zeros((self.k_exog_states, self.k_exog_states), dtype=floatX))
+
+        self.ssm["state_cov", :, :] = pt.linalg.block_diag(*blocks)
