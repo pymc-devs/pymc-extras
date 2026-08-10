@@ -125,7 +125,7 @@ class PyMCStateSpace:
     missing_fill_value: float, optional
         Sentinel used to mask missing observations, so PyMC's imputation machinery is not triggered. Set this only
         if your data legitimately contains the default sentinel. Post-estimation graphs are built with this same
-        value. Default -9999.0.
+        value. Default None, which the filter resolves to -9999.0.
 
     Notes
     -----
