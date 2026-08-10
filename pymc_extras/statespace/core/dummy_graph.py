@@ -123,6 +123,8 @@ def kalman_filter_outputs_from_dummy_graph(
         R,
         H,
         Q,
+        missing_fill_value=ss_mod.missing_fill_value,
+        cov_jitter=ss_mod.cov_jitter,
         time_varying_names=ss_mod.ssm.time_varying_names,
     )
 
@@ -138,6 +140,7 @@ def kalman_filter_outputs_from_dummy_graph(
         Q,
         filtered_states,
         filtered_covariances,
+        cov_jitter=ss_mod.cov_jitter,
         time_varying_names=ss_mod.ssm.time_varying_names,
     )
 

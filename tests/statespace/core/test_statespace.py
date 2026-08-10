@@ -9,6 +9,7 @@ from pymc.exceptions import ImputationWarning
 
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
+from pymc_extras.statespace.utils.constants import MISSING_FILL
 from tests.statespace.shared_fixtures import (
     rng,
 )
@@ -122,3 +123,48 @@ def test_param_dims_coords(ss_mod_multi_component):
             assert i == len(ss_mod_multi_component.coords[s]), (
                 f"Mismatch between shape {i} and dimension {s}"
             )
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_missing_fill_value_reaches_post_estimation_graphs(rng):
+    """Post-estimation graphs must mask missing values with the sentinel the fit used.
+
+    Every observation here is the library's default sentinel but is declared real, via a custom
+    ``missing_fill_value``. A post-estimation graph that fell back to the default would treat the whole
+    series as missing and return the prior rather than states tracking the data.
+    """
+    data = np.full((20, 1), MISSING_FILL, dtype=floatX)
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(
+        verbose=False, missing_fill_value=-1234.0
+    )
+
+    with pm.Model(coords=ss_mod.coords):
+        pm.Normal("initial_trend", mu=0.0, sigma=1.0, shape=(1,))
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX))
+        pm.Exponential("sigma_trend", 1, shape=(1,))
+        ss_mod.build_statespace_graph(data=data)
+        idata = pm.sample_prior_predictive(draws=5, random_seed=rng)
+
+    conditional = ss_mod.sample_conditional_prior(idata, random_seed=rng)
+    filtered_level = conditional["filtered_prior"].values[..., -1, 0]
+
+    assert_allclose(filtered_level, MISSING_FILL, rtol=1e-4)
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_filter_config_is_set_on_the_model_and_overridable_at_build():
+    """Filter settings live on the model; a build-time argument overrides them."""
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(
+        verbose=False, cov_jitter=1e-4, missing_fill_value=-1234.0
+    )
+    assert ss_mod.cov_jitter == 1e-4
+    assert ss_mod.missing_fill_value == -1234.0
+
+    with pm.Model(coords=ss_mod.coords):
+        pm.Normal("initial_trend", shape=(1,))
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX))
+        pm.Exponential("sigma_trend", 1, shape=(1,))
+        ss_mod.build_statespace_graph(data=np.zeros((20, 1), dtype=floatX), cov_jitter=1e-2)
+
+    assert ss_mod.cov_jitter == 1e-2
+    assert ss_mod.missing_fill_value == -1234.0
