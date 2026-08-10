@@ -196,16 +196,11 @@ class Trainer:
         self._sampling_fn: TrainingFn | None = None
         self._sampling_draws: int | None = None
 
-    def _resolve_guide(self, model: Model) -> None:
-        if self._guide is None:
-            # Sacrificial detached model context: a guide built naively with a plain
-            # Model() inside the user's model context lands here instead of writing
-            # into their model
-            with Model(model=None):
-                if callable(self.guide):
-                    self._guide = self.guide(model)
-                else:
-                    self._guide = AutoDiagonalNormal(model, random_seed=self.random_seed)
+    def _build_guide(self, model: Model) -> AutoGuideModel:
+        with Model(model=None):
+            if callable(self.guide):
+                return self.guide(model)
+            return AutoDiagonalNormal(model, random_seed=self.random_seed)
 
     def _compile_sampling_fn(self, model: Model, draws: int) -> None:
         """Compile the posterior sampling function, reusing a previous one when draws match."""
@@ -454,7 +449,8 @@ class Trainer:
             # and compiled functions belong to it, not to the original model
             model = self._fit_model
 
-        self._resolve_guide(model)
+        if self._guide is None:
+            self._guide = self._build_guide(model)
 
         if self.optimizer is None:
             self.optimizer = clipped_adam()
