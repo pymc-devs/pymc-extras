@@ -849,3 +849,90 @@ def test_exog_state_names_match_design_columns(shared_exog_states, rng):
             expected[endog_names.index(endog_name)] = value
 
         assert_allclose(Z[:, column], expected, err_msg=f"state {name!r} loads the wrong series")
+
+
+def test_unstructured_error_cov_without_error_states():
+    """With error_order=0 the idiosyncratic error has no state, so it is observation noise."""
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=["y0", "y1", "y2"],
+        error_order=0,
+        error_cov_type="unstructured",
+        verbose=False,
+    )
+    error_cov = np.array([[1.0, 0.2, 0.0], [0.2, 1.5, 0.1], [0.0, 0.1, 2.0]], dtype=floatX)
+    matrices = evaluate_matrices(
+        mod,
+        {
+            "x0": np.zeros(mod.k_states, dtype=floatX),
+            "P0": np.eye(mod.k_states, dtype=floatX),
+            "factor_loadings": np.ones((3, 1), dtype=floatX),
+            "factor_ar": np.array([[0.5]], dtype=floatX),
+            "error_cov": error_cov,
+        },
+    )
+
+    assert_allclose(matrices["H"], error_cov)
+    assert_allclose(matrices["Q"], np.eye(1))
+
+
+def test_scalar_error_cov_without_error_states():
+    """A scalar error variance spreads over the observation covariance diagonal."""
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=["y0", "y1", "y2"],
+        error_order=0,
+        error_cov_type="scalar",
+        verbose=False,
+    )
+    matrices = evaluate_matrices(
+        mod,
+        {
+            "x0": np.zeros(mod.k_states, dtype=floatX),
+            "P0": np.eye(mod.k_states, dtype=floatX),
+            "factor_loadings": np.ones((3, 1), dtype=floatX),
+            "factor_ar": np.array([[0.5]], dtype=floatX),
+            "error_sigma": np.array(0.75, dtype=floatX),
+        },
+    )
+
+    assert_allclose(matrices["H"], np.eye(3) * 0.75)
+
+
+def test_measurement_error_adds_to_idiosyncratic_error():
+    """error_sigma and sigma_obs are both variances, so H is their sum on the diagonal."""
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=["y0", "y1", "y2"],
+        error_order=0,
+        error_cov_type="diagonal",
+        measurement_error=True,
+        verbose=False,
+    )
+    matrices = evaluate_matrices(
+        mod,
+        {
+            "x0": np.zeros(mod.k_states, dtype=floatX),
+            "P0": np.eye(mod.k_states, dtype=floatX),
+            "factor_loadings": np.ones((3, 1), dtype=floatX),
+            "factor_ar": np.array([[0.5]], dtype=floatX),
+            "error_sigma": np.array([1.0, 2.0, 3.0], dtype=floatX),
+            "sigma_obs": np.array([0.5, 0.25, 0.125], dtype=floatX),
+        },
+    )
+
+    assert_allclose(matrices["H"], np.diag([1.5, 2.25, 3.125]))
+
+
+def test_dfm_rejects_unknown_error_cov_type():
+    with pytest.raises(ValueError, match="error_cov_type must be one of"):
+        BayesianDynamicFactor(
+            k_factors=1,
+            factor_order=1,
+            endog_names=["y0", "y1"],
+            error_cov_type="diagnoal",
+            verbose=False,
+        )

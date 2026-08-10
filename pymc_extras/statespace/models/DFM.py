@@ -670,41 +670,9 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         self._build_selection_matrix()
 
-        if self.error_cov_type == "scalar":
-            error_sigma = self.make_and_register_variable("error_sigma", shape=(), dtype=floatX)
-            error_cov = pt.eye(self.k_endog) * error_sigma
-        elif self.error_cov_type == "diagonal":
-            error_sigma = self.make_and_register_variable(
-                "error_sigma", shape=(self.k_endog,), dtype=floatX
-            )
-            error_cov = pt.diag(error_sigma)
-        elif self.error_cov_type == "unstructured":
-            error_cov = self.make_and_register_variable(
-                "error_cov", shape=(self.k_endog, self.k_endog), dtype=floatX
-            )
-
+        error_cov = self._build_error_cov()
         self._build_state_cov(error_cov)
-
-        # Observation covariance matrix (H)
-        if self.error_order > 0:
-            if self.measurement_error:
-                sigma_obs = self.make_and_register_variable(
-                    "sigma_obs", shape=(self.k_endog,), dtype=floatX
-                )
-                self.ssm["obs_cov", :, :] = pt.diag(sigma_obs)
-            # else: obs_cov remains zero (no measurement noise and idiosyncratic noise captured in state)
-        else:
-            if self.measurement_error:
-                # TODO: check this decision
-                # in this case error_order = 0, so there is no error term in the state, so the sigma error could not be added there
-                # Idiosyncratic + measurement error
-                sigma_obs = self.make_and_register_variable(
-                    "sigma_obs", shape=(self.k_endog,), dtype=floatX
-                )
-                total_obs_var = error_sigma**2 + sigma_obs**2
-                self.ssm["obs_cov", :, :] = pt.diag(pt.sqrt(total_obs_var))
-            else:
-                self.ssm["obs_cov", :, :] = pt.diag(error_sigma)
+        self._build_obs_cov(error_cov)
 
     def _build_design_matrix(self):
         r"""
@@ -840,3 +808,39 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 blocks.append(pt.zeros((self.k_exog_states, self.k_exog_states), dtype=floatX))
 
         self.ssm["state_cov", :, :] = pt.linalg.block_diag(*blocks)
+
+    def _build_error_cov(self):
+        """Build the covariance of the idiosyncratic observation errors."""
+        if self.error_cov_type == "scalar":
+            error_sigma = self.make_and_register_variable("error_sigma", shape=(), dtype=floatX)
+            return pt.eye(self.k_endog, dtype=floatX) * error_sigma
+        elif self.error_cov_type == "diagonal":
+            error_sigma = self.make_and_register_variable(
+                "error_sigma", shape=(self.k_endog,), dtype=floatX
+            )
+            return pt.diag(error_sigma)
+        elif self.error_cov_type == "unstructured":
+            return self.make_and_register_variable(
+                "error_cov", shape=(self.k_endog, self.k_endog), dtype=floatX
+            )
+
+        raise ValueError(
+            "error_cov_type must be one of 'scalar', 'diagonal', or 'unstructured', got "
+            f"{self.error_cov_type!r}"
+        )
+
+    def _build_obs_cov(self, error_cov) -> None:
+        r"""Build the observation covariance :math:`H`."""
+        obs_cov = pt.zeros((self.k_endog, self.k_endog), dtype=floatX)
+
+        # Without error states the idiosyncratic error is not in the state vector, so it lands here.
+        if self.error_order == 0:
+            obs_cov = obs_cov + error_cov
+
+        if self.measurement_error:
+            sigma_obs = self.make_and_register_variable(
+                "sigma_obs", shape=(self.k_endog,), dtype=floatX
+            )
+            obs_cov = obs_cov + pt.diag(sigma_obs)
+
+        self.ssm["obs_cov", :, :] = obs_cov
