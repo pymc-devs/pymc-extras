@@ -86,8 +86,19 @@ def test_sample_conditional_with_time_varying():
 
         prior = pm.sample_prior_predictive(10)
 
-    ss_mod.sample_unconditional_prior(prior)
-    ss_mod.sample_conditional_prior(prior)
+    unconditional = ss_mod.sample_unconditional_prior(prior)
+    conditional = ss_mod.sample_conditional_prior(prior)
+
+    n_time = empty_data.shape[0]
+    for name in ["prior_latent", "prior_observed"]:
+        assert name in unconditional
+        assert unconditional[name].sizes["time"] == n_time
+        assert np.all(np.isfinite(unconditional[name].values))
+
+    for name in ["filtered_prior", "predicted_prior", "smoothed_prior"]:
+        assert name in conditional
+        assert conditional[name].sizes["time"] == n_time
+        assert np.all(np.isfinite(conditional[name].values))
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
