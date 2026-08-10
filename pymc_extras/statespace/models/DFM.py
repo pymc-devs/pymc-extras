@@ -551,16 +551,17 @@ class BayesianDynamicFactor(PyMCStateSpace):
         return tuple(parameters)
 
     def set_states(self) -> State | tuple[State, ...] | None:
+        # States are laid out lag-major to match the companion matrices built in
+        # make_symbolic_graph: every series at lag 0, then every series at lag 1, and so on.
         names = [
             f"L{lag}.factor_{i}"
-            for i in range(self.k_factors)
             for lag in range(max(self.factor_order, 1))
+            for i in range(self.k_factors)
         ]
 
-        if self.error_order > 0:
-            names.extend(
-                f"L{lag}.error_{i}" for i in range(self.k_endog) for lag in range(self.error_order)
-            )
+        names.extend(
+            f"L{lag}.error_{i}" for lag in range(self.error_order) for i in range(self.k_endog)
+        )
 
         if self.exog_flag:
             if self.shared_exog_states:
@@ -568,8 +569,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
             else:
                 names.extend(
                     f"beta_{exog_name}[{endog_name}]"
-                    for exog_name in self.exog_names
                     for endog_name in self.endog_names
+                    for exog_name in self.exog_names
                 )
 
         hidden_states = [State(name=name, observed=False, shared=False) for name in names]
@@ -589,10 +590,11 @@ class BayesianDynamicFactor(PyMCStateSpace):
             if self.shared_exog_states:
                 shock_names.extend(f"exog_shock_{i}.shared" for i in range(self.k_exog))
             else:
+                # Ordered to match the exogenous states in set_states, which are endog-major.
                 shock_names.extend(
                     f"exog_shock_{i}.endog_{j}"
-                    for i in range(self.k_exog)
                     for j in range(self.k_endog)
+                    for i in range(self.k_exog)
                 )
 
         return tuple(Shock(name=name) for name in shock_names)

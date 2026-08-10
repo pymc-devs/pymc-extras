@@ -454,8 +454,8 @@ class TestDFMConfiguration:
             OBS_STATE_DIM: ("y0", "y1", "y2"),
             ALL_STATE_DIM: (
                 "L0.factor_0",
-                "L1.factor_0",
                 "L0.factor_1",
+                "L1.factor_0",
                 "L1.factor_1",
                 "L0.error_0",
                 "L0.error_1",
@@ -463,8 +463,8 @@ class TestDFMConfiguration:
             ),
             ALL_STATE_AUX_DIM: (
                 "L0.factor_0",
-                "L1.factor_0",
                 "L0.factor_1",
+                "L1.factor_0",
                 "L1.factor_1",
                 "L0.error_0",
                 "L0.error_1",
@@ -524,19 +524,19 @@ class TestDFMConfiguration:
             ALL_STATE_DIM: (
                 "L0.factor_0",
                 "L0.error_0",
-                "L1.error_0",
                 "L0.error_1",
-                "L1.error_1",
                 "L0.error_2",
+                "L1.error_0",
+                "L1.error_1",
                 "L1.error_2",
             ),
             ALL_STATE_AUX_DIM: (
                 "L0.factor_0",
                 "L0.error_0",
-                "L1.error_0",
                 "L0.error_1",
-                "L1.error_1",
                 "L0.error_2",
+                "L1.error_0",
+                "L1.error_1",
                 "L1.error_2",
             ),
             FACTOR_DIM: ("factor_1",),
@@ -768,3 +768,84 @@ def test_dfm_workflow(rng, mock_sample):
     irf = ss_mod.impulse_response_function(idata, n_steps=10, random_seed=rng)
     assert "irf" in irf
     assert np.isfinite(irf.irf.values).all()
+
+
+def evaluate_matrices(mod, param_values, data_dict=None):
+    matrices = unpack_symbolic_matrices_with_params(mod, param_values, data_dict=data_dict)
+    return dict(zip(MATRIX_NAMES, matrices))
+
+
+def random_param_values(mod, rng):
+    return {
+        name: rng.normal(size=variable.type.shape).astype(floatX)
+        for name, variable in mod._name_to_variable.items()
+    }
+
+
+@pytest.mark.parametrize(
+    "k_factors, factor_order, error_order, error_var",
+    [(2, 3, 0, False), (1, 1, 2, False), (2, 2, 2, False), (1, 1, 2, True), (2, 2, 2, True)],
+    ids=["factor_lags", "error_lags", "both", "error_lags_var", "both_var"],
+)
+def test_lagged_state_names_match_transition_shifts(
+    k_factors, factor_order, error_order, error_var, rng
+):
+    """A state called ``L{lag}.X`` has to be the previous step's ``L{lag - 1}.X``."""
+    mod = BayesianDynamicFactor(
+        k_factors=k_factors,
+        factor_order=factor_order,
+        endog_names=["y0", "y1", "y2"],
+        error_order=error_order,
+        error_var=error_var,
+        verbose=False,
+    )
+    T = evaluate_matrices(mod, random_param_values(mod, rng))["T"]
+    name_to_index = {name: i for i, name in enumerate(mod.state_names)}
+
+    lagged_states = [
+        (i, name) for i, name in enumerate(mod.state_names) if name.startswith(("L1.", "L2."))
+    ]
+    assert lagged_states, "this configuration has no lagged states to check"
+
+    for index, name in lagged_states:
+        lag, component = name.split(".", 1)
+        expected = np.zeros(mod.k_states)
+        expected[name_to_index[f"L{int(lag[1:]) - 1}.{component}"]] = 1.0
+
+        assert_allclose(T[index], expected, err_msg=f"state {name!r} does not shift from its lag")
+
+
+@pytest.mark.parametrize("shared_exog_states", [True, False], ids=["shared", "per_series"])
+def test_exog_state_names_match_design_columns(shared_exog_states, rng):
+    """A state called ``beta_x[y]`` has to be the column of Z carrying x onto series y."""
+    endog_names = ["y0", "y1", "y2"]
+    exog_names = ["a", "b"]
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=endog_names,
+        exog_names=exog_names,
+        shared_exog_states=shared_exog_states,
+        verbose=False,
+    )
+
+    exog_data = np.array([[2.0, 5.0]], dtype=floatX)
+    Z = evaluate_matrices(mod, random_param_values(mod, rng), data_dict={"exog_data": exog_data})[
+        "Z"
+    ][0]
+    exog_values = dict(zip(exog_names, exog_data[0]))
+
+    beta_states = [(i, name) for i, name in enumerate(mod.state_names) if name.startswith("beta_")]
+    assert len(beta_states) == mod.k_exog_states
+
+    for column, name in beta_states:
+        exog_name, endog_name = name.removeprefix("beta_").rstrip("]").split("[")
+        value = exog_values[exog_name]
+
+        if endog_name == "shared":
+            expected = np.full(len(endog_names), value)
+        else:
+            expected = np.zeros(len(endog_names))
+            expected[endog_names.index(endog_name)] = value
+
+        assert_allclose(Z[:, column], expected, err_msg=f"state {name!r} loads the wrong series")
