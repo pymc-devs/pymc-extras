@@ -106,200 +106,123 @@ def _make_independent_ar_companion_matrix(ar_coeffs, k_series: int, p: int):
 
 class BayesianDynamicFactor(PyMCStateSpace):
     r"""
-    Dynamic Factor Models
+    Dynamic Factor Model
 
     Notes
     -----
-    The Dynamic Factor Model (DFM) is a multivariate state-space model used to represent high-dimensional time series
-    as being driven by a smaller set of unobserved dynamic factors.
+    The Dynamic Factor Model (DFM) is a multivariate state-space model that represents a
+    high-dimensional time series as being driven by a smaller set of unobserved dynamic factors.
 
-    Given a set of observed time series :math:`\{y_t\}_{t=0}^T`, where
+    Given observed series :math:`\{y_t\}_{t=0}^T`, where
 
     .. math::
         y_t = \begin{bmatrix} y_{1,t} & y_{2,t} & \cdots & y_{k_{\text{endog}},t} \end{bmatrix}^T,
 
-    the DFM assumes that each series is a linear combination of a few latent factors and (optionally) autoregressive errors.
-
-    Let:
-    - :math:`k` be the number of dynamic factors (k_factors),
-    - :math:`p` be the order of the latent factor process (factor_order),
-    - :math:`q` be the order of the observation error process (error_order).
-
-    The model equations are in reduced form is:
+    the DFM treats each series as a linear combination of a few latent factors and, optionally,
+    autoregressive errors. Writing :math:`k` for the number of factors (``k_factors``), :math:`p`
+    for the order of the factor process (``factor_order``), and :math:`q` for the order of the error
+    process (``error_order``), the model in reduced form is
 
     .. math::
         y_t &= \Lambda f_t + B x_t + u_t + \eta_t \\
         f_t &= A_1 f_{t-1} + \cdots + A_p f_{t-p} + \varepsilon_{f,t} \\
         u_t &= C_1 u_{t-1} + \cdots + C_q u_{t-q} + \varepsilon_{u,t}
 
-    Where:
-    - :math:`f_t` is the vector of latent dynamic factors (size :math:`k`),
-    - :math:`x_t` is an optional vector of exogenous variables
-    - :math:`u_t` is a vector of autoregressive observation errors (if `error_var=True` with a VAR(q) structure, else treated as independent AR processes),
-    - :math:`\eta_t \sim \mathcal{N}(0, H_t)` is an optional measurement error (if `measurement_error=True`),
-    - :math:`\varepsilon_{f,t} \sim \mathcal{N}(0, I)` and :math:`\varepsilon_{u,t} \sim \mathcal{N}(0, \Sigma_u)` are independent noise terms.
-        To identify the factors, the innovations to the factor process are standardized with identity covariance.
+    where :math:`f_t` is the vector of latent dynamic factors of size :math:`k`, :math:`x_t` is an
+    optional vector of exogenous variables, :math:`u_t` is a vector of autoregressive observation
+    errors following a VAR(q) if ``error_var=True`` and independent AR(q) processes otherwise, and
+    :math:`\eta_t \sim \mathcal{N}(0, H_t)` is an optional measurement error, included when
+    ``measurement_error=True``. The innovations satisfy
+    :math:`\varepsilon_{f,t} \sim \mathcal{N}(0, I)` and
+    :math:`\varepsilon_{u,t} \sim \mathcal{N}(0, \Sigma_u)`. Factor innovations are standardized to
+    an identity covariance in order to identify the factors.
 
-    Internally, the model is represented in state-space form by stacking all current and lagged latent factors and (if present)
-    AR observation errors into a single state vector of dimension:  :math:: k_{\text{states}} = k \cdot p + k_{\text{endog}} \cdot q,
-    where :math:`k_{\text{endog}}` is the number of observed time series.
-
-    The state vector is defined as:
+    Internally the model stacks all current and lagged latent factors and, when present, the AR
+    observation errors into a single state vector of dimension
+    :math:`k_{\text{states}} = k \cdot p + k_{\text{endog}} \cdot q`, where
+    :math:`k_{\text{endog}}` is the number of observed series. States are ordered lag-major: the
+    current value of every factor comes first, then the first lag of every factor, and so on, with
+    the error states laid out the same way.
 
     .. math::
         s_t = \begin{bmatrix}
-            f_t(1) \\
-            \vdots \\
-            f_t(k) \\
-            f_{t-p+1}(1) \\
-            \vdots \\
-            f_{t-p+1}(k) \\
-            u_t(1) \\
-            \vdots \\
-            u_t(k_{\text{endog}}) \\
-            \vdots \\
-            u_{t-q+1}(1) \\
-            \vdots \\
-            u_{t-q+1}(k_{\text{endog}})
-        \end{bmatrix}
+            f_t(1) & \cdots & f_t(k) &
+            f_{t-1}(1) & \cdots & f_{t-1}(k) & \cdots &
+            u_t(1) & \cdots & u_t(k_{\text{endog}}) & \cdots
+        \end{bmatrix}^T
         \in \mathbb{R}^{k_{\text{states}}}
 
-    The transition equation is given by:
+    The transition equation is :math:`s_{t+1} = T s_t + R \epsilon_t`, where :math:`T` is
+    block-diagonal in the factor, error, and exogenous components. Each block is a companion matrix:
+    its first block row holds the autoregressive coefficients and its subdiagonal holds an identity
+    that shifts each lag forward. :math:`\epsilon_t` collects the independent shocks,
 
     .. math::
-        s_{t+1} = T s_t + R \epsilon_t
+        \epsilon_t = \begin{bmatrix} \epsilon_{f,t} \\ \epsilon_{u,t} \end{bmatrix}
+        \in \mathbb{R}^{k + k_{\text{endog}}},
 
-    Where:
-    - :math:`T` is the state transition matrix, composed of:
-        - VAR coefficients :math:`A_1, \dots, A_{p*k_factors}` for the factors,
-        - (if enabled) AR coefficients :math:`C_1, \dots, C_q` for the observation errors.
-        .. math::
-            T = \begin{bmatrix}
-            A_{1,1}  &   A_{1,2}  &   \cdots  &   A_{1,p}  &   0       &   0       &   \cdots  &   0 \\
-            A_{2,1}  &   A_{2,2}  &   \cdots  &   A_{2,p}  &   0       &   0       &   \cdots  &   0 \\
-            1       &   0       &   \cdots  &   0          &   0       &   0       &   \cdots  &   0 \\
-            0       &   1       &   \cdots  &   0          &   0       &   0       &   \cdots  &   0 \\
-            \vdots  &   \vdots  &   \ddots  &   \vdots     &   \vdots  &   \vdots  &   \ddots  &   \vdots \\
-            \hline
-            0       &   0       &   \cdots  &   0       &   C_{1,1}  &  \cdots  &    C_{1,2} &   C_{1,q} \\
-            0       &   0       &   \cdots  &   0       &   1       &   0       &   \cdots  &   0 \\
-            0       &   0       &   \cdots  &   0       &   0       &   1       &   \cdots  &   0 \\
-            \vdots  &   \vdots  &           &   \vdots  &   \vdots  &   \vdots  &   \ddots  &   \vdots
-            \end{bmatrix}
-            \in \mathbb{R}^{k_{\text{states}} \times k_{\text{states}}}
+    and :math:`R` selects which states each shock enters.
 
-    - :math:`\epsilon_t` contains the independent shocks (innovations) and has dimension :math:`k + k_{\text{endog}}` if AR errors are included.
-        .. math::
-            \epsilon_t = \begin{bmatrix}
-            \epsilon_{f,t} \\
-            \epsilon_{u,t}
-            \end{bmatrix}
-            \in \mathbb{R}^{k +  k_{\text{endog}}}
-
-    - :math:`R` is a selection matrix mapping shocks to state transitions.
-        .. math::
-            R = \begin{bmatrix}
-            1       &   0       &   \cdots  &   0       &   0       &   0       &   \cdots  &   0 \\
-            0       &   1       &   \cdots  &   0       &   0       &   0       &   \cdots  &   0 \\
-            \vdots  &   \vdots  &   \ddots  &   \vdots  &   \vdots  &   \vdots  &   \ddots  &   \vdots \\
-            0       &   0       &   \cdots  &   1       &   0       &   0       &   \cdots  &   0 \\
-            0       &   0       &   \cdots  &   0       &   1       &   0       &   \cdots  &   0 \\
-            0       &   0       &   \cdots  &   0       &   0       &   1       &   \cdots  &   0 \\
-            \vdots  &   \vdots  &   \ddots  &   \vdots  &   \vdots  &   \vdots  &   \ddots  &   \vdots \\
-            \end{bmatrix}
-            \in \mathbb{R}^{k_{\text{states}} \times (k + k_{\text{endog}})}
-
-    The observation equation is given by:
+    The observation equation is :math:`y_t = Z s_t + \eta_t`, with design matrix
 
     .. math::
+        Z = \begin{bmatrix} \Lambda & 0 & I & 0 \end{bmatrix}
+        \in \mathbb{R}^{k_{\text{endog}} \times k_{\text{states}}}
 
-        y_t = Z s_t + \eta_t
+    where :math:`\Lambda` holds the factor loadings, the identity block picks out the current error
+    states when :math:`q > 0`, and the zero blocks cover the lagged states, which do not enter the
+    observation equation directly.
 
-    where
-
-    - :math:`y_t` is the vector of observed variables at time :math:`t`
-
-    - :math:`Z` is the design matrix of the state space representation
-        .. math::
-            Z = \begin{bmatrix}
-            \lambda_{1,1}       &   \lambda_{1,k}   &   \vdots    &   1   &   0   &   \cdots  &   0   &   0   &   \cdots  &   0 \\
-            \lambda_{2,1}       &   \lambda_{2,k}   &   \vdots    &   0   &   1   &   \cdots   &   0   &   \cdots  &   0 \\
-            \vdots              &   \vdots          &   \vdots  &   \vdots  &   \ddots  &   \vdots  &   \vdots  &   \ddots  &   \vdots \\
-            \lambda_{k_{\text{endog}},1}  &   \cdots  &   \lambda_{k_{\text{endog}},k}  &   0   &   0   &   \cdots  &   1   &   0   &   \cdots  &   0 \\
-            \end{bmatrix}
-            \in \mathbb{R}^{k_{\text{endog}} \times k_{\text{states}}}
-
-    - :math:`\eta_t` is the vector of observation errors at time :math:`t`
-
-    When exogenous variables :math:`x_t` are present, the implementation follows `pymc_extras/statespace/models/structural/components/regression.py`.
-    In this case, the state vector is extended to include the beta parameters, and the design matrix is modified accordingly,
-    becoming 3-dimensional to handle time-varying exogenous regressors.
-    This approach provides greater flexibility, controlled by the boolean flags `shared_exog_state` and `exog_innovations`.
-    Unlike Statsmodels, where exogenous variables are included only in the observation equation, here they are fully integrated into the state-space
-    representation.
+    When exogenous variables :math:`x_t` are present, the implementation follows
+    :mod:`pymc_extras.statespace.models.structural.components.regression`: the state vector is
+    extended with the regression coefficients and :math:`Z` becomes three-dimensional, with the
+    leading axis indexing time. Unlike statsmodels, which places exogenous variables only in the
+    observation equation, they are fully integrated into the state-space representation here, which
+    is what allows time-varying coefficients via ``exog_innovations``.
 
     .. warning::
 
-        Identification can be an issue, particularly when many observed series load onto only a few latent factors.
-        These models are only identified up to a sign flip in the factor loadings. Proper prior specification is crucial
-        for good estimation and inference.
+        Identification can be an issue, particularly when many observed series load onto only a few
+        latent factors. These models are identified only up to a sign flip in the factor loadings.
+        Proper prior specification is crucial for good estimation and inference.
 
     Examples
     --------
-    The following code snippet estimates a dynamic factor model with 1 latent factors,
-    a AR(2) structure on the factor and a AR(1) structure on the errors:
+    Estimate a dynamic factor model with one latent factor following an AR(2), and AR(1) errors:
 
     .. code:: python
 
-        import pymc_extras.statespace as pmss
         import pymc as pm
+        import pytensor.tensor as pt
 
-        # Create DFM Statespace Model
+        import pymc_extras.statespace as pmss
+
+        # data is a wide DataFrame of observed series indexed by time
         dfm_mod = pmss.BayesianDynamicFactor(
-                k_factors=1,                # Number of latent dynamic factors
-                factor_order=2,             # Number of lags for the latent factor process
-                endog_names=data.columns,   # Names of the observed time series (endogenous variables) (we could also use k_endog = len(data.columns))
-                error_order=1,              # Order of the autoregressive process for the observation noise (i.e., AR(q) error, here q=1)
-                error_var=False,            # If False, models errors as separate AR processes
-                error_cov_type="diagonal",  # Structure of the observation error covariance matrix: uncorrelated noise across series
-                measurement_error=True,     # Whether to include a measurement error term in the model
-                verbose=True
-            )
+            k_factors=1,
+            factor_order=2,
+            endog_names=data.columns,
+            error_order=1,
+            error_var=False,
+            error_cov_type="diagonal",
+            measurement_error=True,
+        )
 
-        # Unpack coords
-        coords = dfm_mod.coords
+        with pm.Model(coords=dfm_mod.coords) as pymc_mod:
+            x0 = pm.Normal("x0", dims=["state"])
 
+            P0_diag = pm.HalfNormal("P0_diag", dims=["state"])
+            P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=["state", "state_aux"])
 
-        with pm.Model(coords=coords) as pymc_mod:
-            # Priors for the initial state mean and covariance
-            x0 = pm.Normal("x0", dims=["state_dim"])
-            P0 = pm.HalfNormal("P0", dims=["state_dim", "state_dim"])
+            factor_loadings = pm.Normal("factor_loadings", dims=["observed_state", "factor"])
+            factor_ar = pm.Normal("factor_ar", dims=["factor", "lag_ar"])
+            error_ar = pm.Normal("error_ar", dims=["observed_state", "error_lag_ar"])
 
-            # Factor loadings: shape (k_endog, k_factors)
-            factor_loadings = pm.Normal("factor_loadings", sigma=1, dims=["k_endog", "k_factors"])
+            error_sigma = pm.HalfNormal("error_sigma", dims=["observed_state"])
+            sigma_obs = pm.HalfNormal("sigma_obs", dims=["observed_state"])
 
-            # AR coefficients for factor dynamics: shape (k_factors, factor_order)
-            factor_ar = pm.Normal("factor_ar", sigma=1, dims=["k_factors", "k_factors" * "factor_order"])
-
-            # AR coefficients for observation noise: shape (k_endog, error_order)
-            error_ar = pm.Normal("error_ar", sigma=1, dims=["k_endog", "error_order"])
-
-            # Std devs for observation noise: shape (k_endog,)
-            error_sigma = pm.HalfNormal("error_sigma", dims=["k_endog"])
-
-            # Observation noise covariance matrix
-            obs_sigma = pm.HalfNormal("sigma_obs", dims=["k_endog"])
-
-            # Build the symbolic graph and attach it to the model
             dfm_mod.build_statespace_graph(data=data)
-
-            # Sampling
-            idata = pm.sample(
-                draws=500,
-                chains=2,
-                nuts_sampler="nutpie",
-                nuts_sampler_kwargs={"backend": "jax", "gradient_backend": "jax"},
-            )
+            idata = pm.sample()
 
     """
 
@@ -321,70 +244,59 @@ class BayesianDynamicFactor(PyMCStateSpace):
         cov_jitter: float = JITTER_DEFAULT,
         missing_fill_value: float = MISSING_FILL,
     ):
-        """
+        r"""
         Create a Bayesian Dynamic Factor Model.
 
         Parameters
         ----------
         k_factors : int
             Number of latent factors.
-
         factor_order : int
-            Order of the VAR process for the latent factors. If set to 0, the factors have no autoregressive dynamics
-            and are modeled as a white noise process, i.e., :math:`f_t = \varepsilon_{f,t}`.
-            Therefore, the state vector will include one state per factor and "factor_ar" will not exist.
-
-        endog_names : Sequence of str, optional
+            Order of the VAR process for the latent factors. If 0, the factors have no
+            autoregressive dynamics and are modeled as white noise, :math:`f_t = \varepsilon_{f,t}`.
+            The state vector still carries one state per factor, but ``factor_ar`` does not exist.
+        endog_names : sequence of str
             Names of the observed time series.
-
-        exog_state_names : Sequence of str, optional
-            Names of the exogenous variables.
-
-        shared_exog_states: bool, optional
-            Whether exogenous latent states are shared across the observed states. If True, there will be only one set of exogenous latent
-            states, which are observed by all observed states. If False, each observed state has its own set of exogenous latent states.
-
+        exog_state_names : sequence of str, optional
+            Names of the exogenous variables. Default None, for a model with no exogenous
+            regressors.
+        shared_exog_states : bool, optional
+            Whether the exogenous latent states are shared across the observed states. If True there
+            is a single set of exogenous states seen by every observed state; if False each observed
+            state gets its own set. Default False.
         exog_innovations : bool, optional
-            Whether to allow time-varying regression coefficients. If True, coefficients follow a random walk.
-
+            Whether to allow time-varying regression coefficients. If True, the coefficients follow
+            a random walk. Default False.
         error_order : int, optional
-            Order of the AR process for the observation error component.
-            Default is 0, corresponding to white noise errors.
-
+            Order of the AR process for the observation error component. Default 0, corresponding to
+            white noise errors.
         error_var : bool, optional
-            If True, errors are modeled jointly via a VAR process;
-            otherwise, each error is modeled separately.
-
+            If True, the errors are modeled jointly as a VAR process; otherwise each error is an
+            independent AR process. Default False.
         error_cov_type : {'scalar', 'diagonal', 'unstructured'}, optional
-            Structure of the covariance matrix of the observation errors.
-
+            Structure of the covariance matrix of the observation errors. Default 'diagonal'.
         filter_type : str, optional
             The type of Kalman Filter to use. Options are "standard", "univariate", and "cholesky".
             See the docs for kalman filters for more details. Default "standard".
-
-        measurement_error: bool, default True
-            If true, a measurement error term is added to the model.
-
-        verbose: bool, default True
-            If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
-
+        measurement_error : bool, optional
+            If True, a measurement error term is added to the model. Default False.
+        verbose : bool, optional
+            If True, a message will be logged to the terminal explaining the variable names,
+            dimensions, and supports. Default True.
         mode : str or Mode, optional
             Pytensor compile mode, used in auxiliary sampling methods such as
             ``sample_conditional_posterior`` and ``forecast``. The mode does **not** effect calls to
             ``pm.sample``. Regardless of whether a mode is specified, it can always be overwritten
             via the ``compile_kwargs`` argument to all sampling methods. Default None.
-
-
-        cov_jitter: float, optional
-            Jitter added to the diagonal of every covariance matrix at each filtering step, for numerical
-            stability. Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
-            ``pytensor.config.floatX`` is float32.
-
-        missing_fill_value: float, optional
-            Sentinel used to mask missing observations. Set this only if your data legitimately contains the
-            default sentinel. Post-estimation graphs are built with this same value. Default -9999.0.
+        cov_jitter : float, optional
+            Jitter added to the diagonal of every covariance matrix at each filtering step, for
+            numerical stability. Post-estimation graphs are built with this same value. Default
+            1e-8, or 1e-6 if ``pytensor.config.floatX`` is float32.
+        missing_fill_value : float, optional
+            Sentinel used to mask missing observations. Set this only if your data legitimately
+            contains the default sentinel. Post-estimation graphs are built with this same value.
+            Default -9999.0.
         """
-
         validate_names(endog_names, var_name="endog_names", optional=False)
         validate_names(exog_state_names, var_name="exog_state_names", optional=True)
 
@@ -430,7 +342,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
         k_endog = self.k_endog
         k_states = self.k_states
 
-        # x0 - initial state
         parameters.append(
             Parameter(
                 name="x0",
@@ -440,7 +351,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
             )
         )
 
-        # P0 - initial covariance
         parameters.append(
             Parameter(
                 name="P0",
@@ -450,7 +360,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
             )
         )
 
-        # factor_loadings
         parameters.append(
             Parameter(
                 name="factor_loadings",
@@ -460,7 +369,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
             )
         )
 
-        # factor_ar - only if factor_order > 0
         if self.factor_order > 0:
             parameters.append(
                 Parameter(
@@ -471,7 +379,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 )
             )
 
-        # error_ar - only if error_order > 0
         if self.error_order > 0:
             error_ar_shape = (
                 (k_endog, self.error_order * k_endog)
@@ -487,7 +394,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 )
             )
 
-        # error_sigma or error_cov depending on error_cov_type
         if self.error_cov_type == "scalar":
             parameters.append(
                 Parameter(
@@ -516,7 +422,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 )
             )
 
-        # sigma_obs - only if measurement_error
         if self.measurement_error:
             parameters.append(
                 Parameter(
@@ -527,7 +432,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 )
             )
 
-        # beta - only if exog_flag
         if self.has_exog:
             parameters.append(
                 Parameter(
@@ -538,7 +442,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 )
             )
 
-            # beta_sigma - only if exog_innovations
             if self.exog_innovations:
                 parameters.append(
                     Parameter(
@@ -568,7 +471,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         if self.has_exog:
             if self.shared_exog_states:
-                names.extend([f"beta_{exog_name}[shared]" for exog_name in self.exog_state_names])
+                names.extend(f"beta_{exog_name}[shared]" for exog_name in self.exog_state_names)
             else:
                 names.extend(
                     f"beta_{exog_name}[{endog_name}]"
@@ -620,27 +523,22 @@ class BayesianDynamicFactor(PyMCStateSpace):
         return tuple(data)
 
     def set_coords(self) -> Coord | tuple[Coord, ...] | None:
-        k_endog = self.k_endog
         coords = list(self.default_coords())
 
-        # Factor coords
         factor_labels = tuple(f"factor_{i + 1}" for i in range(self.k_factors))
         coords.append(Coord(dimension=FACTOR_DIM, labels=factor_labels))
 
-        # AR param coords for factors
         if self.factor_order > 0:
             ar_labels = tuple(range(1, (self.factor_order * self.k_factors) + 1))
             coords.append(Coord(dimension=AR_PARAM_DIM, labels=ar_labels))
 
-        # AR param coords for errors
         if self.error_order > 0:
             if self.error_var:
-                error_ar_labels = tuple(range(1, (self.error_order * k_endog) + 1))
+                error_ar_labels = tuple(range(1, (self.error_order * self.k_endog) + 1))
             else:
                 error_ar_labels = tuple(range(1, self.error_order + 1))
             coords.append(Coord(dimension=ERROR_AR_PARAM_DIM, labels=error_ar_labels))
 
-        # Exogenous coords
         if self.has_exog:
             k_non_exog_states = self.k_states - self.k_exog_states
             coords.append(Coord(dimension=EXOG_STATE_DIM, labels=self.exog_state_names))
@@ -801,25 +699,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 col_start : col_start + self.k_exog_states,
             ] = pt.eye(self.k_exog_states, dtype=floatX)
 
-    def _build_state_cov(self, error_cov) -> None:
-        r"""Build the state covariance :math:`Q` from the blocks the model actually has."""
-        # Factor innovations are standardized to identity in order to identify the factors.
-        blocks = [pt.eye(self.k_factors, dtype=floatX)]
-
-        if self.error_order > 0:
-            blocks.append(error_cov)
-
-        if self.has_exog:
-            if self.exog_innovations:
-                beta_sigma = self.make_and_register_variable(
-                    "beta_sigma", shape=(self.k_exog_states,), dtype=floatX
-                )
-                blocks.append(pt.diag(beta_sigma))
-            else:
-                blocks.append(pt.zeros((self.k_exog_states, self.k_exog_states), dtype=floatX))
-
-        self.ssm["state_cov", :, :] = pt.linalg.block_diag(*blocks)
-
     def _build_error_cov(self):
         """Build the covariance of the idiosyncratic observation errors."""
         if self.error_cov_type == "scalar":
@@ -839,6 +718,25 @@ class BayesianDynamicFactor(PyMCStateSpace):
             "error_cov_type must be one of 'scalar', 'diagonal', or 'unstructured', got "
             f"{self.error_cov_type!r}"
         )
+
+    def _build_state_cov(self, error_cov) -> None:
+        r"""Build the state covariance :math:`Q` from the blocks the model actually has."""
+        # Factor innovations are standardized to identity in order to identify the factors.
+        blocks = [pt.eye(self.k_factors, dtype=floatX)]
+
+        if self.error_order > 0:
+            blocks.append(error_cov)
+
+        if self.has_exog:
+            if self.exog_innovations:
+                beta_sigma = self.make_and_register_variable(
+                    "beta_sigma", shape=(self.k_exog_states,), dtype=floatX
+                )
+                blocks.append(pt.diag(beta_sigma))
+            else:
+                blocks.append(pt.zeros((self.k_exog_states, self.k_exog_states), dtype=floatX))
+
+        self.ssm["state_cov", :, :] = pt.linalg.block_diag(*blocks)
 
     def _build_obs_cov(self, error_cov) -> None:
         r"""Build the observation covariance :math:`H`."""
