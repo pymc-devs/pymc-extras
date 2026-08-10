@@ -1,3 +1,5 @@
+import copy
+
 from abc import ABC
 
 import numpy as np
@@ -62,6 +64,10 @@ class BaseFilter(ABC):
 
         self.missing_fill_value: float | None = None
         self.cov_jitter = None
+
+    def copy(self) -> "BaseFilter":
+        """Return a shallow copy whose ``seq_names``/``non_seq_names`` are independent."""
+        return copy.copy(self)
 
     def check_params(self, data, a0, P0, c, d, T, Z, R, H, Q):
         """

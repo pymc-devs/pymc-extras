@@ -47,6 +47,7 @@ from pymc_extras.statespace.filters import (
 from pymc_extras.statespace.filters.distributions import (
     LinearGaussianStateSpace,
     SequenceMvNormal,
+    SimulationSmoother,
 )
 from pymc_extras.statespace.filters.utilities import stabilize
 from pymc_extras.statespace.utils.constants import (
@@ -1428,23 +1429,54 @@ class PyMCStateSpace:
                     else (None, None)
                 )
 
-                SequenceMvNormal(
-                    f"{name}_{group}",
-                    mus=mu,
-                    covs=cov,
-                    logp=dummy_ll,
-                    dims=state_dims,
-                    method=mvn_method,
-                )
+                if name == "smoothed":
+                    # The simulation smoother draws the whole latent path jointly, so the
+                    # states carry their cross-time posterior covariance.
+                    latent_states = SimulationSmoother(
+                        f"{name}_{group}",
+                        a_smooth=mu,
+                        x0=x0,
+                        P0=P0,
+                        c=c,
+                        d=d,
+                        T=T,
+                        Z=Z,
+                        R=R,
+                        H=H,
+                        Q=Q,
+                        kalman_filter=self.kalman_filter.copy(),
+                        kalman_smoother=self.kalman_smoother.copy(),
+                        sequence_names=tuple(self.kalman_filter.seq_names),
+                        dims=state_dims,
+                        method=mvn_method,
+                    )
+                    # Conditional on a joint draw of the latent path, the observation noise
+                    # is iid, so H alone is the correct per-step covariance. Adding the
+                    # zeros materializes the time axis, which keeps SequenceMvNormal's
+                    # ``(n),(n,n)->(n)`` gufunc from collapsing to a length-1 scan when H is
+                    # rank-3 but time-broadcastable.
+                    obs_mu = d + (Z @ latent_states[..., None]).squeeze(-1)
+                    obs_cov = pt.zeros((obs_mu.shape[0], 1, 1), dtype=H.dtype) + H
+                    obs_logp = pt.zeros_like(obs_mu)
+                else:
+                    SequenceMvNormal(
+                        f"{name}_{group}",
+                        mus=mu,
+                        covs=cov,
+                        logp=dummy_ll,
+                        dims=state_dims,
+                        method=mvn_method,
+                    )
 
-                obs_mu = d + (Z @ mu[..., None]).squeeze(-1)
-                obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H
+                    obs_mu = d + (Z @ mu[..., None]).squeeze(-1)
+                    obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H
+                    obs_logp = dummy_ll
 
                 SequenceMvNormal(
                     f"{name}_{group}_observed",
                     mus=obs_mu,
                     covs=obs_cov,
-                    logp=dummy_ll,
+                    logp=obs_logp,
                     dims=obs_dims,
                     method=mvn_method,
                 )
@@ -1562,7 +1594,9 @@ class PyMCStateSpace:
                 pm.Data(**self._fit_exog_data[name])
 
             self._insert_data_variables()
-            matrices = self._insert_constant_timestep(self.unpack_statespace(), step=steps)
+            # The unconditional trajectory spans ``steps + 1`` timesteps, and time-varying
+            # matrices carry one row per timestep.
+            matrices = self._insert_constant_timestep(self.unpack_statespace(), step=steps + 1)
             x0, P0, c, d, T, Z, R, H, Q = matrices
 
             if not self.measurement_error:
@@ -2427,8 +2461,10 @@ class PyMCStateSpace:
 
             forecast_names = MATRIX_NAMES[2:]  # c, d, T, Z, R, H, Q
             time_varying_names = self.ssm.time_varying_names
+            # Start one step early: the transition into the first forecast period uses the
+            # matrices of the last training period, and its observation is discarded.
             forecast_matrices = [
-                m[n_train:] if SHORT_NAME_TO_LONG[name] in time_varying_names else m
+                m[n_train - 1 :] if SHORT_NAME_TO_LONG[name] in time_varying_names else m
                 for m, name in zip(forecast_matrices, forecast_names)
             ]
 
