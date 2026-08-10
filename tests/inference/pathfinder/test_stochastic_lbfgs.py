@@ -1,5 +1,6 @@
 """Analytic-objective tests for the stochastic L-BFGS optimizer."""
 
+import collections
 import itertools
 
 import numpy as np
@@ -108,22 +109,25 @@ def test_line_search_decreases_objective_each_step():
 
 
 def test_no_duplicate_gradient_evaluations():
-    """The accepted trial's gradient comes from the call that tested it, not a re-evaluation."""
-    rng = np.random.default_rng(30)
-    A = np.diag([1.0, 2.0, 4.0])
-    vg = quadratic(A, rng.normal(size=3))
+    """The accepted trial's gradient comes from the call that tested it, not a re-evaluation.
+
+    On a well-conditioned quadratic started near the optimum every step accepts its first
+    trial, so a step costs exactly two evaluations: the trial, and the re-measurement on the
+    batch installed after it. Re-fetching the accepted gradient would make it three.
+    """
+    vg = quadratic(np.eye(3), np.zeros(3))
     state = {"batch": 0}
-    seen = []
+    per_batch = collections.Counter()
 
     def tagged(x):
-        seen.append((state["batch"], tuple(x)))
+        per_batch[state["batch"]] += 1
         return vg(x)
 
     def advance():
         state["batch"] += 1
 
-    run_stochastic_lbfgs(tagged, advance, np.array([3.0, -3.0, 3.0]), num_iters=25)
-    assert len(seen) == len(set(seen)), "a point was evaluated twice on the same batch"
+    run_stochastic_lbfgs(tagged, advance, np.array([0.3, -0.2, 0.1]), num_iters=6)
+    assert all(c == 2 for c in list(per_batch.values())[:-1]), dict(per_batch)
 
 
 @pytest.mark.parametrize("kw", [{"backtrack": -0.5}, {"maxcor": 0}])
