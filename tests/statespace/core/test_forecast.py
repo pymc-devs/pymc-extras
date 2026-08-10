@@ -248,7 +248,7 @@ def test_finalize_scenario_single(data_type, use_datetime_index):
 )
 @pytest.mark.parametrize("use_datetime_index", [True, False])
 @pytest.mark.parametrize("use_scenario_index", [True, False])
-def test_finalize_secenario_dict(data_type, use_datetime_index, use_scenario_index):
+def test_finalize_scenario_dict(data_type, use_datetime_index, use_scenario_index):
     data_info = {
         "a": {"shape": (None, 1), "dims": ("time", "features_a")},
         "b": {"shape": (None, 2), "dims": ("time", "features_b")},
@@ -646,7 +646,7 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
 @pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
-def test_foreacast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
+def test_forecast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
     # Regression test for issue reported at  https://github.com/pymc-devs/pymc-extras/issues/424
     with exog_pymc_mod:
         idata = pm.sample_prior_predictive()
