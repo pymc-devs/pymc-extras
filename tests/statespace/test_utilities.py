@@ -5,6 +5,8 @@ There are no actual tests in this file -- the name is chosen to trigger automati
 pytest.
 """
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import pytensor
@@ -16,6 +18,7 @@ from pymc import modelcontext
 from pytensor.graph.replace import graph_replace
 from pytensor.graph.traversal import explicit_graph_inputs
 
+from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.filters.kalman_smoother import KalmanSmoother
 from pymc_extras.statespace.utils.constants import (
     MATRIX_NAMES,
@@ -337,3 +340,28 @@ def make_stationary_params(data, p, d, q, P, D, Q, S):
         if isinstance(v, float) or len(v) > 0
     }
     return param_dict
+
+
+def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False, data_info=None):
+    class StateSpace(PyMCStateSpace):
+        def make_symbolic_graph(self):
+            pass
+
+        @property
+        def data_info(self) -> dict[str, dict[str, Any]]:
+            return data_info
+
+        @property
+        def data_names(self) -> list[str]:
+            return list(data_info.keys()) if data_info is not None else []
+
+    ss = StateSpace(
+        k_states=k_states,
+        k_endog=k_endog,
+        k_posdef=k_posdef,
+        filter_type=filter_type,
+        verbose=verbose,
+    )
+    ss._needs_exog_data = data_info is not None
+
+    return ss
