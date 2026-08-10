@@ -14,10 +14,6 @@ from pymc_extras.statespace.utils.constants import (
     MATRIX_NAMES,
     SMOOTHER_OUTPUT_NAMES,
 )
-from tests.statespace.core.test_statespace import (  # pylint: disable=unused-import
-    exog_ss_mod,
-    ss_mod,
-)
 from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
     rng,
 )
