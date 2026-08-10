@@ -19,13 +19,16 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     AR_PARAM_DIM,
     ERROR_AR_PARAM_DIM,
+    EXOG_COEF_STATE_DIM,
     EXOG_STATE_DIM,
     FACTOR_DIM,
     LONG_MATRIX_NAMES,
     MATRIX_NAMES,
+    NON_EXOG_STATE_DIM,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
     SHORT_NAME_TO_LONG,
+    TIME_DIM,
 )
 from tests.statespace.shared_fixtures import rng
 
@@ -587,15 +590,15 @@ class TestDFMConfiguration:
             "beta_sigma",
         )
         expected_param_dims = {
-            "x0": (ALL_STATE_DIM,),
+            "x0": (NON_EXOG_STATE_DIM,),
             "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
             "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
             "factor_ar": (FACTOR_DIM, AR_PARAM_DIM),
             "error_ar": (OBS_STATE_DIM, ERROR_AR_PARAM_DIM),
             "error_sigma": (OBS_STATE_DIM,),
             "sigma_obs": (OBS_STATE_DIM,),
-            "beta": (EXOG_STATE_DIM,),
-            "beta_sigma": (EXOG_STATE_DIM,),
+            "beta": (EXOG_COEF_STATE_DIM,),
+            "beta_sigma": (EXOG_COEF_STATE_DIM,),
         }
         expected_coords = {
             OBS_STATE_DIM: ("y0", "y1", "y2"),
@@ -622,9 +625,15 @@ class TestDFMConfiguration:
             ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
             if error_var
             else tuple(range(1, error_order + 1)),
-            EXOG_STATE_DIM: tuple(range(1, k_exog + 1))
-            if shared_exog_states
-            else tuple(range(1, k_exog * k_endog + 1)),
+            EXOG_STATE_DIM: ("x0", "x1"),
+            EXOG_COEF_STATE_DIM: ("beta_x0[shared]", "beta_x1[shared]"),
+            NON_EXOG_STATE_DIM: (
+                "L0.factor_0",
+                "L0.factor_1",
+                "L0.error_0",
+                "L0.error_1",
+                "L0.error_2",
+            ),
         }
 
         assert mod.param_names == expected_param_names
@@ -670,13 +679,13 @@ class TestDFMConfiguration:
             "beta",
         )
         expected_param_dims = {
-            "x0": (ALL_STATE_DIM,),
+            "x0": (NON_EXOG_STATE_DIM,),
             "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
             "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
             "factor_ar": (FACTOR_DIM, AR_PARAM_DIM),
             "error_ar": (OBS_STATE_DIM, ERROR_AR_PARAM_DIM),
             "error_sigma": (),
-            "beta": (EXOG_STATE_DIM,),
+            "beta": (EXOG_COEF_STATE_DIM,),
         }
         expected_coords = {
             OBS_STATE_DIM: ("y0", "y1", "y2"),
@@ -705,9 +714,15 @@ class TestDFMConfiguration:
             ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
             if error_var
             else tuple(range(1, error_order + 1)),
-            EXOG_STATE_DIM: tuple(range(1, k_exog + 1))
-            if shared_exog_states
-            else tuple(range(1, k_exog * k_endog + 1)),
+            EXOG_STATE_DIM: ("x0",),
+            EXOG_COEF_STATE_DIM: ("beta_x0[y0]", "beta_x0[y1]", "beta_x0[y2]"),
+            NON_EXOG_STATE_DIM: (
+                "L0.factor_0",
+                "L1.factor_0",
+                "L0.error_0",
+                "L0.error_1",
+                "L0.error_2",
+            ),
         }
 
         assert mod.param_names == expected_param_names
@@ -936,3 +951,38 @@ def test_dfm_rejects_unknown_error_cov_type():
             error_cov_type="diagnoal",
             verbose=False,
         )
+
+
+@pytest.mark.parametrize("shared_exog_states", [True, False], ids=["shared", "per_series"])
+def test_exog_model_builds_from_advertised_dims(shared_exog_states, rng):
+    """Every parameter's advertised dims must be as long as the variable it stands for."""
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=["y0", "y1", "y2"],
+        exog_names=["a", "b"],
+        shared_exog_states=shared_exog_states,
+        exog_innovations=True,
+        verbose=False,
+    )
+
+    index = pd.date_range("2020-01-01", periods=20, freq="D")
+    data = pd.DataFrame(rng.normal(size=(20, 3)), columns=["y0", "y1", "y2"], index=index)
+    exog = rng.normal(size=(20, 2))
+
+    assert len(mod.coords[EXOG_STATE_DIM]) == exog.shape[1]
+
+    with pm.Model(coords=mod.coords) as pymc_mod:
+        pm.Data("exog_data", exog, dims=[TIME_DIM, EXOG_STATE_DIM])
+        pm.Normal("x0", dims=mod.param_dims["x0"])
+        P0_diag = pm.Exponential("P0_diag", 1, dims=[ALL_STATE_DIM])
+        pm.Deterministic("P0", pt.diag(P0_diag), dims=[ALL_STATE_DIM, ALL_STATE_AUX_DIM])
+        pm.Normal("factor_loadings", dims=mod.param_dims["factor_loadings"])
+        pm.Normal("factor_ar", dims=mod.param_dims["factor_ar"])
+        pm.Exponential("error_sigma", 1, dims=mod.param_dims["error_sigma"])
+        pm.Normal("beta", dims=mod.param_dims["beta"])
+        pm.Exponential("beta_sigma", 1, dims=mod.param_dims["beta_sigma"])
+
+        mod.build_statespace_graph(data)
+
+    assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))

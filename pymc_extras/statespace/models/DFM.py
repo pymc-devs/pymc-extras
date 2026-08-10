@@ -18,10 +18,12 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     AR_PARAM_DIM,
     ERROR_AR_PARAM_DIM,
+    EXOG_COEF_STATE_DIM,
     EXOG_STATE_DIM,
     FACTOR_DIM,
     JITTER_DEFAULT,
     MISSING_FILL,
+    NON_EXOG_STATE_DIM,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
     TIME_DIM,
@@ -433,8 +435,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
         parameters.append(
             Parameter(
                 name="x0",
-                shape=(k_states,),
-                dims=(ALL_STATE_DIM,),
+                shape=(k_states - self.k_exog_states,),
+                dims=(NON_EXOG_STATE_DIM if self.exog_flag else ALL_STATE_DIM,),
                 constraints=None,
             )
         )
@@ -532,7 +534,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                 Parameter(
                     name="beta",
                     shape=(self.k_exog_states,),
-                    dims=(EXOG_STATE_DIM,),
+                    dims=(EXOG_COEF_STATE_DIM,),
                     constraints=None,
                 )
             )
@@ -543,7 +545,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
                     Parameter(
                         name="beta_sigma",
                         shape=(self.k_exog_states,),
-                        dims=(EXOG_STATE_DIM,),
+                        dims=(EXOG_COEF_STATE_DIM,),
                         constraints="Positive",
                     )
                 )
@@ -637,8 +639,14 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         # Exogenous coords
         if self.exog_flag:
-            exog_labels = tuple(range(1, self.k_exog_states + 1))
-            coords.append(Coord(dimension=EXOG_STATE_DIM, labels=exog_labels))
+            k_non_exog_states = self.k_states - self.k_exog_states
+            coords.append(Coord(dimension=EXOG_STATE_DIM, labels=tuple(self.exog_names)))
+            coords.append(
+                Coord(dimension=EXOG_COEF_STATE_DIM, labels=self.state_names[k_non_exog_states:])
+            )
+            coords.append(
+                Coord(dimension=NON_EXOG_STATE_DIM, labels=self.state_names[:k_non_exog_states])
+            )
 
         return tuple(coords)
 
