@@ -4,6 +4,8 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
+from pytensor.compile.mode import Mode
+
 from pymc_extras.statespace.core.properties import (
     Coord,
     Data,
@@ -312,8 +314,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
         error_order: int = 0,
         error_var: bool = False,
         error_cov_type: str = "diagonal",
+        filter_type: str = "standard",
         measurement_error: bool = False,
         verbose: bool = True,
+        mode: str | Mode | None = None,
         cov_jitter: float = JITTER_DEFAULT,
         missing_fill_value: float = MISSING_FILL,
     ):
@@ -354,11 +358,21 @@ class BayesianDynamicFactor(PyMCStateSpace):
         error_cov_type : {'scalar', 'diagonal', 'unstructured'}, optional
             Structure of the covariance matrix of the observation errors.
 
+        filter_type : str, optional
+            The type of Kalman Filter to use. Options are "standard", "univariate", and "cholesky".
+            See the docs for kalman filters for more details. Default "standard".
+
         measurement_error: bool, default True
             If true, a measurement error term is added to the model.
 
         verbose: bool, default True
             If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
+
+        mode : str or Mode, optional
+            Pytensor compile mode, used in auxiliary sampling methods such as
+            ``sample_conditional_posterior`` and ``forecast``. The mode does **not** effect calls to
+            ``pm.sample``. Regardless of whether a mode is specified, it can always be overwritten
+            via the ``compile_kwargs`` argument to all sampling methods. Default None.
 
 
         cov_jitter: float, optional
@@ -419,8 +433,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
             k_endog=k_endog,
             k_states=k_states,
             k_posdef=k_posdef,
+            filter_type=filter_type,
             verbose=verbose,
             measurement_error=measurement_error,
+            mode=mode,
             cov_jitter=cov_jitter,
             missing_fill_value=missing_fill_value,
         )

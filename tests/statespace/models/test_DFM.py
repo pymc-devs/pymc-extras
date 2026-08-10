@@ -13,6 +13,7 @@ from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.graph.traversal import explicit_graph_inputs
 from statsmodels.tsa.statespace.dynamic_factor import DynamicFactor
 
+from pymc_extras.statespace.core.statespace import FILTER_FACTORY
 from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
@@ -986,3 +987,18 @@ def test_exog_model_builds_from_advertised_dims(shared_exog_states, rng):
         mod.build_statespace_graph(data)
 
     assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
+
+
+@pytest.mark.parametrize("filter_type", ["standard", "univariate", "cholesky"])
+def test_dfm_accepts_filter_type_and_mode(filter_type):
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=["y0", "y1"],
+        filter_type=filter_type,
+        mode="FAST_COMPILE",
+        verbose=False,
+    )
+
+    assert isinstance(mod.kalman_filter, FILTER_FACTORY[filter_type])
+    assert mod.mode == "FAST_COMPILE"
