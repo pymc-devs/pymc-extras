@@ -1,3 +1,4 @@
+import copy
 import unittest
 
 import numpy as np
@@ -165,6 +166,21 @@ class BasicFunctionality(unittest.TestCase):
             ssm["transition"] = T
         msg = str(e.exception)
         self.assertEqual(msg, "Trailing dims of transition are (10, 10), expected (5, 5)")
+
+    def test_copy_does_not_alias_time_varying_names(self):
+        for make_copy in (PytensorRepresentation.copy, copy.copy):
+            with self.subTest(make_copy=make_copy.__qualname__):
+                ssm = PytensorRepresentation(k_endog=3, k_states=5, k_posdef=1)
+                copied = make_copy(ssm)
+
+                copied.declare_time_varying("design")
+
+                self.assertNotIn("design", ssm.time_varying_names)
+                self.assertIn("design", copied.time_varying_names)
+
+                # Everything else is still shared, which is what makes this a shallow copy.
+                self.assertIs(copied.transition, ssm.transition)
+                self.assertEqual(copied.k_states, ssm.k_states)
 
 
 if __name__ == "__main__":
