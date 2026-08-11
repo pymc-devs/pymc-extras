@@ -29,6 +29,11 @@ INTEGRATOR_COEFFICIENTS = {
 
 _LOG2 = math.log(2.0)
 
+# Below this delta the textbook kinetic-energy form cancels catastrophically, and above it MLX's
+# expm1 is the weaker primitive; each form covers where the other fails. The crossover is sharp
+# between 0.15 and 0.18 in float32, measured against a float64 reference.
+_CANCELLATION_FREE_BELOW = 0.15
+
 # Below this norm a vector is left unnormalized rather than divided by its own (near-zero)
 # norm, so a vanishing gradient at the mode gives a finite result instead of 0 / 0 -> nan.
 _NORM_FLOOR = 1e-13
@@ -180,8 +185,18 @@ def _momentum_update(
     momentum = _normalize(
         grad_direction * (1 - zeta) * (1 + zeta + projection * (1 - zeta)) + 2 * zeta * momentum
     )
+    # blackjax writes this as delta - log2 + log(1 + p + (1 - p) * zeta^2), which subtracts two
+    # near-equal 0.693s at small delta and then scales the remainder by dim - 1 -- up to 13% of
+    # the value in float32, right where the step-size controller is most sensitive. The algebraic
+    # rewrite below removes that cancellation but leans on expm1, which MLX computes less
+    # accurately for larger arguments, so the two are blended at the measured crossover.
     kinetic_energy_change = (
-        (delta - _LOG2 + mx.log(1 + projection + (1 - projection) * zeta**2)) * (dim - 1)
+        mx.where(
+            delta < _CANCELLATION_FREE_BELOW,
+            delta + mx.log1p((1 - projection) * mx.expm1(-2 * delta) / 2),
+            delta - _LOG2 + mx.log(1 + projection + (1 - projection) * zeta**2),
+        )
+        * (dim - 1)
     ).squeeze(-1)
 
     return momentum, momentum * sqrt_inverse_mass, kinetic_energy_change
