@@ -101,9 +101,8 @@ def test_filter_output_coord_assignment(f, warning, create_model):
     filter_idata = ss_mod.sample_filter_outputs(prior, group="prior")
 
     for output in FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES + ["predicted_observed_states"]:
-        expected_dims = tuple(FILTER_OUTPUT_DIMS[output])
-        result_dims = filter_idata.posterior_predictive[output].dims
-        assert result_dims[-len(expected_dims) :] == expected_dims
+        expected_dims = ("chain", "draw", *FILTER_OUTPUT_DIMS[output])
+        assert filter_idata.posterior_predictive[output].dims == expected_dims
 
 
 def test_model_build_without_coords(load_dataset):
