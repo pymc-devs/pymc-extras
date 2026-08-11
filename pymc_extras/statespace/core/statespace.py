@@ -1082,8 +1082,19 @@ class PyMCStateSpace:
             method=mvn_method,
         )
 
+        self._register_additional_statespace_variables()
+
         self._fit_coords = pm_mod.coords.copy()
         self._fit_dims = pm_mod.named_vars_to_dims.copy()
+
+    def _register_additional_statespace_variables(self) -> None:
+        """
+        Register model-specific variables into the active PyMC model.
+
+        Override this hook in a subclass that adds its own ``pm.Deterministic`` or ``pm.Potential`` nodes, rather
+        than overriding :meth:`build_statespace_graph`. It runs inside the active model context, after the ``obs``
+        likelihood is registered. The base implementation registers nothing.
+        """
 
     def _build_smoother_graph(
         self,

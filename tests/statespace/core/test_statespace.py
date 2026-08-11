@@ -193,3 +193,37 @@ def test_shipped_models_accept_filter_config(make_model):
 
     assert ss_mod.cov_jitter == 1e-3
     assert ss_mod.missing_fill_value == -777.0
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_register_additional_statespace_variables_hook():
+    """A subclass adds its own nodes through the hook, not by overriding build_statespace_graph."""
+
+    class SubclassStateSpace(PyMCStateSpace):
+        def make_symbolic_graph(self):
+            rho = self.make_and_register_variable("rho", ())
+            self.ssm["transition", 0, 0] = rho
+            self.ssm["design", 0, 0] = 1.0
+            self.ssm["selection", 0, 0] = 1.0
+            self.ssm["state_cov", 0, 0] = 1.0
+            self.ssm["initial_state_cov", 0, 0] = 1.0
+
+        @property
+        def param_names(self):
+            return ["rho"]
+
+        def _register_additional_statespace_variables(self):
+            pm.Deterministic("subclass_det", pm.modelcontext(None)["data"].sum())
+            pm.Potential("subclass_check", pt.zeros(()))
+
+    ss_mod = SubclassStateSpace(
+        k_endog=1, k_states=1, k_posdef=1, filter_type="standard", verbose=False
+    )
+
+    with pm.Model() as pymc_mod:
+        pm.Normal("rho")
+        ss_mod.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
+    assert "subclass_det" in [x.name for x in pymc_mod.deterministics]
+    assert "subclass_check" in [x.name for x in pymc_mod.potentials]
+    assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
