@@ -648,3 +648,33 @@ def test_convergent_filter_k_equals_n_gradient_matches_standard(rng):
     out_std = build(StandardFilter())(*vals)
     out_conv = build(ConvergentFilter(tol=0.0))(*vals)
     assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="tol=0: ")
+
+
+def test_convergent_filter_builds_and_runs_at_float32(rng):
+    """The filter follows ``pytensor.config.floatX``; nothing in its graph is pinned to float64."""
+    m, p, n_shocks, n = 3, 2, 3, 60
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+
+    with pytensor.config.change_flags(floatX="float32"):
+        dtype = pytensor.config.floatX
+        shapes = {
+            "data": (n, p),
+            "a0": (m,),
+            "P0": (m, m),
+            "c": (m,),
+            "d": (p,),
+            "T": (m, m),
+            "Z": (p, m),
+            "R": (m, n_shocks),
+            "H": (p, p),
+            "Q": (n_shocks, n_shocks),
+        }
+        inputs = [pt.tensor(name, dtype=dtype, shape=shape) for name, shape in shapes.items()]
+
+        *_, ll_obs = ConvergentFilter().build_graph(*inputs)
+        loss = ll_obs.sum()
+        fn = pytensor.function(inputs, [loss, *pt.grad(loss, inputs[1:])], on_unused_input="ignore")
+
+    results = fn(*[np.asarray(v, dtype=dtype) for v in vals])
+    for name, value in zip(GRAD_NAMES, results, strict=True):
+        assert np.all(np.isfinite(value)), f"{name} is not finite at float32"

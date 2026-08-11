@@ -7,7 +7,7 @@ import pytensor
 import pytensor.tensor as pt
 
 from pymc.pytensorf import constant_fold
-from pytensor.compile.builders import OpFromGraph
+from pytensor.compile.builders import SymbolicOp
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.gradient import disconnected_grad
 from pytensor.graph.basic import Variable
@@ -27,7 +27,6 @@ from pymc_extras.statespace.utils.constants import (
     LONG_NAME_TO_SHORT,
     MATRIX_NAMES,
     MISSING_FILL,
-    static_matrix_shapes,
 )
 
 MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
@@ -859,7 +858,7 @@ class ConvergentFilter(StandardFilter):
       ``K_star``, ``F_star``, ``log det F_star``. No per-step Cholesky; loss is ``log det F_star + v_t^T F_star^{-1} v_t``
       evaluated via a pre-computed Cholesky of ``F_star`` and a per-step triangular solve.
 
-    The gradient is delivered via a custom pullback on an :class:`~pytensor.compile.builders.OpFromGraph`
+    The gradient is delivered via a custom pullback on a :class:`~pytensor.compile.builders.SymbolicOp`
     rather than via autodiff. Two reasons:
 
     1. **Correctness.** Autodiff through the two-scan forward gives *incorrect* gradients when the ``until``
@@ -1188,179 +1187,171 @@ class ConvergentFilter(StandardFilter):
         # rule step for (K_star, F_star) -> (P_star, Z, H) using the analytic definitions, and an
         # autodiff backward on the pre-convergence segment with the handoff adjoints as its terminal
         # condition (the plain Kalman iterations).
-        op = self._make_ofg()
+        op = ConvergentKalmanOp(filt=self)
         a_filt, a_hat, y_hat, P_filt, P_hat, F, ll, _k = op(data, a0, P0, c, d, T, Z, R, H, Q)
         n = data.type.shape[0]
         return self._postprocess_scan_results(
             (a_filt, a_hat, y_hat, P_filt, P_hat, F, ll[..., None]), a0, P0, n=n
         )
 
-    def _make_ofg(self):
-        m, p, r_ = self.n_states, self.n_endog, self.n_shocks
-        cov_jitter = self.cov_jitter
 
-        sym = {
-            "data": pt.tensor("data", dtype="float64", shape=(None, p)),
-            **{
-                name: pt.tensor(name, dtype="float64", shape=shape)
-                for name, shape in static_matrix_shapes(m, p, r_).items()
-            },
-        }
-        in_order = ["data", "a0", "P0", "c", "d", "T", "Z", "R", "H", "Q"]
-        inputs_s = [sym[k] for k in in_order]
-        outputs = list(self._convergent_forward(*inputs_s))
-        filt_self = self
+class ConvergentKalmanOp(SymbolicOp):
+    """Wrap :meth:`ConvergentFilter._convergent_forward` with its analytic pullback.
 
-        def pullback(inputs, outputs, out_grads):
-            # `outputs` are the 8 forward outputs of `_convergent_forward`:
-            # (a_filt, a_hat, y_hat, P_filt, P_hat, F, ll, k). Only the sequences we need for the
-            # backward are bound; the rest are `_`. Similarly, `out_grads[6]` is the adjoint on `ll`;
-            # all other output adjoints are assumed disconnected (see class docstring).
-            data_, a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = inputs
-            _, a_hat_sym, _, _, P_hat_sym, _, _, k_sym = outputs
-            dll = out_grads[6]
+    The inner graph is built from the caller's input types, so dtype and static shapes follow the
+    surrounding model rather than being fixed here.
+    """
 
-            # Split the recorded per-step sequences at the convergence step `k_sym`. The
-            # pre-convergence slice is `[:k_sym]` and the post-convergence slice is `[k_sym:]`;
-            # a_star and P_star are the handoff values flowing between them (a_{k|k-1}, P_{k|k-1}).
-            a_hat_tr, P_hat_tr = a_hat_sym[:k_sym], P_hat_sym[:k_sym]
-            data_tr, data_fx = data_[:k_sym], data_[k_sym:]
-            a_star, P_star = a_hat_tr[-1], P_hat_tr[-1]
-            a_hat_fx = a_hat_sym[k_sym:]
-            # Reduce the per-step ll adjoint to a scalar by averaging. This is correct for the
-            # standard use case loss = ll.sum() (dll is a broadcast of ones, average is 1.0) and
-            # punts on the more general case of per-step weights.
-            dlogp_up = dll.sum() / dll.shape[0]
+    inline = True
 
-            # Pre-compute tail constants for readability.
-            F_star = Z_ @ P_star @ Z_.mT + stabilize(H_, cov_jitter)
-            F_chol = pt.linalg.cholesky(F_star, lower=True)
-            K_star = pt.linalg.solve(
-                F_star.mT, (P_star @ Z_.mT).mT, assume_a="pos", check_finite=False
-            ).mT
-            F_inv = pt.linalg.cho_solve((F_chol, True), pt.eye(F_chol.shape[0]))
+    def __init__(self, input_types=None, *, filt, **kwargs):
+        self._filt = filt
+        kwargs.setdefault("name", "convergent_kf")
+        super().__init__(input_types=input_types, **kwargs)
+        self._init_kwargs["filt"] = filt
 
-            # Post-convergence backward. This is the source of the speedup: K, F, and P are constant
-            # across the segment, so the per-step backward drops to matvec/outer-product work.
-            # The factor of -0.5 on dlogp_up is a convention adjustment: the analytic formulas in
-            # `_fixed_k_tail_backward` are derived for ll = log |F| + v^T F^{-1} v (the "2 * negative
-            # log-likelihood" form), while our per-step ll is -0.5 * (MVN_CONST + log |F| + v^T F^{-1} v).
-            # So the caller's dlogp_up needs a -0.5 factor before being fed into the analytic formulas.
-            (
-                dd_fx,
-                da_star,
-                dP_star_ric,
-                dT_a,
-                dc_t,
-                dZ_dir,
-                dd_t,
-                dK_s,
-                dF_s,
-                S,
-            ) = filt_self._fixed_k_tail_backward(
-                data_fx,
-                a_star,
-                c_,
-                d_,
-                T_,
-                Z_,
-                K_star,
-                F_star,
-                F_chol,
-                a_hat_fx,
-                -0.5 * dlogp_up,
-            )
+    def build_inner_graph(self, *inputs):
+        return list(self._filt._convergent_forward(*inputs))
 
-            # Use chain rule to recover dZ and dH from dK*, dF*. Fully analytic.
-            dK, dF = disconnected_grad(dK_s), disconnected_grad(dF_s)
-            P_filt_s = (pt.eye(m) - K_star @ Z_) @ P_star
-            d_Z_chain = (
-                F_inv @ dK.mT @ P_filt_s - K_star.mT @ dK @ K_star.mT + (dF + dF.mT) @ Z_ @ P_star
-            )
-            X = K_star.mT @ dK @ F_inv
-            d_H_chain = dF - 0.5 * (X + X.mT)
+    def pullback(self, inputs, outputs, output_grads):
+        # `outputs` are the 8 forward outputs of `_convergent_forward`:
+        # (a_filt, a_hat, y_hat, P_filt, P_hat, F, ll, k). Only the sequences we need for the
+        # backward are bound; the rest are `_`. Similarly, `output_grads[6]` is the adjoint on `ll`;
+        # all other output adjoints are assumed disconnected (see class docstring).
+        data_, a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = inputs
+        _, a_hat_sym, _, _, P_hat_sym, _, _, k_sym = outputs
+        dll = output_grads[6]
 
-            # P-path contributions to d_T, d_Z, d_H. Because P_t is the constant P_star across the
-            # post-convergence segment, each step's contribution is linear in d_P_hat_t, so the sum
-            # over the segment is obtained by substituting S = sum_t d_P_hat_t into the formulas.
-            TtST = T_.mT @ S @ T_
-            KtPg = K_star.mT @ TtST
-            FinvZP = F_inv @ Z_ @ P_star
-            KZP = (K_star @ Z_) @ P_star
-            d_T_P = (S @ T_) @ P_filt_s.mT + (S.mT @ T_) @ P_filt_s
-            d_Z_P = (
-                -FinvZP @ TtST.mT @ P_star
-                + KtPg @ P_star.mT @ Z_.mT @ K_star.mT
-                + FinvZP @ TtST.mT @ KZP
-                - KtPg @ P_star.mT
-            )
-            d_H_P = KtPg @ K_star
-            # Chain S through W = R Q R^T for (d_R, d_Q).
-            d_R_P = (S + S.mT) @ R_ @ Q_
-            d_Q_P = R_.mT @ S @ R_
+        # Split the recorded per-step sequences at the convergence step `k_sym`. The
+        # pre-convergence slice is `[:k_sym]` and the post-convergence slice is `[k_sym:]`;
+        # a_star and P_star are the handoff values flowing between them (a_{k|k-1}, P_{k|k-1}).
+        a_hat_tr, P_hat_tr = a_hat_sym[:k_sym], P_hat_sym[:k_sym]
+        data_tr, data_fx = data_[:k_sym], data_[k_sym:]
+        a_star, P_star = a_hat_tr[-1], P_hat_tr[-1]
+        a_hat_fx = a_hat_sym[k_sym:]
+        # Reduce the per-step ll adjoint to a scalar by averaging. This is correct for the
+        # standard use case loss = ll.sum() (dll is a broadcast of ones, average is 1.0) and
+        # punts on the more general case of per-step weights.
+        dlogp_up = dll.sum() / dll.shape[0]
 
-            # Pre-convergence backward. We rebuild the Kalman scan on the sliced pre-convergence data
-            # (data[:k_sym]) and autodiff through it. The surrogate loss has three parts: the
-            # pre-convergence log-likelihood itself, plus two inner products that encode the handoff
-            # adjoints (da_star for the last predicted state, dP_star_ric for the last predicted
-            # covariance). disconnected_grad on the adjoints keeps pt.grad from trying to chase their
-            # own parameter dependence (they are outputs of the post-convergence backward and are
-            # treated as constants here. If we connect their gradients we would be double-counting).
-            _, a_hat_rb, _, _, P_hat_rb, _, ll_rb = filt_self._full_kalman_scan(
-                data_tr,
-                a0_,
-                P0_,
-                c_,
-                d_,
-                T_,
-                Z_,
-                R_,
-                H_,
-                Q_,
-                stop_early=False,
-            )
-            loss_tr = (
-                dlogp_up * ll_rb.sum()
-                + (a_hat_rb[-1] * disconnected_grad(da_star)).sum()
-                + (P_hat_rb[-1] * disconnected_grad(dP_star_ric)).sum()
-            )
-            (
-                dd_full,
-                da0,
-                dP0,
-                dc_tr,
-                dd_tr,
-                dT_tr,
-                dZ_tr,
-                dR_tr,
-                dH_tr,
-                dQ_tr,
-            ) = pt.grad(
-                loss_tr,
-                [data_, a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_],
-                disconnected_inputs="ignore",
-            )
+        # Pre-compute tail constants for readability.
+        F_star = Z_ @ P_star @ Z_.mT + stabilize(H_, self._filt.cov_jitter)
+        F_chol = pt.linalg.cholesky(F_star, lower=True)
+        K_star = pt.linalg.solve(
+            F_star.mT, (P_star @ Z_.mT).mT, assume_a="pos", check_finite=False
+        ).mT
+        F_inv = pt.linalg.cho_solve((F_chol, True), pt.eye(F_chol.shape[0]))
 
-            return [
-                pt.concatenate([dd_full[:k_sym], dd_fx], axis=0),
-                da0,
-                dP0,
-                dc_tr + dc_t,
-                dd_tr + dd_t,
-                dT_tr + dT_a + d_T_P,
-                dZ_tr + dZ_dir + d_Z_chain + d_Z_P,
-                dR_tr + d_R_P,
-                dH_tr + d_H_chain + d_H_P,
-                dQ_tr + d_Q_P,
-            ]
-
-        # inline=True folds the forward into the surrounding graph, but the custom pullback still
-        # wins: pt.grad builds the gradient graph before the inline rewrite runs, so the analytic
-        # backward is what gets differentiated.
-        return OpFromGraph(
-            inputs=inputs_s,
-            outputs=outputs,
-            pullback=pullback,
-            inline=True,
-            name="convergent_kf",
+        # Post-convergence backward. This is the source of the speedup: K, F, and P are constant
+        # across the segment, so the per-step backward drops to matvec/outer-product work.
+        # The factor of -0.5 on dlogp_up is a convention adjustment: the analytic formulas in
+        # `_fixed_k_tail_backward` are derived for ll = log |F| + v^T F^{-1} v (the "2 * negative
+        # log-likelihood" form), while our per-step ll is -0.5 * (MVN_CONST + log |F| + v^T F^{-1} v).
+        # So the caller's dlogp_up needs a -0.5 factor before being fed into the analytic formulas.
+        (
+            dd_fx,
+            da_star,
+            dP_star_ric,
+            dT_a,
+            dc_t,
+            dZ_dir,
+            dd_t,
+            dK_s,
+            dF_s,
+            S,
+        ) = self._filt._fixed_k_tail_backward(
+            data_fx,
+            a_star,
+            c_,
+            d_,
+            T_,
+            Z_,
+            K_star,
+            F_star,
+            F_chol,
+            a_hat_fx,
+            -0.5 * dlogp_up,
         )
+
+        # Use chain rule to recover dZ and dH from dK*, dF*. Fully analytic.
+        dK, dF = disconnected_grad(dK_s), disconnected_grad(dF_s)
+        P_filt_s = (pt.eye(self._filt.n_states) - K_star @ Z_) @ P_star
+        d_Z_chain = (
+            F_inv @ dK.mT @ P_filt_s - K_star.mT @ dK @ K_star.mT + (dF + dF.mT) @ Z_ @ P_star
+        )
+        X = K_star.mT @ dK @ F_inv
+        d_H_chain = dF - 0.5 * (X + X.mT)
+
+        # P-path contributions to d_T, d_Z, d_H. Because P_t is the constant P_star across the
+        # post-convergence segment, each step's contribution is linear in d_P_hat_t, so the sum
+        # over the segment is obtained by substituting S = sum_t d_P_hat_t into the formulas.
+        TtST = T_.mT @ S @ T_
+        KtPg = K_star.mT @ TtST
+        FinvZP = F_inv @ Z_ @ P_star
+        KZP = (K_star @ Z_) @ P_star
+        d_T_P = (S @ T_) @ P_filt_s.mT + (S.mT @ T_) @ P_filt_s
+        d_Z_P = (
+            -FinvZP @ TtST.mT @ P_star
+            + KtPg @ P_star.mT @ Z_.mT @ K_star.mT
+            + FinvZP @ TtST.mT @ KZP
+            - KtPg @ P_star.mT
+        )
+        d_H_P = KtPg @ K_star
+        # Chain S through W = R Q R^T for (d_R, d_Q).
+        d_R_P = (S + S.mT) @ R_ @ Q_
+        d_Q_P = R_.mT @ S @ R_
+
+        # Pre-convergence backward. We rebuild the Kalman scan on the sliced pre-convergence data
+        # (data[:k_sym]) and autodiff through it. The surrogate loss has three parts: the
+        # pre-convergence log-likelihood itself, plus two inner products that encode the handoff
+        # adjoints (da_star for the last predicted state, dP_star_ric for the last predicted
+        # covariance). disconnected_grad on the adjoints keeps pt.grad from trying to chase their
+        # own parameter dependence (they are outputs of the post-convergence backward and are
+        # treated as constants here. If we connect their gradients we would be double-counting).
+        _, a_hat_rb, _, _, P_hat_rb, _, ll_rb = self._filt._full_kalman_scan(
+            data_tr,
+            a0_,
+            P0_,
+            c_,
+            d_,
+            T_,
+            Z_,
+            R_,
+            H_,
+            Q_,
+            stop_early=False,
+        )
+        loss_tr = (
+            dlogp_up * ll_rb.sum()
+            + (a_hat_rb[-1] * disconnected_grad(da_star)).sum()
+            + (P_hat_rb[-1] * disconnected_grad(dP_star_ric)).sum()
+        )
+        (
+            dd_full,
+            da0,
+            dP0,
+            dc_tr,
+            dd_tr,
+            dT_tr,
+            dZ_tr,
+            dR_tr,
+            dH_tr,
+            dQ_tr,
+        ) = pt.grad(
+            loss_tr,
+            [data_, a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_],
+            disconnected_inputs="ignore",
+        )
+
+        return [
+            pt.concatenate([dd_full[:k_sym], dd_fx], axis=0),
+            da0,
+            dP0,
+            dc_tr + dc_t,
+            dd_tr + dd_t,
+            dT_tr + dT_a + d_T_P,
+            dZ_tr + dZ_dir + d_Z_chain + d_Z_P,
+            dR_tr + d_R_P,
+            dH_tr + d_H_chain + d_H_P,
+            dQ_tr + d_Q_P,
+        ]
