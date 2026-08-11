@@ -82,19 +82,27 @@ def create_model(load_dataset):
             P0 = pm.Deterministic("P0", pt.diag(P0_diag), dims=("state", "state_aux"))
             initial_trend = pm.Normal("initial_level_trend", dims="state_level_trend")
             sigma_trend = pm.Exponential("sigma_level_trend", 1, dims="shock_level_trend")
-            ss_mod.build_statespace_graph(data, save_kalman_filter_outputs_in_idata=True)
-        return mod
+            ss_mod.build_statespace_graph(data)
+        return ss_mod, mod
 
     return _create_model
 
 
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
 @pytest.mark.parametrize("f, warning", func_inputs, ids=function_names)
 def test_filter_output_coord_assignment(f, warning, create_model):
     with warning:
-        pymc_model = create_model(f)
+        ss_mod, pymc_model = create_model(f)
+
+    with pymc_model:
+        prior = pm.sample_prior_predictive(draws=1)
+    filter_idata = ss_mod.sample_filter_outputs(prior, group="prior")
 
     for output in FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES + ["predicted_observed_states"]:
-        assert pymc_model.named_vars_to_dims[output] == FILTER_OUTPUT_DIMS[output]
+        expected_dims = tuple(FILTER_OUTPUT_DIMS[output])
+        result_dims = filter_idata.posterior_predictive[output].dims
+        assert result_dims[-len(expected_dims) :] == expected_dims
 
 
 def test_model_build_without_coords(load_dataset):
@@ -113,7 +121,7 @@ def test_model_build_without_coords(load_dataset):
 @pytest.mark.parametrize("f, warning", func_inputs, ids=function_names)
 def test_data_index_is_coord(f, warning, create_model):
     with warning:
-        pymc_model = create_model(f)
+        _, pymc_model = create_model(f)
     assert TIME_DIM in pymc_model.coords
 
 

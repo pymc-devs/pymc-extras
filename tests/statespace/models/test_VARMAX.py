@@ -68,7 +68,7 @@ def pymc_mod(varma_mod, data):
         )
         sigma_obs = pm.Exponential("sigma_obs", 1, dims=["observed_state"])
 
-        varma_mod.build_statespace_graph(data=data, save_kalman_filter_outputs_in_idata=True)
+        varma_mod.build_statespace_graph(data=data)
 
     return pymc_mod
 
@@ -161,9 +161,14 @@ def test_VARMAX_update_matches_statsmodels(data, order, rng):
 
 
 @pytest.mark.parametrize("filter_output", ["filtered", "predicted", "smoothed"])
-def test_all_prior_covariances_are_PSD(filter_output, pymc_mod, rng):
-    rv = pymc_mod[f"{filter_output}_covariances"]
-    cov_mats = pm.draw(rv, 100, random_seed=rng)
+def test_all_prior_covariances_are_PSD(filter_output, varma_mod, idata, rng):
+    cov_name = f"{filter_output}_covariances"
+    filter_idata = varma_mod.sample_filter_outputs(
+        idata, filter_output_names=[cov_name], group="prior", random_seed=rng
+    )
+    cov_mats = filter_idata.posterior_predictive[cov_name].values.reshape(
+        -1, varma_mod.k_states, varma_mod.k_states
+    )
     w, v = np.linalg.eig(cov_mats)
     assert_array_less(0, w, err_msg=f"Smallest eigenvalue: {min(w.ravel())}")
 

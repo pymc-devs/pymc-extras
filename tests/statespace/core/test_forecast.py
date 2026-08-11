@@ -578,6 +578,13 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
         scenario=scenario,
     )
 
+    # Fetched before the forecast model mutates any shared data.
+    predicted = exog_ss_mod.sample_filter_outputs(
+        idata_exog,
+        filter_output_names=["predicted_states", "predicted_covariances"],
+        group="posterior",
+    ).posterior_predictive
+
     test_forecast_model = exog_ss_mod._build_forecast_model(
         time_index=time_index,
         t0=t0,
@@ -632,11 +639,11 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
 
     # Check that the frozen states and covariances correctly match the sliced index
     np.testing.assert_allclose(
-        idata_exog.posterior["predicted_covariances"].sel(time=t0).mean(("chain", "draw")).values,
+        predicted["predicted_covariances"].sel(time=t0).mean(("chain", "draw")).values,
         idata_forecast.posterior_predictive["P0_slice"].mean(("chain", "draw")).values,
     )
     np.testing.assert_allclose(
-        idata_exog.posterior["predicted_states"].sel(time=t0).mean(("chain", "draw")).values,
+        predicted["predicted_states"].sel(time=t0).mean(("chain", "draw")).values,
         idata_forecast.posterior_predictive["x0_slice"].mean(("chain", "draw")).values,
     )
 

@@ -66,7 +66,7 @@ def pymc_mod(ss_mod):
         rho = pm.Beta("rho", 1, 1)
         zeta = pm.Deterministic("zeta", 1 - rho)
 
-        ss_mod.build_statespace_graph(data=nile, save_kalman_filter_outputs_in_idata=True)
+        ss_mod.build_statespace_graph(data=nile)
         names = ["x0", "P0", "c", "d", "T", "Z", "R", "H", "Q"]
         for name, matrix in zip(names, ss_mod.unpack_statespace()):
             pm.Deterministic(name, matrix)
@@ -229,7 +229,7 @@ def exog_pymc_mod(exog_ss_mod, exog_data):
         )
         beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=["state_exog"])
 
-        exog_ss_mod.build_statespace_graph(exog_data["y"], save_kalman_filter_outputs_in_idata=True)
+        exog_ss_mod.build_statespace_graph(exog_data["y"])
 
     return struct_model
 
@@ -250,9 +250,7 @@ def exog_pymc_mod_mv(exog_ss_mod_mv, exog_data_mv):
         )
         beta_exog = pm.Normal("beta_exog", mu=0, sigma=1, dims=["endog_exog", "state_exog"])
 
-        exog_ss_mod_mv.build_statespace_graph(
-            exog_data_mv[["y1", "y2"]], save_kalman_filter_outputs_in_idata=True
-        )
+        exog_ss_mod_mv.build_statespace_graph(exog_data_mv[["y1", "y2"]])
 
     return struct_model
 

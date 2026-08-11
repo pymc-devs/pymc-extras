@@ -190,7 +190,7 @@ def pymc_mod(arima_mod):
         ar_params = pm.Normal("ar_params", sigma=0.1, dims=["lag_ar"])
         ma_params = pm.Normal("ma_params", sigma=1, dims=["lag_ma"])
         sigma_state = pm.Exponential("sigma_state", 0.5)
-        arima_mod.build_statespace_graph(data=data, save_kalman_filter_outputs_in_idata=True)
+        arima_mod.build_statespace_graph(data=data)
 
     return pymc_mod
 
@@ -221,7 +221,7 @@ def pymc_mod_interp(arima_mod_interp):
         sigma_state = pm.Exponential("sigma_state", 0.5)
         sigma_obs = pm.Exponential("sigma_obs", 0.1)
 
-        arima_mod_interp.build_statespace_graph(data=data, save_kalman_filter_outputs_in_idata=True)
+        arima_mod_interp.build_statespace_graph(data=data)
 
     return pymc_mod
 
@@ -329,9 +329,17 @@ def test_SARIMAX_update_matches_statsmodels(p, d, q, P, D, Q, S, data, rng):
 
 
 @pytest.mark.parametrize("filter_output", ["filtered", "predicted", "smoothed"])
-def test_all_prior_covariances_are_PSD(filter_output, pymc_mod, rng):
-    rv = pymc_mod[f"{filter_output}_covariances"]
-    cov_mats = pm.draw(rv, 100, random_seed=rng)
+def test_all_prior_covariances_are_PSD(filter_output, arima_mod, pymc_mod, rng):
+    with pymc_mod:
+        idata = pm.sample_prior_predictive(draws=10, random_seed=rng)
+
+    cov_name = f"{filter_output}_covariances"
+    filter_idata = arima_mod.sample_filter_outputs(
+        idata, filter_output_names=[cov_name], group="prior", random_seed=rng
+    )
+    cov_mats = filter_idata.posterior_predictive[cov_name].values.reshape(
+        -1, arima_mod.k_states, arima_mod.k_states
+    )
     w, v = np.linalg.eig(cov_mats)
     assert_array_less(0, w, err_msg=f"Smallest eigenvalue: {min(w.ravel())}")
 
@@ -459,7 +467,7 @@ def test_SARIMA_with_exogenous(rng, mock_sample):
 
         sigma_state = pm.Exponential("sigma_state", 1.0)
 
-        ss_mod.build_statespace_graph(data=data_df, save_kalman_filter_outputs_in_idata=True)
+        ss_mod.build_statespace_graph(data=data_df)
         idata = pm.sample(chains=2, draws=100)
 
     assert "exogenous_data" in idata.constant_data

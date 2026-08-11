@@ -98,22 +98,6 @@ def test_build_statespace_graph_raises_if_data_has_missing_fill():
             ss_mod.build_statespace_graph(data=data, missing_fill_value=1.0, register_data=False)
 
 
-def test_build_statespace_graph(pymc_mod):
-    for name in [
-        "filtered_states",
-        "predicted_states",
-        "predicted_covariances",
-        "filtered_covariances",
-    ]:
-        assert name in [x.name for x in pymc_mod.deterministics]
-
-
-def test_build_smoother_graph(pymc_mod):
-    names = ["smoothed_states", "smoothed_covariances"]
-    for name in names:
-        assert name in [x.name for x in pymc_mod.deterministics]
-
-
 def test_param_dims_coords(ss_mod_multi_component):
     for param in ss_mod_multi_component.param_names:
         shape = ss_mod_multi_component.param_info[param]["shape"]
