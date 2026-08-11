@@ -1074,13 +1074,16 @@ class ConvergentFilter(StandardFilter):
         F_inv = pt.linalg.cho_solve((F_chol_star, True), pt.eye(p_dim))
         ZtFinvZ = Z.T @ F_inv @ Z  # the data-independent half of direct_C, lifted out of the scan
 
-        def bwd(y, a_prev, r_next, P_hat_next, c_, d_, T_, Z_, K_, F_inv_, A_, I_KZ_, ZtFinvZ_):
+        def bwd(y, a_prev, r_next, P_hat_next, c_, d_, T_, Z_, K_, F_inv_, A_, ZtFinvZ_):
             v = y - Z_ @ a_prev - d_
             Finv_v = F_inv_ @ v
             a_filt = a_prev + K_ @ v
             T_r_next = T_.T @ r_next
+            A_r_next = A_.T @ r_next
+            Zt_Finv_v = Z_.T @ Finv_v
+
             dL_dv = K_.T @ T_r_next + 2 * Finv_v
-            r_t = A_.T @ r_next - 2 * Z_.T @ Finv_v
+            r_t = A_r_next - 2 * Zt_Finv_v
 
             # P-adjoint recursion: d_P_prev = A^T @ d_P_hat_next @ A + cross_a + direct_C,
             # where A = T (I - K_star Z) is the closed-loop transition. The homogeneous part
@@ -1091,11 +1094,8 @@ class ConvergentFilter(StandardFilter):
             # which still depend on y_t and a_prev. cross_a uses the identity Z(I - K Z) = H F^{-1} Z
             # to express what is naturally an H^{-1} term through F^{-1} instead, which stays finite for
             # singular H (a measurement-error-free model).
-            u = I_KZ_.T @ T_r_next
-            w = Z_.T @ Finv_v
-            cross_a = 0.5 * (pt.outer(u, w) + pt.outer(w, u))
-            Zt_Finv_v = w[:, None]
-            direct_C = ZtFinvZ_ - Zt_Finv_v @ Zt_Finv_v.T
+            cross_a = 0.5 * (pt.outer(A_r_next, Zt_Finv_v) + pt.outer(Zt_Finv_v, A_r_next))
+            direct_C = ZtFinvZ_ - pt.outer(Zt_Finv_v, Zt_Finv_v)
             d_P_prev = A_.T @ P_hat_next @ A_ + cross_a + direct_C
 
             dL_dT = pt.outer(r_next, a_filt)
@@ -1121,7 +1121,7 @@ class ConvergentFilter(StandardFilter):
                 None,
                 None,
             ],
-            non_sequences=[c, d, T, Z, K_star, F_inv, A, I_KZ, ZtFinvZ],
+            non_sequences=[c, d, T, Z, K_star, F_inv, A, ZtFinvZ],
             go_backwards=True,
             strict=False,
             return_updates=False,
