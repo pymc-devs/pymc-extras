@@ -82,9 +82,7 @@ def test_none_losses_raises_typeerror():
 def test_no_stop_before_min_steps():
     """Even a perfect plateau from step 0 waits out the warm-up."""
     rng = np.random.default_rng(0)
-    stop = run_monitor(
-        CheckLossConvergence(window=50), 100.0 + rng.normal(0, 1.0, 2000)
-    )
+    stop = run_monitor(CheckLossConvergence(window=50), 100.0 + rng.normal(0, 1.0, 2000))
     assert stop is not None and stop >= 200
 
 

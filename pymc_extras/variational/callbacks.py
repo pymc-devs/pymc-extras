@@ -130,8 +130,7 @@ class CheckLossConvergence(Callback):
             improvement = float(np.nanmean(hist[-2 * width : -width]) - np.nanmean(hist[-width:]))
             noise_sd = sigma * np.sqrt(2.0 / width)
             return np.isfinite(improvement) and (
-                improvement < self._Z_THRESHOLD * noise_sd
-                or improvement < self.rel_tol * achieved
+                improvement < self._Z_THRESHOLD * noise_sd or improvement < self.rel_tol * achieved
             )
 
         if is_plateau(2 * w) and is_plateau(w):
