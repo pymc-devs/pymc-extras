@@ -1,3 +1,5 @@
+import pickle
+
 import numpy as np
 import pymc as pm
 import pytensor
@@ -226,4 +228,19 @@ def test_register_additional_statespace_variables_hook():
 
     assert "subclass_det" in [x.name for x in pymc_mod.deterministics]
     assert "subclass_check" in [x.name for x in pymc_mod.potentials]
+    assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_statespace_model_survives_pickling():
+    """A statespace model holds no PyMC-model references, so it round-trips and still builds."""
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(verbose=False)
+    unpickled = pickle.loads(pickle.dumps(ss_mod))
+
+    with pm.Model(coords=unpickled.coords) as pymc_mod:
+        pm.Normal("initial_trend", shape=(1,))
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX))
+        pm.Exponential("sigma_trend", 1, shape=(1,))
+        unpickled.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
     assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
