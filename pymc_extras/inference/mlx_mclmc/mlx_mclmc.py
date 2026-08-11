@@ -18,6 +18,11 @@ from pymc_extras.inference.mlx_mclmc.logp import (
 
 _log = logging.getLogger(__name__)
 
+# MLX raises this when a fused graph exceeds Metal's argument-buffer limit. Hand-written special
+# functions such as gammaln expand into large graphs, so a model can hit it through no fault of
+# its own; running the step unfused is the documented way out.
+_METAL_FUSION_LIMIT = "Too many inputs/outputs fused"
+
 # The step-size controller clamps at 1e-12, so anything at that floor means it gave up.
 _COLLAPSED_STEP_SIZE = 1e-11
 
@@ -87,8 +92,9 @@ def fit_mlx_mclmc(
         Whether to add an ``unconstrained_posterior`` group holding the draws in the space the
         sampler moved in. Default is False.
     compile_step : bool
-        Whether to fuse the sampler step with ``mx.compile``. Pass False for very large model
-        graphs, whose fused kernel can exceed Metal's argument-buffer limit. Default is True.
+        Whether to fuse the sampler step with ``mx.compile``. A fused step that exceeds Metal's
+        argument-buffer limit is retried unfused, so this is a way to skip that first attempt
+        rather than a requirement. Default is True.
     random_seed : int, optional
     warmup_kwargs : dict, optional
         Extra keyword arguments for :func:`~pymc_extras.inference.mlx_mclmc.kernel.warmup`.
@@ -139,18 +145,32 @@ def fit_mlx_mclmc(
     }
 
     _log.info("Sampling %d chains of %d draws in %d dimensions", chains, draws, logdensity_fn.dim)
-    output, tuned = warmup_and_sample(
-        logdensity_fn,
-        start,
+    sampler_kwargs = dict(
         num_tune=tune,
         draws=draws,
         discard=burn_in,
         chains=chains,
         integrator=integrator,
         seed=seed,
-        compile_step=compile_step,
         **warmup_kwargs,
     )
+    try:
+        output, tuned = warmup_and_sample(
+            logdensity_fn, start, compile_step=compile_step, **sampler_kwargs
+        )
+    except RuntimeError as exc:
+        if not (compile_step and _METAL_FUSION_LIMIT in str(exc)):
+            raise
+        warnings.warn(
+            "The fused sampler step exceeded Metal's argument-buffer limit, so MCLMC is falling "
+            "back to an unfused step, which is slower. Pass compile_step=False to skip this "
+            "attempt.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        output, tuned = warmup_and_sample(
+            logdensity_fn, start, compile_step=False, **sampler_kwargs
+        )
 
     # The kernel stacks draws first; InferenceData wants chains first.
     flat_draws = np.asarray(output.samples, dtype="float32").transpose(1, 0, 2)
