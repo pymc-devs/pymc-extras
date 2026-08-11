@@ -27,15 +27,21 @@ INTEGRATOR_COEFFICIENTS = {
     "velocity_verlet": [0.5, 1.0, 0.5],
 }
 
-_LOG2 = math.log(2.0)
-
+# Below this norm a vector is left unnormalized rather than divided by its own (near-zero)
+# norm, so a vanishing gradient at the mode gives a finite result instead of 0 / 0 -> nan.
 # Below this delta the textbook kinetic-energy form cancels catastrophically, and above it MLX's
 # expm1 is the weaker primitive; each form covers where the other fails. The crossover is sharp
 # between 0.15 and 0.18 in float32, measured against a float64 reference.
 _CANCELLATION_FREE_BELOW = 0.15
+_LOG2 = math.log(2.0)
 
-# Below this norm a vector is left unnormalized rather than divided by its own (near-zero)
-# norm, so a vanishing gradient at the mode gives a finite result instead of 0 / 0 -> nan.
+# A retained direction whose gain reaches -1 annihilates that direction entirely, so a fit that
+# comes anywhere near it is rejected instead.
+_MIN_LOW_RANK_GAIN = 1e-3
+
+# Floor on eigenvalues fed to a fractional matrix power, where a zero would produce inf.
+_EIGENVALUE_FLOOR = 1e-30
+
 _NORM_FLOOR = 1e-13
 _SAFE_DIVISOR = 1e-30
 
@@ -52,6 +58,68 @@ class ChainState(NamedTuple):
     grad: mx.array
 
 
+class AdaptationSettings(NamedTuple):
+    r"""
+    Everything :func:`warmup` adapts, and how.
+
+    Attributes
+    ----------
+    mass_matrix : str
+        ``"variance"`` for blackjax's per-coordinate posterior variance, ``"gradient"`` for
+        nuts-rs's :math:`\sqrt{\mathrm{Var}[x] / \mathrm{Var}[\nabla \log p]}`, or
+        ``"low_rank"`` to fit a low-rank correction on top of the latter. Only ``"low_rank"`` can
+        precondition a posterior whose ridges are not axis-aligned.
+    settings.diagonal_preconditioning : bool
+        Whether to install the estimated metric at all.
+    early_switch_freq, switch_freq : int
+        Moment-estimator window lengths, before and after ``early_end``.
+    early_end : int
+        Phase-2 step at which the short early windows give way to the growing ones. 0 disables the
+        early phase.
+    window_growth : float
+        Factor by which each main-phase window exceeds the last.
+    low_rank_window : int
+        Trailing phase-2 draws retained for a ``"low_rank"`` fit.
+    low_rank_refits : int
+        Refits within phase 2 before the final one. The first is always the gradient diagonal,
+        which seeds the later low-rank fits with draws taken under something better than identity.
+    settings.desired_energy_var : float
+        Target energy variance per dimension for the step-size controller.
+    settings.trust_in_estimate : float
+        Width of the controller's Gaussian weighting. Larger values give more weight to single-step
+        estimates far from the target.
+    settings.num_effective_samples : float
+        Sets the controller's exponential decay rate.
+    settings.frac_tune1, settings.frac_tune2, settings.frac_tune3 : float
+        Fractions of the step budget given to each adaptation phase.
+    settings.l_factor : float
+        Multiplier on the autocorrelation-derived ``L`` in phase 3.
+    settings.optimize_steps : int
+        Maximum Adam steps taken toward the mode before adaptation. Pass 0 for a log-density
+        unbounded above, such as a centered hierarchical model.
+    settings.optimize_learning_rate : float
+        Adam learning rate for that ascent.
+    """
+
+    mass_matrix: str = "gradient"
+    diagonal_preconditioning: bool = True
+    early_switch_freq: int = 10
+    switch_freq: int = 80
+    early_end: int = 0
+    window_growth: float = 1.5
+    low_rank_window: int = 400
+    low_rank_refits: int = 2
+    desired_energy_var: float = 5e-4
+    trust_in_estimate: float = 1.5
+    num_effective_samples: float = 150
+    frac_tune1: float = 0.1
+    frac_tune2: float = 0.1
+    frac_tune3: float = 0.1
+    l_factor: float = 0.4
+    optimize_steps: int = 200
+    optimize_learning_rate: float = 0.05
+
+
 class LowRankCorrection(NamedTuple):
     r"""Orthonormal directions and their :math:`\sqrt{\Lambda} - 1` gains."""
 
@@ -63,7 +131,7 @@ class Metric(NamedTuple):
     r"""
     A diagonal inverse mass matrix, optionally corrected on a low-rank subspace.
 
-    Without a ``correction`` this is :math:`M^{-1} = \mathrm{diag}(\sigma^2)`. With one it is
+    Without a ``correction`` this is :math:`M^{-1} = \mathrm{diag}(\sigma^2)`. With them it is
     blackjax's ``LowRankInverseMassMatrix``,
 
     .. math:: M^{-1} = \mathrm{diag}(\sigma)(I + U(\Lambda - I)U^\top)\mathrm{diag}(\sigma)
@@ -105,14 +173,6 @@ def _unwhiten_momentum(metric: Metric, momentum: mx.array) -> mx.array:
     return corrected * metric.scale
 
 
-def _as_metric(inverse_mass_matrix) -> Metric:
-    """Accept a diagonal inverse mass matrix or an already-built :class:`Metric`."""
-    if isinstance(inverse_mass_matrix, Metric):
-        return inverse_mass_matrix
-
-    return Metric(scale=mx.sqrt(mx.array(inverse_mass_matrix, dtype=mx.float32)))
-
-
 class Dynamics(NamedTuple):
     """Everything a transition needs that does not change from one step to the next."""
 
@@ -122,6 +182,16 @@ class Dynamics(NamedTuple):
     metric: Metric
     inverse_L: float
     dim: int
+
+
+class WindowedMoments(NamedTuple):
+    """Running count, mean and mean-square of the position and of the log-density gradient."""
+
+    count: mx.array
+    position_mean: mx.array
+    position_mean_sq: mx.array
+    grad_mean: mx.array
+    grad_mean_sq: mx.array
 
 
 class AdaptationState(NamedTuple):
@@ -135,9 +205,8 @@ class AdaptationState(NamedTuple):
     step_size_max: mx.array
     time: mx.array
     x_average: mx.array
-    stream_weight: mx.array
-    stream_mean: mx.array
-    stream_mean_sq: mx.array
+    foreground: WindowedMoments
+    background: WindowedMoments
 
 
 class SamplerOutput(NamedTuple):
@@ -154,7 +223,7 @@ class TunedParameters(NamedTuple):
     position: mx.array
     L: float
     step_size: float
-    inverse_mass_matrix: mx.array
+    metric: Metric
     num_tuning_steps: int
 
 
@@ -164,6 +233,247 @@ def _check_dim(dim: int) -> None:
             f"MCLMC needs at least 2 dimensions, got {dim}. The isokinetic momentum update "
             "divides by (dim - 1), which is undefined for a single parameter."
         )
+
+
+def _as_metric(inverse_mass_matrix) -> Metric:
+    """Accept a diagonal inverse mass matrix or an already-built :class:`Metric`."""
+    if isinstance(inverse_mass_matrix, Metric):
+        return inverse_mass_matrix
+
+    return Metric(scale=mx.sqrt(mx.array(inverse_mass_matrix, dtype=mx.float32)))
+
+
+def _empty_moments(dim: int) -> WindowedMoments:
+    zeros = mx.zeros((1, dim))
+    return WindowedMoments(mx.zeros(()), zeros, zeros, zeros, zeros)
+
+
+def _accumulate(moments: WindowedMoments, position, grad, weight) -> WindowedMoments:
+    """Fold one draw into a running mean and mean-square, skipping zero-weight steps."""
+    count = moments.count + weight
+    safe = mx.maximum(count, 1e-30)
+
+    def blend(previous, sample):
+        return mx.where(count > 0, (moments.count * previous + weight * sample) / safe, previous)
+
+    return WindowedMoments(
+        count=count,
+        position_mean=blend(moments.position_mean, position),
+        position_mean_sq=blend(moments.position_mean_sq, position * position),
+        grad_mean=blend(moments.grad_mean, grad),
+        grad_mean_sq=blend(moments.grad_mean_sq, grad * grad),
+    )
+
+
+def _spd_mean(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    r"""
+    Geometric mean of two symmetric positive-definite matrices.
+
+    :math:`A \# B = B^{-1/2}(B^{1/2} A B^{1/2})^{1/2}B^{-1/2}`, the Riemannian midpoint. This is
+    how nuts-rs reconciles the draw covariance with the inverse gradient covariance when the two
+    disagree, which is exactly what happens on a rotated posterior.
+    """
+
+    def symmetric_power(matrix, power):
+        values, vectors = np.linalg.eigh(matrix)
+        return (vectors * np.clip(values, _EIGENVALUE_FLOOR, None) ** power) @ vectors.T
+
+    right_sqrt = symmetric_power(right, 0.5)
+    right_inv_sqrt = symmetric_power(right, -0.5)
+    middle = symmetric_power(right_sqrt @ left @ right_sqrt, 0.5)
+
+    return right_inv_sqrt @ middle @ right_inv_sqrt
+
+
+def _low_rank_metric(
+    draws: np.ndarray,
+    grads: np.ndarray,
+    *,
+    gamma: float = 1e-5,
+    eigval_cutoff: float = 2.0,
+    max_eigenvalue: float = 1e6,
+    eps: float = 1e-12,
+) -> Metric | None:
+    r"""
+    Fit a diagonal-plus-low-rank inverse mass matrix to a window of draws and gradients.
+
+    A port of nuts-rs's ``LowRankMassMatrixStrategy``. The diagonal is the fourth root of
+    :math:`\mathrm{Var}[x] / \mathrm{Var}[\nabla \log p]`, applied as a scale to the draws and
+    its reciprocal to the gradients. The correction is then fitted only inside the subspace spanned
+    by the leading directions of the rescaled draws *and* gradients together, which is what lets it
+    find a ridge neither set resolves alone.
+
+    Parameters
+    ----------
+    draws, grads : np.ndarray
+        Window of positions and log-density gradients, of shape ``(dim, n_draws)``.
+    gamma : float
+        Shrinkage toward the identity for the projected covariances. Default is 1e-5.
+    eigval_cutoff : float
+        Keep only directions whose eigenvalue is above this or below its reciprocal; the rest are
+        left to the diagonal. Default is 2.0.
+    max_eigenvalue : float
+        Largest eigenvalue of the geometric mean the fit will accept. Those eigenvalues measure how
+        far the draws and the gradients disagree about the geometry; past this the window is
+        uninformative rather than the posterior extreme. nuts-rs needs no such test because it fits
+        from a tuned chain. Default is 1e6.
+
+    Returns
+    -------
+    Metric or None
+        None when the window does not support a trustworthy fit, in which case the caller should
+        keep the diagonal it already has.
+
+    Returns
+    -------
+    scale : np.ndarray
+        Diagonal :math:`\sigma`, of shape ``(dim,)``.
+    vectors : np.ndarray
+        Retained directions, of shape ``(dim, k)``.
+    scales : np.ndarray
+        The :math:`\sqrt{\Lambda} - 1` gains, of shape ``(k,)``.
+    """
+    dim, n_draws = draws.shape
+
+    draw_mean, grad_mean = draws.mean(axis=1), grads.mean(axis=1)
+    draw_var = np.clip(draws.var(axis=1), eps, None)
+    grad_var = np.clip(grads.var(axis=1), eps, None)
+    scale = (draw_var / grad_var) ** 0.25
+
+    # nuts-rs centres the draws on the mean shifted along the gradient rather than on the sample
+    # mean, a Newton-like correction toward the mode.
+    centre = draw_mean + scale**2 * grad_mean
+    rescaled_draws = (draws - centre[:, None]) / scale[:, None]
+    rescaled_grads = grads * scale[:, None]
+    rescaled_draws -= rescaled_draws.mean(axis=1, keepdims=True)
+    rescaled_grads -= rescaled_grads.mean(axis=1, keepdims=True)
+
+    draw_basis = np.linalg.svd(rescaled_draws, full_matrices=False)[0]
+    grad_basis = np.linalg.svd(rescaled_grads, full_matrices=False)[0]
+    subspace, _ = np.linalg.qr(np.concatenate([draw_basis, grad_basis], axis=1))
+
+    projected_draws = subspace.T @ rescaled_draws
+    projected_grads = subspace.T @ rescaled_grads
+    identity = np.eye(subspace.shape[1])
+    cov_draws = projected_draws @ projected_draws.T / gamma + identity
+    cov_grads = projected_grads @ projected_grads.T / gamma + identity
+
+    values, vectors = np.linalg.eigh(_spd_mean(cov_draws, cov_grads))
+    if not np.isfinite(values).all():
+        return None
+    if values.max() > max_eigenvalue or values.min() < 1.0 / max_eigenvalue:
+        return None
+
+    keep = (values > eigval_cutoff) | (values < 1.0 / eigval_cutoff)
+    gains = np.sqrt(values[keep]) - 1.0
+    if not (np.all(scale > 0) and np.all(gains > -1.0 + _MIN_LOW_RANK_GAIN)):
+        return None
+
+    return Metric(
+        scale=mx.array(scale.astype(np.float32)),
+        correction=LowRankCorrection(
+            vectors=mx.array((subspace @ vectors[:, keep]).astype(np.float32)),
+            scales=mx.array(gains.astype(np.float32)),
+        ),
+    )
+
+
+def _reset_step_size_controller(state: "AdaptationState") -> "AdaptationState":
+    """
+    Re-seed the step-size controller, which every reference does when the metric changes.
+
+    The step tuned under the previous metric is baked into ``x_average``, whose decay is slow
+    enough that the controller cannot re-tune from it under a new one.
+    """
+    return state._replace(
+        step_size_max=mx.array([float("inf")], dtype=mx.float32),
+        time=mx.array([0.0], dtype=mx.float32),
+        x_average=mx.array([0.0], dtype=mx.float32),
+    )
+
+
+def _fit_metric(
+    moments: WindowedMoments,
+    retained: list,
+    dim: int,
+    mass_matrix: str,
+    allow_low_rank: bool,
+) -> tuple[Metric, np.ndarray]:
+    """
+    Build the metric for the next stretch of adaptation, and the diagonal it implies.
+
+    The low-rank fit is only as good as the draws behind it, and draws taken under an identity
+    metric on an ill-conditioned target do not span the posterior. So the first fit is always the
+    gradient diagonal, and the low-rank correction goes on top of it once there are draws taken
+    under something better than identity.
+    """
+    if mass_matrix == "low_rank" and allow_low_rank and len(retained) >= 3:
+        mx.eval(retained)
+        draws = np.stack([np.asarray(p).reshape(dim) for p, _ in retained], axis=1)
+        grads = np.stack([np.asarray(g).reshape(dim) for _, g in retained], axis=1)
+        fitted = _low_rank_metric(draws, grads)
+        if fitted is not None:
+            return fitted, (np.asarray(fitted.scale) ** 2).astype(np.float32)
+
+        _log.warning(
+            "The low-rank mass matrix fit was rejected as unreliable; keeping the diagonal."
+        )
+
+    diagonal = _diagonal_from_moments(
+        moments, dim, "gradient" if mass_matrix == "low_rank" else mass_matrix
+    )
+
+    return _as_metric(diagonal), diagonal
+
+
+def _window_switch_steps(
+    num_steps: int, early_end: int, early_switch_freq: int, switch_freq: int, window_growth: float
+) -> set[int]:
+    """
+    Step counts at which the background estimator should replace the foreground.
+
+    Mirrors nuts-rs's schedule: short windows of ``early_switch_freq`` until ``early_end``, then
+    windows starting at ``switch_freq`` and growing by ``window_growth``. A window that could not
+    finish inside ``num_steps`` is not started, which is the reference's is-late gate.
+    """
+    switches, size, step = set(), switch_freq, 0
+    while True:
+        early = step < early_end
+        target = early_switch_freq if early else size
+        if step + target > num_steps:
+            return switches
+        step += target
+        switches.add(step)
+        if not early:
+            size = max(size + 1, round(size * window_growth))
+
+
+_MASS_MATRIX_METHODS = ("variance", "gradient", "low_rank")
+
+
+def _diagonal_from_moments(
+    moments: WindowedMoments, dim: int, method: str, eps: float = 1e-12
+) -> np.ndarray:
+    """
+    Read the diagonal inverse mass matrix off a window's moments.
+
+    ``"variance"`` is blackjax's per-coordinate posterior variance. ``"gradient"`` is nuts-rs's
+    ``sqrt(var[x] / var[grad])``, which for an axis-aligned Gaussian equals the same variance but
+    degrades more gracefully when the posterior is rotated, since the gradient carries the
+    curvature the positions alone do not.
+    """
+
+    def variance(mean, mean_sq):
+        mean = np.asarray(mean).reshape(dim)
+        return np.clip(np.asarray(mean_sq).reshape(dim) - mean**2, eps, None)
+
+    position_variance = variance(moments.position_mean, moments.position_mean_sq)
+    if method == "variance":
+        return position_variance.astype(np.float32)
+
+    grad_variance = variance(moments.grad_mean, moments.grad_mean_sq)
+
+    return np.sqrt(position_variance / grad_variance).astype(np.float32)
 
 
 def _batched_value_and_grad(logdensity_fn: Callable) -> Callable:
@@ -709,21 +1019,12 @@ def warmup(
     initial_position: ArrayLike,
     *,
     num_steps: int,
+    settings: AdaptationSettings = AdaptationSettings(),
     integrator: str = "mclachlan",
-    diagonal_preconditioning: bool = True,
-    desired_energy_var: float = 5e-4,
-    trust_in_estimate: float = 1.5,
-    num_effective_samples: float = 150,
-    frac_tune1: float = 0.1,
-    frac_tune2: float = 0.1,
-    frac_tune3: float = 0.1,
-    l_factor: float = 0.4,
     seed: int = 0,
-    optimize_steps: int = 200,
-    optimize_learning_rate: float = 0.05,
     compile_step: bool = True,
 ) -> TunedParameters:
-    """
+    r"""
     Adapt the step size, the diagonal metric, and ``L``.
 
     A single adapting chain, carried as shape ``(1, dim)`` so the batched primitives apply, both
@@ -732,7 +1033,7 @@ def warmup(
     fractions of ``num_steps``:
 
     1. Tune the step size alone, with a controller that drives
-       :math:`\\mathrm{Var}[E]` per dimension to ``desired_energy_var``.
+       :math:`\\mathrm{Var}[E]` per dimension to ``settings.desired_energy_var``.
     2. Keep tuning while accumulating a step-size-weighted running mean and mean-square of the
        position, then set the metric to the per-coordinate variance and re-adjust the step size
        under it.
@@ -749,26 +1050,30 @@ def warmup(
         Budget of integrator steps, of which the ``frac_tune`` fractions are taken.
     integrator : str
         Either ``"mclachlan"`` or ``"velocity_verlet"``. Default is ``"mclachlan"``.
-    diagonal_preconditioning : bool
+    settings.diagonal_preconditioning : bool
         Whether to estimate a diagonal inverse mass matrix in phase 2. Default is True.
-    desired_energy_var : float
+    mass_matrix : str or MassMatrixSettings
+        How phase 2 estimates the metric. A bare string selects the method and leaves the estimator
+        windows at their defaults; pass a :class:`MassMatrixSettings` to set those too. Default is
+        ``"gradient"``.
+    settings.desired_energy_var : float
         Target energy variance per dimension. Default is 5e-4.
-    trust_in_estimate : float
+    settings.trust_in_estimate : float
         Width of the controller's Gaussian weighting. Larger values give more weight to
         single-step estimates far from the target. Default is 1.5.
-    num_effective_samples : float
+    settings.num_effective_samples : float
         Sets the controller's exponential decay rate. Default is 150.
-    frac_tune1, frac_tune2, frac_tune3 : float
+    settings.frac_tune1, settings.frac_tune2, settings.frac_tune3 : float
         Fractions of ``num_steps`` given to each phase. Each defaults to 0.1.
-    l_factor : float
+    settings.l_factor : float
         Multiplier on the autocorrelation-derived ``L`` in phase 3. Default is 0.4.
     seed : int
         Seed for the MLX random key. Default is 0.
-    optimize_steps : int
+    settings.optimize_steps : int
         Maximum number of Adam steps taken toward the mode before adaptation. Pass 0 for a model
         whose log-density is unbounded above, such as a centered hierarchical model, where the
         ascent runs off into a region of high density but negligible mass. Default is 200.
-    optimize_learning_rate : float
+    settings.optimize_learning_rate : float
         Adam learning rate for that ascent. Default is 0.05.
     compile_step : bool
         Whether to fuse the adapting step with ``mx.compile``. Default is True.
@@ -778,22 +1083,27 @@ def warmup(
     TunedParameters
         The adapting chain's final ``position`` of shape ``(dim,)``, which should be jittered by
         ``sqrt(inverse_mass_matrix)`` to seed the sampling chains, along with the adapted ``L``,
-        ``step_size``, and ``inverse_mass_matrix``, and the ``num_tuning_steps`` spent.
+        ``step_size``, and ``metric``, and the ``num_tuning_steps`` spent.
     """
+    if settings.mass_matrix not in _MASS_MATRIX_METHODS:
+        raise ValueError(
+            f"mass_matrix must be one of {_MASS_MATRIX_METHODS}, got {settings.mass_matrix!r}"
+        )
+
     coefficients = INTEGRATOR_COEFFICIENTS[integrator]
     initial_position = np.asarray(initial_position, dtype=np.float32).ravel()
     dim = initial_position.shape[0]
     _check_dim(dim)
     logp_and_grad = _batched_value_and_grad(logdensity_fn)
-    decay_rate = (num_effective_samples - 1.0) / (num_effective_samples + 1.0)
+    decay_rate = (settings.num_effective_samples - 1.0) / (settings.num_effective_samples + 1.0)
 
     # Phases 1 and 2 hold L at sqrt(dim), so their refresh rate is a compile-time constant rather
     # than threaded state.
     adaptation_inverse_L = 1.0 / math.sqrt(dim)
 
-    num_steps1 = round(num_steps * frac_tune1)
-    num_steps2 = round(num_steps * frac_tune2)
-    num_steps3 = round(num_steps * frac_tune3)
+    num_steps1 = round(num_steps * settings.frac_tune1)
+    num_steps2 = round(num_steps * settings.frac_tune2)
+    num_steps3 = round(num_steps * settings.frac_tune3)
 
     def adapt_step(state, metric, mask, keys):
         """
@@ -821,29 +1131,21 @@ def warmup(
         position, momentum, logdensity, grad = chain
         step_size_max = mx.where(is_finite, state.step_size_max, state.step_size * 0.8)
 
-        relative_error = energy_error**2 / (dim * desired_energy_var) + 1e-8
-        weight = mx.exp(-0.5 * (mx.log(relative_error) / (6.0 * trust_in_estimate)) ** 2)
+        relative_error = energy_error**2 / (dim * settings.desired_energy_var) + 1e-8
+        weight = mx.exp(-0.5 * (mx.log(relative_error) / (6.0 * settings.trust_in_estimate)) ** 2)
         x_average = decay_rate * state.x_average + weight * (relative_error / state.step_size**6)
         time = decay_rate * state.time + weight
         step_size = mx.maximum(
             mx.minimum(mx.power(x_average / time, -1.0 / 6.0), step_size_max), 1e-12
         )
 
-        moment_weight = mask * is_finite.astype(mx.float32) * step_size
-        stream_weight = state.stream_weight + moment_weight
-        safe_weight = mx.maximum(stream_weight, 1e-30)
+        # Both windows see every accepted draw; the caller swaps them on the schedule. Unlike
+        # blackjax this is unweighted, matching nuts-rs, whose windowing plays the role the
+        # step-size weighting played there.
+        moment_weight = mask * is_finite.astype(mx.float32)
         x = position.reshape(1, dim)
-        do_update = stream_weight > 0
-        stream_mean = mx.where(
-            do_update,
-            (state.stream_weight * state.stream_mean + moment_weight * x) / safe_weight,
-            state.stream_mean,
-        )
-        stream_mean_sq = mx.where(
-            do_update,
-            (state.stream_weight * state.stream_mean_sq + moment_weight * (x * x)) / safe_weight,
-            state.stream_mean_sq,
-        )
+        foreground = _accumulate(state.foreground, x, grad, moment_weight)
+        background = _accumulate(state.background, x, grad, moment_weight)
 
         return AdaptationState(
             position=position,
@@ -854,9 +1156,8 @@ def warmup(
             step_size_max=step_size_max,
             time=time,
             x_average=x_average,
-            stream_weight=stream_weight,
-            stream_mean=stream_mean,
-            stream_mean_sq=stream_mean_sq,
+            foreground=foreground,
+            background=background,
         )
 
     step = mx.compile(adapt_step) if compile_step else adapt_step
@@ -872,8 +1173,8 @@ def warmup(
     position = _optimize_to_mode(
         logp_and_grad=logp_and_grad,
         position=position,
-        steps=optimize_steps,
-        learning_rate=optimize_learning_rate,
+        steps=settings.optimize_steps,
+        learning_rate=settings.optimize_learning_rate,
     )
     logdensity, grad = logp_and_grad(position)
 
@@ -886,48 +1187,77 @@ def warmup(
         step_size_max=mx.array([float("inf")], dtype=mx.float32),
         time=mx.array([0.0], dtype=mx.float32),
         x_average=mx.array([0.0], dtype=mx.float32),
-        stream_weight=mx.array([0.0], dtype=mx.float32),
-        stream_mean=mx.zeros((1, dim)),
-        stream_mean_sq=mx.zeros((1, dim)),
+        foreground=_empty_moments(dim),
+        background=_empty_moments(dim),
     )
 
     metric = Metric(scale=mx.ones((dim,)))
     num_tuning_steps = 0
 
-    # Phase 1 tunes the step size alone; phase 2 also accumulates the streaming moments.
+    # Phase 1 tunes the step size alone; phase 2 also accumulates the windowed moments. The swap
+    # schedule is a function of the step index alone, so it needs no synchronization -- a draw
+    # rejected as non-finite simply leaves the window one sample short of its nominal length.
+    # The low-rank fit needs the raw draws, not running moments, so phase 2 retains a trailing
+    # window of them. nuts-rs keeps the same buffer and splits it on each switch; keeping the most
+    # recent low_rank_window draws is the streaming approximation of that.
+    retained: list[tuple[mx.array, mx.array]] = []
+
+    # Phase 2 is cut into segments: at each boundary the metric is refitted from what has been seen
+    # since the last one, the step-size controller is re-seeded, and the draw window is cleared so
+    # the next fit only sees draws taken under the improved metric.
+    refits = settings.low_rank_refits
+    refit_steps = (
+        {round(num_steps2 * i / (refits + 1)): i for i in range(1, refits + 1)}
+        if settings.mass_matrix == "low_rank"
+        else {}
+    )
+    switch_steps = _window_switch_steps(
+        num_steps2,
+        settings.early_end,
+        settings.early_switch_freq,
+        settings.switch_freq,
+        settings.window_growth,
+    )
     for n_phase_steps, mask_value in ((num_steps1, 0.0), (num_steps2, 1.0)):
         mask = mx.array([mask_value], dtype=mx.float32)
-        for _ in range(n_phase_steps):
+        for phase_step in range(1, n_phase_steps + 1):
             key, *keys = mx.random.split(key, num=4)
             state = step(state, metric=metric, mask=mask, keys=tuple(keys))
+            if mask_value and settings.mass_matrix == "low_rank":
+                retained.append((state.position, state.grad))
+                del retained[: -settings.low_rank_window]
+            if mask_value and phase_step in switch_steps:
+                state = state._replace(foreground=state.background, background=_empty_moments(dim))
+            if mask_value and phase_step in refit_steps:
+                metric, _ = _fit_metric(
+                    state.foreground,
+                    retained,
+                    dim,
+                    settings.mass_matrix,
+                    allow_low_rank=refit_steps[phase_step] > 1,
+                )
+                state = _reset_step_size_controller(state)
+                retained.clear()
+                mx.eval(state)
             num_tuning_steps += 1
             if num_tuning_steps % _EVAL_EVERY == 0:
                 mx.eval(state)
     mx.eval(state)
 
-    inverse_mass_matrix = np.ones(dim, dtype=np.float32)
     L = math.sqrt(dim)
 
     if num_steps2 > 1:
-        stream_mean = np.asarray(state.stream_mean).reshape(dim)
-        stream_mean_sq = np.asarray(state.stream_mean_sq).reshape(dim)
-        variances = np.clip(stream_mean_sq - stream_mean**2, 1e-12, None).astype(np.float32)
+        fitted, variances = _fit_metric(
+            state.foreground, retained, dim, settings.mass_matrix, allow_low_rank=True
+        )
         L = float(np.sqrt(variances.sum()))
 
-        if diagonal_preconditioning:
-            inverse_mass_matrix = variances
+        if settings.diagonal_preconditioning:
             L = math.sqrt(dim)
-            metric = _as_metric(inverse_mass_matrix)
+            metric = fitted
             mask = mx.array([1.0], dtype=mx.float32)
 
-            # Reset the controller accumulators before the re-adjustment. Otherwise the tiny
-            # identity-metric step from phases 1 and 2 stays baked into x_average, whose decay is
-            # slow enough that the step size cannot re-tune under the new metric.
-            state = state._replace(
-                step_size_max=mx.array([float("inf")], dtype=mx.float32),
-                time=mx.array([0.0], dtype=mx.float32),
-                x_average=mx.array([0.0], dtype=mx.float32),
-            )
+            state = _reset_step_size_controller(state)
 
             for _ in range(round(num_steps2 / 3)):
                 key, *keys = mx.random.split(key, num=4)
@@ -965,13 +1295,13 @@ def warmup(
         samples = mx.stack(positions, axis=0).reshape(num_steps3, dim)
         mx.eval(samples)
         ess = _ess_per_dim(np.asarray(samples))
-        L = l_factor * step_size * float(np.mean(num_steps3 / np.clip(ess, 1e-8, None)))
+        L = settings.l_factor * step_size * float(np.mean(num_steps3 / np.clip(ess, 1e-8, None)))
 
     return TunedParameters(
         position=mx.array(np.asarray(chain.position).reshape(dim)),
         L=float(L),
         step_size=step_size,
-        inverse_mass_matrix=mx.array(inverse_mass_matrix),
+        metric=metric,
         num_tuning_steps=num_tuning_steps,
     )
 
@@ -984,10 +1314,10 @@ def warmup_and_sample(
     draws: int,
     chains: int,
     discard: int = 0,
+    settings: AdaptationSettings = AdaptationSettings(),
     integrator: str = "mclachlan",
     seed: int = 0,
     compile_step: bool = True,
-    **warmup_kwargs,
 ) -> tuple[SamplerOutput, TunedParameters]:
     """
     Adapt on one chain, then sample ``chains`` chains jittered around the tuned position.
@@ -995,8 +1325,7 @@ def warmup_and_sample(
     Parameters
     ----------
     num_tune : int
-        Budget of integrator steps for :func:`warmup`, which takes the remaining keyword
-        arguments.
+        Budget of integrator steps for :func:`warmup`.
     draws : int
         Number of draws to keep per chain.
     chains : int
@@ -1016,15 +1345,17 @@ def warmup_and_sample(
         logdensity_fn,
         initial_position,
         num_steps=num_tune,
+        settings=settings,
         integrator=integrator,
         seed=seed,
         compile_step=compile_step,
-        **warmup_kwargs,
     )
 
     dim = tuned.position.shape[0]
-    jitter = mx.sqrt(tuned.inverse_mass_matrix) * mx.random.normal(
-        shape=(chains, dim), key=mx.random.key(seed + 1)
+    # A draw from N(0, M^-1) is forward_L(z), so the chains scatter along the fitted metric rather
+    # than along its diagonal -- which for a rotated posterior points the wrong way entirely.
+    jitter = _unwhiten_momentum(
+        tuned.metric, mx.random.normal(shape=(chains, dim), key=mx.random.key(seed + 1))
     )
 
     output = sample(
@@ -1035,7 +1366,7 @@ def warmup_and_sample(
         n_steps=draws + discard,
         discard=discard,
         integrator=integrator,
-        inverse_mass_matrix=tuned.inverse_mass_matrix,
+        inverse_mass_matrix=tuned.metric,
         seed=seed + 2,
         compile_step=compile_step,
     )
