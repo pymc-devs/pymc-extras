@@ -414,3 +414,26 @@ def test_ascent_gives_up_when_the_gradient_never_becomes_finite():
     unchanged = _optimize_to_mode(always_nan, start, steps=400, learning_rate=0.05)
 
     np.testing.assert_array_equal(np.asarray(unchanged), np.asarray(start))
+
+
+def test_fit_falls_back_to_an_unfused_step_past_the_metal_limit(conjugate_model, monkeypatch):
+    """A graph too large for mx.compile must retry unfused, not fail."""
+    import pymc_extras.inference.mlx_mclmc.mlx_mclmc as module
+
+    model, *_ = conjugate_model
+    attempted = []
+    real = module.warmup_and_sample
+
+    def fail_once_when_fused(*args, compile_step, **kwargs):
+        attempted.append(compile_step)
+        if compile_step:
+            raise RuntimeError("[compile] Too many inputs/outputs fused in the Metal Compiled")
+        return real(*args, compile_step=False, **kwargs)
+
+    monkeypatch.setattr(module, "warmup_and_sample", fail_once_when_fused)
+
+    with pytest.warns(RuntimeWarning, match="unfused"):
+        idata = fit_mlx_mclmc(draws=100, tune=200, chains=1, model=model, random_seed=0)
+
+    assert attempted == [True, False]
+    assert idata["posterior"]["mu"].shape == (1, 100, 3)
