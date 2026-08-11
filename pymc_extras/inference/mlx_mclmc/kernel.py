@@ -52,13 +52,74 @@ class ChainState(NamedTuple):
     grad: mx.array
 
 
+class LowRankCorrection(NamedTuple):
+    r"""Orthonormal directions and their :math:`\sqrt{\Lambda} - 1` gains."""
+
+    vectors: mx.array
+    scales: mx.array
+
+
+class Metric(NamedTuple):
+    r"""
+    A diagonal inverse mass matrix, optionally corrected on a low-rank subspace.
+
+    Without a ``correction`` this is :math:`M^{-1} = \mathrm{diag}(\sigma^2)`. With one it is
+    blackjax's ``LowRankInverseMassMatrix``,
+
+    .. math:: M^{-1} = \mathrm{diag}(\sigma)(I + U(\Lambda - I)U^\top)\mathrm{diag}(\sigma)
+
+    which the dynamics never form: only the two O(dk) maps :func:`_whiten_gradient` and
+    :func:`_unwhiten_momentum` are ever applied.
+
+    Attributes
+    ----------
+    scale : mx.array
+        Per-coordinate :math:`\sigma`, of shape ``(dim,)``.
+    correction : LowRankCorrection or None
+        The low-rank part, absent for a purely diagonal metric.
+    """
+
+    scale: mx.array
+    correction: LowRankCorrection | None = None
+
+
+def _whiten_gradient(metric: Metric, grad: mx.array) -> mx.array:
+    """Map a gradient into the whitened frame: blackjax's ``adjoint_L``."""
+    scaled = grad * metric.scale
+    if metric.correction is None:
+        return scaled
+
+    vectors, scales = metric.correction
+
+    return scaled + (scaled @ vectors * scales) @ vectors.T
+
+
+def _unwhiten_momentum(metric: Metric, momentum: mx.array) -> mx.array:
+    """Map a whitened momentum to a position velocity: blackjax's ``forward_L``."""
+    if metric.correction is None:
+        return momentum * metric.scale
+
+    vectors, scales = metric.correction
+    corrected = momentum + (momentum @ vectors * scales) @ vectors.T
+
+    return corrected * metric.scale
+
+
+def _as_metric(inverse_mass_matrix) -> Metric:
+    """Accept a diagonal inverse mass matrix or an already-built :class:`Metric`."""
+    if isinstance(inverse_mass_matrix, Metric):
+        return inverse_mass_matrix
+
+    return Metric(scale=mx.sqrt(mx.array(inverse_mass_matrix, dtype=mx.float32)))
+
+
 class Dynamics(NamedTuple):
     """Everything a transition needs that does not change from one step to the next."""
 
     logp_and_grad: Callable
     step_size: float | mx.array
     coefficients: list[float]
-    sqrt_inverse_mass: mx.array
+    metric: Metric
     inverse_L: float
     dim: int
 
@@ -153,7 +214,7 @@ def _momentum_update(
     momentum: mx.array,
     grad: mx.array,
     effective_step: float | mx.array,
-    sqrt_inverse_mass: mx.array,
+    metric: Metric,
     dim: int,
 ) -> tuple[mx.array, mx.array, mx.array]:
     """
@@ -173,7 +234,7 @@ def _momentum_update(
     kinetic_energy_change : mx.array
         Per-chain change in kinetic energy.
     """
-    scaled_grad = grad * sqrt_inverse_mass
+    scaled_grad = _whiten_gradient(metric, grad)
     grad_norm = mx.linalg.norm(scaled_grad, axis=-1, keepdims=True)
     grad_direction = _normalize(scaled_grad)
     projection = mx.sum(momentum * grad_direction, axis=-1, keepdims=True)
@@ -199,7 +260,7 @@ def _momentum_update(
         * (dim - 1)
     ).squeeze(-1)
 
-    return momentum, momentum * sqrt_inverse_mass, kinetic_energy_change
+    return momentum, _unwhiten_momentum(metric, momentum), kinetic_energy_change
 
 
 def _integrate(
@@ -221,7 +282,7 @@ def _integrate(
                 momentum=momentum,
                 grad=grad,
                 effective_step=dynamics.step_size * coefficient,
-                sqrt_inverse_mass=dynamics.sqrt_inverse_mass,
+                metric=dynamics.metric,
                 dim=dynamics.dim,
             )
             kinetic_energy_change = kinetic_energy_change + energy_change
@@ -233,7 +294,7 @@ def _integrate(
         momentum=momentum,
         grad=grad,
         effective_step=dynamics.step_size * dynamics.coefficients[-1],
-        sqrt_inverse_mass=dynamics.sqrt_inverse_mass,
+        metric=dynamics.metric,
         dim=dynamics.dim,
     )
     kinetic_energy_change = kinetic_energy_change + energy_change
@@ -340,7 +401,7 @@ def sample(
     step_size: float,
     n_steps: int,
     integrator: str = "mclachlan",
-    inverse_mass_matrix: ArrayLike = 1.0,
+    inverse_mass_matrix: ArrayLike | Metric = 1.0,
     discard: int = 0,
     seed: int = 0,
     compile_step: bool = True,
@@ -368,8 +429,9 @@ def sample(
     integrator : str
         Either ``"mclachlan"``, which takes 2 gradient evaluations per step, or
         ``"velocity_verlet"``, which takes 1. Default is ``"mclachlan"``.
-    inverse_mass_matrix : float or array
-        Diagonal inverse mass matrix, broadcastable to ``(dim,)``. Default is 1.0.
+    inverse_mass_matrix : float, array or Metric
+        Diagonal inverse mass matrix, broadcastable to ``(dim,)``, or a :class:`Metric` carrying a
+        low-rank correction as well. Default is 1.0.
     discard : int
         Number of leading steps to drop from the returned draws. Default is 0.
     seed : int
@@ -403,7 +465,7 @@ def sample(
         logp_and_grad=logp_and_grad,
         step_size=step_size,
         coefficients=INTEGRATOR_COEFFICIENTS[integrator],
-        sqrt_inverse_mass=mx.sqrt(mx.array(inverse_mass_matrix, dtype=mx.float32)),
+        metric=_as_metric(inverse_mass_matrix),
         inverse_L=1.0 / L,
         dim=dim,
     )
@@ -462,7 +524,7 @@ def tune_step_size(
     *,
     L: float,
     integrator: str = "mclachlan",
-    inverse_mass_matrix: ArrayLike = 1.0,
+    inverse_mass_matrix: ArrayLike | Metric = 1.0,
     desired_energy_var: float = 5e-4,
     rounds: int = 25,
     steps: int = 600,
@@ -733,7 +795,7 @@ def warmup(
     num_steps2 = round(num_steps * frac_tune2)
     num_steps3 = round(num_steps * frac_tune3)
 
-    def adapt_step(state, sqrt_inverse_mass, mask, keys):
+    def adapt_step(state, metric, mask, keys):
         """
         Take one adapting step: dynamics, the step-size controller, then the streaming moments.
 
@@ -745,7 +807,7 @@ def warmup(
             logp_and_grad=logp_and_grad,
             step_size=state.step_size,
             coefficients=coefficients,
-            sqrt_inverse_mass=sqrt_inverse_mass,
+            metric=metric,
             inverse_L=adaptation_inverse_L,
             dim=dim,
         )
@@ -829,7 +891,7 @@ def warmup(
         stream_mean_sq=mx.zeros((1, dim)),
     )
 
-    sqrt_inverse_mass = mx.ones((dim,))
+    metric = Metric(scale=mx.ones((dim,)))
     num_tuning_steps = 0
 
     # Phase 1 tunes the step size alone; phase 2 also accumulates the streaming moments.
@@ -837,7 +899,7 @@ def warmup(
         mask = mx.array([mask_value], dtype=mx.float32)
         for _ in range(n_phase_steps):
             key, *keys = mx.random.split(key, num=4)
-            state = step(state, sqrt_inverse_mass=sqrt_inverse_mass, mask=mask, keys=tuple(keys))
+            state = step(state, metric=metric, mask=mask, keys=tuple(keys))
             num_tuning_steps += 1
             if num_tuning_steps % _EVAL_EVERY == 0:
                 mx.eval(state)
@@ -855,7 +917,7 @@ def warmup(
         if diagonal_preconditioning:
             inverse_mass_matrix = variances
             L = math.sqrt(dim)
-            sqrt_inverse_mass = mx.array(np.sqrt(inverse_mass_matrix))
+            metric = _as_metric(inverse_mass_matrix)
             mask = mx.array([1.0], dtype=mx.float32)
 
             # Reset the controller accumulators before the re-adjustment. Otherwise the tiny
@@ -869,9 +931,7 @@ def warmup(
 
             for _ in range(round(num_steps2 / 3)):
                 key, *keys = mx.random.split(key, num=4)
-                state = step(
-                    state, sqrt_inverse_mass=sqrt_inverse_mass, mask=mask, keys=tuple(keys)
-                )
+                state = step(state, metric=metric, mask=mask, keys=tuple(keys))
                 num_tuning_steps += 1
                 if num_tuning_steps % _EVAL_EVERY == 0:
                     mx.eval(state)
@@ -888,7 +948,7 @@ def warmup(
             logp_and_grad=logp_and_grad,
             step_size=state.step_size,
             coefficients=coefficients,
-            sqrt_inverse_mass=sqrt_inverse_mass,
+            metric=metric,
             inverse_L=1.0 / L,
             dim=dim,
         )
