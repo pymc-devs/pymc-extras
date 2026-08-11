@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
-import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 
@@ -912,39 +911,12 @@ class PyMCStateSpace:
         replacement_dict = {var: step for var in n_timestep_variables}
         return graph_replace(matrices, replace=replacement_dict, strict=False)
 
-    @staticmethod
-    def _register_kalman_filter_outputs_with_pymc_model(outputs: tuple[pt.TensorVariable]) -> None:
-        mod = modelcontext(None)
-        coords = mod.coords
-
-        states, covs = outputs[:4], outputs[4:]
-
-        state_names = [
-            "filtered_states",
-            "predicted_states",
-            "predicted_observed_states",
-            "smoothed_states",
-        ]
-        cov_names = [
-            "filtered_covariances",
-            "predicted_covariances",
-            "predicted_observed_covariances",
-            "smoothed_covariances",
-        ]
-
-        with mod:
-            for var, name in zip(states + covs, state_names + cov_names):
-                dim_names = FILTER_OUTPUT_DIMS.get(name, None)
-                dims = tuple([dim if dim in coords.keys() else None for dim in dim_names])
-                pm.Deterministic(name, var, dims=dims)
-
     def build_statespace_graph(
         self,
         data: np.ndarray | pd.DataFrame | pt.TensorVariable,
         missing_fill_value: float | None = None,
         cov_jitter: float | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
-        save_kalman_filter_outputs_in_idata: bool = False,
         mode: str | None = None,
     ) -> None:
         """
@@ -998,10 +970,6 @@ class PyMCStateSpace:
             In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
             recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
-        save_kalman_filter_outputs_in_idata: bool, optional, default=False
-            If True, Kalman Filter outputs will be saved in the model as deterministics. Useful for debugging, but
-            should not be necessary for the majority of users.
-
         mode: str, optional
             Pytensor mode to use when compiling the graph. This will be saved as a model attribute and used when
             compiling sampling functions (e.g. ``sample_conditional_prior``).
@@ -1053,15 +1021,8 @@ class PyMCStateSpace:
         )
 
         logp = filter_outputs.pop(-1)
-        states, covs = filter_outputs[:3], filter_outputs[3:]
-        filtered_states, predicted_states, observed_states = states
-        filtered_covariances, predicted_covariances, observed_covariances = covs
-        if save_kalman_filter_outputs_in_idata:
-            smooth_states, smooth_covariances = self._build_smoother_graph(
-                filtered_states, filtered_covariances, self.unpack_statespace()
-            )
-            all_kf_outputs = [*states, smooth_states, *covs, smooth_covariances]
-            self._register_kalman_filter_outputs_with_pymc_model(all_kf_outputs)
+        *_, observed_states = filter_outputs[:3]
+        *_, observed_covariances = filter_outputs[3:]
 
         obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_states"]
         obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
@@ -1089,62 +1050,6 @@ class PyMCStateSpace:
         than overriding :meth:`build_statespace_graph`. It runs inside the active model context, after the ``obs``
         likelihood is registered. The base implementation registers nothing.
         """
-
-    def _build_smoother_graph(
-        self,
-        filtered_states: pt.TensorVariable,
-        filtered_covariances: pt.TensorVariable,
-        matrices,
-        mode: str | None = None,
-        cov_jitter=JITTER_DEFAULT,
-    ):
-        """
-        Build the computation graph for the Kalman smoother.
-
-        This method constructs the computation graph for applying the Kalman smoother to the filtered states
-        and covariances obtained from the Kalman filter. The Kalman smoother is used to generate smoothed
-        estimates of the latent states and their covariances in a state space model.
-
-        The Kalman smoother provides a more accurate estimate of the latent states by incorporating future
-        information in the backward pass, resulting in smoothed state trajectories.
-
-        Parameters
-        ----------
-        filtered_states : pytensor.tensor.TensorVariable
-            The filtered states obtained from the Kalman filter. Returned by the `build_statespace_graph` method.
-
-        filtered_covariances : pytensor.tensor.TensorVariable
-            The filtered state covariances obtained from the Kalman filter. Returned by the `build_statespace_graph`
-            method.
-
-        mode : Optional[str], default=None
-            The mode used by pytensor for the construction of the logp graph. If None, the mode provided to
-            `build_statespace_graph` will be used.
-
-        Returns
-        -------
-        Tuple[pytensor.tensor.TensorVariable, pytensor.tensor.TensorVariable]
-            A tuple containing TensorVariables representing the smoothed states and smoothed state covariances
-            obtained from the Kalman smoother.
-        """
-
-        pymc_model = modelcontext(None)
-        with pymc_model:
-            *_, T, Z, R, H, Q = matrices
-
-            smooth_states, smooth_covariances = self.kalman_smoother.build_graph(
-                T,
-                R,
-                Q,
-                filtered_states,
-                filtered_covariances,
-                cov_jitter=self.cov_jitter,
-                time_varying_names=self.ssm.time_varying_names,
-            )
-            smooth_states.name = "smooth_states"
-            smooth_covariances.name = "smooth_covariances"
-
-            return smooth_states, smooth_covariances
 
     def _build_dummy_graph(self) -> None:
         return dummy_graph.build_dummy_graph(self)
