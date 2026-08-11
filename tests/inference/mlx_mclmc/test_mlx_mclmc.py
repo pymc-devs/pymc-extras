@@ -8,6 +8,8 @@ mx = pytest.importorskip("mlx.core", reason="MCLMC requires mlx, which needs App
 
 from pymc_extras.inference.mlx_mclmc import fit_mlx_mclmc
 from pymc_extras.inference.mlx_mclmc.kernel import (
+    AdaptationSettings,
+    Metric,
     TunedParameters,
     _optimize_to_mode,
     sample,
@@ -170,20 +172,18 @@ def test_fit_mlx_mclmc_transformed_variable(float32):
     )
 
 
-def test_fit_mlx_mclmc_warmup_kwargs_reach_the_adaptation(conjugate_model):
-    """warmup_kwargs must override the named arguments it shadows, not collide with them."""
+def test_adaptation_settings_reach_the_warmup(conjugate_model):
+    """Settings must be threaded to warmup, not silently defaulted."""
     model, *_ = conjugate_model
-    settings = dict(draws=100, tune=400, chains=1, model=model, random_seed=0)
+    shared = dict(draws=100, tune=400, chains=1, model=model, random_seed=0)
 
-    default = fit_mlx_mclmc(**settings, warmup_kwargs={"optimize_steps": 20})
-    overridden = fit_mlx_mclmc(
-        **settings,
-        # desired_energy_var shadows a named argument; frac_tune3 makes the override observable
-        # by dropping the third adaptation phase from the step count.
-        warmup_kwargs={"desired_energy_var": 1e-3, "optimize_steps": 20, "frac_tune3": 0.0},
+    default = fit_mlx_mclmc(**shared, adaptation=AdaptationSettings(optimize_steps=20))
+    # Dropping phase 3 removes its share of the step budget, which is reported in the attrs.
+    without_phase_three = fit_mlx_mclmc(
+        **shared, adaptation=AdaptationSettings(optimize_steps=20, frac_tune3=0.0)
     )
 
-    assert overridden["posterior"].attrs["num_tuning_steps"] == (
+    assert without_phase_three["posterior"].attrs["num_tuning_steps"] == (
         default["posterior"].attrs["num_tuning_steps"] - 40
     )
 
@@ -191,7 +191,7 @@ def test_fit_mlx_mclmc_warmup_kwargs_reach_the_adaptation(conjugate_model):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"diagonal_preconditioning": False},
+        {"adaptation": AdaptationSettings(diagonal_preconditioning=False)},
         {"integrator": "velocity_verlet"},
         {"compile_step": False},
     ],
@@ -292,7 +292,7 @@ def test_warns_on_divergences_and_on_collapsed_adaptation():
         position=mx.zeros((2,)),
         L=1.0,
         step_size=0.5,
-        inverse_mass_matrix=mx.ones((2,)),
+        metric=Metric(scale=mx.ones((2,))),
         num_tuning_steps=10,
     )
     with pytest.warns(RuntimeWarning, match="divergent"):
@@ -317,7 +317,7 @@ def test_warmup_recovers_the_diagonal_metric():
 
     # A streaming estimate over a short window, so the tolerance is wide -- the point is that it
     # tracks a 64x spread in scale rather than that it nails any one coordinate.
-    np.testing.assert_allclose(np.asarray(tuned.inverse_mass_matrix), variances, rtol=0.35)
+    np.testing.assert_allclose(np.asarray(tuned.metric.scale) ** 2, variances, rtol=0.35)
 
 
 def test_tune_step_size_reaches_the_target_energy_variance():
