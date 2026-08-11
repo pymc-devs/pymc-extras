@@ -435,6 +435,22 @@ def _make_stationary_system(m, p, n_shocks, n, rng):
     ]
 
 
+GRAD_NAMES = ["loss", "d_a0", "d_P0", "d_c", "d_d", "d_T", "d_Z", "d_R", "d_H", "d_Q"]
+
+# Gradients of parameters that are themselves symmetric matrices are only determined up to their
+# symmetric part, so the analytic and autodiff versions can differ in the antisymmetric half without
+# actually disagreeing.
+SYMMETRIC_GRADS = {"d_P0", "d_H", "d_Q"}
+
+
+def assert_results_match(out_std, out_conv, names, err_prefix=""):
+    for name, std, conv in zip(names, out_std, out_conv, strict=True):
+        std, conv = np.asarray(std, float), np.asarray(conv, float)
+        if name in SYMMETRIC_GRADS:
+            std, conv = 0.5 * (std + std.T), 0.5 * (conv + conv.T)
+        assert_allclose(conv, std, atol=ATOL, rtol=RTOL, err_msg=f"{err_prefix}{name} mismatch")
+
+
 @pytest.mark.parametrize(
     "m,p,n_shocks,n",
     [(5, 2, 5, 100), (10, 3, 10, 200)],
@@ -453,14 +469,12 @@ def test_convergent_filter_forward_matches_standard(m, p, n_shocks, n, rng):
     out_std = fn_std(*vals)
     out_conv = fn_conv(*vals)
 
-    for name, s, c in zip(output_names, out_std, out_conv):
-        assert_allclose(
-            c,
-            s,
-            atol=ATOL,
-            rtol=RTOL,
-            err_msg=f"ConvergentFilter {name} differs from StandardFilter",
-        )
+    # The tail path only runs once the Riccati recursion converges. Without this the comparison
+    # could pass vacuously, with ConvergentFilter having degenerated into StandardFilter.
+    predicted_covs = out_conv[output_names.index("predicted_covs")]
+    assert_allclose(predicted_covs[-1], predicted_covs[n // 2], atol=ATOL, rtol=RTOL)
+
+    assert_results_match(out_std, out_conv, output_names, err_prefix="ConvergentFilter ")
 
 
 @pytest.mark.parametrize(
@@ -469,8 +483,8 @@ def test_convergent_filter_forward_matches_standard(m, p, n_shocks, n, rng):
     ids=["small", "medium"],
 )
 def test_convergent_filter_gradient_matches_standard(m, p, n_shocks, n, rng):
-    """ConvergentFilter gradients (via custom OFG split pullback) should match
-    StandardFilter (via autodiff) for every model parameter."""
+    """ConvergentFilter's analytic gradients should match StandardFilter's autodiff gradients for
+    every model parameter."""
     vals = _make_stationary_system(m, p, n_shocks, n, rng)
 
     def build(filter_cls):
@@ -486,21 +500,7 @@ def test_convergent_filter_gradient_matches_standard(m, p, n_shocks, n, rng):
     out_std = fn_std(*vals)
     out_conv = fn_conv(*vals)
 
-    names = ["loss", "d_a0", "d_P0", "d_c", "d_d", "d_T", "d_Z", "d_R", "d_H", "d_Q"]
-    symmetric = {"d_P0", "d_H", "d_Q"}
-    for name, s, c in zip(names, out_std, out_conv):
-        s = np.asarray(s)
-        c = np.asarray(c)
-        if name in symmetric:
-            s = 0.5 * (s + s.T)
-            c = 0.5 * (c + c.T)
-        assert_allclose(
-            c,
-            s,
-            atol=ATOL,
-            rtol=RTOL,
-            err_msg=f"ConvergentFilter {name} differs from StandardFilter",
-        )
+    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="ConvergentFilter ")
 
 
 def test_convergent_filter_rejects_time_varying_params():
@@ -550,8 +550,7 @@ def test_convergent_filter_asserts_nan_symbolic_data(rng):
     inputs, outputs = initialize_filter(ConvergentFilter(), p=p, m=m, r=n_shocks, n=n)
     fn = pytensor.function(inputs, outputs, on_unused_input="ignore")
 
-    # The Assert op raises AssertionError at evaluation time
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match="missing data"):
         fn(*vals)
 
 
@@ -590,13 +589,7 @@ def test_convergent_filter_singular_H_gradient_matches_standard(rng):
 
     out_std = build(StandardFilter())(*vals)
     out_conv = build(ConvergentFilter())(*vals)
-    names = ["loss", "d_a0", "d_P0", "d_c", "d_d", "d_T", "d_Z", "d_R", "d_H", "d_Q"]
-    symmetric = {"d_P0", "d_H", "d_Q"}
-    for name, s, c in zip(names, out_std, out_conv):
-        s, c = np.asarray(s, float), np.asarray(c, float)
-        if name in symmetric:
-            s, c = 0.5 * (s + s.T), 0.5 * (c + c.T)
-        assert_allclose(c, s, atol=ATOL, rtol=RTOL, err_msg=f"{name} mismatch for singular H")
+    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="singular H: ")
 
 
 def _make_local_level_system(n, rng):
@@ -635,8 +628,8 @@ def test_convergent_filter_local_level_matches_standard(rng):
 
     out_std = build(StandardFilter)(*vals)
     out_conv = build(ConvergentFilter)(*vals)
-    for s, c in zip(out_std, out_conv):
-        assert_allclose(np.asarray(c), np.asarray(s), atol=ATOL, rtol=RTOL)
+    for std, conv in zip(out_std, out_conv, strict=True):
+        assert_allclose(np.asarray(conv), np.asarray(std), atol=ATOL, rtol=RTOL)
 
 
 def test_convergent_filter_k_equals_n_gradient_matches_standard(rng):
@@ -654,10 +647,4 @@ def test_convergent_filter_k_equals_n_gradient_matches_standard(rng):
 
     out_std = build(StandardFilter())(*vals)
     out_conv = build(ConvergentFilter(tol=0.0))(*vals)
-    names = ["loss", "d_a0", "d_P0", "d_c", "d_d", "d_T", "d_Z", "d_R", "d_H", "d_Q"]
-    symmetric = {"d_P0", "d_H", "d_Q"}
-    for name, s, c in zip(names, out_std, out_conv):
-        s, c = np.asarray(s, float), np.asarray(c, float)
-        if name in symmetric:
-            s, c = 0.5 * (s + s.T), 0.5 * (c + c.T)
-        assert_allclose(c, s, atol=ATOL, rtol=RTOL)
+    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="tol=0: ")
