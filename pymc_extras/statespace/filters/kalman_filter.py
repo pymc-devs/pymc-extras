@@ -858,23 +858,10 @@ class ConvergentFilter(StandardFilter):
       ``K_star``, ``F_star``, ``log det F_star``. No per-step Cholesky; loss is ``log det F_star + v_t^T F_star^{-1} v_t``
       evaluated via a pre-computed Cholesky of ``F_star`` and a per-step triangular solve.
 
-    The gradient is delivered via a custom pullback on a :class:`~pytensor.compile.builders.SymbolicOp`
-    rather than via autodiff. Two reasons:
-
-    1. **Correctness.** Autodiff through the two-scan forward gives *incorrect* gradients when the ``until``
-       clause on the pre-convergence scan actually fires. The forward value is fine, and one scan in
-       isolation autodiffs correctly -- but the combination of an ``until``-scan followed by a second scan
-       that depends on quantities derived from the first scan's *last* outputs (our case: ``K_star``,
-       ``F_star`` derived from ``P_hat_tr[-1]``) produces parameter gradients that are wrong by 5--100%
-       relative error even though the likelihood value matches to machine precision. With ``tol`` set so
-       the until never fires, autodiff is exact; with a real post-convergence tail it is not.
-
-    2. **Speed.** In the post-convergence tail, per-step Cholesky and the full Joseph-form backward are
-       unnecessary because ``K``, ``F``, and ``P`` are constant. The custom pullback hoists
-       ``F^{-1}, A = T (I - K_star Z), I - K_star Z`` out of the scan body and the per-step
-       backward reduces to matvec and outer products. On typical state-space cells
-       (m=10..50, p=3..10, n=2000..10000) this gives a ~1.8--2.9x speedup on ``logp + grad``
-       versus :class:`StandardFilter` autodiff, on top of a ~7--12x forward speedup.
+    The gradient comes from a custom pullback on a :class:`~pytensor.compile.builders.SymbolicOp`
+    rather than from autodiff. Autodiff is not merely slower here, it is wrong: an ``until``-scan
+    followed by a second scan depending on the first scan's *last* outputs yields incorrect parameter
+    gradients whenever the ``until`` clause fires, even though the likelihood itself is exact.
 
     Constraints (validated at graph build time):
 
@@ -953,20 +940,32 @@ class ConvergentFilter(StandardFilter):
         )
 
     def _convergent_forward(self, data, a0, P0, c, d, T, Z, R, H, Q):
-        """Two-phase forward pass.
+        """
+        Run the two-phase forward pass.
 
-        Phase 1 (pre-convergence): a standard Kalman scan with an ``until`` clause that stops once the Riccati
-        recursion has converged (``||P_{t+1|t} - P_{t|t-1}||_F < tol``). At the stopping step ``k`` we have the DARE
-        fixed point estimate ``P_star = P_hat_tr[-1]``.
+        Phase 1 stops a standard Kalman scan once the Riccati recursion converges
+        (``||P_{t+1|t} - P_{t|t-1}||_F < tol``), fixing the DARE estimate ``P_star`` at step ``k``. Phase 2
+        reuses the constants derived from ``P_star`` in a cheaper scan whose step is one triangular solve
+        against ``F_chol_star`` plus two matvecs.
 
-        Phase 2 (post-convergence): ``K_star, F_star, F_chol_star, log det F_star, P_filt_star`` are computed once from
-         ``P_star`` and plugged into a cheaper scan whose step only does ``v_t = y_t - Z a_prev - d``, a triangular
-         solve against ``F_chol_star`` for the loss, a matvec ``a_filt = a_prev + K_star v_t``, and one matvec for
-         the state predict ``a_hat = T a_filt + c``.
-
-        Outputs are the 7 per-step sequences produced by :class:`StandardFilter` plus the convergence step ``k``
-        (a symbolic integer). The pullback uses ``k`` to split the adjoint computation. In the post-convergence segment
-        the sequences ``P_filt``, ``P_hat``, and ``F`` are broadcasts of constants.
+        Returns
+        -------
+        a_filt : TensorVariable
+            Filtered states, shape ``(n, m)``.
+        a_hat : TensorVariable
+            Predicted states, shape ``(n, m)``.
+        y_hat : TensorVariable
+            Predicted observations, shape ``(n, p)``.
+        P_filt : TensorVariable
+            Filtered state covariances, shape ``(n, m, m)``. Constant from step ``k`` on.
+        P_hat : TensorVariable
+            Predicted state covariances, shape ``(n, m, m)``. Constant from step ``k`` on.
+        F : TensorVariable
+            Innovation covariances, shape ``(n, p, p)``. Constant from step ``k`` on.
+        loglike_obs : TensorVariable
+            Per-timestep log-likelihood, shape ``(n,)``.
+        k : TensorVariable
+            Scalar integer convergence step. The pullback splits the adjoint on it.
         """
         n = data.shape[0]
         (a_filt_tr, a_hat_tr, y_hat_tr, P_filt_tr, P_hat_tr, F_tr, ll_tr) = self._full_kalman_scan(
@@ -978,7 +977,7 @@ class ConvergentFilter(StandardFilter):
         k = pt.minimum(a_filt_tr.shape[0], n - 1)
         a_star, P_star = a_hat_tr[k - 1], P_hat_tr[k - 1]
 
-        # Tail constants from P*. Computed once here to make the tail function prettier.
+        # Tail constants from P*, hoisted so the tail scan body carries no Cholesky or solve.
         F_star = Z @ P_star @ Z.mT + stabilize(H, self.cov_jitter)
         F_chol_star = pt.linalg.cholesky(F_star, lower=True)
         logdet_F_star = 2 * pt.log(pt.diag(F_chol_star)).sum()
@@ -1042,25 +1041,42 @@ class ConvergentFilter(StandardFilter):
         a_hat_fx,
         dlogp,
     ):
-        """Analytic backward pass over the post-convergence segment.
+        """
+        Run the analytic backward pass over the post-convergence segment.
 
-        Runs a backward scan on the post-convergence data with ``F_inv, A = T (I - K_star Z),
-        I - K_star Z`` hoisted out as non-sequences. Each step is closed-form (no Cholesky or solve in
-        the body; only matvecs and outer products). Returns:
+        The scan body is closed form -- matvecs and outer products only, no Cholesky or solve -- because
+        ``F^{-1}`` and the closed-loop transition ``A = T (I - K_star Z)`` are constant once the Riccati
+        recursion has converged.
 
-        - ``d_data, d_a_star``: ordinary adjoints flowing backward out of the segment.
-        - ``d_P_star``: Riccati-style adjoint at the segment's entry. Used as the terminal condition for
-          the pre-convergence backward (the transient's ``P_hat_grad`` at step ``k-1``).
-        - ``d_T_alpha, d_c, d_Z_direct, d_d``: per-step contributions summed across post-convergence.
-          These are the alpha-path (mean of the latent states) contributions; P-path contributions to d_T / d_Z
-          come from the ``S`` aggregate below.
-        - ``d_K_star, d_F_star``: adjoints treating ``K_star, F_star`` as if they were independent
-          inputs to the post-convergence forward. The caller chains these to ``(P_star, Z, H)`` via the
-          analytic definitions ``K_star = P_star Z^T F_star^{-1}`` and ``F_star = Z P_star Z^T + H``.
-        - ``S = sum_t d_P_hat_t``: aggregate P-adjoint across the post-convergence segment. In the
-          post-convergence segment ``P_t`` is the constant ``P_star``, so P-path contributions to
-          d_T, d_Z, d_H, d_R, d_Q are linear in ``d_P_hat_t``. These aggregate into formulas that use
-          ``S`` (rather than needing a separate per-step scan).
+        Returns
+        -------
+        d_data : TensorVariable
+            Adjoint of the observations over the segment.
+        d_a_star : TensorVariable
+            Adjoint of the state entering the segment.
+        d_P_star : TensorVariable
+            Riccati adjoint at the segment entry, used as the terminal condition for the pre-convergence
+            backward.
+        d_T_alpha : TensorVariable
+            Alpha-path contribution to ``d_T``, summed over the segment. Its P-path contribution comes
+            from ``S``.
+        d_c : TensorVariable
+            Contribution to ``d_c``, summed over the segment.
+        d_Z_direct : TensorVariable
+            Alpha-path contribution to ``d_Z``, summed over the segment. Its P-path contribution comes
+            from ``S``.
+        d_d : TensorVariable
+            Contribution to ``d_d``, summed over the segment.
+        d_K_star : TensorVariable
+            Adjoint of ``K_star`` treated as an independent input. The caller chains it to
+            ``(P_star, Z, H)`` through ``K_star = P_star Z^T F_star^{-1}``.
+        d_F_star : TensorVariable
+            Adjoint of ``F_star`` treated as an independent input. The caller chains it through
+            ``F_star = Z P_star Z^T + H``.
+        S : TensorVariable
+            ``sum_t d_P_hat_t`` over the segment. ``P_t`` is the constant ``P_star`` there, so the P-path
+            contributions to ``d_T``, ``d_Z``, ``d_H``, ``d_R`` and ``d_Q`` are linear in it and can be
+            aggregated instead of scanned.
         """
         m = a_star.shape[0]
         p_dim = F_chol_star.shape[0]
@@ -1071,7 +1087,7 @@ class ConvergentFilter(StandardFilter):
         I_KZ = pt.eye(m) - K_star @ Z
         A = T @ I_KZ
         F_inv = pt.linalg.cho_solve((F_chol_star, True), pt.eye(p_dim))
-        ZtFinvZ = Z.T @ F_inv @ Z  # the data-independent half of direct_C, lifted out of the scan
+        ZtFinvZ = Z.T @ F_inv @ Z  # the data-independent half of direct_C
 
         def bwd(y, a_prev, r_next, P_hat_next, c_, d_, T_, Z_, K_, F_inv_, A_, ZtFinvZ_):
             v = y - Z_ @ a_prev - d_
@@ -1084,15 +1100,10 @@ class ConvergentFilter(StandardFilter):
             dL_dv = K_.T @ T_r_next + 2 * Finv_v
             r_t = A_r_next - 2 * Zt_Finv_v
 
-            # P-adjoint recursion: d_P_prev = A^T @ d_P_hat_next @ A + cross_a + direct_C,
-            # where A = T (I - K_star Z) is the closed-loop transition. The homogeneous part
-            # d_P_prev = A^T @ d_P_hat_next @ A is the backward Lyapunov recursion: as the segment
-            # length grows it converges to the solution of the Lyapunov equation X = A^T X A + C, which
-            # is the steady-state P-adjoint. Because A is constant in the post-convergence segment,
-            # we can hoist it; the per-step work is the two correction terms (cross_a and direct_C)
-            # which still depend on y_t and a_prev. cross_a uses the identity Z(I - K Z) = H F^{-1} Z
-            # to express what is naturally an H^{-1} term through F^{-1} instead, which stays finite for
-            # singular H (a measurement-error-free model).
+            # P-adjoint recursion, where A = T (I - K_star Z) is the closed-loop transition. The
+            # homogeneous part is a backward Lyapunov recursion; only the two correction terms depend
+            # on y_t and a_prev. cross_a routes what is naturally an H^{-1} term through F^{-1} via the
+            # identity Z(I - K Z) = H F^{-1} Z, which stays finite when H is singular.
             cross_a = 0.5 * (pt.outer(A_r_next, Zt_Finv_v) + pt.outer(Zt_Finv_v, A_r_next))
             direct_C = ZtFinvZ_ - pt.outer(Zt_Finv_v, Zt_Finv_v)
             d_P_prev = A_.T @ P_hat_next @ A_ + cross_a + direct_C
@@ -1179,14 +1190,6 @@ class ConvergentFilter(StandardFilter):
         self.seq_names = []
         self.non_seq_names = list(PARAM_NAMES)
 
-        # The forward is two scans chained through derived quantities (K_star, F_star, log det F_star
-        # and P_filt_star all depend on the first scan's last output). Autodiff gives incorrect
-        # gradients on this structure once the `until` clause fires with a non-trivial post-convergence
-        # segment. We wrap in an OFG and supply a custom pullback that splits the backward
-        # into: an analytic backward on the post-convergence segment (cheap, closed form), a chain
-        # rule step for (K_star, F_star) -> (P_star, Z, H) using the analytic definitions, and an
-        # autodiff backward on the pre-convergence segment with the handoff adjoints as its terminal
-        # condition (the plain Kalman iterations).
         op = ConvergentKalmanOp(filt=self)
         a_filt, a_hat, y_hat, P_filt, P_hat, F, ll, _k = op(data, a0, P0, c, d, T, Z, R, H, Q)
         n = data.type.shape[0]
