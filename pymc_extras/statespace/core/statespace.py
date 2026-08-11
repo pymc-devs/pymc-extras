@@ -924,7 +924,7 @@ class PyMCStateSpace:
 
         Parameters
         ----------
-        data : Union[np.ndarray, pd.DataFrame, pt.TensorVariable]
+        data : numpy array, pandas DataFrame, or pytensor tensor
             The observed data used to fit the state space model. It can be a NumPy array, a Pandas DataFrame,
             or a Pytensor tensor variable.
 
