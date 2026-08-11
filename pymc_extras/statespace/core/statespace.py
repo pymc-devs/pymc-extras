@@ -50,11 +50,7 @@ from pymc_extras.statespace.filters.distributions import (
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     JITTER_DEFAULT,
-    MATRIX_DIMS,
-    MATRIX_NAMES,
     OBS_STATE_DIM,
-    SHORT_NAME_TO_LONG,
-    TIME_DIM,
 )
 from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
 
@@ -749,43 +745,6 @@ class PyMCStateSpace:
         """
         raise NotImplementedError("The make_symbolic_statespace method has not been implemented!")
 
-    def _get_matrix_shape_and_dims(self, name: str) -> tuple[tuple[int] | None, tuple[str] | None]:
-        """
-        Get the shape and dimensions of a matrix associated with the specified name.
-
-        This method retrieves the shape and dimensions of a matrix associated with the given name. Importantly,
-        it will only find named dimension if they are the "default" dimension names defined in the
-        statespace.utils.constant.py file.
-
-        Parameters
-        ----------
-        name : str
-            The name of the matrix whose shape and dimensions need to be retrieved.
-
-        Returns
-        -------
-        shape: tuple or None
-            If no named dimension are found, the shape of the requested matrix, otherwise None.
-
-        dims: tuple or None
-            If named dimensions are found, a tuple of strings, otherwise None
-        """
-
-        pm_mod = modelcontext(None)
-        dims = MATRIX_DIMS.get(name, None)
-        dims = dims if all([dim in pm_mod.coords.keys() for dim in dims]) else None
-        data_len = len(self._fit_data)
-
-        if name in self.kalman_filter.seq_names:
-            shape = (data_len, *self.ssm[SHORT_NAME_TO_LONG[name]].type.shape)
-            dims = (TIME_DIM, *dims)
-        else:
-            shape = self.ssm[SHORT_NAME_TO_LONG[name]].type.shape
-
-        shape = shape if dims is None else None
-
-        return shape, dims
-
     def _save_exogenous_data_info(self):
         """
         Store exogenous data required by posterior sampling functions
@@ -935,37 +894,6 @@ class PyMCStateSpace:
 
         replacement_dict = {var: step for var in n_timestep_variables}
         return graph_replace(matrices, replace=replacement_dict, strict=False)
-
-    def _register_matrices_with_pymc_model(self) -> list[pt.TensorVariable]:
-        """
-        Add all statespace matrices to the PyMC model currently on the context stack as pm.Deterministic nodes, and
-        adds named dimensions if they are found.
-
-        Returns
-        -------
-        registered_matrices: list of pt.TensorVariable
-            list of statespace matrices, wrapped in pm.Deterministic
-        """
-
-        pm_mod = modelcontext(None)
-        matrices = self.unpack_statespace()
-        time_varying_names = self.ssm.time_varying_names
-
-        registered_matrices = []
-        for i, (matrix, name) in enumerate(zip(matrices, MATRIX_NAMES)):
-            if not getattr(pm_mod, name, None):
-                shape, dims = self._get_matrix_shape_and_dims(name)
-                has_dims = dims is not None
-
-                if SHORT_NAME_TO_LONG[name] in time_varying_names and has_dims:
-                    dims = (TIME_DIM, *dims)
-
-                x = pm.Deterministic(name, matrix, dims=dims)
-                registered_matrices.append(x)
-            else:
-                registered_matrices.append(matrices[i])
-
-        return registered_matrices
 
     @staticmethod
     def _register_kalman_filter_outputs_with_pymc_model(outputs: tuple[pt.TensorVariable]) -> None:

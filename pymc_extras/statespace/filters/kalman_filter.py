@@ -59,7 +59,6 @@ class BaseFilter(ABC):
         self.non_seq_names: list[str] = []
 
         self.n_states = None
-        self.n_posdef = None
         self.n_endog = None
 
         self.missing_fill_value: float | None = None
@@ -203,7 +202,7 @@ class BaseFilter(ABC):
         [R_shape] = constant_fold([R.shape], raise_not_constant=False)
         [Z_shape] = constant_fold([Z.shape], raise_not_constant=False)
 
-        self.n_states, self.n_shocks = R_shape[-2:]
+        self.n_states = R_shape[-2]
         self.n_endog = Z_shape[-2]
 
         data, a0, P0, *params = self.check_params(data, a0, P0, c, d, T, Z, R, H, Q)
