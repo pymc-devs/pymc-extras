@@ -9,7 +9,11 @@ from pymc.util import RandomSeed, _get_seeds_per_chain
 from xarray import DataTree
 
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
-from pymc_extras.inference.mlx_mclmc.kernel import TunedParameters, warmup_and_sample
+from pymc_extras.inference.mlx_mclmc.kernel import (
+    AdaptationSettings,
+    TunedParameters,
+    warmup_and_sample,
+)
 from pymc_extras.inference.mlx_mclmc.logp import (
     MLXLogp,
     check_model_is_sampleable,
@@ -38,13 +42,11 @@ def fit_mlx_mclmc(
     chains: int = 4,
     model: pm.Model | None = None,
     integrator: str = "mclachlan",
-    diagonal_preconditioning: bool = True,
-    desired_energy_var: float = 5e-4,
+    adaptation: AdaptationSettings = AdaptationSettings(),
     initial_point: dict[str, np.ndarray] | np.ndarray | None = None,
     include_transformed: bool = False,
     compile_step: bool = True,
     random_seed: RandomSeed = None,
-    warmup_kwargs: dict | None = None,
     compile_kwargs: dict | None = None,
 ) -> DataTree:
     """
@@ -79,11 +81,9 @@ def fit_mlx_mclmc(
     integrator : str
         Either ``"mclachlan"``, which takes 2 gradient evaluations per step, or
         ``"velocity_verlet"``, which takes 1. Default is ``"mclachlan"``.
-    diagonal_preconditioning : bool
-        Whether to adapt a diagonal inverse mass matrix. Default is True.
-    desired_energy_var : float
-        Target energy variance per dimension. Smaller values give a smaller step size, so less
-        bias and more compute per effective draw. Default is 5e-4.
+    adaptation : AdaptationSettings
+        How warmup adapts the step size, the metric, and ``L``. Defaults to
+        :class:`~pymc_extras.inference.mlx_mclmc.kernel.AdaptationSettings`.
     initial_point : dict or array, optional
         Starting point for the adaptation, given either as unconstrained value-variable arrays
         keyed by name or as a flat vector in ``model.value_vars`` order. Defaults to the model's
@@ -96,8 +96,6 @@ def fit_mlx_mclmc(
         argument-buffer limit is retried unfused, so this is a way to skip that first attempt
         rather than a requirement. Default is True.
     random_seed : int, optional
-    warmup_kwargs : dict, optional
-        Extra keyword arguments for :func:`~pymc_extras.inference.mlx_mclmc.kernel.warmup`.
     compile_kwargs : dict, optional
         Extra keyword arguments for the PyTensor function that maps draws back to model space.
 
@@ -136,23 +134,15 @@ def fit_mlx_mclmc(
     else:
         start = np.asarray(initial_point, dtype="float32").ravel()
 
-    # Merged rather than passed alongside, so an explicit warmup_kwargs entry overrides the
-    # named argument instead of raising a duplicate-keyword TypeError.
-    warmup_kwargs = {
-        "diagonal_preconditioning": diagonal_preconditioning,
-        "desired_energy_var": desired_energy_var,
-        **(warmup_kwargs or {}),
-    }
-
     _log.info("Sampling %d chains of %d draws in %d dimensions", chains, draws, logdensity_fn.dim)
     sampler_kwargs = dict(
         num_tune=tune,
         draws=draws,
         discard=burn_in,
         chains=chains,
+        settings=adaptation,
         integrator=integrator,
         seed=seed,
-        **warmup_kwargs,
     )
     try:
         output, tuned = warmup_and_sample(
