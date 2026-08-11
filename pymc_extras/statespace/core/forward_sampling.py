@@ -491,7 +491,6 @@ def sample_filter_outputs(
             data,
             n_obs=ss_mod.ssm.k_endog,
             obs_coords=obs_coords,
-            register_data=True,
         )
 
         filter_outputs = ss_mod.kalman_filter.build_graph(

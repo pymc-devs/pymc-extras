@@ -109,7 +109,6 @@ def kalman_filter_outputs_from_dummy_graph(
         n_obs=ss_mod.ssm.k_endog,
         obs_coords=obs_coords,
         data_dims=data_dims,
-        register_data=True,
     )
 
     filter_outputs = ss_mod.kalman_filter.build_graph(

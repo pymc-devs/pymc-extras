@@ -12,6 +12,7 @@ from pymc_extras.statespace.models.structural import LevelTrend
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     FILTER_OUTPUT_NAMES,
+    OBS_STATE_DIM,
     SMOOTHER_OUTPUT_NAMES,
     TIME_DIM,
 )
@@ -113,9 +114,10 @@ def test_model_build_without_coords(load_dataset):
         P0 = pm.Deterministic("P0", pt.diag(P0_diag))
         initial_trend = pm.Normal("initial_level_trend", shape=(2,))
         sigma_trend = pm.Exponential("sigma_level_trend", 1, shape=(2,))
-        ss_mod.build_statespace_graph(data, register_data=False)
+        ss_mod.build_statespace_graph(data)
 
-    assert mod.coords == {}
+    assert set(mod.coords) == {TIME_DIM, OBS_STATE_DIM}
+    assert mod["data"].get_value().shape[0] == len(mod.coords[TIME_DIM])
 
 
 @pytest.mark.parametrize("f, warning", func_inputs, ids=function_names)

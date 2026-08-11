@@ -471,6 +471,8 @@ def test_SARIMA_with_exogenous(rng, mock_sample):
         idata = pm.sample(chains=2, draws=100)
 
     assert "exogenous_data" in idata.constant_data
+    # Observed data is always registered as a pm.Data, so post-estimation can recover it.
+    assert "data" in idata.constant_data
     assert idata.posterior.beta_exog.shape == (
         2,
         100,

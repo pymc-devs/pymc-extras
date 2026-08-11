@@ -82,9 +82,7 @@ def test_build_statespace_graph_warns_if_data_has_nans():
         initial_trend = pm.Normal("initial_trend", shape=(1,))
         P0 = pm.Deterministic("P0", pt.eye(1, dtype=floatX))
         with pytest.warns(ImputationWarning):
-            ss_mod.build_statespace_graph(
-                data=np.full((10, 1), np.nan, dtype=floatX), register_data=False
-            )
+            ss_mod.build_statespace_graph(data=np.full((10, 1), np.nan, dtype=floatX))
 
 
 def test_build_statespace_graph_raises_if_data_has_missing_fill():
@@ -97,7 +95,7 @@ def test_build_statespace_graph_raises_if_data_has_missing_fill():
         with pytest.raises(ValueError, match=r"Provided data contains the value 1.0"):
             data = np.ones((10, 1), dtype=floatX)
             data[3] = np.nan
-            ss_mod.build_statespace_graph(data=data, missing_fill_value=1.0, register_data=False)
+            ss_mod.build_statespace_graph(data=data, missing_fill_value=1.0)
 
 
 def test_param_dims_coords(ss_mod_multi_component):

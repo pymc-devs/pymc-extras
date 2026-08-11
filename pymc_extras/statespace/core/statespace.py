@@ -941,7 +941,6 @@ class PyMCStateSpace:
     def build_statespace_graph(
         self,
         data: np.ndarray | pd.DataFrame | pt.TensorVariable,
-        register_data: bool = True,
         missing_fill_value: float | None = None,
         cov_jitter: float | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
@@ -958,10 +957,6 @@ class PyMCStateSpace:
         data : Union[np.ndarray, pd.DataFrame, pt.TensorVariable]
             The observed data used to fit the state space model. It can be a NumPy array, a Pandas DataFrame,
             or a Pytensor tensor variable.
-
-        register_data : bool, optional, default=True
-            If True, the observed data will be registered with PyMC as a pm.Data variable. In addition,
-            a "time" dim will be created an added to the model's coords.
 
         mode : Optional[str], optional, default=None
             The Pytensor mode used for the computation graph construction. If None, the default mode will be used.
@@ -1043,7 +1038,6 @@ class PyMCStateSpace:
             data,
             n_obs=self.ssm.k_endog,
             obs_coords=obs_coords,
-            register_data=register_data,
             missing_fill_value=self.missing_fill_value,
         )
 

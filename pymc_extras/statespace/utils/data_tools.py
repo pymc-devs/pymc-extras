@@ -3,7 +3,6 @@ import warnings
 import numpy as np
 import pandas as pd
 import pymc as pm
-import pytensor
 import pytensor.tensor as pt
 
 from pymc import modelcontext
@@ -181,9 +180,7 @@ def mask_missing_values_in_data(values, missing_fill_value=None):
     return filled_values, nan_mask
 
 
-def register_data_with_pymc(
-    data, n_obs, obs_coords, register_data=True, missing_fill_value=None, data_dims=None
-):
+def register_data_with_pymc(data, n_obs, obs_coords, missing_fill_value=None, data_dims=None):
     if isinstance(data, pt.TensorVariable | TensorSharedVariable):
         values, index = preprocess_tensor_data(data, n_obs, obs_coords)
     elif isinstance(data, np.ndarray):
@@ -193,10 +190,7 @@ def register_data_with_pymc(
     else:
         raise ValueError("Data should be one of pytensor tensor, numpy array, or pandas dataframe")
 
-    data, nan_mask = mask_missing_values_in_data(values, missing_fill_value)
+    filled_values, nan_mask = mask_missing_values_in_data(values, missing_fill_value)
+    data_variable = add_data_to_active_model(filled_values, index, data_dims)
 
-    if register_data:
-        data = add_data_to_active_model(data, index, data_dims)
-    else:
-        data = pytensor.shared(data, name="data")
-    return data, nan_mask
+    return data_variable, nan_mask
