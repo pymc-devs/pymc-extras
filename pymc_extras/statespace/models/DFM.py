@@ -216,7 +216,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             obs_sigma = pm.HalfNormal("sigma_obs", dims=["k_endog"])
 
             # Build the symbolic graph and attach it to the model
-            dfm_mod.build_statespace_graph(data=data, mode="JAX")
+            dfm_mod.build_statespace_graph(data=data)
 
             # Sampling
             idata = pm.sample(

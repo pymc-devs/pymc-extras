@@ -1,5 +1,4 @@
 import logging
-import warnings
 
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
@@ -917,7 +916,6 @@ class PyMCStateSpace:
         missing_fill_value: float | None = None,
         cov_jitter: float | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
-        mode: str | None = None,
     ) -> None:
         """
         Given a parameter vector `theta`, constructs the full computational graph describing the state space model and
@@ -929,10 +927,6 @@ class PyMCStateSpace:
         data : Union[np.ndarray, pd.DataFrame, pt.TensorVariable]
             The observed data used to fit the state space model. It can be a NumPy array, a Pandas DataFrame,
             or a Pytensor tensor variable.
-
-        mode : Optional[str], optional, default=None
-            The Pytensor mode used for the computation graph construction. If None, the default mode will be used.
-            Other options include "JAX" and "NUMBA".
 
         missing_fill_value: float, optional
             A value to mask in missing values. NaN values in the data need to be filled with an arbitrary value to
@@ -970,23 +964,7 @@ class PyMCStateSpace:
             In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
             recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
-        mode: str, optional
-            Pytensor mode to use when compiling the graph. This will be saved as a model attribute and used when
-            compiling sampling functions (e.g. ``sample_conditional_prior``).
-
-            .. deprecated:: 0.2.5
-                The `mode` argument is deprecated and will be removed in a future version. Pass ``mode`` to the
-                model constructor, or manually specify ``compile_kwargs`` in sampling functions instead.
         """
-        if mode is not None:
-            warnings.warn(
-                "The `mode` argument is deprecated and will be removed in a future version. "
-                "Pass `mode` to the model constructor, or manually specify `compile_kwargs` in sampling functions"
-                " instead.",
-                DeprecationWarning,
-            )
-            self.mode = mode
-
         # Recorded on the model so post-estimation graphs are filtered the same way the fit was.
         if cov_jitter is not None:
             self.cov_jitter = cov_jitter
