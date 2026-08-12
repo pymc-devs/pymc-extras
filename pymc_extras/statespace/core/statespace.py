@@ -774,25 +774,17 @@ class PyMCStateSpace:
 
             ss_mod = pmss.BayesianSARIMAX(order=(2, 0, 2), verbose=False, stationary_initialization=True)
             with pm.Model():
-                 x0 = pm.Normal('x0', size=ss_mod.k_states)
-                 ar_params = pm.Normal('ar_params', size=ss_mod.p)
-                 ma_parama = pm.Normal('ma_params', size=ss_mod.q)
-                 sigma_state = pm.Normal('sigma_state')
+                x0 = pm.Normal("x0", size=ss_mod.k_states)
+                ar_params = pm.Normal("ar_params", size=ss_mod.p)
+                ma_params = pm.Normal("ma_params", size=ss_mod.q)
+                sigma_state = pm.Normal("sigma_state")
 
-                 matrices = ss_mod._insert_random_variables()
+                x0, P0, c, d, T, Z, R, H, Q = ss_mod._insert_random_variables()
 
-            pm.draw(matrices['transition'], random_seed=RANDOM_SEED)
+            pm.draw(T, random_seed=RANDOM_SEED)
             >>> array([[-0.90590386,  1.        ,  0.        ],
             >>>        [ 1.25190143,  0.        ,  1.        ],
             >>>        [ 0.        ,  0.        ,  0.        ]])
-
-            pm.draw(matrices['selection'], random_seed=RANDOM_SEED)
-            >>> array([[ 1.        ],
-            >>>        [-2.46741039],
-            >>>        [-0.28947689]])
-
-            pm.draw(matrices['state_cov'], random_seed=RANDOM_SEED)
-            >>> array([[-1.69353533]])
         """
 
         pymc_model = modelcontext(None)
