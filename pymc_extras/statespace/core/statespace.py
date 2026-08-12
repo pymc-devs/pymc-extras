@@ -259,7 +259,6 @@ class PyMCStateSpace:
         self._fit_dims: dict[str, Sequence[str]] | None = None
         self._fit_data: pt.TensorVariable | None = None
         self._fit_exog_data: dict[str, dict] = {}
-        self._shared_timestep: pt.TensorVariable | None = None
 
         self._needs_exog_data = None
         self._tensor_variable_info = SymbolicVariableInfo()
@@ -873,8 +872,8 @@ class PyMCStateSpace:
         if not n_timestep_variables:
             return matrices
 
-        self._shared_timestep = data.shape[0].astype("int32")
-        replacement_dict = {var: self._shared_timestep for var in n_timestep_variables}
+        n_timesteps = data.shape[0].astype("int32")
+        replacement_dict = {var: n_timesteps for var in n_timestep_variables}
 
         return graph_replace(matrices, replace=replacement_dict, strict=False)
 
