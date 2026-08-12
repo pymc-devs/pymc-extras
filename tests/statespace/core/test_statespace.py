@@ -1,3 +1,5 @@
+import pickle
+
 import numpy as np
 import pymc as pm
 import pytensor
@@ -80,9 +82,7 @@ def test_build_statespace_graph_warns_if_data_has_nans():
         initial_trend = pm.Normal("initial_trend", shape=(1,))
         P0 = pm.Deterministic("P0", pt.eye(1, dtype=floatX))
         with pytest.warns(ImputationWarning):
-            ss_mod.build_statespace_graph(
-                data=np.full((10, 1), np.nan, dtype=floatX), register_data=False
-            )
+            ss_mod.build_statespace_graph(data=np.full((10, 1), np.nan, dtype=floatX))
 
 
 def test_build_statespace_graph_raises_if_data_has_missing_fill():
@@ -95,23 +95,7 @@ def test_build_statespace_graph_raises_if_data_has_missing_fill():
         with pytest.raises(ValueError, match=r"Provided data contains the value 1.0"):
             data = np.ones((10, 1), dtype=floatX)
             data[3] = np.nan
-            ss_mod.build_statespace_graph(data=data, missing_fill_value=1.0, register_data=False)
-
-
-def test_build_statespace_graph(pymc_mod):
-    for name in [
-        "filtered_states",
-        "predicted_states",
-        "predicted_covariances",
-        "filtered_covariances",
-    ]:
-        assert name in [x.name for x in pymc_mod.deterministics]
-
-
-def test_build_smoother_graph(pymc_mod):
-    names = ["smoothed_states", "smoothed_covariances"]
-    for name in names:
-        assert name in [x.name for x in pymc_mod.deterministics]
+            ss_mod.build_statespace_graph(data=data, missing_fill_value=1.0)
 
 
 def test_param_dims_coords(ss_mod_multi_component):
@@ -209,3 +193,52 @@ def test_shipped_models_accept_filter_config(make_model):
 
     assert ss_mod.cov_jitter == 1e-3
     assert ss_mod.missing_fill_value == -777.0
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_register_additional_statespace_variables_hook():
+    """A subclass adds its own nodes through the hook, not by overriding build_statespace_graph."""
+
+    class SubclassStateSpace(PyMCStateSpace):
+        def make_symbolic_graph(self):
+            rho = self.make_and_register_variable("rho", ())
+            self.ssm["transition", 0, 0] = rho
+            self.ssm["design", 0, 0] = 1.0
+            self.ssm["selection", 0, 0] = 1.0
+            self.ssm["state_cov", 0, 0] = 1.0
+            self.ssm["initial_state_cov", 0, 0] = 1.0
+
+        @property
+        def param_names(self):
+            return ["rho"]
+
+        def _register_additional_statespace_variables(self):
+            pm.Deterministic("subclass_det", pm.modelcontext(None)["data"].sum())
+            pm.Potential("subclass_check", pt.zeros(()))
+
+    ss_mod = SubclassStateSpace(
+        k_endog=1, k_states=1, k_posdef=1, filter_type="standard", verbose=False
+    )
+
+    with pm.Model() as pymc_mod:
+        pm.Normal("rho")
+        ss_mod.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
+    assert "subclass_det" in [x.name for x in pymc_mod.deterministics]
+    assert "subclass_check" in [x.name for x in pymc_mod.potentials]
+    assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_statespace_model_survives_pickling():
+    """A statespace model holds no PyMC-model references, so it round-trips and still builds."""
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(verbose=False)
+    unpickled = pickle.loads(pickle.dumps(ss_mod))
+
+    with pm.Model(coords=unpickled.coords) as pymc_mod:
+        pm.Normal("initial_trend", shape=(1,))
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX))
+        pm.Exponential("sigma_trend", 1, shape=(1,))
+        unpickled.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
+    assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))

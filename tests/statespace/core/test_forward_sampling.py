@@ -8,17 +8,11 @@ import pytest
 from numpy.testing import assert_allclose
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
-from pymc_extras.statespace.utils.constants import (
-    FILTER_OUTPUT_NAMES,
-    MATRIX_NAMES,
-    SMOOTHER_OUTPUT_NAMES,
-)
-
-ALL_SAMPLE_OUTPUTS = MATRIX_NAMES + FILTER_OUTPUT_NAMES + SMOOTHER_OUTPUT_NAMES
+from pymc_extras.statespace.utils.constants import MATRIX_NAMES
 
 
 @pytest.mark.parametrize("group", ["posterior", "prior"])
-@pytest.mark.parametrize("matrix", ALL_SAMPLE_OUTPUTS)
+@pytest.mark.parametrize("matrix", MATRIX_NAMES)
 def test_no_nans_in_sampling_output(group, matrix, idata):
     assert not np.any(np.isnan(idata[group][matrix].values))
 
@@ -111,6 +105,9 @@ def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
     idata_filter_prior = exog_ss_mod.sample_filter_outputs(
         idata_exog, filter_output_names=None, group="prior"
     )
+
+    for name, values in idata_filter_prior.posterior_predictive.data_vars.items():
+        assert not np.any(np.isnan(values)), f"{name} contains NaNs"
 
     specific_outputs = ["filtered_states", "filtered_covariances"]
     idata_filter_specific = exog_ss_mod.sample_filter_outputs(
