@@ -39,6 +39,7 @@ from pymc_extras.statespace.core.properties import (
 )
 from pymc_extras.statespace.core.representation import PytensorRepresentation
 from pymc_extras.statespace.filters import (
+    ConvergentFilter,
     KalmanSmoother,
     SquareRootFilter,
     StandardFilter,
@@ -62,6 +63,7 @@ FILTER_FACTORY = {
     "standard": StandardFilter,
     "univariate": UnivariateFilter,
     "cholesky": SquareRootFilter,
+    "convergent": ConvergentFilter,
 }
 
 

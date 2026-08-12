@@ -15,6 +15,7 @@ from pymc_extras.statespace.filters import (
     UnivariateFilter,
 )
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter
+from pymc_extras.statespace.utils.constants import MISSING_FILL
 from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
     rng,
 )
@@ -388,3 +389,292 @@ def test_kalman_filter_jax(filter):
 
     for name, jax_res, pt_res in zip(output_names, jax_outputs, pt_outputs):
         assert_allclose(jax_res, pt_res, atol=ATOL, rtol=RTOL, err_msg=f"{name} failed!")
+
+
+# -------------------- ConvergentFilter --------------------
+# Tests comparing ConvergentFilter outputs and gradients to StandardFilter.
+# ConvergentFilter requires stationary parameters and no missing data, so it
+# can't join the shared parametrized suite above.
+
+
+from pymc_extras.statespace.filters import ConvergentFilter
+
+
+def _make_stationary_system(m, p, n_shocks, n, rng):
+    """Build a valid stable stationary system for ConvergentFilter testing."""
+    T_np = rng.standard_normal((m, m)) * 0.3
+    T_np = T_np / (np.abs(np.linalg.eigvals(T_np)).max() * 1.5)
+    Z_np = rng.standard_normal((p, m)) * 0.5
+    H_root = rng.standard_normal((p, p)) * 0.3
+    H_np = H_root @ H_root.T + 0.2 * np.eye(p)
+    Q_root = rng.standard_normal((n_shocks, n_shocks)) * 0.3
+    Q_np = Q_root @ Q_root.T + 0.1 * np.eye(n_shocks)
+    R_np = rng.standard_normal((m, n_shocks)) * 0.5
+    c_np = rng.standard_normal(m) * 0.05
+    d_np = rng.standard_normal(p) * 0.05
+    a0_np = rng.standard_normal(m) * 0.1
+    P0_np = np.eye(m) * 0.5
+    a = rng.multivariate_normal(a0_np, P0_np)
+    data_np = np.empty((n, p), dtype=floatX)
+    for t in range(n):
+        w = R_np @ rng.multivariate_normal(np.zeros(n_shocks), Q_np)
+        eps = rng.multivariate_normal(np.zeros(p), H_np)
+        a = T_np @ a + c_np + w
+        data_np[t] = Z_np @ a + d_np + eps
+    return [
+        data_np.astype(floatX),
+        a0_np.astype(floatX),
+        P0_np.astype(floatX),
+        c_np.astype(floatX),
+        d_np.astype(floatX),
+        T_np.astype(floatX),
+        Z_np.astype(floatX),
+        R_np.astype(floatX),
+        H_np.astype(floatX),
+        Q_np.astype(floatX),
+    ]
+
+
+GRAD_NAMES = ["loss", "d_a0", "d_P0", "d_c", "d_d", "d_T", "d_Z", "d_R", "d_H", "d_Q"]
+
+# Gradients of parameters that are themselves symmetric matrices are only determined up to their
+# symmetric part, so the analytic and autodiff versions can differ in the antisymmetric half without
+# actually disagreeing.
+SYMMETRIC_GRADS = {"d_P0", "d_H", "d_Q"}
+
+
+def assert_results_match(out_std, out_conv, names, err_prefix=""):
+    for name, std, conv in zip(names, out_std, out_conv, strict=True):
+        std, conv = np.asarray(std, float), np.asarray(conv, float)
+        if name in SYMMETRIC_GRADS:
+            std, conv = 0.5 * (std + std.T), 0.5 * (conv + conv.T)
+        assert_allclose(conv, std, atol=ATOL, rtol=RTOL, err_msg=f"{err_prefix}{name} mismatch")
+
+
+@pytest.mark.parametrize(
+    "m,p,n_shocks,n",
+    [(5, 2, 5, 100), (10, 3, 10, 200)],
+    ids=["small", "medium"],
+)
+def test_convergent_filter_forward_matches_standard(m, p, n_shocks, n, rng):
+    """ConvergentFilter forward outputs should match StandardFilter to numerical precision."""
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+
+    def build(filter_cls):
+        inputs, outputs = initialize_filter(filter_cls(), p=p, m=m, r=n_shocks, n=n)
+        return pytensor.function(inputs, outputs, on_unused_input="ignore")
+
+    fn_std = build(StandardFilter)
+    fn_conv = build(ConvergentFilter)
+    out_std = fn_std(*vals)
+    out_conv = fn_conv(*vals)
+
+    # The tail path only runs once the Riccati recursion converges. Without this the comparison
+    # could pass vacuously, with ConvergentFilter having degenerated into StandardFilter.
+    predicted_covs = out_conv[output_names.index("predicted_covs")]
+    assert_allclose(predicted_covs[-1], predicted_covs[n // 2], atol=ATOL, rtol=RTOL)
+
+    assert_results_match(out_std, out_conv, output_names, err_prefix="ConvergentFilter ")
+
+
+@pytest.mark.parametrize(
+    "m,p,n_shocks,n",
+    [(5, 2, 5, 100), (10, 3, 10, 200)],
+    ids=["small", "medium"],
+)
+def test_convergent_filter_gradient_matches_standard(m, p, n_shocks, n, rng):
+    """ConvergentFilter's analytic gradients should match StandardFilter's autodiff gradients for
+    every model parameter."""
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+
+    def build(filter_cls):
+        inputs, outputs = initialize_filter(filter_cls(), p=p, m=m, r=n_shocks, n=n)
+        data_, a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = inputs
+        ll_obs = outputs[-1]
+        loss = ll_obs.sum()
+        grads = pt.grad(loss, [a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_])
+        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
+
+    fn_std = build(StandardFilter)
+    fn_conv = build(ConvergentFilter)
+    out_std = fn_std(*vals)
+    out_conv = fn_conv(*vals)
+
+    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="ConvergentFilter ")
+
+
+def test_convergent_filter_rejects_time_varying_params():
+    """Declaring any matrix time-varying should raise ValueError at build time."""
+    data = pt.matrix("data")
+    a0 = pt.vector("a0")
+    P0 = pt.matrix("P0")
+    c = pt.vector("c")
+    d = pt.vector("d")
+    T = pt.matrix("T")
+    Z = pt.matrix("Z")
+    R = pt.matrix("R")
+    H = pt.matrix("H")
+    Q = pt.matrix("Q")
+    with pytest.raises(ValueError, match="time-invariant"):
+        ConvergentFilter().build_graph(
+            data, a0, P0, c, d, T, Z, R, H, Q, time_varying_names=["transition"]
+        )
+
+
+def test_convergent_filter_rejects_nan_constant_data():
+    """NaN in a TensorConstant data tensor should raise ValueError at build time."""
+    n, p = 10, 2
+    data_arr = np.zeros((n, p), dtype=floatX)
+    data_arr[3, 0] = np.nan
+    data = pt.as_tensor(data_arr)
+    a0 = pt.vector("a0")
+    P0 = pt.matrix("P0")
+    c = pt.vector("c")
+    d = pt.vector("d")
+    T = pt.matrix("T")
+    Z = pt.matrix("Z")
+    R = pt.matrix("R")
+    H = pt.matrix("H")
+    Q = pt.matrix("Q")
+    with pytest.raises(ValueError, match="missing data"):
+        ConvergentFilter().build_graph(data, a0, P0, c, d, T, Z, R, H, Q)
+
+
+def test_convergent_filter_asserts_nan_symbolic_data(rng):
+    """For fully symbolic data, NaN should be caught by a runtime Assert op."""
+    m, p, n_shocks, n = 3, 2, 3, 30
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+    # Inject NaN at runtime
+    vals[0][5, 0] = np.nan
+
+    inputs, outputs = initialize_filter(ConvergentFilter(), p=p, m=m, r=n_shocks, n=n)
+    fn = pytensor.function(inputs, outputs, on_unused_input="ignore")
+
+    with pytest.raises(AssertionError, match="missing data"):
+        fn(*vals)
+
+
+def test_convergent_filter_rejects_missing_fill_sentinel(rng):
+    """The statespace core replaces NaN with missing_fill_value before the filter runs, so the
+    sentinel -- not just NaN -- must be rejected. This mirrors the real PyMC path, where data is a
+    shared variable holding the pre-filled values."""
+    m, p, n_shocks, n = 3, 2, 3, 30
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+    data_np = vals[0].copy()
+    data_np[5, 0] = MISSING_FILL  # a missing observation, pre-filled by the statespace core
+    shared_data = pytensor.shared(data_np, name="data")
+
+    _, a0, P0, c, d, T, Z, R, H, Q = (pt.as_tensor_variable(v) for v in vals)
+    with pytest.raises(ValueError, match="missing data"):
+        ConvergentFilter().build_graph(
+            pt.as_tensor_variable(shared_data), a0, P0, c, d, T, Z, R, H, Q
+        )
+
+
+def test_convergent_filter_singular_H_gradient_matches_standard(rng):
+    """A measurement-error-free model has singular H. The tail backward routes its one H-coupled
+    term through F^{-1}, so every gradient -- d_H included -- matches StandardFilter even when H is
+    singular."""
+    m, p, n_shocks, n = 4, 3, 4, 120
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+    # Perfectly observe one series: zero its measurement-noise row and column.
+    vals[8][0, :] = 0.0
+    vals[8][:, 0] = 0.0
+
+    def build(kfilter):
+        inputs, outputs = initialize_filter(kfilter, p=p, m=m, r=n_shocks, n=n)
+        loss = outputs[-1].sum()
+        grads = pt.grad(loss, inputs[1:])
+        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
+
+    out_std = build(StandardFilter())(*vals)
+    out_conv = build(ConvergentFilter())(*vals)
+    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="singular H: ")
+
+
+def _make_local_level_system(n, rng):
+    """A unit-root (non-stationary) but observable and controllable local level. Its Riccati
+    recursion still converges to a steady-state gain, so ConvergentFilter applies -- convergence
+    requires detectability and stabilizability, not stationarity."""
+    sigma_level, sigma_obs = 0.4, 0.7
+    T_np = np.array([[1.0]], dtype=floatX)
+    Z_np = np.array([[1.0]], dtype=floatX)
+    R_np = np.array([[1.0]], dtype=floatX)
+    Q_np = np.array([[sigma_level**2]], dtype=floatX)
+    H_np = np.array([[sigma_obs**2]], dtype=floatX)
+    c_np = np.zeros(1, dtype=floatX)
+    d_np = np.zeros(1, dtype=floatX)
+    a0_np = np.zeros(1, dtype=floatX)
+    P0_np = np.array([[1.0]], dtype=floatX)
+    level = rng.standard_normal()
+    data_np = np.empty((n, 1), dtype=floatX)
+    for t in range(n):
+        level = level + sigma_level * rng.standard_normal()
+        data_np[t] = level + sigma_obs * rng.standard_normal()
+    return [data_np, a0_np, P0_np, c_np, d_np, T_np, Z_np, R_np, H_np, Q_np]
+
+
+def test_convergent_filter_local_level_matches_standard(rng):
+    """A unit-root local level converges to a steady-state gain. ConvergentFilter forward outputs
+    and gradients should match StandardFilter even though the system is non-stationary."""
+    n = 250
+    vals = _make_local_level_system(n, rng)
+
+    def build(filter_cls):
+        inputs, outputs = initialize_filter(filter_cls(), p=1, m=1, r=1, n=n)
+        ll_obs = outputs[-1]
+        grads = pt.grad(ll_obs.sum(), inputs[1:])
+        return pytensor.function(inputs, [*outputs, *grads], on_unused_input="ignore")
+
+    out_std = build(StandardFilter)(*vals)
+    out_conv = build(ConvergentFilter)(*vals)
+    for std, conv in zip(out_std, out_conv, strict=True):
+        assert_allclose(np.asarray(conv), np.asarray(std), atol=ATOL, rtol=RTOL)
+
+
+def test_convergent_filter_k_equals_n_gradient_matches_standard(rng):
+    """With tol=0 the until clause never fires, so the Riccati never converges. The split is then
+    capped at n-1 (a one-step tail -- a single tail step is exactly the Kalman step), and the
+    gradient of this degenerate no-convergence case must still match StandardFilter."""
+    m, p, n_shocks, n = 4, 2, 4, 40
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+
+    def build(kfilter):
+        inputs, outputs = initialize_filter(kfilter, p=p, m=m, r=n_shocks, n=n)
+        loss = outputs[-1].sum()
+        grads = pt.grad(loss, inputs[1:])
+        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
+
+    out_std = build(StandardFilter())(*vals)
+    out_conv = build(ConvergentFilter(tol=0.0))(*vals)
+    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="tol=0: ")
+
+
+def test_convergent_filter_builds_and_runs_at_float32(rng):
+    """The filter follows ``pytensor.config.floatX``; nothing in its graph is pinned to float64."""
+    m, p, n_shocks, n = 3, 2, 3, 60
+    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+
+    with pytensor.config.change_flags(floatX="float32"):
+        dtype = pytensor.config.floatX
+        shapes = {
+            "data": (n, p),
+            "a0": (m,),
+            "P0": (m, m),
+            "c": (m,),
+            "d": (p,),
+            "T": (m, m),
+            "Z": (p, m),
+            "R": (m, n_shocks),
+            "H": (p, p),
+            "Q": (n_shocks, n_shocks),
+        }
+        inputs = [pt.tensor(name, dtype=dtype, shape=shape) for name, shape in shapes.items()]
+
+        *_, ll_obs = ConvergentFilter().build_graph(*inputs)
+        loss = ll_obs.sum()
+        fn = pytensor.function(inputs, [loss, *pt.grad(loss, inputs[1:])], on_unused_input="ignore")
+
+    results = fn(*[np.asarray(v, dtype=dtype) for v in vals])
+    for name, value in zip(GRAD_NAMES, results, strict=True):
+        assert np.all(np.isfinite(value)), f"{name} is not finite at float32"
