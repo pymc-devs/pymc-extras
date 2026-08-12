@@ -1412,6 +1412,26 @@ class TestXDist:
 
         assert equivalent_models(obs_m, expected_obs_m)
 
+    def test_xdist_likelihood_requires_observed(self):
+        """observed=None is refused on the xdist path, and left alone off it."""
+        import pymc.dims as pmd
+
+        coords = {"city": range(3)}
+        normal = Prior("Normal", sigma=1, dims=("city",))
+        censored = Censored(normal, lower=0)
+        match = "observed cannot be None"
+
+        with pm.Model(coords=coords):
+            mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
+            for dist in (normal, censored):
+                with pytest.raises(ValueError, match=match):
+                    dist.create_likelihood_variable("x", mu=mu, observed=None, xdist=True)
+
+        with pm.Model(coords=coords) as legacy:
+            normal.create_likelihood_variable("x", mu=pt.as_tensor([1, 2, 3]), observed=None)
+
+        assert [rv.name for rv in legacy.free_RVs] == ["x"]
+
     def test_dims(self) -> None:
         assert Prior("Normal").dims is None
         assert Prior("Normal", dims=()).dims == ()

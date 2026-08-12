@@ -494,6 +494,19 @@ def sample_prior(
     ).prior.dataset
 
 
+def _check_observed(observed, xdist: bool) -> None:
+    """Refuse a likelihood with nothing to condition on.
+
+    Only on the ``pymc.dims`` path. Without ``xdist`` the value is passed to
+    PyMC untouched, and tightening that would change long-standing behaviour.
+    """
+    if xdist and observed is None:
+        raise ValueError(
+            "observed cannot be None. A likelihood needs observations; use "
+            "create_variable for a variable without them."
+        )
+
+
 def _param_value_with_dims(param: str, value, dims: Dims | None):
     """Infer parameter dims positionally.
 
@@ -1398,6 +1411,8 @@ class Prior:
                 dist.create_likelihood_variable("y", mu=mu, observed=observed)
 
         """
+        _check_observed(observed, xdist)
+
         if "mu" not in _get_pymc_parameters(self.pymc_distribution):
             raise UnsupportedDistributionError(
                 f"Likelihood distribution {self.distribution!r} is not supported."
@@ -1642,6 +1657,8 @@ class Censored:
                 dist.create_likelihood_variable("y", mu=mu, observed=observed)
 
         """
+        _check_observed(observed, xdist)
+
         if "mu" not in _get_pymc_parameters(self.distribution.pymc_distribution):
             raise UnsupportedDistributionError(
                 f"Likelihood distribution {self.distribution.distribution!r} is not supported."
