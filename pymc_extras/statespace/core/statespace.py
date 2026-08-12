@@ -1289,26 +1289,33 @@ class PyMCStateSpace:
         **kwargs,
     ):
         """
-        Draw samples of requested statespace matrices from provided idata
+        Draw samples of the statespace matrices implied by a model's parameter draws.
 
         Parameters
         ----------
-        matrix_names: str, list[str], optional
-            Statespace matrices to be sampled. Valid names are short names: x0, P0, c, d, T, Z, R, H, Q, or
-             "formal" names: initial_state, initial_state_cov, state_intercept, obs_intercept, transition, design,
-                             selection, obs_cov, state_cov
-        idata: DataTree
-            DataTree from which to sample
-
-        group: str, one of "posterior" or "prior"
-            Whether to sample from priors or posteriors
-
-        kwargs:
-            Additional keyword arguments are passed to ``pymc.sample_posterior_predictive``
+        idata : DataTree
+            Sampling results holding the parameter draws the matrices are built from.
+        matrix_names : str or list of str, optional
+            Matrices to sample, as short names (``x0``, ``P0``, ``c``, ``d``, ``T``, ``Z``, ``R``, ``H``, ``Q``)
+            or long names (``initial_state``, ``initial_state_cov``, ``state_intercept``, ``obs_intercept``,
+            ``transition``, ``design``, ``selection``, ``obs_cov``, ``state_cov``). Each sampled matrix takes the
+            name it was requested by, so short names can collide with model parameters called ``x0`` or ``P0``.
+            Default None, which samples every matrix under its long name.
+        group : str, optional
+            Which group of ``idata`` to draw from, ``"posterior"`` or ``"prior"``. Default "posterior".
+        **kwargs
+            Additional keyword arguments are passed to :func:`pymc.sample_posterior_predictive`.
 
         Returns
         -------
-        idata_matrices: az.InterenceData
+        idata_matrices : DataTree
+            Sampled matrices, in the ``posterior_predictive`` group. A time-varying matrix carries a leading
+            time dimension; the others carry only the dimensions declared for them.
+
+        Raises
+        ------
+        ValueError
+            If any requested name is neither a short nor a long statespace matrix name.
         """
         return forward_sampling.sample_statespace_matrices(
             self, idata, matrix_names=matrix_names, group=group, **kwargs
@@ -1321,6 +1328,27 @@ class PyMCStateSpace:
         group: str = "posterior",
         **kwargs,
     ):
+        """
+        Draw samples of the Kalman filter and smoother outputs from a model's parameter draws.
+
+        Parameters
+        ----------
+        idata : DataTree
+            Sampling results holding the parameter draws the outputs are computed from.
+        filter_output_names : str or list of str, optional
+            Which outputs to sample: ``filtered_states``, ``predicted_states``, ``smoothed_states``, each of
+            their ``_covariances`` counterparts, and ``predicted_observed_states`` with
+            ``predicted_observed_covariances``. Default None, which samples all of them.
+        group : str, optional
+            Which group of ``idata`` to draw from, ``"posterior"`` or ``"prior"``. Default "posterior".
+        **kwargs
+            Additional keyword arguments are passed to :func:`pymc.sample_posterior_predictive`.
+
+        Returns
+        -------
+        idata_filter_outputs : DataTree
+            Sampled outputs, in the ``posterior_predictive`` group.
+        """
         return forward_sampling.sample_filter_outputs(
             self,
             idata,
