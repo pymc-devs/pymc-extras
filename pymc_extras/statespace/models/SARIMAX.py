@@ -26,6 +26,7 @@ from pymc_extras.statespace.utils.constants import (
     EXOG_STATE_DIM,
     JITTER_DEFAULT,
     MA_PARAM_DIM,
+    MISSING_FILL,
     SARIMAX_STATE_STRUCTURES,
     SEASONAL_AR_PARAM_DIM,
     SEASONAL_MA_PARAM_DIM,
@@ -145,7 +146,7 @@ class BayesianSARIMAX(PyMCStateSpace):
         verbose=True,
         mode: str | Mode | None = None,
         cov_jitter: float = JITTER_DEFAULT,
-        missing_fill_value: float | None = None,
+        missing_fill_value: float = MISSING_FILL,
     ):
         """
         Initialize a BayesianSARIMAX model.
@@ -217,7 +218,7 @@ class BayesianSARIMAX(PyMCStateSpace):
 
         missing_fill_value : float, optional
             Sentinel used to mask missing observations. Set this only if your data legitimately contains the
-            default sentinel. Post-estimation graphs are built with this same value. Default None, which the filter resolves to -9999.0.
+            default sentinel. Post-estimation graphs are built with this same value. Default -9999.0.
         """
         # Model order
         self.p, self.d, self.q = order

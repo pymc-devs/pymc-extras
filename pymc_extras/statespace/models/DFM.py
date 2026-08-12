@@ -20,6 +20,7 @@ from pymc_extras.statespace.utils.constants import (
     EXOG_STATE_DIM,
     FACTOR_DIM,
     JITTER_DEFAULT,
+    MISSING_FILL,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
     TIME_DIM,
@@ -241,7 +242,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         measurement_error: bool = False,
         verbose: bool = True,
         cov_jitter: float = JITTER_DEFAULT,
-        missing_fill_value: float | None = None,
+        missing_fill_value: float = MISSING_FILL,
     ):
         """
         Create a Bayesian Dynamic Factor Model.
@@ -294,7 +295,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
 
         missing_fill_value: float, optional
             Sentinel used to mask missing observations. Set this only if your data legitimately contains the
-            default sentinel. Post-estimation graphs are built with this same value. Default None, which the filter resolves to -9999.0.
+            default sentinel. Post-estimation graphs are built with this same value. Default -9999.0.
         """
 
         validate_names(endog_names, var_name="endog_names", optional=False)

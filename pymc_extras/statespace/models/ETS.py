@@ -20,6 +20,7 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     ETS_SEASONAL_DIM,
     JITTER_DEFAULT,
+    MISSING_FILL,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
 )
@@ -213,7 +214,7 @@ class BayesianETS(PyMCStateSpace):
 
     missing_fill_value: float, optional
         Sentinel used to mask missing observations. Set this only if your data legitimately contains the
-        default sentinel. Post-estimation graphs are built with this same value. Default None, which the filter resolves to -9999.0.
+        default sentinel. Post-estimation graphs are built with this same value. Default -9999.0.
 
 
     References
@@ -238,7 +239,7 @@ class BayesianETS(PyMCStateSpace):
         verbose: bool = True,
         mode: str | Mode | None = None,
         cov_jitter: float = JITTER_DEFAULT,
-        missing_fill_value: float | None = None,
+        missing_fill_value: float = MISSING_FILL,
     ):
         if order is not None:
             if len(order) != 3 or any(not isinstance(o, str) for o in order):

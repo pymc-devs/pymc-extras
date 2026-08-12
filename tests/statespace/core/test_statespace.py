@@ -11,7 +11,7 @@ from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
-from pymc_extras.statespace.utils.constants import MISSING_FILL
+from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL
 from tests.statespace.shared_fixtures import (
     rng,
 )
@@ -151,6 +151,14 @@ def test_missing_fill_value_reaches_post_estimation_graphs(rng):
     filtered_level = conditional["filtered_prior"].values[..., -1, 0]
 
     assert_allclose(filtered_level, MISSING_FILL, rtol=1e-4)
+
+
+def test_filter_config_defaults_to_the_documented_values():
+    """The constructor defaults are the values themselves, not a sentinel resolved further down."""
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(verbose=False)
+
+    assert ss_mod.cov_jitter == JITTER_DEFAULT
+    assert ss_mod.missing_fill_value == MISSING_FILL
 
 
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data")

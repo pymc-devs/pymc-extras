@@ -21,6 +21,7 @@ from pymc_extras.statespace.utils.constants import (
     EXOG_STATE_DIM,
     JITTER_DEFAULT,
     MA_PARAM_DIM,
+    MISSING_FILL,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
     SHOCK_AUX_DIM,
@@ -111,7 +112,7 @@ class BayesianVARMAX(PyMCStateSpace):
         verbose: bool = True,
         mode: str | Mode | None = None,
         cov_jitter: float = JITTER_DEFAULT,
-        missing_fill_value: float | None = None,
+        missing_fill_value: float = MISSING_FILL,
     ):
         """
         Create a Bayesian VARMAX model.
@@ -165,7 +166,7 @@ class BayesianVARMAX(PyMCStateSpace):
 
         missing_fill_value: float, optional
             Sentinel used to mask missing observations. Set this only if your data legitimately contains the
-            default sentinel. Post-estimation graphs are built with this same value. Default None, which the filter resolves to -9999.0.
+            default sentinel. Post-estimation graphs are built with this same value. Default -9999.0.
         """
 
         validate_names(endog_names, var_name="endog_names", optional=False)

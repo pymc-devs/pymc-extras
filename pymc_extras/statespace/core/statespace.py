@@ -50,6 +50,7 @@ from pymc_extras.statespace.filters.distributions import (
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     JITTER_DEFAULT,
+    MISSING_FILL,
     OBS_STATE_DIM,
 )
 from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
@@ -125,7 +126,7 @@ class PyMCStateSpace:
     missing_fill_value: float, optional
         Sentinel used to mask missing observations, so PyMC's imputation machinery is not triggered. Set this only
         if your data legitimately contains the default sentinel. Post-estimation graphs are built with this same
-        value. Default None, which the filter resolves to -9999.0.
+        value. Default -9999.0.
 
     Notes
     -----
@@ -251,7 +252,7 @@ class PyMCStateSpace:
         measurement_error: bool = False,
         mode: str | None = None,
         cov_jitter: float = JITTER_DEFAULT,
-        missing_fill_value: float | None = None,
+        missing_fill_value: float = MISSING_FILL,
     ):
         self._fit_coords: dict[str, Sequence[str]] | None = None
         self._fit_dims: dict[str, Sequence[str]] | None = None
