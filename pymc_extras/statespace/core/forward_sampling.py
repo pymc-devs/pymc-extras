@@ -19,6 +19,7 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     FILTER_OUTPUT_DIMS,
     FILTER_OUTPUT_TYPES,
+    LONG_MATRIX_NAMES,
     MATRIX_DIMS,
     MATRIX_NAMES,
     OBS_STATE_DIM,
@@ -403,7 +404,7 @@ def sample_unconditional_posterior(
 def sample_statespace_matrices(
     ss_mod: "PyMCStateSpace",
     idata,
-    matrix_names: str | list[str] | None,
+    matrix_names: str | list[str] | None = None,
     group: str = "posterior",
     **kwargs,
 ):
@@ -413,7 +414,8 @@ def sample_statespace_matrices(
     compile_kwargs.setdefault("mode", ss_mod.mode)
 
     if matrix_names is None:
-        matrix_names = MATRIX_NAMES
+        # Not the short names: x0 and P0 collide with parameters most models declare.
+        matrix_names = LONG_MATRIX_NAMES
     elif isinstance(matrix_names, str):
         matrix_names = [matrix_names]
 

@@ -1282,7 +1282,11 @@ class PyMCStateSpace:
         )
 
     def sample_statespace_matrices(
-        self, idata, matrix_names: str | list[str] | None, group: str = "posterior", **kwargs
+        self,
+        idata,
+        matrix_names: str | list[str] | None = None,
+        group: str = "posterior",
+        **kwargs,
     ):
         """
         Draw samples of requested statespace matrices from provided idata

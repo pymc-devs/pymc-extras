@@ -224,3 +224,22 @@ def test_sample_statespace_matrices_keeps_its_dims(exog_ss_mod, idata_exog):
 
         assert sampled[long_name].dims == expected, f"{long_name} lost its dims"
         assert np.all(np.isfinite(sampled[long_name].values)), f"{long_name} is not finite"
+
+
+@pytest.mark.filterwarnings("ignore:Provided data contains missing values")
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.parametrize(
+    "mod_name, idata_name",
+    [("ss_mod", "idata"), ("exog_ss_mod", "idata_exog")],
+    ids=["no_exog", "with_exog"],
+)
+def test_sample_statespace_matrices_defaults_to_every_matrix(mod_name, idata_name, request):
+    """The default names must not collide with the x0 and P0 parameters models declare."""
+    ss_mod = request.getfixturevalue(mod_name)
+    idata = request.getfixturevalue(idata_name)
+
+    sampled = ss_mod.sample_statespace_matrices(
+        idata, matrix_names=None, group="prior"
+    ).posterior_predictive
+
+    assert set(sampled.data_vars) == set(LONG_MATRIX_NAMES)
