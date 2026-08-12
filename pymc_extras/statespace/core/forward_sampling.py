@@ -463,11 +463,11 @@ def sample_filter_outputs(
     if filter_output_names is None:
         filter_output_names = list(FILTER_OUTPUT_DIMS.keys())
     else:
-        unknown_filter_output_names = np.setdiff1d(
-            filter_output_names, list(FILTER_OUTPUT_DIMS.keys())
-        )
-        if unknown_filter_output_names.size > 0:
-            raise ValueError(f"{unknown_filter_output_names} not a valid filter output name!")
+        unknown_filter_output_names = set(filter_output_names).difference(FILTER_OUTPUT_DIMS)
+        if unknown_filter_output_names:
+            raise ValueError(
+                f"{sorted(unknown_filter_output_names)} not a valid filter output name!"
+            )
         filter_output_names = [x for x in FILTER_OUTPUT_DIMS.keys() if x in filter_output_names]
 
     compile_kwargs = kwargs.pop("compile_kwargs", {})

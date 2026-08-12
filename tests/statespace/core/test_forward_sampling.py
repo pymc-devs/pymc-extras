@@ -119,7 +119,7 @@ def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
 
     assert missing_outputs.size == 0
 
-    msg = "['filter_covariances' 'filter_states'] not a valid filter output name!"
+    msg = "['filter_covariances', 'filter_states'] not a valid filter output name!"
     incorrect_outputs = ["filter_states", "filter_covariances"]
     with pytest.raises(ValueError, match=re.escape(msg)):
         exog_ss_mod.sample_filter_outputs(idata_exog, filter_output_names=incorrect_outputs)
