@@ -7,8 +7,11 @@ import pytest
 from numpy.testing import assert_allclose
 from pymc.exceptions import ImputationWarning
 
+from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
+from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
+from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL
 from tests.statespace.shared_fixtures import (
     rng,
 )
@@ -122,3 +125,87 @@ def test_param_dims_coords(ss_mod_multi_component):
             assert i == len(ss_mod_multi_component.coords[s]), (
                 f"Mismatch between shape {i} and dimension {s}"
             )
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_missing_fill_value_reaches_post_estimation_graphs(rng):
+    """Post-estimation graphs must mask missing values with the sentinel the fit used.
+
+    Every observation here is the library's default sentinel but is declared real, via a custom
+    ``missing_fill_value``. A post-estimation graph that fell back to the default would treat the whole
+    series as missing and return the prior rather than states tracking the data.
+    """
+    data = np.full((20, 1), MISSING_FILL, dtype=floatX)
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(
+        verbose=False, missing_fill_value=-1234.0
+    )
+
+    with pm.Model(coords=ss_mod.coords):
+        pm.Normal("initial_trend", mu=0.0, sigma=1.0, shape=(1,))
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX))
+        pm.Exponential("sigma_trend", 1, shape=(1,))
+        ss_mod.build_statespace_graph(data=data)
+        idata = pm.sample_prior_predictive(draws=5, random_seed=rng)
+
+    conditional = ss_mod.sample_conditional_prior(idata, random_seed=rng)
+    filtered_level = conditional["filtered_prior"].values[..., -1, 0]
+
+    assert_allclose(filtered_level, MISSING_FILL, rtol=1e-4)
+
+
+def test_filter_config_defaults_to_the_documented_values():
+    """The constructor defaults are the values themselves, not a sentinel resolved further down."""
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(verbose=False)
+
+    assert ss_mod.cov_jitter == JITTER_DEFAULT
+    assert ss_mod.missing_fill_value == MISSING_FILL
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_filter_config_is_overridable_at_build():
+    """A build-time argument overrides the model's filter settings; others are left alone."""
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(
+        verbose=False, cov_jitter=1e-4, missing_fill_value=-1234.0
+    )
+
+    with pm.Model(coords=ss_mod.coords):
+        pm.Normal("initial_trend", shape=(1,))
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX))
+        pm.Exponential("sigma_trend", 1, shape=(1,))
+        ss_mod.build_statespace_graph(data=np.zeros((20, 1), dtype=floatX), cov_jitter=1e-2)
+
+    assert ss_mod.cov_jitter == 1e-2
+    assert ss_mod.missing_fill_value == -1234.0
+
+
+@pytest.mark.parametrize(
+    "make_model",
+    [
+        pytest.param(
+            lambda **kw: BayesianSARIMAX(order=(1, 0, 1), stationary_initialization=True, **kw),
+            id="SARIMAX",
+        ),
+        pytest.param(
+            lambda **kw: BayesianVARMAX(order=(1, 0), endog_names=["a", "b"], **kw), id="VARMAX"
+        ),
+        pytest.param(
+            lambda **kw: BayesianETS(order=("A", "N", "N"), endog_names=["a"], **kw), id="ETS"
+        ),
+        pytest.param(
+            lambda **kw: BayesianDynamicFactor(
+                k_factors=1, factor_order=1, endog_names=["a", "b"], **kw
+            ),
+            id="DFM",
+        ),
+        pytest.param(
+            lambda **kw: st.LevelTrend(name="trend", order=1, innovations_order=1).build(**kw),
+            id="structural",
+        ),
+    ],
+)
+def test_shipped_models_accept_filter_config(make_model):
+    """Every shipped model exposes the filter settings its post-estimation graphs will use."""
+    ss_mod = make_model(verbose=False, cov_jitter=1e-3, missing_fill_value=-777.0)
+
+    assert ss_mod.cov_jitter == 1e-3
+    assert ss_mod.missing_fill_value == -777.0

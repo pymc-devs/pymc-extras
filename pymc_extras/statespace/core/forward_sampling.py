@@ -505,6 +505,8 @@ def sample_filter_outputs(
             R,
             H,
             Q,
+            missing_fill_value=ss_mod.missing_fill_value,
+            cov_jitter=ss_mod.cov_jitter,
             time_varying_names=ss_mod.ssm.time_varying_names,
         )
 
@@ -514,6 +516,7 @@ def sample_filter_outputs(
             Q,
             filter_outputs[0],
             filter_outputs[3],
+            cov_jitter=ss_mod.cov_jitter,
             time_varying_names=ss_mod.ssm.time_varying_names,
         )
 

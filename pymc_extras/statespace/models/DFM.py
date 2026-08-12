@@ -19,6 +19,8 @@ from pymc_extras.statespace.utils.constants import (
     ERROR_AR_PARAM_DIM,
     EXOG_STATE_DIM,
     FACTOR_DIM,
+    JITTER_DEFAULT,
+    MISSING_FILL,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
     TIME_DIM,
@@ -239,6 +241,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
         error_cov_type: str = "diagonal",
         measurement_error: bool = False,
         verbose: bool = True,
+        cov_jitter: float = JITTER_DEFAULT,
+        missing_fill_value: float = MISSING_FILL,
     ):
         """
         Create a Bayesian Dynamic Factor Model.
@@ -283,6 +287,15 @@ class BayesianDynamicFactor(PyMCStateSpace):
         verbose: bool, default True
             If true, a message will be logged to the terminal explaining the variable names, dimensions, and supports.
 
+
+        cov_jitter: float, optional
+            Jitter added to the diagonal of every covariance matrix at each filtering step, for numerical
+            stability. Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
+            ``pytensor.config.floatX`` is float32.
+
+        missing_fill_value: float, optional
+            Sentinel used to mask missing observations. Set this only if your data legitimately contains the
+            default sentinel. Post-estimation graphs are built with this same value. Default -9999.0.
         """
 
         validate_names(endog_names, var_name="endog_names", optional=False)
@@ -335,6 +348,8 @@ class BayesianDynamicFactor(PyMCStateSpace):
             k_posdef=k_posdef,
             verbose=verbose,
             measurement_error=measurement_error,
+            cov_jitter=cov_jitter,
+            missing_fill_value=missing_fill_value,
         )
 
     def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:

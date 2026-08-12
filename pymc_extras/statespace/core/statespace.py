@@ -50,6 +50,7 @@ from pymc_extras.statespace.filters.distributions import (
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     JITTER_DEFAULT,
+    MISSING_FILL,
     OBS_STATE_DIM,
 )
 from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
@@ -116,6 +117,16 @@ class PyMCStateSpace:
 
         Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
         to all sampling methods.
+
+    cov_jitter: float, optional
+        Value added to the diagonal of every covariance matrix at each filtering step, for numerical stability.
+        Post-estimation graphs -- ``forecast``, the conditional samplers, ``sample_filter_outputs`` -- are built
+        with this same value. Default 1e-8, or 1e-6 if ``pytensor.config.floatX`` is float32.
+
+    missing_fill_value: float, optional
+        Sentinel used to mask missing observations, so PyMC's imputation machinery is not triggered. Set this only
+        if your data legitimately contains the default sentinel. Post-estimation graphs are built with this same
+        value. Default -9999.0.
 
     Notes
     -----
@@ -240,6 +251,8 @@ class PyMCStateSpace:
         verbose: bool = True,
         measurement_error: bool = False,
         mode: str | None = None,
+        cov_jitter: float = JITTER_DEFAULT,
+        missing_fill_value: float = MISSING_FILL,
     ):
         self._fit_coords: dict[str, Sequence[str]] | None = None
         self._fit_dims: dict[str, Sequence[str]] | None = None
@@ -256,6 +269,8 @@ class PyMCStateSpace:
         self.k_posdef = k_posdef
         self.measurement_error = measurement_error
         self.mode = mode
+        self.cov_jitter = cov_jitter
+        self.missing_fill_value = missing_fill_value
 
         self._populate_properties()
 
@@ -926,7 +941,7 @@ class PyMCStateSpace:
         data: np.ndarray | pd.DataFrame | pt.TensorVariable,
         register_data: bool = True,
         missing_fill_value: float | None = None,
-        cov_jitter: float | None = JITTER_DEFAULT,
+        cov_jitter: float | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         save_kalman_filter_outputs_in_idata: bool = False,
         mode: str | None = None,
@@ -950,7 +965,7 @@ class PyMCStateSpace:
             The Pytensor mode used for the computation graph construction. If None, the default mode will be used.
             Other options include "JAX" and "NUMBA".
 
-        missing_fill_value: float, optional, default=-9999
+        missing_fill_value: float, optional
             A value to mask in missing values. NaN values in the data need to be filled with an arbitrary value to
             avoid triggering PyMC's automatic imputation machinery (missing values are instead filled by treating them
             as hidden states during Kalman filtering).
@@ -959,7 +974,10 @@ class PyMCStateSpace:
             you will need to change the missing_fill_value to something else, to avoid incorrectly mark in
             data as missing.
 
-        cov_jitter: float, default 1e-8 or 1e-6 if pytensor.config.floatX is float32
+            Overrides the value given to the model constructor, which is also what post-estimation graphs use.
+            Default None, meaning the constructor's value is kept.
+
+        cov_jitter: float, optional
             The Kalman filter is known to be numerically unstable, especially at half precision. This value is added to
             the diagonal of every covariance matrix -- predicted, filtered, and smoothed -- at every step, to ensure
             all matrices are strictly positive semi-definite.
@@ -971,6 +989,9 @@ class PyMCStateSpace:
                   error.
 
                 - The Univariate Filter is more robust than other filters, and can tolerate a lower jitter value
+
+            Overrides the value given to the model constructor, which is also what post-estimation graphs use.
+            Default None, meaning the constructor's value is kept.
 
         mvn_method: str, default "svd"
             Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
@@ -1001,6 +1022,12 @@ class PyMCStateSpace:
             )
             self.mode = mode
 
+        # Recorded on the model so post-estimation graphs are filtered the same way the fit was.
+        if cov_jitter is not None:
+            self.cov_jitter = cov_jitter
+        if missing_fill_value is not None:
+            self.missing_fill_value = missing_fill_value
+
         pm_mod = modelcontext(None)
 
         self._insert_random_variables()
@@ -1015,7 +1042,7 @@ class PyMCStateSpace:
             n_obs=self.ssm.k_endog,
             obs_coords=obs_coords,
             register_data=register_data,
-            missing_fill_value=missing_fill_value,
+            missing_fill_value=self.missing_fill_value,
         )
 
         # Order is important here: only call _insert_data_shape_into_n_timesteps after data has been registered.
@@ -1024,8 +1051,8 @@ class PyMCStateSpace:
         filter_outputs = self.kalman_filter.build_graph(
             pt.as_tensor_variable(data),
             *self.unpack_statespace(),
-            missing_fill_value=missing_fill_value,
-            cov_jitter=cov_jitter,
+            missing_fill_value=self.missing_fill_value,
+            cov_jitter=self.cov_jitter,
             time_varying_names=self.ssm.time_varying_names,
         )
 
@@ -1104,7 +1131,7 @@ class PyMCStateSpace:
                 Q,
                 filtered_states,
                 filtered_covariances,
-                cov_jitter=cov_jitter,
+                cov_jitter=self.cov_jitter,
                 time_varying_names=self.ssm.time_varying_names,
             )
             smooth_states.name = "smooth_states"

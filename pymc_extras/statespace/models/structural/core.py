@@ -38,7 +38,9 @@ from pymc_extras.statespace.models.utilities import (
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
+    JITTER_DEFAULT,
     LONG_MATRIX_NAMES,
+    MISSING_FILL,
 )
 
 _log = logging.getLogger(__name__)
@@ -132,6 +134,8 @@ class StructuralTimeSeries(PyMCStateSpace):
         verbose: bool = True,
         filter_type: str = "standard",
         mode: str | Mode | None = None,
+        cov_jitter: float = JITTER_DEFAULT,
+        missing_fill_value: float = MISSING_FILL,
     ):
         """
         Initialize a StructuralTimeSeries model.
@@ -168,6 +172,12 @@ class StructuralTimeSeries(PyMCStateSpace):
             Type of Kalman filter to use.
         mode : str | Mode | None, default None
             PyTensor compilation mode.
+        cov_jitter : float, optional
+            Jitter added to covariance diagonals at each filtering step. Post-estimation graphs use the same
+            value. Default 1e-8, or 1e-6 if ``pytensor.config.floatX`` is float32.
+        missing_fill_value : float, optional
+            Sentinel used to mask missing observations. Post-estimation graphs use the same value.
+            Default -9999.0.
         """
         self._name = name or "StructuralTimeSeries"
         self.measurement_error = measurement_error
@@ -186,6 +196,8 @@ class StructuralTimeSeries(PyMCStateSpace):
             verbose=verbose,
             measurement_error=measurement_error,
             mode=mode,
+            cov_jitter=cov_jitter,
+            missing_fill_value=missing_fill_value,
         )
 
         self._tensor_variable_info = tensor_variable_info
@@ -966,7 +978,13 @@ class Component:
         return new_comp
 
     def build(
-        self, name=None, filter_type="standard", verbose=True, mode: str | Mode | None = None
+        self,
+        name=None,
+        filter_type="standard",
+        verbose=True,
+        mode: str | Mode | None = None,
+        cov_jitter: float = JITTER_DEFAULT,
+        missing_fill_value: float = MISSING_FILL,
     ):
         """
         Build a StructuralTimeSeries statespace model from the current component(s)
@@ -990,6 +1008,16 @@ class Component:
             Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
             to all sampling methods.
 
+        cov_jitter: float, optional
+            Jitter added to the diagonal of every covariance matrix at each filtering step, for numerical
+            stability. Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
+            ``pytensor.config.floatX`` is float32.
+
+        missing_fill_value: float, optional
+            Sentinel used to mask missing observations. Set this only if your data legitimately contains the
+            default sentinel. Post-estimation graphs are built with this same value. Default None, which the
+            filter resolves to -9999.0.
+
         Returns
         -------
         PyMCStateSpace
@@ -1012,4 +1040,6 @@ class Component:
             filter_type=filter_type,
             verbose=verbose,
             mode=mode,
+            cov_jitter=cov_jitter,
+            missing_fill_value=missing_fill_value,
         )

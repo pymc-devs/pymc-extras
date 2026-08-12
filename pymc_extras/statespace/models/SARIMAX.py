@@ -24,7 +24,9 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     AR_PARAM_DIM,
     EXOG_STATE_DIM,
+    JITTER_DEFAULT,
     MA_PARAM_DIM,
+    MISSING_FILL,
     SARIMAX_STATE_STRUCTURES,
     SEASONAL_AR_PARAM_DIM,
     SEASONAL_MA_PARAM_DIM,
@@ -143,6 +145,8 @@ class BayesianSARIMAX(PyMCStateSpace):
         measurement_error: bool = False,
         verbose=True,
         mode: str | Mode | None = None,
+        cov_jitter: float = JITTER_DEFAULT,
+        missing_fill_value: float = MISSING_FILL,
     ):
         """
         Initialize a BayesianSARIMAX model.
@@ -206,6 +210,15 @@ class BayesianSARIMAX(PyMCStateSpace):
 
             Regardless of whether a mode is specified, it can always be overwritten via the ``compile_kwargs`` argument
             to all sampling methods.
+
+        cov_jitter : float, optional
+            Jitter added to the diagonal of every covariance matrix at each filtering step, for numerical
+            stability. Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
+            ``pytensor.config.floatX`` is float32.
+
+        missing_fill_value : float, optional
+            Sentinel used to mask missing observations. Set this only if your data legitimately contains the
+            default sentinel. Post-estimation graphs are built with this same value. Default -9999.0.
         """
         # Model order
         self.p, self.d, self.q = order
@@ -269,6 +282,8 @@ class BayesianSARIMAX(PyMCStateSpace):
             verbose=verbose,
             measurement_error=measurement_error,
             mode=mode,
+            cov_jitter=cov_jitter,
+            missing_fill_value=missing_fill_value,
         )
         self._needs_exog_data = self.k_exog > 0
 
