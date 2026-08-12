@@ -318,8 +318,7 @@ def test_SARIMAX_update_matches_statsmodels(p, d, q, P, D, Q, S, data, rng):
 
         pm.Deterministic("sigma_state", pt.as_tensor_variable(np.sqrt(param_d["sigma2"])))
 
-        mod._insert_random_variables()
-        matrices = pm.draw(mod.subbed_ssm)
+        matrices = pm.draw(mod._insert_random_variables())
         matrix_dict = dict(zip(SHORT_NAME_TO_LONG.values(), matrices))
 
     for matrix in ["transition", "selection", "state_cov", "obs_cov", "design"]:

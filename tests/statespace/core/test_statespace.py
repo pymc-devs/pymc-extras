@@ -8,6 +8,7 @@ import pytest
 
 from numpy.testing import assert_allclose
 from pymc.exceptions import ImputationWarning
+from pytensor.graph.traversal import explicit_graph_inputs
 
 from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
@@ -32,18 +33,6 @@ def test_invalid_filter_name_raises():
         mod = make_statespace_mod(k_endog=1, k_states=5, k_posdef=1, filter_type="invalid_filter")
 
 
-def test_unpack_before_insert_raises(rng):
-    p, m, r, n = 2, 5, 1, 10
-    data, *inputs = make_test_inputs(p, m, r, n, rng, missing_data=0)
-    mod = make_statespace_mod(
-        k_endog=p, k_states=m, k_posdef=r, filter_type="standard", verbose=False
-    )
-
-    msg = "Cannot unpack the complete statespace system until PyMC model variables have been inserted."
-    with pytest.raises(ValueError, match=msg):
-        outputs = mod.unpack_statespace()
-
-
 def test_unpack_matrices(rng):
     p, m, r, n = 2, 5, 1, 10
     data, *inputs = make_test_inputs(p, m, r, n, rng, missing_data=0)
@@ -51,11 +40,8 @@ def test_unpack_matrices(rng):
         k_endog=p, k_states=m, k_posdef=r, filter_type="standard", verbose=False
     )
 
-    # mod is a dummy statespace, so there are no placeholders to worry about. Monkey patch subbed_ssm with the defaults
-    mod.subbed_ssm = mod._unpack_statespace_with_placeholders()
-
     outputs = mod.unpack_statespace()
-    for x, y in zip(inputs, outputs):
+    for x, y in zip(inputs, outputs, strict=True):
         assert_allclose(np.zeros_like(x), fast_eval(y))
 
 
@@ -272,3 +258,12 @@ def test_build_graph_does_not_mutate_the_filters(ss_mod):
 
     assert kalman_filter.__dict__ == filter_state
     assert kalman_smoother.__dict__ == smoother_state
+
+
+def test_post_estimation_leaves_template_matrices_alone(ss_mod, pymc_mod, idata, rng):
+    before = ss_mod.unpack_statespace()
+    ss_mod.forecast(idata, start=-1, periods=10, random_seed=rng)
+    after = ss_mod.unpack_statespace()
+
+    assert all(x is y for x, y in zip(before, after, strict=True))
+    assert not set(pymc_mod.basic_RVs).intersection(explicit_graph_inputs(after))

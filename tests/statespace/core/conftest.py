@@ -68,7 +68,7 @@ def pymc_mod(ss_mod):
 
         ss_mod.build_statespace_graph(data=nile)
         names = ["x0", "P0", "c", "d", "T", "Z", "R", "H", "Q"]
-        for name, matrix in zip(names, ss_mod.unpack_statespace()):
+        for name, matrix in zip(names, ss_mod._insert_random_variables()):
             pm.Deterministic(name, matrix)
 
     return pymc_mod

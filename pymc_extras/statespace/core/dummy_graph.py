@@ -70,7 +70,8 @@ def kalman_filter_outputs_from_dummy_graph(
     Returns
     -------
     matrices : list of tensors
-        Statespace matrices with dummy parameters.
+        Statespace matrices with dummy parameters substituted in, still carrying the ``n_timesteps``
+        placeholder. Pin it with :meth:`PyMCStateSpace._insert_constant_timestep` for the span you need.
     grouped_outputs : list of tuple of tensors
         A list of tuples, each containing the mean and covariance of the filtered, predicted, and smoothed
         states.
@@ -80,27 +81,25 @@ def kalman_filter_outputs_from_dummy_graph(
 
     pm_mod = modelcontext(None)
     build_dummy_graph(ss_mod)
-    ss_mod._insert_random_variables()
+    matrices = ss_mod._insert_random_variables()
 
     for name in ss_mod.data_names:
         if name not in pm_mod:
             pm.Data(**ss_mod._fit_exog_data[name])
 
-    ss_mod._insert_data_variables()
+    matrices = ss_mod._insert_data_variables(matrices)
 
     for name in ss_mod.data_names:
         if name in scenario.keys():
             pm.set_data({name: scenario[name]})
 
-    matrices = ss_mod.unpack_statespace()
-
     if data is None:
         data = ss_mod._fit_data
 
-    # Replace n_timesteps with data length for time-varying matrices
+    # Pinned to the data length only for the filter below; the returned matrices keep the
+    # n_timesteps placeholder so a caller can build over a different span.
     data_len = data.shape[0] if hasattr(data, "shape") else len(data)
-    matrices = ss_mod._insert_constant_timestep(matrices, data_len)
-    x0, P0, c, d, T, Z, R, H, Q = matrices
+    x0, P0, c, d, T, Z, R, H, Q = ss_mod._insert_constant_timestep(matrices, data_len)
 
     obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
 
@@ -134,4 +133,4 @@ def kalman_filter_outputs_from_dummy_graph(
         (smoothed_states, smoothed_covariances),
     ]
 
-    return [x0, P0, c, d, T, Z, R, H, Q], grouped_outputs
+    return matrices, grouped_outputs

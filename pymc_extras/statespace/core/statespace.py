@@ -281,9 +281,6 @@ class PyMCStateSpace:
         # All models contain a state space representation and a Kalman filter
         self.ssm = PytensorRepresentation(k_endog, k_states, k_posdef)
 
-        # This will be populated with PyMC random matrices after calling _insert_random_variables
-        self.subbed_ssm: list[pt.TensorVariable] | None = None
-
         if filter_type.lower() not in FILTER_FACTORY.keys():
             raise NotImplementedError(
                 "The following are valid filter types: " + ", ".join(list(FILTER_FACTORY.keys()))
@@ -480,17 +477,12 @@ class PyMCStateSpace:
 
     def unpack_statespace(self) -> list[pt.TensorVariable]:
         """
-        Helper function to quickly obtain all statespace matrices in the standard order.
+        Return this model's statespace matrices in the standard order.
+
+        These are the template's own symbolic matrices, carrying a placeholder variable for every
+        model parameter. They are not bound to any PyMC model.
         """
-
-        if self.subbed_ssm is None:
-            raise ValueError(
-                "Cannot unpack the complete statespace system until PyMC model variables have been "
-                "inserted. To build the random statespace matrices, call build_statespace_graph() inside"
-                "a PyMC model context. "
-            )
-
-        return self.subbed_ssm
+        return list(self._unpack_statespace_with_placeholders())
 
     @property
     def n_timesteps(self) -> Variable:
@@ -773,7 +765,7 @@ class PyMCStateSpace:
                 "dims": pymc_mod.named_vars_to_dims.get(data_name, None),
             }
 
-    def _insert_random_variables(self):
+    def _insert_random_variables(self) -> list[pt.TensorVariable]:
         """
         Replace pytensor symbolic variables with PyMC random variables.
 
@@ -788,8 +780,7 @@ class PyMCStateSpace:
                  ma_parama = pm.Normal('ma_params', size=ss_mod.q)
                  sigma_state = pm.Normal('sigma_state')
 
-                 ss_mod._insert_random_variables()
-                 matrics = ss_mod.unpack_statespace()
+                 matrices = ss_mod._insert_random_variables()
 
             pm.draw(matrices['transition'], random_seed=RANDOM_SEED)
             >>> array([[-0.90590386,  1.        ,  0.        ],
@@ -830,9 +821,9 @@ class PyMCStateSpace:
         matrices = list(self._unpack_statespace_with_placeholders())
 
         replacement_dict = {var: pymc_model[name] for name, var in self._name_to_variable.items()}
-        self.subbed_ssm = graph_replace(matrices, replace=replacement_dict, strict=True)
+        return graph_replace(matrices, replace=replacement_dict, strict=True)
 
-    def _insert_data_variables(self):
+    def _insert_data_variables(self, matrices: list[pt.TensorVariable]) -> list[pt.TensorVariable]:
         """
         Replace symbolic pytensor variables with PyMC data containers.
 
@@ -840,7 +831,7 @@ class PyMCStateSpace:
         """
         data_names = self.data_names
         if not data_names:
-            return
+            return matrices
 
         pymc_model = modelcontext(None)
         found_data = []
@@ -858,9 +849,11 @@ class PyMCStateSpace:
             )
 
         replacement_dict = {data: pymc_model[name] for name, data in self._name_to_data.items()}
-        self.subbed_ssm = graph_replace(self.subbed_ssm, replace=replacement_dict, strict=True)
+        return graph_replace(matrices, replace=replacement_dict, strict=True)
 
-    def _insert_data_shape_into_n_timesteps(self, data):
+    def _insert_data_shape_into_n_timesteps(
+        self, matrices: list[pt.TensorVariable], data: pt.TensorVariable
+    ) -> list[pt.TensorVariable]:
         """
         Replace any occurrence of the n_timesteps symbolic variable with the length of the data.
 
@@ -872,25 +865,22 @@ class PyMCStateSpace:
         # Otherwise, we don't get symbolic linkage between time-varying matrix shapes and the data when the user calls
         # pm.set_data
         assert isinstance(data, pt.TensorVariable)
-        matrices = (
-            self.subbed_ssm
-            if self.subbed_ssm is not None
-            else self._unpack_statespace_with_placeholders()
-        )
-
         n_timestep_variables = tuple(
             variable
             for variable in explicit_graph_inputs(matrices)
             if variable.name == "n_timesteps"
         )
+        if not n_timestep_variables:
+            return matrices
 
-        if n_timestep_variables:
-            self._shared_timestep = data.shape[0].astype("int32")
-            replacement_dict = {var: self._shared_timestep for var in n_timestep_variables}
+        self._shared_timestep = data.shape[0].astype("int32")
+        replacement_dict = {var: self._shared_timestep for var in n_timestep_variables}
 
-            self.subbed_ssm = graph_replace(self.subbed_ssm, replace=replacement_dict, strict=False)
+        return graph_replace(matrices, replace=replacement_dict, strict=False)
 
-    def _insert_constant_timestep(self, matrices, step: int | pt.TensorVariable):
+    def _insert_constant_timestep(
+        self, matrices: list[pt.TensorVariable], step: int | pt.TensorVariable
+    ) -> list[pt.TensorVariable]:
         """
         Replace any occurrence of the n_timesteps symbolic variable with a constant integer.
 
@@ -973,9 +963,9 @@ class PyMCStateSpace:
 
         pm_mod = modelcontext(None)
 
-        self._insert_random_variables()
+        matrices = self._insert_random_variables()
         self._save_exogenous_data_info()
-        self._insert_data_variables()
+        matrices = self._insert_data_variables(matrices)
 
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
         self._fit_data = data
@@ -988,12 +978,10 @@ class PyMCStateSpace:
         )
 
         # Order is important here: only call _insert_data_shape_into_n_timesteps after data has been registered.
-        self._insert_data_shape_into_n_timesteps(data)
+        matrices = self._insert_data_shape_into_n_timesteps(matrices, data)
 
         kalman_filter, _ = self.make_filters()
-        filter_outputs = kalman_filter.build_graph(
-            pt.as_tensor_variable(data), *self.unpack_statespace()
-        )
+        filter_outputs = kalman_filter.build_graph(pt.as_tensor_variable(data), *matrices)
 
         logp = filter_outputs.pop(-1)
         *_, observed_states = filter_outputs[:3]
