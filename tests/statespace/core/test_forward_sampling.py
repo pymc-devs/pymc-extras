@@ -8,7 +8,13 @@ import pytest
 from numpy.testing import assert_allclose
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
-from pymc_extras.statespace.utils.constants import MATRIX_NAMES
+from pymc_extras.statespace.utils.constants import (
+    LONG_MATRIX_NAMES,
+    MATRIX_DIMS,
+    MATRIX_NAMES,
+    SHORT_NAME_TO_LONG,
+    TIME_DIM,
+)
 
 
 @pytest.mark.parametrize("group", ["posterior", "prior"])
@@ -195,3 +201,26 @@ class TestTimeVaryingTransition:
         assert "irf" in result
         assert result["irf"].shape[2] == 20
         assert not np.any(np.isnan(result["irf"].values))
+
+
+@pytest.mark.filterwarnings("ignore:Provided data contains missing values")
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+def test_sample_statespace_matrices_keeps_its_dims(exog_ss_mod, idata_exog):
+    """Every sampled matrix carries the dims MATRIX_DIMS declares for it.
+
+    The dims are looked up against the fit coords and silently become ``None`` for any coord that is
+    missing, so a coord regression would degrade the output rather than fail.
+    """
+    matrix_idata = exog_ss_mod.sample_statespace_matrices(
+        idata_exog, matrix_names=LONG_MATRIX_NAMES, group="prior"
+    )
+    sampled = matrix_idata.posterior_predictive
+
+    for short_name in MATRIX_NAMES:
+        long_name = SHORT_NAME_TO_LONG[short_name]
+        expected = ("chain", "draw", *MATRIX_DIMS[short_name])
+        if long_name in exog_ss_mod.ssm.time_varying_names:
+            expected = ("chain", "draw", TIME_DIM, *MATRIX_DIMS[short_name])
+
+        assert sampled[long_name].dims == expected, f"{long_name} lost its dims"
+        assert np.all(np.isfinite(sampled[long_name].values)), f"{long_name} is not finite"
