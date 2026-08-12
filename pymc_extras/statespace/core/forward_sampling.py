@@ -413,11 +413,16 @@ def sample_statespace_matrices(
     compile_kwargs = kwargs.pop("compile_kwargs", {})
     compile_kwargs.setdefault("mode", ss_mod.mode)
 
+    if isinstance(matrix_names, str):
+        matrix_names = [matrix_names]
+
     if matrix_names is None:
         # Not the short names: x0 and P0 collide with parameters most models declare.
         matrix_names = LONG_MATRIX_NAMES
-    elif isinstance(matrix_names, str):
-        matrix_names = [matrix_names]
+    else:
+        unknown_matrix_names = set(matrix_names).difference(MATRIX_NAMES, LONG_MATRIX_NAMES)
+        if unknown_matrix_names:
+            raise ValueError(f"{sorted(unknown_matrix_names)} not a valid statespace matrix name!")
 
     with pm.Model(coords=ss_mod._fit_coords) as forward_model:
         dummy_graph.build_dummy_graph(ss_mod)

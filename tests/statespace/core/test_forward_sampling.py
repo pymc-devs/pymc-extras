@@ -243,3 +243,15 @@ def test_sample_statespace_matrices_defaults_to_every_matrix(mod_name, idata_nam
     ).posterior_predictive
 
     assert set(sampled.data_vars) == set(LONG_MATRIX_NAMES)
+
+
+def test_sample_statespace_matrices_rejects_unknown_names(ss_mod, idata):
+    """A mistyped name fails naming itself, rather than as a KeyError from inside pymc."""
+    with pytest.raises(ValueError, match="not a valid statespace matrix name"):
+        ss_mod.sample_statespace_matrices(idata, matrix_names="tranistion", group="prior")
+
+    # A valid name alongside an invalid one must not mask the mistake.
+    with pytest.raises(ValueError, match="not a valid statespace matrix name"):
+        ss_mod.sample_statespace_matrices(
+            idata, matrix_names=["transition", "bogus"], group="prior"
+        )
