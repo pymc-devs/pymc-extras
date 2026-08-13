@@ -2,6 +2,7 @@ from copy import deepcopy
 
 import numpy as np
 import pymc as pm
+import pymc.dims as pmd
 import pytensor
 import pytensor.tensor as pt
 import pytest
@@ -1273,7 +1274,6 @@ class TestCensored:
         "ignore:The `pymc.dims` module is experimental and may contain critical bugs"
     )
     def test_censored_xdist(self):
-        import pymc.dims as pmd
 
         coords = {
             "batch": range(2),
@@ -1309,7 +1309,6 @@ class TestCensored:
 )
 class TestXDist:
     def test_xdist_serialization(self):
-        import pymc.dims as pmd
 
         mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
         sigma = DataArray([4, 5], dims=("country",))
@@ -1349,7 +1348,6 @@ class TestXDist:
 
     @pytest.mark.parametrize("transform", (None, "exp"))
     def test_xdist_prior(self, transform):
-        import pymc.dims as pmd
 
         mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
         sigma = DataArray([4, 5], dims=("country",))
@@ -1385,7 +1383,6 @@ class TestXDist:
         assert equivalent_models(prior_m, expected_prior_m)
 
     def test_xdist_likelihood(self):
-        import pymc.dims as pmd
 
         mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
         sigma = DataArray([4, 5], dims=("country",))
@@ -1414,7 +1411,6 @@ class TestXDist:
 
     def test_xdist_likelihood_requires_observed(self):
         """observed=None is refused on the xdist path, and left alone off it."""
-        import pymc.dims as pmd
 
         coords = {"city": range(3)}
         normal = Prior("Normal", sigma=1, dims=("city",))
@@ -1481,8 +1477,6 @@ class TestXDist:
                 p_wo_dims.create_variable("v", xdist=True)
 
     def test_core_dims(self):
-        from pymc.dims import ZeroSumNormal
-
         coords = {"country": range(3), "city": range(4)}
 
         prior = Prior("ZeroSumNormal", sigma=np.pi, core_dims=("city",), dims=("country", "city"))
@@ -1490,7 +1484,7 @@ class TestXDist:
             prior.create_variable("x", xdist=True)
 
         with pm.Model(coords=coords) as ref_m:
-            ZeroSumNormal("x", sigma=np.pi, core_dims=("city",), dims=("country", "city"))
+            pmd.ZeroSumNormal("x", sigma=np.pi, core_dims=("city",), dims=("country", "city"))
 
         # This fails because SymbolicRandomVariable (which ZeroSumNormal is), doesn't have `__eq__` implemented
         # assert equivalent_models(m, ref_m)
