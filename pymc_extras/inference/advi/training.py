@@ -1,8 +1,7 @@
 import time
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 import numpy as np
 import pymc as pm
@@ -32,14 +31,8 @@ from pymc_extras.inference.advi.compile import (
     TrainingFn,
     compile_sampling_fn,
     compile_svi_step_fn,
-    compile_svi_training_fn,
 )
-from pymc_extras.inference.advi.optimizers import (
-    GradientTransformation,
-    ScalarOrSchedule,
-    apply_updates,
-    linear_onecycle_schedule,
-)
+from pymc_extras.inference.advi.schedules import ScalarOrSchedule, linear_onecycle_schedule
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 
 
@@ -108,28 +101,36 @@ def make_advi_progress_bar(theme: Theme) -> CustomProgress:
     )
 
 
-@dataclass
+@dataclass(frozen=True)
 class SVIState:
-    """Holds the current state of SVI training."""
+    """A complete snapshot of a :class:`Trainer`.
+
+    Everything needed to resume training exactly, so that
+    ``Trainer(...).load_state(state).fit(n)`` continues a run the same way a second
+    ``fit(n)`` on the original trainer would.
+    """
 
     params: dict[str, np.ndarray]
-    optimizer_state: Any
-    step: int = 0
-    loss_history: list[float] = field(default_factory=list)
-
-
-# One training step: maps (step number, state) to (loss, new state).
-StepFn = Callable[[int, SVIState], tuple[np.ndarray, SVIState]]
+    optimizer_state: dict[str, np.ndarray]
+    step: int
+    loss_history: np.ndarray
 
 
 class Trainer:
     """
     Trainer for stochastic variational inference.
 
-    Follows the design of PyTorch Lightning's ``Trainer`` (and pymc-devs/pymc#8333):
-    the model owns the math, the trainer owns the training loop, and there are no
-    user-facing callbacks — everything, including convergence-based early stopping,
-    is configured at construction, and :meth:`fit` just runs.
+    The trainer *is* the training state: the guide parameters and the Adam moments live
+    in shared variables inside the compiled step function, and :meth:`fit` always
+    continues from wherever they are. Calling ``fit(n)`` twice runs ``2 * n`` steps.
+    Use :meth:`reset` to start over and :meth:`load_state` to adopt a snapshot.
+
+    Configuration splits along the same line. Everything compiled into the step function
+    (``guide``, ``n_particles``, ``path_derivative_gradient``, ``clip_norm``) is fixed at
+    construction and exposed read-only. Everything that is per-run policy
+    (``learning_rate``, ``convergence_window``, ``relative_tolerance``) is read afresh by
+    each :meth:`fit` call and can be changed between them, or overridden for a single
+    call by passing ``learning_rate`` to :meth:`fit`.
 
     Parameters
     ----------
@@ -137,20 +138,13 @@ class Trainer:
         The guide to fit: an :class:`AutoGuideModel`, or a factory mapping the model
         to one. By default an :func:`AutoDiagonalNormal` guide is built from the
         model (mean-field ADVI).
-    optimizer : GradientTransformation, optional
-        An optax-like optimizer (actual optax optimizers are compatible). By default
-        a clipped-Adam update on ``learning_rate`` is compiled *into* the step
-        function, so no parameters or gradients round-trip through Python per step
-        (fast path); passing an explicit optimizer switches to a Python-side update
-        loop.
     learning_rate : float or callable, optional
-        Learning rate, or a schedule mapping the step number to one, for the default
-        compiled optimizer. Defaults to a :func:`linear_onecycle_schedule` peaking at
-        0.008 over the ``n`` steps of each :meth:`fit` call. Ignored when
-        ``optimizer`` is given (set the learning rate on the optimizer itself).
+        Learning rate, or a schedule mapping the step number within a :meth:`fit` call
+        to one. Defaults to a :func:`linear_onecycle_schedule` peaking at 0.008 over the
+        ``n`` steps of each call, so a follow-up ``fit`` is a warm restart: the
+        parameters and Adam moments carry over, the learning rate ramps again.
     clip_norm : float, optional
-        Clip gradients to this global norm in the default compiled optimizer, by
-        default 10. None disables clipping. Ignored when ``optimizer`` is given.
+        Clip gradients to this global norm, by default 10. None disables clipping.
     n_particles : int, optional
         Number of guide draws per step used to estimate the ELBO gradient, by
         default 1.
@@ -158,9 +152,11 @@ class Trainer:
         Whether to use the lower-variance path-derivative ("sticking the landing")
         gradient estimator, by default True.
     convergence_window : int, optional
-        Number of steps per convergence window, by default 200. Training stops early
-        when the mean loss over the last window is within ``relative_tolerance`` of
-        the mean over the window before it. Set to None to disable early stopping.
+        Number of steps per convergence window, by default 200. A :meth:`fit` call stops
+        early when the mean loss over its last window is within ``relative_tolerance`` of
+        the mean over the window before it. Only steps taken by the current call count,
+        so a later ``fit`` always gets a fresh chance to make progress. Set to None to
+        disable early stopping.
     relative_tolerance : float, optional
         Relative loss change between consecutive windows under which training stops,
         by default 1e-3.
@@ -182,7 +178,8 @@ class Trainer:
     ...     mu = pm.Normal("mu", 0, 1)
     ...     pm.Normal("y", mu, 1, observed=[0.5, 1.5])
     ...     trainer = Trainer()
-    ...     state = trainer.fit(10_000)
+    ...     trainer.fit(10_000)
+    ...     trainer.fit(5_000, learning_rate=1e-4)  # 5_000 more, at a fixed rate
     ...     idata = trainer.sample_posterior(1_000)
     """
 
@@ -190,7 +187,6 @@ class Trainer:
         self,
         *,
         guide: AutoGuideModel | Callable[[Model], AutoGuideModel] | None = None,
-        optimizer: GradientTransformation | None = None,
         learning_rate: ScalarOrSchedule | None = None,
         clip_norm: float | None = 10.0,
         n_particles: int = 1,
@@ -202,60 +198,122 @@ class Trainer:
         compile_kwargs: dict | None = None,
         random_seed=None,
     ):
-        self.guide = guide
-        self.optimizer = optimizer
+        # Per-run policy: read afresh by every fit call
         self.learning_rate = learning_rate
-        self.clip_norm = clip_norm
-        self.n_particles = n_particles
-        self.path_derivative_gradient = path_derivative_gradient
         self.convergence_window = convergence_window
         self.relative_tolerance = relative_tolerance
+
         self.model = model
         self.compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
         self.random_seed = random_seed
-        self.state: SVIState | None = None
+
+        # Compiled into the step function on the first fit, hence read-only
+        self._guide_factory = guide
+        self._clip_norm = clip_norm
+        self._n_particles = n_particles
+        self._path_derivative_gradient = path_derivative_gradient
 
         self._guide: AutoGuideModel | None = guide if isinstance(guide, AutoGuideModel) else None
-        self._param_names: list[str] | None = None
-        self._training_fn: TrainingFn | None = None
         self._step_fn: TrainingFn | None = None
-        self._step_shared_params: dict | None = None
+        self._shared_params: dict | None = None
+        self._shared_optimizer_state: dict | None = None
+        self._init_state: SVIState | None = None
         self._sampling_fn: TrainingFn | None = None
         self._sampling_draws: int | None = None
+        self._loss_history: list[float] = []
+        self._step = 0
+
+    @property
+    def guide(self) -> AutoGuideModel | None:
+        """The guide being fit, once resolved. Compiled in, so it cannot be replaced."""
+        return self._guide
+
+    @property
+    def clip_norm(self) -> float | None:
+        """Global gradient norm clip. Compiled in, so it cannot be changed after a fit."""
+        return self._clip_norm
+
+    @property
+    def n_particles(self) -> int:
+        """Guide draws per step. Compiled in, so it cannot be changed after a fit."""
+        return self._n_particles
+
+    @property
+    def path_derivative_gradient(self) -> bool:
+        """Whether the path-derivative estimator is used. Compiled in, so it is fixed."""
+        return self._path_derivative_gradient
+
+    @property
+    def step(self) -> int:
+        """Total number of optimization steps taken so far."""
+        return self._step
+
+    @property
+    def state(self) -> SVIState:
+        """Snapshot of the current training state, read out of the shared variables."""
+        if self._step_fn is None:
+            raise RuntimeError("The trainer has not been fitted yet.")
+        return SVIState(
+            params={
+                name: shared.get_value().copy() for name, shared in self._shared_params.items()
+            },
+            optimizer_state={
+                name: shared.get_value().copy()
+                for name, shared in self._shared_optimizer_state.items()
+            },
+            step=self._step,
+            loss_history=np.asarray(self._loss_history, dtype=float),
+        )
+
+    def load_state(self, state: SVIState) -> None:
+        """Adopt a snapshot, so that the next :meth:`fit` continues from it."""
+        self._compile_step_fn(modelcontext(self.model))
+        for name, shared in self._shared_params.items():
+            shared.set_value(np.asarray(state.params[name]))
+        for name, shared in self._shared_optimizer_state.items():
+            shared.set_value(np.asarray(state.optimizer_state[name]))
+        self._step = state.step
+        self._loss_history = list(state.loss_history)
+
+    def reset(self) -> None:
+        """Restore the parameters, optimizer state, and loss history to their initial values."""
+        if self._step_fn is not None:
+            self.load_state(self._init_state)
 
     def _resolve_guide(self, model: Model) -> None:
-        if self._guide is None:
-            # Sacrificial detached model context: a guide built naively with a plain
-            # Model() inside the user's model context lands here instead of writing
-            # into their model
-            with Model(model=None):
-                if callable(self.guide):
-                    self._guide = self.guide(model)
-                else:
-                    self._guide = AutoDiagonalNormal(model, random_seed=self.random_seed)
-        if self._param_names is None:
-            self._param_names = [p.name for p in self._guide.params]
-
-    def _compile_training_fn(self, model: Model) -> None:
-        """Compile the training function, reusing a previous one if available.
-
-        ``n_particles`` is baked into the compiled function as a constant, because
-        backends like JAX cannot handle inputs that determine random variable shapes.
-        """
-        if self._training_fn is not None:
+        if self._guide is not None:
             return
-        self._training_fn = compile_svi_training_fn(
+        # Sacrificial detached model context: a guide built naively with a plain
+        # Model() inside the user's model context lands here instead of writing
+        # into their model
+        with Model(model=None):
+            if callable(self._guide_factory):
+                self._guide = self._guide_factory(model)
+            else:
+                self._guide = AutoDiagonalNormal(model, random_seed=self.random_seed)
+
+    def _compile_step_fn(self, model: Model) -> None:
+        """Compile the step function once. Its shared variables hold all training state."""
+        if self._step_fn is not None:
+            return
+        self._resolve_guide(model)
+        self._step_fn, self._shared_params, self._shared_optimizer_state = compile_svi_step_fn(
             model,
             self._guide,
-            draws=self.n_particles,
-            path_derivative_gradient=self.path_derivative_gradient,
+            draws=self._n_particles,
+            path_derivative_gradient=self._path_derivative_gradient,
+            clip_norm=self._clip_norm,
             **self.compile_kwargs,
         )
+        # The shared variables still hold their initial values, so this is exactly
+        # what reset() restores
+        self._init_state = self.state
 
     def _compile_sampling_fn(self, model: Model, draws: int) -> None:
         """Compile the posterior sampling function, reusing a previous one when draws match."""
         if self._sampling_fn is not None and self._sampling_draws == draws:
             return
+        self._resolve_guide(model)
         self._sampling_fn = compile_sampling_fn(
             model=model,
             guide=self._guide,
@@ -264,168 +322,79 @@ class Trainer:
         )
         self._sampling_draws = draws
 
-    def _should_stop(self, step: int, loss_history: list[float]) -> bool:
-        """Window-based convergence check, see ``convergence_window``."""
+    def _should_stop(self, losses: list) -> bool:
+        """Window-based convergence check over the current fit call, see ``convergence_window``."""
         window = self.convergence_window
-        if window is None or step % window != 0 or len(loss_history) < 2 * window:
+        if window is None or len(losses) % window != 0 or len(losses) < 2 * window:
             return False
-        recent = np.mean(loss_history[-window:])
-        previous = np.mean(loss_history[-2 * window : -window])
+        recent = np.mean(losses[-window:])
+        previous = np.mean(losses[-2 * window : -window])
         return bool(abs(recent - previous) < self.relative_tolerance * (abs(previous) + 1e-8))
 
-    def _make_python_step(
-        self, model: Model, state: SVIState | None, random_seed
-    ) -> tuple[StepFn, SVIState, Callable[[SVIState], SVIState]]:
-        """Set up the Python-side update loop for a user-provided optax-like optimizer."""
-        self._compile_training_fn(model)
-        if random_seed is not None:
-            _reseed_function_rngs(self._training_fn, random_seed)
+    def _resolve_learning_rates(self, n: int, learning_rate: ScalarOrSchedule | None) -> list:
+        """Materialize the learning rate for every step of a fit call.
 
-        if state is None:
-            init_params = {p.name: v for p, v in self._guide.params_init_values.items()}
-            state = SVIState(
-                params=init_params,
-                optimizer_state=self.optimizer.init(init_params),
-                step=0,
-                loss_history=[],
-            )
-        # Mutated in place each step and shared by every per-step state: rebuilding it
-        # on each new SVIState would be quadratic in the number of steps
-        loss_history = list(state.loss_history)
-        state = SVIState(state.params, state.optimizer_state, state.step, loss_history)
-
-        optimizer = self.optimizer
-        param_names = self._param_names
-
-        def step_fn(step: int, state: SVIState) -> tuple[np.ndarray, SVIState]:
-            # The compiled function uses trust_input=True, so scalar params must be
-            # passed as 0d arrays, not python/numpy scalars
-            params = {name: np.asarray(value) for name, value in state.params.items()}
-            outputs = self._training_fn(**params)
-            # Backends may return their own array types (e.g. JAX); convert once here
-            # so the optimizer update runs on numpy arrays
-            loss, *grads = (np.asarray(out) for out in outputs)
-            updates, optimizer_state = optimizer.update(
-                dict(zip(param_names, grads)), state.optimizer_state, state.params
-            )
-            new_state = SVIState(
-                apply_updates(state.params, updates), optimizer_state, state.step + 1, loss_history
-            )
-            return loss, new_state
-
-        return step_fn, state, lambda final_state: final_state
-
-    def _make_compiled_step(
-        self, model: Model, n: int, state: SVIState | None, random_seed
-    ) -> tuple[StepFn, SVIState, Callable[[SVIState], SVIState]]:
-        """Set up the fast path: clipped-Adam updates compiled into the step function.
-
-        The guide parameters and the optimizer state live in shared variables updated
-        in place by the compiled function, so nothing round-trips through Python per
-        step. The function's only input is the learning rate; a resumed ``state`` only
-        restores the parameters (the Adam moments are not part of ``SVIState``).
+        Resolved up front so that no python-level schedule call (nor, for the default
+        schedule, an ``np.interp``) happens inside the step loop. The compiled function
+        uses ``trust_input=True``, so these must be 0d arrays rather than scalars.
         """
-        if self._step_fn is None:
-            self._step_fn, self._step_shared_params = compile_svi_step_fn(
-                model,
-                self._guide,
-                draws=self.n_particles,
-                path_derivative_gradient=self.path_derivative_gradient,
-                clip_norm=self.clip_norm,
-                **self.compile_kwargs,
-            )
-
-        if random_seed is not None:
-            _reseed_function_rngs(self._step_fn, random_seed)
-
-        shared_params = self._step_shared_params
-        if state is not None:
-            for name, shared in shared_params.items():
-                shared.set_value(np.asarray(state.params[name]))
-            loss_history = list(state.loss_history)
-            start_step = state.step
-        else:
-            loss_history = []
-            start_step = 0
-
-        learning_rate = self.learning_rate
+        if learning_rate is None:
+            learning_rate = self.learning_rate
         if learning_rate is None:
             learning_rate = linear_onecycle_schedule(
                 transition_steps=n, peak_value=0.008, pct_start=0.2
             )
-        schedule = learning_rate if callable(learning_rate) else (lambda step: learning_rate)
-        lr_dtype = np.dtype(pytensor_config.floatX)
-
-        state = SVIState(
-            params={name: shared.get_value() for name, shared in shared_params.items()},
-            optimizer_state=None,
-            step=start_step,
-            loss_history=loss_history,
-        )
-
-        compiled_step = self._step_fn
-
-        def step_fn(step: int, state: SVIState) -> tuple[np.ndarray, SVIState]:
-            loss = np.asarray(compiled_step(np.asarray(schedule(step), dtype=lr_dtype)))
-            return loss, SVIState(state.params, None, state.step + 1, loss_history)
-
-        def finalize(final_state: SVIState) -> SVIState:
-            # The per-step states carry stale params; read the trained values out of
-            # the shared variables once at the end
-            return SVIState(
-                params={name: shared.get_value().copy() for name, shared in shared_params.items()},
-                optimizer_state=None,
-                step=final_state.step,
-                loss_history=loss_history,
-            )
-
-        return step_fn, state, finalize
+        dtype = np.dtype(pytensor_config.floatX)
+        if callable(learning_rate):
+            return [np.asarray(learning_rate(step), dtype=dtype) for step in range(n)]
+        return [np.asarray(learning_rate, dtype=dtype)] * n
 
     def fit(
         self,
         n: int = 10_000,
         *,
-        state: SVIState | None = None,
+        learning_rate: ScalarOrSchedule | None = None,
         random_seed=None,
     ) -> SVIState:
         """
-        Fit the model using SVI for ``n`` steps.
+        Run ``n`` more optimization steps, continuing from the current state.
 
-        With the default compiled optimizer the guide parameters and the Adam state
-        live in shared variables updated in place by the compiled step function; with
-        an explicit ``optimizer`` each step round-trips the parameters and gradients
-        through a Python-side update.
+        The guide parameters and the Adam moments live in shared variables updated in
+        place by the compiled step function, so nothing round-trips through Python per
+        step and repeated calls pick up where the previous one left off. Call
+        :meth:`reset` first to start over.
 
         Parameters
         ----------
         n : int, optional
-            Maximum number of optimization steps, by default 10_000. Training may
-            stop earlier, controlled by ``convergence_window`` and
+            Maximum number of optimization steps to take, by default 10_000. The call
+            may stop earlier, controlled by ``convergence_window`` and
             ``relative_tolerance``.
-        state : SVIState, optional
-            Previous state to resume training from. If None, starts fresh. With the
-            default compiled optimizer only the parameters are restored, not the
-            Adam moments.
+        learning_rate : float or callable, optional
+            Learning rate, or a schedule mapping the step number within this call to
+            one, overriding the trainer's for this call only.
         random_seed : optional
             Seed for the guide draws used to estimate the gradients.
 
         Returns
         -------
         SVIState
-            The final training state containing optimized parameters. Also stored on
-            the trainer, where :meth:`sample_posterior` picks it up by default.
+            A snapshot of the trainer after the call, the same value as
+            :attr:`state`.
         """
         if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
             raise ValueError(f"n must be a positive integer (the number of fit steps), got {n!r}")
 
         model = modelcontext(self.model)
-        self._resolve_guide(model)
+        self._compile_step_fn(model)
 
-        if self.optimizer is None:
-            step_fn, state, finalize = self._make_compiled_step(model, n, state, random_seed)
-        else:
-            step_fn, state, finalize = self._make_python_step(model, state, random_seed)
-        loss_history = state.loss_history
+        if random_seed is not None:
+            _reseed_function_rngs(self._step_fn, random_seed)
+
+        learning_rates = self._resolve_learning_rates(n, learning_rate)
+        step_fn = self._step_fn
+        start_step = self._step
+        losses: list = []
 
         progress = make_advi_progress_bar(theme=default_progress_theme)
         progress_every = max(1, n // 1_000)
@@ -434,7 +403,7 @@ class Trainer:
             with progress:
                 task = progress.add_task(
                     "Fitting",
-                    step=0,
+                    step=start_step,
                     total=n,
                     loss=np.inf,
                     training_speed=0,
@@ -446,23 +415,25 @@ class Trainer:
                 # that first call is excluded from the steps/s estimate
                 start_time = None
 
-                for step in range(n):
-                    loss, state = step_fn(step, state)
+                for i in range(n):
+                    loss = step_fn(learning_rates[i])
                     if start_time is None:
                         start_time = time.perf_counter()
-                    loss_history.append(loss)
+                    losses.append(loss)
 
-                    if self._should_stop(state.step, loss_history):
+                    if self._should_stop(losses):
                         break
 
-                    if step % progress_every == 0:
+                    if i % progress_every == 0:
                         elapsed = time.perf_counter() - start_time
-                        speed, unit = compute_step_speed(elapsed, step)
+                        speed, unit = compute_step_speed(elapsed, i)
                         progress.update(
                             task,
-                            completed=step,
-                            step=step,
-                            loss=loss,
+                            completed=i,
+                            step=start_step + i,
+                            # Backends may return their own scalar types (e.g. JAX);
+                            # convert here rather than once per step
+                            loss=float(loss),
                             training_speed=speed,
                             speed_unit=unit,
                         )
@@ -470,8 +441,8 @@ class Trainer:
                 progress.update(
                     task,
                     completed=n,
-                    step=state.step,
-                    loss=loss,
+                    step=start_step + len(losses),
+                    loss=float(loss),
                     training_speed=speed,
                     speed_unit=unit,
                     refresh=True,
@@ -479,10 +450,10 @@ class Trainer:
         except KeyboardInterrupt:
             pass
 
-        state = finalize(state)
-        self.state = state
+        self._loss_history.extend(np.asarray(losses, dtype=float).tolist())
+        self._step += len(losses)
 
-        return state
+        return self.state
 
     def sample_posterior(
         self,
@@ -499,8 +470,7 @@ class Trainer:
         draws : int, optional
             Number of posterior samples to draw, by default 1_000.
         state : SVIState, optional
-            The training state containing optimized parameters. Defaults to the state
-            of the last :meth:`fit` call.
+            Snapshot to sample from. Defaults to the trainer's current state.
         random_seed : optional
             Seed for the posterior draws.
 
@@ -509,12 +479,10 @@ class Trainer:
         DataTree
             Samples from the guide posterior for each latent variable.
         """
+        model = modelcontext(self.model)
         if state is None:
             state = self.state
-        if state is None or self._guide is None:
-            raise RuntimeError("The trainer has not been fitted yet.")
 
-        model = modelcontext(self.model)
         self._compile_sampling_fn(model, draws)
 
         if random_seed is not None:

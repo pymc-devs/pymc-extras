@@ -72,6 +72,78 @@ def test_fit_advi_early_stopping(conjugate_model):
     assert idata["fit"].dataset.sizes["step"] == 100
 
 
+def test_fit_continues_and_reset_starts_over(conjugate_model):
+    model, *_ = conjugate_model
+    kwargs = dict(model=model, convergence_window=None, learning_rate=0.01, random_seed=0)
+
+    trainer = Trainer(**kwargs)
+    first = trainer.fit(100, random_seed=1)
+    second = trainer.fit(100, random_seed=1)
+
+    # fit continues rather than starting over: the step count and history accumulate,
+    # and the parameters keep moving
+    assert (first.step, second.step) == (100, 200)
+    assert (len(first.loss_history), len(second.loss_history)) == (100, 200)
+    np.testing.assert_array_equal(second.loss_history[:100], first.loss_history)
+    assert not np.allclose(first.params["theta_loc"], second.params["theta_loc"])
+
+    # a fresh trainer resuming from the snapshot matches continuing in place, which
+    # requires the Adam moments to travel with the state
+    resumed = Trainer(**kwargs)
+    resumed.load_state(first)
+    resumed_state = resumed.fit(100, random_seed=1)
+    np.testing.assert_allclose(resumed_state.params["theta_loc"], second.params["theta_loc"])
+    np.testing.assert_allclose(resumed_state.loss_history, second.loss_history)
+
+    # reset returns the trainer to its initial state, so the run repeats exactly
+    trainer.reset()
+    assert trainer.step == 0
+    assert trainer.state.loss_history.size == 0
+    repeated = trainer.fit(100, random_seed=1)
+    np.testing.assert_allclose(repeated.params["theta_loc"], first.params["theta_loc"])
+    np.testing.assert_allclose(repeated.loss_history, first.loss_history)
+
+
+def test_trainer_state_is_complete_and_honest(conjugate_model):
+    model, *_ = conjugate_model
+    trainer = Trainer(model=model, convergence_window=None, random_seed=0)
+
+    with pytest.raises(RuntimeError, match="not been fitted"):
+        trainer.state
+
+    state = trainer.fit(50, random_seed=1)
+
+    # the returned state is the trainer's state, and both read the live shared variables
+    for name, value in trainer.state.params.items():
+        np.testing.assert_array_equal(value, state.params[name])
+    assert set(state.params) == {"theta_loc", "theta_scale"}
+    assert set(state.optimizer_state) == {
+        "adam_t",
+        "adam_m_theta_loc",
+        "adam_v_theta_loc",
+        "adam_m_theta_scale",
+        "adam_v_theta_scale",
+    }
+    assert state.optimizer_state["adam_t"] == 50
+
+    # compile-time configuration is read-only rather than silently ignored
+    with pytest.raises(AttributeError):
+        trainer.n_particles = 32
+
+
+def test_fit_learning_rate_override(conjugate_model):
+    model, *_ = conjugate_model
+
+    trainer = Trainer(model=model, convergence_window=None, learning_rate=0.0, random_seed=0)
+    frozen = trainer.fit(50, random_seed=1)
+    # a zero learning rate leaves Adam's moments moving but the parameters untouched
+    np.testing.assert_allclose(frozen.params["theta_loc"], trainer._init_state.params["theta_loc"])
+
+    trainer.reset()
+    moved = trainer.fit(50, learning_rate=0.05, random_seed=1)
+    assert not np.allclose(moved.params["theta_loc"], frozen.params["theta_loc"])
+
+
 def test_guide_initialized_at_initial_point():
     with pm.Model() as model:
         pm.LogNormal("x", mu=np.log(4.5), sigma=0.5)
