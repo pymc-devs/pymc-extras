@@ -55,11 +55,10 @@ def get_logp_logq(
     }
 
     if logp_scalings:
-        logps = model.logp(sum=False)
         all_vars = model.free_RVs + model.observed_RVs + model.potentials
+        logps = model.logp(vars=all_vars, sum=False)
         scales = pt.constant([logp_scalings.get(var, 1.0) for var in all_vars])
-        summed_logps = pt.stack([pt.sum(logp) for logp in logps])
-        model_logp = pt.dot(scales, summed_logps)
+        model_logp = pt.sum([pt.sum(logp) * scale for logp, scale in zip(logps, scales)])
     else:
         model_logp = model.logp()
 

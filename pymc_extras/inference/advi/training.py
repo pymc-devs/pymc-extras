@@ -397,7 +397,8 @@ class Trainer:
             A stream of batches, one per step, each a dictionary mapping variable
             names to data. Every step, each entry is reassigned on the model with
             ``set_data`` before the gradient update, so the model trains on one
-            batch at a time. Names listed in ``observeds`` may instead refer to
+            batch at a time. The batch axis is assumed to be the first (leftmost)
+            axis of each array. Names listed in ``observeds`` may instead refer to
             free RVs, see below. If the iterable supports ``len``, that is taken
             as the total dataset row count ``N`` (as for a torch-style dataloader
             that yields minibatches of a dataset of ``N`` rows).
