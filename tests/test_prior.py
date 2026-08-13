@@ -2,6 +2,7 @@ from copy import deepcopy
 
 import numpy as np
 import pymc as pm
+import pymc.dims as pmd
 import pytensor
 import pytensor.tensor as pt
 import pytest
@@ -1273,7 +1274,6 @@ class TestCensored:
         "ignore:The `pymc.dims` module is experimental and may contain critical bugs"
     )
     def test_censored_xdist(self):
-        import pymc.dims as pmd
 
         coords = {
             "batch": range(2),
@@ -1309,7 +1309,6 @@ class TestCensored:
 )
 class TestXDist:
     def test_xdist_serialization(self):
-        import pymc.dims as pmd
 
         mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
         sigma = DataArray([4, 5], dims=("country",))
@@ -1349,7 +1348,6 @@ class TestXDist:
 
     @pytest.mark.parametrize("transform", (None, "exp"))
     def test_xdist_prior(self, transform):
-        import pymc.dims as pmd
 
         mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
         sigma = DataArray([4, 5], dims=("country",))
@@ -1385,7 +1383,6 @@ class TestXDist:
         assert equivalent_models(prior_m, expected_prior_m)
 
     def test_xdist_likelihood(self):
-        import pymc.dims as pmd
 
         mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
         sigma = DataArray([4, 5], dims=("country",))
@@ -1411,6 +1408,29 @@ class TestXDist:
             pmd.Normal("x", mu=mu, sigma=sigma, observed=x_obs.T, dims=dims)
 
         assert equivalent_models(obs_m, expected_obs_m)
+
+    def test_xdist_likelihood_requires_observed(self):
+        """observed=None raises on the xdist path and warns off it."""
+
+        coords = {"city": range(3)}
+        normal = Prior("Normal", sigma=1, dims=("city",))
+        censored = Censored(normal, lower=0)
+        match = "observed cannot be None"
+
+        with pm.Model(coords=coords):
+            mu = pmd.as_xtensor([1, 2, 3], dims=("city",))
+            for dist in (normal, censored):
+                with pytest.raises(ValueError, match=match):
+                    dist.create_likelihood_variable("x", mu=mu, observed=None, xdist=True)
+
+        with pm.Model(coords=coords) as legacy:
+            mu = pt.as_tensor([1, 2, 3])
+            with pytest.warns(FutureWarning, match=match):
+                normal.create_likelihood_variable("x", mu=mu, observed=None)
+            with pytest.warns(FutureWarning, match=match):
+                censored.create_likelihood_variable("x2", mu=mu, observed=None)
+
+        assert [rv.name for rv in legacy.free_RVs] == ["x", "x2"]
 
     def test_dims(self) -> None:
         assert Prior("Normal").dims is None
@@ -1461,8 +1481,6 @@ class TestXDist:
                 p_wo_dims.create_variable("v", xdist=True)
 
     def test_core_dims(self):
-        from pymc.dims import ZeroSumNormal
-
         coords = {"country": range(3), "city": range(4)}
 
         prior = Prior("ZeroSumNormal", sigma=np.pi, core_dims=("city",), dims=("country", "city"))
@@ -1470,7 +1488,7 @@ class TestXDist:
             prior.create_variable("x", xdist=True)
 
         with pm.Model(coords=coords) as ref_m:
-            ZeroSumNormal("x", sigma=np.pi, core_dims=("city",), dims=("country", "city"))
+            pmd.ZeroSumNormal("x", sigma=np.pi, core_dims=("city",), dims=("country", "city"))
 
         # This fails because SymbolicRandomVariable (which ZeroSumNormal is), doesn't have `__eq__` implemented
         # assert equivalent_models(m, ref_m)
