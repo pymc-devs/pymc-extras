@@ -23,35 +23,6 @@ class SamplingFn(Protocol):
     def __call__(self, *params: np.ndarray) -> tuple[np.ndarray, ...]: ...
 
 
-def compile_svi_training_fn(
-    model: Model,
-    guide: AutoGuideModel,
-    draws: int = 1,
-    path_derivative_gradient: bool = True,
-    **compile_kwargs,
-) -> TrainingFn:
-    # draws is a compile-time constant: backends like JAX cannot handle inputs that
-    # determine the shapes of random variables
-    params = guide.params
-    inputs = list(params)
-
-    logp, logq = get_logp_logq(model, guide, path_derivative_gradient=path_derivative_gradient)
-
-    scalar_negative_elbo = advi_objective(logp, logq)
-    [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
-    negative_elbo = negative_elbo_draws.mean(axis=0)
-
-    negative_elbo_grads = pt.grad(rewrite_pregrad(negative_elbo), wrt=params)
-
-    compile_kwargs.setdefault("trust_input", True)
-
-    f_loss_dloss = compile(
-        inputs=inputs, outputs=[negative_elbo, *negative_elbo_grads], **compile_kwargs
-    )
-
-    return f_loss_dloss
-
-
 def compile_svi_step_fn(
     model: Model,
     guide: AutoGuideModel,
@@ -62,7 +33,7 @@ def compile_svi_step_fn(
     beta2: float = 0.999,
     epsilon: float = 1e-8,
     **compile_kwargs,
-) -> tuple[TrainingFn, dict[str, SharedVariable]]:
+) -> tuple[TrainingFn, dict[str, SharedVariable], dict[str, SharedVariable]]:
     """Compile one full SVI step, with clipped-Adam updates applied in-graph.
 
     The guide parameters and the optimizer state live in shared variables that the
@@ -70,12 +41,18 @@ def compile_svi_step_fn(
     only output the negative ELBO estimate, so no parameters or gradients round-trip
     through Python during training.
 
+    Together the two returned dicts hold the whole training state: reading their values
+    snapshots a run, writing them resumes one exactly.
+
     Returns
     -------
     step_fn :
         Compiled function ``step_fn(learning_rate) -> negative_elbo``.
     shared_params : dict
         Maps each guide parameter name to the shared variable holding its value.
+    shared_optimizer_state : dict
+        Maps each Adam variable name (the step counter and the two moments per
+        parameter) to the shared variable holding its value.
     """
     logp, logq = get_logp_logq(model, guide, path_derivative_gradient=path_derivative_gradient)
     scalar_negative_elbo = advi_objective(logp, logq)
@@ -105,10 +82,12 @@ def compile_svi_step_fn(
     # floatX so the whole update stays in the parameter dtype.
     t_new_float = t_new.astype(config.floatX)
     updates = {t: t_new}
+    shared_optimizer_state = {t.name: t}
     for shared_param, grad in zip(shared_params, grads):
         value = shared_param.get_value(borrow=True)
         m = pytensor.shared(np.zeros_like(value), name=f"adam_m_{shared_param.name}")
         v = pytensor.shared(np.zeros_like(value), name=f"adam_v_{shared_param.name}")
+        shared_optimizer_state.update({m.name: m, v.name: v})
         m_new = beta1 * m + (1 - beta1) * grad
         v_new = beta2 * v + (1 - beta2) * pt.square(grad)
         m_hat = m_new / (1 - beta1**t_new_float)
@@ -122,7 +101,9 @@ def compile_svi_step_fn(
         inputs=[learning_rate], outputs=negative_elbo, updates=updates, **compile_kwargs
     )
 
-    return step_fn, {param.name: shared for param, shared in params_to_shared.items()}
+    shared_params_by_name = {param.name: shared for param, shared in params_to_shared.items()}
+
+    return step_fn, shared_params_by_name, shared_optimizer_state
 
 
 def compile_sampling_fn(
