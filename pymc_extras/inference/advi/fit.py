@@ -19,8 +19,6 @@ def fit_advi(
     learning_rate: ScalarOrSchedule | None = None,
     clip_norm: float | None = 10.0,
     path_derivative_gradient: bool = True,
-    convergence_window: int | None = 200,
-    relative_tolerance: float = 1e-3,
     random_seed=None,
     backend: str | None = None,
     compile_kwargs: dict | None = None,
@@ -38,8 +36,8 @@ def fit_advi(
     model : Model, optional
         The PyMC model to fit. If None, the model is inferred from context.
     n_steps : int, optional
-        Maximum number of optimization steps, by default 10_000. Training may stop
-        earlier, controlled by ``convergence_window`` and ``relative_tolerance``.
+        Number of optimization steps, by default 10_000. Also the horizon the default
+        learning rate schedule anneals over, so it paces the run as well as sizing it.
     n_particles : int, optional
         Number of guide draws per step used to estimate the ELBO gradient, by default 1.
     draws : int, optional
@@ -55,12 +53,6 @@ def fit_advi(
         Whether to use the lower-variance path-derivative ("sticking the landing")
         gradient estimator, by default True. It is an unbiased variance reduction (it changes
         only the gradient, not the ELBO); numpyro's ``Trace_ELBO`` does not offer it.
-    convergence_window : int, optional
-        Number of steps per convergence window, by default 200. Set to None to always
-        run for ``n_steps``.
-    relative_tolerance : float, optional
-        Relative loss change between consecutive windows under which training stops,
-        by default 1e-3.
     random_seed : optional
         Seed for the guide initialization, the training draws, and the posterior draws.
     backend : str, optional
@@ -88,8 +80,6 @@ def fit_advi(
         clip_norm=clip_norm,
         n_particles=n_particles,
         path_derivative_gradient=path_derivative_gradient,
-        convergence_window=convergence_window,
-        relative_tolerance=relative_tolerance,
         model=model,
         backend=backend,
         compile_kwargs=compile_kwargs,

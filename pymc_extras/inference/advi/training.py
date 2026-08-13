@@ -127,10 +127,15 @@ class Trainer:
 
     Configuration splits along the same line. Everything compiled into the step function
     (``guide``, ``n_particles``, ``path_derivative_gradient``, ``clip_norm``) is fixed at
-    construction and exposed read-only. Everything that is per-run policy
-    (``learning_rate``, ``convergence_window``, ``relative_tolerance``) is read afresh by
-    each :meth:`fit` call and can be changed between them, or overridden for a single
-    call by passing ``learning_rate`` to :meth:`fit`.
+    construction and exposed read-only. ``learning_rate`` is per-run policy: it is read
+    afresh by each :meth:`fit` call, and can be changed between calls or overridden for a
+    single one by passing it to :meth:`fit`.
+
+    There is no convergence-based early stopping. ``fit(n)`` runs ``n`` steps, because the
+    default schedule anneals over exactly those ``n`` steps: cutting a run short lands it
+    at whatever rate the schedule had reached, which for an early stop is near the peak.
+    To spend less, ask for fewer steps, which scales the schedule to match. To decide as
+    you go, fit in chunks and look at ``state.loss_history`` between them.
 
     Parameters
     ----------
@@ -139,10 +144,10 @@ class Trainer:
         to one. By default an :func:`AutoDiagonalNormal` guide is built from the
         model (mean-field ADVI).
     learning_rate : float or callable, optional
-        Learning rate, or a schedule mapping the step number within a :meth:`fit` call
-        to one. Defaults to a :func:`linear_onecycle_schedule` peaking at 0.008 over the
-        ``n`` steps of each call, so a follow-up ``fit`` is a warm restart: the
-        parameters and Adam moments carry over, the learning rate ramps again.
+        Learning rate, or a schedule mapping the trainer's global step number to one.
+        Defaults to a :func:`linear_onecycle_schedule` peaking at 0.008 over the whole
+        run. Because schedules see the global step, a follow-up ``fit`` continues down
+        the ramp rather than restarting it.
     clip_norm : float, optional
         Clip gradients to this global norm, by default 10. None disables clipping.
     n_particles : int, optional
@@ -151,15 +156,6 @@ class Trainer:
     path_derivative_gradient : bool, optional
         Whether to use the lower-variance path-derivative ("sticking the landing")
         gradient estimator, by default True.
-    convergence_window : int, optional
-        Number of steps per convergence window, by default 200. A :meth:`fit` call stops
-        early when the mean loss over its last window is within ``relative_tolerance`` of
-        the mean over the window before it. Only steps taken by the current call count,
-        so a later ``fit`` always gets a fresh chance to make progress. Set to None to
-        disable early stopping.
-    relative_tolerance : float, optional
-        Relative loss change between consecutive windows under which training stops,
-        by default 1e-3.
     model : Model, optional
         The PyMC model to fit. If None, the model is taken from the context stack
         when :meth:`fit` or :meth:`sample_posterior` is called.
@@ -191,8 +187,6 @@ class Trainer:
         clip_norm: float | None = 10.0,
         n_particles: int = 1,
         path_derivative_gradient: bool = True,
-        convergence_window: int | None = 200,
-        relative_tolerance: float = 1e-3,
         model: Model | None = None,
         backend: str | None = None,
         compile_kwargs: dict | None = None,
@@ -200,8 +194,6 @@ class Trainer:
     ):
         # Per-run policy: read afresh by every fit call
         self.learning_rate = learning_rate
-        self.convergence_window = convergence_window
-        self.relative_tolerance = relative_tolerance
 
         self.model = model
         self.compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
@@ -322,17 +314,15 @@ class Trainer:
         )
         self._sampling_draws = draws
 
-    def _should_stop(self, losses: list) -> bool:
-        """Window-based convergence check over the current fit call, see ``convergence_window``."""
-        window = self.convergence_window
-        if window is None or len(losses) % window != 0 or len(losses) < 2 * window:
-            return False
-        recent = np.mean(losses[-window:])
-        previous = np.mean(losses[-2 * window : -window])
-        return bool(abs(recent - previous) < self.relative_tolerance * (abs(previous) + 1e-8))
-
-    def _resolve_learning_rates(self, n: int, learning_rate: ScalarOrSchedule | None) -> list:
+    def _resolve_learning_rates(
+        self, n: int, learning_rate: ScalarOrSchedule | None, start_step: int
+    ) -> list:
         """Materialize the learning rate for every step of a fit call.
+
+        Schedules are functions of the trainer's global step rather than of the offset
+        within the call, so resuming carries on down the ramp instead of starting a new
+        one. The default schedule is sized to the whole run, ``start_step + n``, for the
+        same reason: a follow-up ``fit`` anneals the rest of one cycle.
 
         Resolved up front so that no python-level schedule call (nor, for the default
         schedule, an ``np.interp``) happens inside the step loop. The compiled function
@@ -342,11 +332,14 @@ class Trainer:
             learning_rate = self.learning_rate
         if learning_rate is None:
             learning_rate = linear_onecycle_schedule(
-                transition_steps=n, peak_value=0.008, pct_start=0.2
+                transition_steps=start_step + n, peak_value=0.008, pct_start=0.2
             )
         dtype = np.dtype(pytensor_config.floatX)
         if callable(learning_rate):
-            return [np.asarray(learning_rate(step), dtype=dtype) for step in range(n)]
+            return [
+                np.asarray(learning_rate(step), dtype=dtype)
+                for step in range(start_step, start_step + n)
+            ]
         return [np.asarray(learning_rate, dtype=dtype)] * n
 
     def fit(
@@ -367,11 +360,11 @@ class Trainer:
         Parameters
         ----------
         n : int, optional
-            Maximum number of optimization steps to take, by default 10_000. The call
-            may stop earlier, controlled by ``convergence_window`` and
-            ``relative_tolerance``.
+            Number of optimization steps to take, by default 10_000. Also the horizon the
+            default learning rate schedule anneals over, so it sets how the run is paced
+            and not just how long it is.
         learning_rate : float or callable, optional
-            Learning rate, or a schedule mapping the step number within this call to
+            Learning rate, or a schedule mapping the trainer's global step number to
             one, overriding the trainer's for this call only.
         random_seed : optional
             Seed for the guide draws used to estimate the gradients.
@@ -391,9 +384,9 @@ class Trainer:
         if random_seed is not None:
             _reseed_function_rngs(self._step_fn, random_seed)
 
-        learning_rates = self._resolve_learning_rates(n, learning_rate)
-        step_fn = self._step_fn
         start_step = self._step
+        learning_rates = self._resolve_learning_rates(n, learning_rate, start_step)
+        step_fn = self._step_fn
         losses: list = []
 
         progress = make_advi_progress_bar(theme=default_progress_theme)
@@ -420,9 +413,6 @@ class Trainer:
                     if start_time is None:
                         start_time = time.perf_counter()
                     losses.append(loss)
-
-                    if self._should_stop(losses):
-                        break
 
                     if i % progress_every == 0:
                         elapsed = time.perf_counter() - start_time

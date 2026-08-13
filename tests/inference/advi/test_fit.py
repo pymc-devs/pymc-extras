@@ -32,7 +32,7 @@ def test_fit_advi_recovers_conjugate_posterior(conjugate_model):
 def test_fit_advi_random_seed(conjugate_model):
     model, *_ = conjugate_model
 
-    kwargs = dict(model=model, n_steps=200, draws=100, convergence_window=None)
+    kwargs = dict(model=model, n_steps=200, draws=100)
     draws_a = fit_advi(random_seed=42, **kwargs)["posterior"].dataset["theta"].values
     draws_b = fit_advi(random_seed=42, **kwargs)["posterior"].dataset["theta"].values
     draws_c = fit_advi(random_seed=13, **kwargs)["posterior"].dataset["theta"].values
@@ -48,7 +48,7 @@ def test_fit_advi_random_seed_jax(conjugate_model):
     pytest.importorskip("jax")
     model, *_ = conjugate_model
 
-    kwargs = dict(model=model, n_steps=50, draws=50, convergence_window=None, backend="jax")
+    kwargs = dict(model=model, n_steps=50, draws=50, backend="jax")
     draws_a = fit_advi(random_seed=42, **kwargs)["posterior"].dataset["theta"].values
     draws_b = fit_advi(random_seed=42, **kwargs)["posterior"].dataset["theta"].values
     draws_c = fit_advi(random_seed=13, **kwargs)["posterior"].dataset["theta"].values
@@ -57,24 +57,9 @@ def test_fit_advi_random_seed_jax(conjugate_model):
     assert not np.array_equal(draws_a, draws_c)
 
 
-def test_fit_advi_early_stopping(conjugate_model):
-    model, *_ = conjugate_model
-
-    idata = fit_advi(
-        model=model,
-        n_steps=1_000,
-        random_seed=1,
-        convergence_window=50,
-        relative_tolerance=10.0,
-    )
-
-    # With a huge tolerance, training stops at the first convergence check
-    assert idata["fit"].dataset.sizes["step"] == 100
-
-
 def test_fit_continues_and_reset_starts_over(conjugate_model):
     model, *_ = conjugate_model
-    kwargs = dict(model=model, convergence_window=None, learning_rate=0.01, random_seed=0)
+    kwargs = dict(model=model, learning_rate=0.01, random_seed=0)
 
     trainer = Trainer(**kwargs)
     first = trainer.fit(100, random_seed=1)
@@ -106,7 +91,7 @@ def test_fit_continues_and_reset_starts_over(conjugate_model):
 
 def test_trainer_state_is_complete_and_honest(conjugate_model):
     model, *_ = conjugate_model
-    trainer = Trainer(model=model, convergence_window=None, random_seed=0)
+    trainer = Trainer(model=model, random_seed=0)
 
     with pytest.raises(RuntimeError, match="not been fitted"):
         trainer.state
@@ -131,10 +116,10 @@ def test_trainer_state_is_complete_and_honest(conjugate_model):
         trainer.n_particles = 32
 
 
-def test_fit_learning_rate_override(conjugate_model):
+def test_learning_rate_policy(conjugate_model):
     model, *_ = conjugate_model
 
-    trainer = Trainer(model=model, convergence_window=None, learning_rate=0.0, random_seed=0)
+    trainer = Trainer(model=model, learning_rate=0.0, random_seed=0)
     frozen = trainer.fit(50, random_seed=1)
     # a zero learning rate leaves Adam's moments moving but the parameters untouched
     np.testing.assert_allclose(frozen.params["theta_loc"], trainer._init_state.params["theta_loc"])
@@ -142,6 +127,19 @@ def test_fit_learning_rate_override(conjugate_model):
     trainer.reset()
     moved = trainer.fit(50, learning_rate=0.05, random_seed=1)
     assert not np.allclose(moved.params["theta_loc"], frozen.params["theta_loc"])
+
+    # schedules see the trainer's global step, so a resumed fit continues down the ramp
+    # instead of starting a new one
+    scheduled = Trainer(model=model, random_seed=0)
+    opening = scheduled._resolve_learning_rates(500, None, start_step=0)
+    resumed = scheduled._resolve_learning_rates(500, None, start_step=500)
+    assert opening[0] < max(opening)  # the first call ramps up to the peak
+    assert resumed[0] == max(resumed)  # the second starts at it and anneals
+    assert resumed[-1] < resumed[0]
+
+    # and a user-supplied schedule is called with absolute step numbers
+    seen = scheduled._resolve_learning_rates(3, lambda step: float(step), start_step=500)
+    np.testing.assert_array_equal(np.asarray(seen, dtype=float), [500.0, 501.0, 502.0])
 
 
 def test_guide_initialized_at_initial_point():
@@ -180,7 +178,7 @@ def test_naive_custom_guide_does_not_leak_into_user_model():
     with pm.Model() as model:
         mu = pm.Normal("mu", 0, 1)
         pm.Normal("y", mu, 1, observed=[0.5])
-        trainer = Trainer(guide=naive_guide, convergence_window=None)
+        trainer = Trainer(guide=naive_guide)
         trainer.fit(10)
 
     assert set(model.named_vars) == {"mu", "y"}
