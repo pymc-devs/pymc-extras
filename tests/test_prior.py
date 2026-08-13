@@ -1410,7 +1410,7 @@ class TestXDist:
         assert equivalent_models(obs_m, expected_obs_m)
 
     def test_xdist_likelihood_requires_observed(self):
-        """observed=None is refused on the xdist path, and left alone off it."""
+        """observed=None raises on the xdist path and warns off it."""
 
         coords = {"city": range(3)}
         normal = Prior("Normal", sigma=1, dims=("city",))
@@ -1424,9 +1424,13 @@ class TestXDist:
                     dist.create_likelihood_variable("x", mu=mu, observed=None, xdist=True)
 
         with pm.Model(coords=coords) as legacy:
-            normal.create_likelihood_variable("x", mu=pt.as_tensor([1, 2, 3]), observed=None)
+            mu = pt.as_tensor([1, 2, 3])
+            with pytest.warns(FutureWarning, match=match):
+                normal.create_likelihood_variable("x", mu=mu, observed=None)
+            with pytest.warns(FutureWarning, match=match):
+                censored.create_likelihood_variable("x2", mu=mu, observed=None)
 
-        assert [rv.name for rv in legacy.free_RVs] == ["x"]
+        assert [rv.name for rv in legacy.free_RVs] == ["x", "x2"]
 
     def test_dims(self) -> None:
         assert Prior("Normal").dims is None

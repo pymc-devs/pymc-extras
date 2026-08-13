@@ -497,14 +497,25 @@ def sample_prior(
 def _check_observed(observed, xdist: bool) -> None:
     """Refuse a likelihood with nothing to condition on.
 
-    Only on the ``pymc.dims`` path. Without ``xdist`` the value is passed to
-    PyMC untouched, and tightening that would change long-standing behaviour.
+    Raises on the ``pymc.dims`` path. Without ``xdist`` the value has been
+    passed to PyMC untouched since the method arrived, so that path warns
+    first and will raise in a future release.
     """
-    if xdist and observed is None:
-        raise ValueError(
-            "observed cannot be None. A likelihood needs observations; use "
-            "create_variable for a variable without them."
-        )
+    if observed is not None:
+        return
+
+    message = (
+        "observed cannot be None. A likelihood needs observations; use "
+        "create_variable for a variable without them."
+    )
+    if xdist:
+        raise ValueError(message)
+
+    warnings.warn(
+        f"{message} This will become an error in a future release.",
+        FutureWarning,
+        stacklevel=3,
+    )
 
 
 def _param_value_with_dims(param: str, value, dims: Dims | None):
