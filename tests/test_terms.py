@@ -39,6 +39,7 @@ from pymc_extras.terms import (
     collect_terms,
     get_coords,
     register_data,
+    set_data,
 )
 
 
@@ -446,3 +447,93 @@ def test_custom_term():
     with pm.Model():
         result = build_param(_Custom(42.0))
         assert isinstance(result, PTVariable)
+
+
+def test_dot_default_name(simple_ds):
+    """Dot without `name` defaults to `{var_name}_beta` (unchanged behavior)."""
+    dot = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
+    assert dot.name == "x_beta"
+
+
+def test_dot_distinct_name_no_collision(simple_ds):
+    """CLV: alpha/beta branches share data but need distinct coef names.
+
+    Two Dot terms referencing the same ``var_name`` with distinct ``name``
+    should build separate coefficient variables without colliding.
+    """
+    dot_a = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
+    dot_b = Dot(var_name="x", prior=Prior("Normal", dims="feature"), name="x_coef_b")
+    mu = dot_a + dot_b
+    coords = collect_coords(mu, ds=simple_ds)
+    with pm.Model(coords=coords) as model:
+        register_data(mu, ds=simple_ds)
+        build_param(mu)
+        assert "x_beta" in model.named_vars
+        assert "x_coef_b" in model.named_vars
+
+
+def test_collect_coords_subtraction(simple_ds):
+    """CLV gotcha: `baseline - dot(...)` coordinates must be collected.
+
+    Regression test for `Sum.get_coords` dropping Product children (the
+    Product(-1, Dot) produced by subtraction).
+    """
+    mu = Intercept(name="a") - Dot(var_name="x", prior=Prior("Normal", dims="feature"))
+    coords = collect_coords(mu, ds=simple_ds)
+    assert "feature" in coords
+
+
+def test_collect_coords_multiplication(simple_ds):
+    """CLV gotcha: `a + b * c` must collect coordinates from the Product child."""
+    mu = Intercept(name="a") + Dot(var_name="x", prior=Prior("Normal", dims="feature")) * Transform(
+        Intercept(name="scale"), func=ptx.exp
+    )
+    coords = collect_coords(mu, ds=simple_ds)
+    assert "feature" in coords
+
+
+def test_set_data_subtraction(simple_ds):
+    """CLV gotcha: `baseline - dot(...)` must still update the Dot's data on prediction.
+
+    Regression test for `Sum.set_data` dropping Product children, which would
+    silently leave the covariate `pmd.Data` stale during prediction.
+    """
+    mu = Intercept(name="a") - Dot(var_name="x", prior=Prior("Normal", dims="feature"))
+    coords = collect_coords(mu, ds=simple_ds)
+    with pm.Model(coords=coords) as model:
+        register_data(mu, ds=simple_ds)
+        build_param(mu)
+        ds2 = simple_ds.copy()
+        ds2["x"] = xr.DataArray(np.roll(simple_ds["x"].values, 1, axis=0), dims=("obs", "feature"))
+        set_data(mu, ds=ds2, model=model)
+        updated = model["x"].get_value()
+    assert np.allclose(updated, ds2["x"].values)
+
+
+def test_set_data_multiplication(simple_ds):
+    """CLV gotcha: `a + b * c` must still update the Dot's data on prediction.
+
+    Mirror of `test_set_data_subtraction` for the `*` trigger (Product child
+    inside a Sum).
+    """
+    mu = Intercept(name="a") + Dot(var_name="x", prior=Prior("Normal", dims="feature")) * Transform(
+        Intercept(name="scale"), func=ptx.exp
+    )
+    coords = collect_coords(mu, ds=simple_ds)
+    with pm.Model(coords=coords) as model:
+        register_data(mu, ds=simple_ds)
+        build_param(mu)
+        ds2 = simple_ds.copy()
+        ds2["x"] = xr.DataArray(np.roll(simple_ds["x"].values, 1, axis=0), dims=("obs", "feature"))
+        set_data(mu, ds=ds2, model=model)
+        updated = model["x"].get_value()
+    assert np.allclose(updated, ds2["x"].values)
+
+
+def test_register_data_subtraction(simple_ds):
+    """`register_data` of `a - b` must register the subtracted Dot's data."""
+    mu = Intercept(name="a") - Dot(var_name="x", prior=Prior("Normal", dims="feature"))
+    coords = collect_coords(mu, ds=simple_ds)
+    with pm.Model(coords=coords) as model:
+        register_data(mu, ds=simple_ds)
+        assert "x" in model

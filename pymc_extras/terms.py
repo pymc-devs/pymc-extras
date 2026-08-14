@@ -78,7 +78,10 @@ Gotchas
   ``pmd.Data`` variable automatically (duplicate registration is skipped).
 - Two ``Dot`` terms with the same ``var_name`` will also create identically
   named beta variables (``{var_name}_beta``), causing a PyMC "already
-  exists" error. Use different ``var_name`` values to avoid this.
+  exists" error. Pass a distinct ``name`` to each ``Dot`` to give the
+  coefficients different variable names while still sharing the same
+  ``pmd.Data`` (e.g. separate alpha and beta coefficient branches on the
+  same covariate matrix).
 - ``build_param`` is not idempotent --- call it once to create PyMC
   variables, then sample. Calling it a second time tries to create
   variables with the same name, causing a PyMC error.
@@ -239,8 +242,7 @@ class Sum:
         """Collect coordinates from all terms."""
         coords: dict[str, Any] = {}
         for term in self.terms:
-            if isinstance(term, ModelTerm):
-                coords.update(term.get_coords(ds))
+            coords.update(get_coords(term, ds))
         return coords
 
     def register_data(self, ds: xr.Dataset) -> None:
@@ -254,8 +256,7 @@ class Sum:
     def set_data(self, ds: xr.Dataset, model: pm.Model | None = None) -> None:
         """Update shared data for all terms."""
         for term in self.terms:
-            if isinstance(term, ModelTerm):
-                term.set_data(ds, model=model)
+            set_data(term, ds=ds, model=model)
 
 
 @dataclass
@@ -338,10 +339,20 @@ class Dot(ModelTerm):
         Prior for the beta coefficients. Any ``VariableFactory`` is
         accepted. Must have dims matching the last dimension of the
         data variable.
+    name : str, optional
+        Name for the coefficient variable. Defaults to ``{var_name}_beta``.
+        Provide a distinct ``name`` to reference the same ``var_name`` from
+        multiple terms (e.g. separate alpha and beta coefficient branches)
+        without colliding on the coefficient variable name.
     """
 
     var_name: str
     prior: VariableFactory
+    name: str | None = None
+
+    def __post_init__(self):
+        if self.name is None:
+            self.name = f"{self.var_name}_beta"
 
     def get_coords(self, ds: xr.Dataset) -> dict[str, Any]:
         """Extract coordinates from the data variable."""
@@ -364,7 +375,7 @@ class Dot(ModelTerm):
         """Build ``data @ beta`` tensor."""
         model = pm.modelcontext(None)
         data = model[self.var_name]
-        beta = self.prior.create_variable(f"{self.var_name}_beta", xdist=True)
+        beta = self.prior.create_variable(self.name, xdist=True)
         return data @ beta
 
 
