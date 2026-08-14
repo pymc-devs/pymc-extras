@@ -123,6 +123,7 @@ def _sample_conditional(
             if name == "smoothed":
                 # The simulation smoother draws the whole latent path jointly, so the
                 # states carry their cross-time posterior covariance.
+                lgss_filter, lgss_smoother = ss_mod.make_filters()
                 latent_states = SimulationSmoother(
                     f"{name}_{group}",
                     a_smooth=mu,
@@ -135,8 +136,8 @@ def _sample_conditional(
                     R=R,
                     H=H,
                     Q=Q,
-                    kalman_filter=ss_mod.kalman_filter.copy(),
-                    kalman_smoother=ss_mod.kalman_smoother.copy(),
+                    kalman_filter=lgss_filter,
+                    kalman_smoother=lgss_smoother,
                     sequence_names=tuple(scan_sequence_names(ss_mod.ssm.time_varying_names)),
                     dims=state_dims,
                     method=mvn_method,
@@ -493,30 +494,11 @@ def sample_filter_outputs(
             obs_coords=obs_coords,
         )
 
-        filter_outputs = ss_mod.kalman_filter.build_graph(
-            data,
-            x0,
-            P0,
-            c,
-            d,
-            T,
-            Z,
-            R,
-            H,
-            Q,
-            missing_fill_value=ss_mod.missing_fill_value,
-            cov_jitter=ss_mod.cov_jitter,
-            time_varying_names=ss_mod.ssm.time_varying_names,
-        )
+        kalman_filter, kalman_smoother = ss_mod.make_filters()
+        filter_outputs = kalman_filter.build_graph(data, x0, P0, c, d, T, Z, R, H, Q)
 
-        smoother_outputs = ss_mod.kalman_smoother.build_graph(
-            T,
-            R,
-            Q,
-            filter_outputs[0],
-            filter_outputs[3],
-            cov_jitter=ss_mod.cov_jitter,
-            time_varying_names=ss_mod.ssm.time_varying_names,
+        smoother_outputs = kalman_smoother.build_graph(
+            T, R, Q, filter_outputs[0], filter_outputs[3]
         )
 
         filter_outputs = filter_outputs[:-1] + list(smoother_outputs)

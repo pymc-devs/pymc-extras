@@ -111,21 +111,8 @@ def kalman_filter_outputs_from_dummy_graph(
         data_dims=data_dims,
     )
 
-    filter_outputs = ss_mod.kalman_filter.build_graph(
-        data,
-        x0,
-        P0,
-        c,
-        d,
-        T,
-        Z,
-        R,
-        H,
-        Q,
-        missing_fill_value=ss_mod.missing_fill_value,
-        cov_jitter=ss_mod.cov_jitter,
-        time_varying_names=ss_mod.ssm.time_varying_names,
-    )
+    kalman_filter, kalman_smoother = ss_mod.make_filters()
+    filter_outputs = kalman_filter.build_graph(data, x0, P0, c, d, T, Z, R, H, Q)
 
     filter_outputs.pop(-1)
     states, covariances = filter_outputs[:3], filter_outputs[3:]
@@ -133,14 +120,12 @@ def kalman_filter_outputs_from_dummy_graph(
     filtered_states, predicted_states, _ = states
     filtered_covariances, predicted_covariances, _ = covariances
 
-    [smoothed_states, smoothed_covariances] = ss_mod.kalman_smoother.build_graph(
+    [smoothed_states, smoothed_covariances] = kalman_smoother.build_graph(
         T,
         R,
         Q,
         filtered_states,
         filtered_covariances,
-        cov_jitter=ss_mod.cov_jitter,
-        time_varying_names=ss_mod.ssm.time_varying_names,
     )
 
     grouped_outputs = [

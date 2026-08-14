@@ -15,7 +15,11 @@ from pymc_extras.statespace.filters import (
     UnivariateFilter,
 )
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter
-from pymc_extras.statespace.utils.constants import MISSING_FILL
+from pymc_extras.statespace.utils.constants import (
+    LONG_NAME_TO_SHORT,
+    MATRIX_NAMES,
+    MISSING_FILL,
+)
 from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
     rng,
 )
@@ -120,7 +124,8 @@ def test_output_shapes_when_some_states_are_deterministic(filter_name, rng):
 
 @pytest.fixture
 def f_standard_nd():
-    ksmoother = KalmanSmoother()
+    time_varying_names = ("transition", "design", "selection", "obs_cov", "state_cov")
+    ksmoother = KalmanSmoother(time_varying_names=time_varying_names)
     data = pt.tensor(name="data", dtype=floatX, shape=(None, None))
     a0 = pt.vector(name="a0", dtype=floatX)
     P0 = pt.matrix(name="P0", dtype=floatX)
@@ -134,7 +139,6 @@ def f_standard_nd():
 
     inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
 
-    time_varying_names = ("transition", "design", "selection", "obs_cov", "state_cov")
     (
         filtered_states,
         predicted_states,
@@ -143,11 +147,9 @@ def f_standard_nd():
         predicted_covs,
         observed_covs,
         ll_obs,
-    ) = StandardFilter().build_graph(*inputs, time_varying_names=time_varying_names)
+    ) = StandardFilter(time_varying_names=time_varying_names).build_graph(*inputs)
 
-    smoothed_states, smoothed_covs = ksmoother.build_graph(
-        T, R, Q, filtered_states, filtered_covs, time_varying_names=time_varying_names
-    )
+    smoothed_states, smoothed_covs = ksmoother.build_graph(T, R, Q, filtered_states, filtered_covs)
 
     outputs = [
         filtered_states,
@@ -163,6 +165,40 @@ def f_standard_nd():
     f_standard = pytensor.function(inputs, outputs)
 
     return f_standard
+
+
+@pytest.mark.parametrize(
+    ("time_varying_names", "expected_seq_names"),
+    [
+        ((), []),
+        (("transition",), ["T"]),
+        (("design", "obs_intercept"), ["d", "Z"]),
+        (
+            ("transition", "design", "selection", "obs_cov", "state_cov"),
+            ["T", "Z", "R", "H", "Q"],
+        ),
+    ],
+    ids=["none", "one", "declared_out_of_order", "many"],
+)
+def test_time_varying_matrices_become_scan_sequences_in_matrix_order(
+    time_varying_names, expected_seq_names, rng
+):
+    """``scan`` receives sequences in matrix order, not the order the model declared them."""
+    p, m, r, n = 1, 5, 2, 10
+    inputs = list(make_test_inputs(p, m, r, n, rng))
+
+    # inputs are [data, a0, P0, c, d, T, Z, R, H, Q]; a time-varying matrix needs a leading time axis.
+    index_of = dict(zip(MATRIX_NAMES[2:], range(3, 10), strict=True))
+    for long_name in time_varying_names:
+        i = index_of[LONG_NAME_TO_SHORT[long_name]]
+        inputs[i] = np.repeat(np.expand_dims(inputs[i], 0), n, axis=0)
+
+    kfilter = StandardFilter(time_varying_names=time_varying_names)
+    assert kfilter.seq_names == expected_seq_names
+    assert kfilter.non_seq_names == [n for n in MATRIX_NAMES[2:] if n not in expected_seq_names]
+
+    # Building proves the split is usable: a mis-ordered sequence fails on a shape mismatch.
+    kfilter.build_graph(*[pt.as_tensor_variable(x) for x in inputs])
 
 
 def test_output_shapes_with_time_varying_matrices(f_standard_nd, rng):
@@ -515,10 +551,8 @@ def test_convergent_filter_rejects_time_varying_params():
     R = pt.matrix("R")
     H = pt.matrix("H")
     Q = pt.matrix("Q")
-    with pytest.raises(ValueError, match="time-invariant"):
-        ConvergentFilter().build_graph(
-            data, a0, P0, c, d, T, Z, R, H, Q, time_varying_names=["transition"]
-        )
+    with pytest.raises(ValueError, match=r"time-invariant.*\['transition'\]"):
+        ConvergentFilter(time_varying_names=["transition"])
 
 
 def test_convergent_filter_rejects_nan_constant_data():

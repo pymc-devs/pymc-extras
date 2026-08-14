@@ -13,6 +13,27 @@ from pymc_extras.statespace.utils.constants import (
 PARAM_NAMES = MATRIX_NAMES[2:]
 
 
+def dim_of(tensor, axis: int):
+    """
+    Return a tensor's length along ``axis``.
+
+    Parameters
+    ----------
+    tensor : TensorVariable
+        Tensor to measure.
+    axis : int
+        Axis to measure, which may be negative.
+
+    Returns
+    -------
+    length : int or TensorVariable
+        A Python int when the length is known statically, so downstream shapes stay static, and a
+        symbolic scalar otherwise.
+    """
+    static_length = tensor.type.shape[axis]
+    return static_length if static_length is not None else tensor.shape[axis]
+
+
 def scan_sequence_names(time_varying_names: Iterable[str]) -> list[str]:
     """
     Return the names of the matrices the Kalman filter passes to ``scan`` as sequences.

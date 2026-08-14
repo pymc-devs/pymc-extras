@@ -46,6 +46,7 @@ from pymc_extras.statespace.filters import (
 from pymc_extras.statespace.filters.distributions import (
     SequenceMvNormal,
 )
+from pymc_extras.statespace.filters.kalman_filter import BaseFilter
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     JITTER_DEFAULT,
@@ -291,8 +292,7 @@ class PyMCStateSpace:
         if filter_type == "single" and self.k_endog > 1:
             raise ValueError('Cannot use filter_type = "single" with multiple observed time series')
 
-        self.kalman_filter = FILTER_FACTORY[filter_type.lower()]()
-        self.kalman_smoother = KalmanSmoother()
+        self.filter_type = filter_type.lower()
         self.make_symbolic_graph()
 
         self.requirement_table = None
@@ -990,12 +990,9 @@ class PyMCStateSpace:
         # Order is important here: only call _insert_data_shape_into_n_timesteps after data has been registered.
         self._insert_data_shape_into_n_timesteps(data)
 
-        filter_outputs = self.kalman_filter.build_graph(
-            pt.as_tensor_variable(data),
-            *self.unpack_statespace(),
-            missing_fill_value=self.missing_fill_value,
-            cov_jitter=self.cov_jitter,
-            time_varying_names=self.ssm.time_varying_names,
+        kalman_filter, _ = self.make_filters()
+        filter_outputs = kalman_filter.build_graph(
+            pt.as_tensor_variable(data), *self.unpack_statespace()
         )
 
         logp = filter_outputs.pop(-1)
@@ -1019,6 +1016,27 @@ class PyMCStateSpace:
 
         self._fit_coords = pm_mod.coords.copy()
         self._fit_dims = pm_mod.named_vars_to_dims.copy()
+
+    def make_filters(self) -> tuple[BaseFilter, KalmanSmoother]:
+        """
+        Return a Kalman filter and smoother configured for this model.
+
+        Returns
+        -------
+        kalman_filter : BaseFilter
+            Filter of the type this model was constructed with.
+        kalman_smoother : KalmanSmoother
+            Smoother carrying the same time-varying names and jitter.
+        """
+        kalman_filter = FILTER_FACTORY[self.filter_type](
+            time_varying_names=self.ssm.time_varying_names,
+            cov_jitter=self.cov_jitter,
+            missing_fill_value=self.missing_fill_value,
+        )
+        kalman_smoother = KalmanSmoother(
+            time_varying_names=self.ssm.time_varying_names, cov_jitter=self.cov_jitter
+        )
+        return kalman_filter, kalman_smoother
 
     def _register_additional_statespace_variables(self) -> None:
         """

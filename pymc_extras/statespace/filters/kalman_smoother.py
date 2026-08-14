@@ -1,14 +1,16 @@
-import copy
+from collections.abc import Iterable
 
 import pytensor
 import pytensor.tensor as pt
 
 from pymc_extras.statespace.filters.utilities import (
     quad_form_sym,
-    split_vars_into_seq_and_nonseq,
     stabilize,
 )
 from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, LONG_NAME_TO_SHORT
+
+# The smoother's backward pass only ever touches these three matrices.
+SMOOTHER_PARAM_NAMES = ("T", "R", "Q")
 
 
 class KalmanSmoother:
@@ -17,14 +19,32 @@ class KalmanSmoother:
 
     """
 
-    def __init__(self):
-        self.cov_jitter = JITTER_DEFAULT
-        self.seq_names = []
-        self.non_seq_names = []
+    def __init__(
+        self,
+        time_varying_names: Iterable[str] = (),
+        cov_jitter: float | None = None,
+    ):
+        """
+        Kalman smoother.
 
-    def copy(self) -> "KalmanSmoother":
-        """Return a shallow copy whose ``seq_names``/``non_seq_names`` are independent."""
-        return copy.copy(self)
+        :meth:`build_graph` only reads these settings, so one smoother builds any number of graphs.
+
+        Parameters
+        ----------
+        time_varying_names : iterable of str, optional
+            Long names of the matrices the model declared time-varying. Only the transition, selection
+            and state covariance matrices reach the smoother. Default is no time-varying matrices.
+        cov_jitter : float, optional
+            Jitter added to the diagonal of every covariance matrix at each step. Default 1e-8, or
+            1e-6 if ``pytensor.config.floatX`` is float32.
+        """
+        self.cov_jitter = JITTER_DEFAULT if cov_jitter is None else cov_jitter
+
+        time_varying_short = {LONG_NAME_TO_SHORT[name] for name in time_varying_names}
+        self.seq_names = [name for name in SMOOTHER_PARAM_NAMES if name in time_varying_short]
+        self.non_seq_names = [
+            name for name in SMOOTHER_PARAM_NAMES if name not in time_varying_short
+        ]
 
     def unpack_args(self, args):
         """
@@ -53,7 +73,7 @@ class KalmanSmoother:
             args[n_seq + 2 :],
         )
         return_ordered = []
-        for name in ["T", "R", "Q"]:
+        for name in SMOOTHER_PARAM_NAMES:
             if name in self.seq_names:
                 idx = self.seq_names.index(name)
                 return_ordered.append(seqs[idx])
@@ -72,23 +92,15 @@ class KalmanSmoother:
         Q,
         filtered_states,
         filtered_covariances,
-        cov_jitter=JITTER_DEFAULT,
-        time_varying_names=(),
     ):
-        self.cov_jitter = cov_jitter
-
         k = filtered_states.type.shape[1]
 
         a_last = pt.specify_shape(filtered_states[-1], (k,))
         P_last = pt.specify_shape(filtered_covariances[-1], (k, k))
 
-        time_varying_short = {LONG_NAME_TO_SHORT[n] for n in time_varying_names}
-        sequences, non_sequences, seq_names, non_seq_names = split_vars_into_seq_and_nonseq(
-            [T, R, Q], ["T", "R", "Q"], time_varying_short
-        )
-
-        self.seq_names = seq_names
-        self.non_seq_names = non_seq_names
+        params = dict(zip(SMOOTHER_PARAM_NAMES, [T, R, Q], strict=True))
+        sequences = [params[name] for name in self.seq_names]
+        non_sequences = [params[name] for name in self.non_seq_names]
 
         smoothed_states, smoothed_covariances = pytensor.scan(
             self.smoother_step,

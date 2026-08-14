@@ -242,3 +242,33 @@ def test_statespace_model_survives_pickling():
         unpickled.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
 
     assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
+
+
+def test_make_filters_carries_the_models_filter_config():
+    """Post-estimation graphs filter with the settings the fit used, not the library defaults."""
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(
+        verbose=False, cov_jitter=1e-3, missing_fill_value=-777.0
+    )
+    kalman_filter, kalman_smoother = ss_mod.make_filters()
+
+    assert kalman_filter.cov_jitter == 1e-3
+    assert kalman_filter.missing_fill_value == -777.0
+    assert kalman_smoother.cov_jitter == 1e-3
+
+
+def test_build_graph_does_not_mutate_the_filters(ss_mod):
+    """Filters carry their settings from construction, so building a graph writes nothing back."""
+    kalman_filter, kalman_smoother = ss_mod.make_filters()
+    filter_state = dict(kalman_filter.__dict__)
+    smoother_state = dict(kalman_smoother.__dict__)
+
+    n_timesteps = 25
+    matrices = ss_mod._insert_constant_timestep(
+        list(ss_mod._unpack_statespace_with_placeholders()), n_timesteps
+    )
+    _, _, _, _, T, _, R, _, Q = matrices
+    outputs = kalman_filter.build_graph(pt.zeros((n_timesteps, ss_mod.k_endog)), *matrices)
+    kalman_smoother.build_graph(T, R, Q, outputs[0], outputs[3])
+
+    assert kalman_filter.__dict__ == filter_state
+    assert kalman_smoother.__dict__ == smoother_state
