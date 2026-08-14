@@ -300,7 +300,8 @@ class PytensorRepresentation:
             self._validate_name(name)
             existing = getattr(self, name)
             updated = pt.set_subtensor(existing[tuple(idx)], value)
-            updated.name = name
+            updated.name = existing.name
+            updated.tag = copy.copy(existing.tag)
             setattr(self, name, updated)
             return
 
