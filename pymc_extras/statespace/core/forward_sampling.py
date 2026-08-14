@@ -123,7 +123,7 @@ def _sample_conditional(
             if name == "smoothed":
                 # The simulation smoother draws the whole latent path jointly, so the
                 # states carry their cross-time posterior covariance.
-                lgss_filter, lgss_smoother = ss_mod.make_filters()
+                kalman_filter, kalman_smoother = ss_mod.make_filters()
                 latent_states = SimulationSmoother(
                     f"{name}_{group}",
                     a_smooth=mu,
@@ -136,8 +136,8 @@ def _sample_conditional(
                     R=R,
                     H=H,
                     Q=Q,
-                    kalman_filter=lgss_filter,
-                    kalman_smoother=lgss_smoother,
+                    kalman_filter=kalman_filter,
+                    kalman_smoother=kalman_smoother,
                     sequence_names=tuple(scan_sequence_names(ss_mod.ssm.time_varying_names)),
                     dims=state_dims,
                     method=mvn_method,
