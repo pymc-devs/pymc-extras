@@ -13,19 +13,23 @@ from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.graph.traversal import explicit_graph_inputs
 from statsmodels.tsa.statespace.dynamic_factor import DynamicFactor
 
+from pymc_extras.statespace.core.statespace import FILTER_FACTORY
 from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
     AR_PARAM_DIM,
     ERROR_AR_PARAM_DIM,
+    EXOG_COEF_STATE_DIM,
     EXOG_STATE_DIM,
     FACTOR_DIM,
     LONG_MATRIX_NAMES,
     MATRIX_NAMES,
+    NON_EXOG_STATE_DIM,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
     SHORT_NAME_TO_LONG,
+    TIME_DIM,
 )
 from tests.statespace.shared_fixtures import rng
 
@@ -105,12 +109,12 @@ def create_sm_test_values_mapping(
             }
         )
 
-    # Observation error variances:
+    # statsmodels parameterizes the observation error by its variance, not its standard deviation.
     if "error_sigma" in test_values:
         error_sigma = test_values["error_sigma"]
         sm_test_values.update(
             {
-                f"sigma2.{endog_name}": error_sigma[endog_idx]
+                f"sigma2.{endog_name}": error_sigma[endog_idx] ** 2
                 for endog_idx, endog_name in enumerate(data.columns)
             }
         )
@@ -212,45 +216,37 @@ def unpack_symbolic_matrices_with_params(mod, param_dict, data_dict=None, mode="
     return f_matrices(**param_dict, **data_dict)
 
 
-def simulate_from_numpy_model(
-    mod, rng, param_dict, data_dict=None, steps=100, state_shocks=None, measurement_shocks=None
-):
-    x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(mod, param_dict, data_dict)
-    k_endog = mod.k_endog
-    k_states = mod.k_states
-    k_posdef = mod.k_posdef
+def simulate_from_matrices(matrices, rng, steps=100):
+    x0, P0, c, d, T, Z, R, H, Q = matrices
+    k_states, k_posdef = R.shape
+    k_endog = Z.shape[-2]
+    has_measurement_error = not np.allclose(H, 0)
 
     x = np.zeros((steps, k_states))
     y = np.zeros((steps, k_endog))
 
+    def measurement_error():
+        if not has_measurement_error:
+            return 0
+        return rng.multivariate_normal(mean=np.zeros(k_endog), cov=H).squeeze()
+
     x[0] = x0
     y[0] = (Z @ x0).squeeze() if Z.ndim == 2 else (Z[0] @ x0).squeeze()
-
-    if not np.allclose(H, 0):
-        y[0] += rng.multivariate_normal(mean=np.zeros(1), cov=H).squeeze()
+    y[0] += measurement_error()
 
     for t in range(1, steps):
-        if k_posdef > 0:
-            innov = R @ rng.multivariate_normal(mean=np.zeros(k_posdef), cov=Q)
-        else:
-            innov = 0
-
-        if not np.allclose(H, 0):
-            error = measurement_shocks[t - 1]
-        else:
-            error = 0
+        innov = R @ rng.multivariate_normal(mean=np.zeros(k_posdef), cov=Q) if k_posdef > 0 else 0
 
         x[t] = c + T @ x[t - 1] + innov
-        if Z.ndim == 2:
-            y[t] = (d + Z @ x[t] + error).squeeze()
-        else:
-            y[t] = (d + Z[t] @ x[t] + error).squeeze()
+        design = Z if Z.ndim == 2 else Z[t]
+        y[t] = (d + design @ x[t] + measurement_error()).squeeze()
 
     return x, y.squeeze()
 
 
 @pytest.mark.parametrize("n_obs,n_runs", [(100, 200)])
-def test_DFM_exog_betas_random_walk(n_obs, n_runs):
+def test_exog_coefficient_random_walk_variance_grows_linearly(n_obs, n_runs):
+    """With exog_innovations the coefficients random walk, so Var(beta_t) = t * diag(Q)."""
     rng = np.random.default_rng(123)
     dfm_mod = BayesianDynamicFactor(
         k_factors=1,
@@ -258,56 +254,45 @@ def test_DFM_exog_betas_random_walk(n_obs, n_runs):
         endog_names=["endogenous_0", "endogenous_1"],
         error_order=1,
         error_var=False,
-        exog_names=["exogenous_0", "exogenous_1"],
+        exog_state_names=["exogenous_0", "exogenous_1"],
         shared_exog_states=False,
         exog_innovations=True,
         error_cov_type="diagonal",
         measurement_error=False,
+        verbose=False,
     )
 
-    # Arbitrary Parameters
+    beta_variances = np.array([1.0, 2.0, 3.0, 4.0])
     param_dict = {
         "factor_loadings": np.array([[0.9], [0.8]]),
         "factor_ar": np.array([[0.5]]),
         "error_ar": np.array([[0.4], [0.3]]),
         "error_sigma": np.array([0.1, 0.2]),
         "P0": np.eye(dfm_mod.k_states),
-        "x0": np.zeros(dfm_mod.k_states - dfm_mod.k_exog * dfm_mod.k_endog),
-        "beta": np.array([0.3, 0.5, 1, 2]),
-        "beta_sigma": np.array([1, 2, 3, 4]) ** 0.5,
+        "x0": np.zeros(dfm_mod.k_states - dfm_mod.k_exog_states),
+        "beta": np.array([0.3, 0.5, 1.0, 2.0]),
+        "beta_sigma": beta_variances,
     }
-    data_dict = {"exog_data": np.random.normal(size=(n_obs, 2))}
-
-    # Run multiple sims
-    betas_t1, betas_t100 = [], []
-    k_exog_states = dfm_mod.k_exog * dfm_mod.k_endog
-
-    for _ in range(n_runs):
-        x_traj, _ = simulate_from_numpy_model(dfm_mod, rng, param_dict, data_dict, steps=n_obs)
-        beta_traj = x_traj[:, -k_exog_states:]
-        betas_t1.append(beta_traj[1, :])
-        betas_t100.append(beta_traj[-1, :])
-
-    betas_t1 = np.array(betas_t1)
-    betas_t100 = np.array(betas_t100)
-
-    var_t1 = betas_t1.var(axis=0)
-    var_t100 = betas_t100.var(axis=0)
-
-    assert np.all(var_t100 > var_t1), (
-        f"Expected variance at T=100 > T=1, got {var_t1} vs {var_t100}"
+    matrices = unpack_symbolic_matrices_with_params(
+        dfm_mod, param_dict, {"exog_data": rng.normal(size=(n_obs, 2))}
     )
 
+    first_exog_state = dfm_mod.k_states - dfm_mod.k_exog_states
+    coefficient_paths = np.array(
+        [
+            simulate_from_matrices(matrices, rng, steps=n_obs)[0][:, first_exog_state:]
+            for _ in range(n_runs)
+        ]
+    )
 
-@pytest.mark.parametrize("shared", [True, False])
-def test_DFM_exog_shared_vs_not(shared):
+    assert_allclose(coefficient_paths[:, 1].var(axis=0), beta_variances, rtol=0.3)
+    assert_allclose(coefficient_paths[:, -1].var(axis=0), (n_obs - 1) * beta_variances, rtol=0.3)
+
+
+@pytest.mark.parametrize("shared", [True, False], ids=["shared", "per_series"])
+def test_exog_contribution_is_shared_across_series_only_when_requested(shared):
     rng = np.random.default_rng(123)
-
-    n_obs = 50
-    k_exog = 2
-    k_endog = 2
-
-    # Dummy exogenous data
+    n_obs, k_exog, k_endog = 50, 2, 2
     exog = rng.normal(size=(n_obs, k_exog))
 
     dfm_mod = BayesianDynamicFactor(
@@ -315,69 +300,42 @@ def test_DFM_exog_shared_vs_not(shared):
         factor_order=1,
         endog_names=["endogenous_0", "endogenous_1"],
         error_order=1,
-        exog_names=["exogenous_0", "exogenous_1"],
+        exog_state_names=["exogenous_0", "exogenous_1"],
         shared_exog_states=shared,
         exog_innovations=False,
         error_cov_type="diagonal",
         measurement_error=False,
+        verbose=False,
     )
 
-    k_exog_states = dfm_mod.k_exog * dfm_mod.k_endog if not shared else dfm_mod.k_exog
-
-    if shared:
-        beta = np.array([0.3, 0.5])
-    else:
-        beta = np.array([0.3, 0.5, 1.0, 2.0])
-
+    beta = np.array([0.3, 0.5]) if shared else np.array([0.3, 0.5, 1.0, 2.0])
     param_dict = {
         "factor_loadings": np.array([[0.9], [0.8]]),
         "factor_ar": np.array([[0.5]]),
         "error_ar": np.array([[0.4], [0.3]]),
         "error_sigma": np.array([0.1, 0.2]),
         "P0": np.eye(dfm_mod.k_states),
-        "x0": np.zeros(dfm_mod.k_states - k_exog_states),
+        "x0": np.zeros(dfm_mod.k_states - dfm_mod.k_exog_states),
         "beta": beta,
     }
 
-    data_dict = {"exog_data": exog}
+    matrices = unpack_symbolic_matrices_with_params(dfm_mod, param_dict, {"exog_data": exog})
+    x_traj, _ = simulate_from_matrices(matrices, rng, steps=n_obs)
+    Z = dict(zip(MATRIX_NAMES, matrices))["Z"]
 
-    # Simulate trajectory
-    x_traj, y_traj = simulate_from_numpy_model(dfm_mod, rng, param_dict, data_dict, steps=n_obs)
-
-    # Test 1: Check hidden states
-    # Extract exogenous hidden states at time t=10
     t = 10
-    exog_states_start = dfm_mod.k_states - k_exog_states
-    exog_states_end = dfm_mod.k_states
-    exog_hidden_states = x_traj[t, exog_states_start:exog_states_end]
+    first_exog_state = dfm_mod.k_states - dfm_mod.k_exog_states
 
+    # Without innovations the coefficients never move off their initial value.
+    assert_allclose(x_traj[t, first_exog_state:], beta)
+
+    exog_contribution = Z[t][:, first_exog_state:] @ x_traj[t, first_exog_state:]
     if shared:
-        # When shared=True, there should be k_exog states total
-        assert len(exog_hidden_states) == k_exog
+        expected = np.full(k_endog, beta @ exog[t])
     else:
-        # When shared=False, there should be k_exog * k_endog states
-        assert len(exog_hidden_states) == k_exog * k_endog
-        # Each endogenous variable has its own set of exogenous states
-        exog_states_reshaped = exog_hidden_states.reshape(k_endog, k_exog)
-        assert not np.allclose(exog_states_reshaped[0], exog_states_reshaped[1])
+        expected = beta.reshape(k_endog, k_exog) @ exog[t]
 
-    # Test 2: Check observed contributions
-    exog_t = exog[t]
-
-    if shared:
-        # All endogenous variables get the same beta * data contribution
-        contributions = [beta @ exog_t for _ in range(k_endog)]
-        assert np.allclose(contributions[0], contributions[1]), (
-            "Expected same contribution for all endog when shared=True"
-        )
-    else:
-        # Each endogenous variable gets different beta * data
-        beta_reshaped = beta.reshape(k_endog, k_exog)
-        contributions = [beta_reshaped[i] @ exog_t for i in range(k_endog)]
-        # Check that contributions are different
-        assert not np.allclose(contributions[0], contributions[1]), (
-            f"Expected different contributions, got {contributions}"
-        )
+    assert_allclose(exog_contribution, expected)
 
 
 class TestDFMConfiguration:
@@ -402,8 +360,8 @@ class TestDFMConfiguration:
         }
         expected_coords = {
             OBS_STATE_DIM: ("y0", "y1", "y2"),
-            ALL_STATE_DIM: ("L0.factor_0",),
-            ALL_STATE_AUX_DIM: ("L0.factor_0",),
+            ALL_STATE_DIM: ("L0.factor_1",),
+            ALL_STATE_AUX_DIM: ("L0.factor_1",),
             FACTOR_DIM: ("factor_1",),
         }
 
@@ -411,9 +369,9 @@ class TestDFMConfiguration:
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert mod.state_names == ("L0.factor_0",)
+        assert mod.state_names == ("L0.factor_1",)
         assert mod.observed_states == ("y0", "y1", "y2")
-        assert mod.shock_names == ("factor_shock_0",)
+        assert mod.shock_names == ("factor_shock_1",)
 
     def test_dynamic_factor_ar1_error_diagonal_error(self):
         k_factors = 2
@@ -453,35 +411,32 @@ class TestDFMConfiguration:
         expected_coords = {
             OBS_STATE_DIM: ("y0", "y1", "y2"),
             ALL_STATE_DIM: (
-                "L0.factor_0",
-                "L1.factor_0",
                 "L0.factor_1",
+                "L0.factor_2",
                 "L1.factor_1",
-                "L0.error_0",
+                "L1.factor_2",
                 "L0.error_1",
                 "L0.error_2",
+                "L0.error_3",
             ),
             ALL_STATE_AUX_DIM: (
-                "L0.factor_0",
-                "L1.factor_0",
                 "L0.factor_1",
+                "L0.factor_2",
                 "L1.factor_1",
-                "L0.error_0",
+                "L1.factor_2",
                 "L0.error_1",
                 "L0.error_2",
+                "L0.error_3",
             ),
             FACTOR_DIM: ("factor_1", "factor_2"),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, error_order + 1)),
         }
 
         assert mod.param_names == expected_param_names
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order
         assert mod.observed_states == ("y0", "y1", "y2")
         assert len(mod.shock_names) == k_factors + k_endog
 
@@ -522,35 +477,32 @@ class TestDFMConfiguration:
         expected_coords = {
             OBS_STATE_DIM: ("y0", "y1", "y2"),
             ALL_STATE_DIM: (
-                "L0.factor_0",
-                "L0.error_0",
-                "L1.error_0",
+                "L0.factor_1",
                 "L0.error_1",
-                "L1.error_1",
                 "L0.error_2",
+                "L0.error_3",
+                "L1.error_1",
                 "L1.error_2",
+                "L1.error_3",
             ),
             ALL_STATE_AUX_DIM: (
-                "L0.factor_0",
-                "L0.error_0",
-                "L1.error_0",
+                "L0.factor_1",
                 "L0.error_1",
-                "L1.error_1",
                 "L0.error_2",
+                "L0.error_3",
+                "L1.error_1",
                 "L1.error_2",
+                "L1.error_3",
             ),
             FACTOR_DIM: ("factor_1",),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1)),
         }
 
         assert mod.param_names == expected_param_names
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order
         assert mod.observed_states == ("y0", "y1", "y2")
         assert len(mod.shock_names) == k_factors + k_endog
 
@@ -568,7 +520,7 @@ class TestDFMConfiguration:
             endog_names=["y0", "y1", "y2"],
             error_order=error_order,
             error_var=error_var,
-            exog_names=["x0", "x1"],
+            exog_state_names=["x0", "x1"],
             shared_exog_states=shared_exog_states,
             exog_innovations=True,
             error_cov_type="diagonal",
@@ -587,56 +539,63 @@ class TestDFMConfiguration:
             "beta_sigma",
         )
         expected_param_dims = {
-            "x0": (ALL_STATE_DIM,),
+            "x0": (NON_EXOG_STATE_DIM,),
             "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
             "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
             "factor_ar": (FACTOR_DIM, AR_PARAM_DIM),
             "error_ar": (OBS_STATE_DIM, ERROR_AR_PARAM_DIM),
             "error_sigma": (OBS_STATE_DIM,),
             "sigma_obs": (OBS_STATE_DIM,),
-            "beta": (EXOG_STATE_DIM,),
-            "beta_sigma": (EXOG_STATE_DIM,),
+            "beta": (EXOG_COEF_STATE_DIM,),
+            "beta_sigma": (EXOG_COEF_STATE_DIM,),
         }
         expected_coords = {
             OBS_STATE_DIM: ("y0", "y1", "y2"),
             ALL_STATE_DIM: (
-                "L0.factor_0",
                 "L0.factor_1",
-                "L0.error_0",
+                "L0.factor_2",
                 "L0.error_1",
                 "L0.error_2",
+                "L0.error_3",
                 "beta_x0[shared]",
                 "beta_x1[shared]",
             ),
             ALL_STATE_AUX_DIM: (
-                "L0.factor_0",
                 "L0.factor_1",
-                "L0.error_0",
+                "L0.factor_2",
                 "L0.error_1",
                 "L0.error_2",
+                "L0.error_3",
                 "beta_x0[shared]",
                 "beta_x1[shared]",
             ),
             FACTOR_DIM: ("factor_1", "factor_2"),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
-            EXOG_STATE_DIM: tuple(range(1, k_exog + 1))
-            if shared_exog_states
-            else tuple(range(1, k_exog * k_endog + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, error_order + 1)),
+            EXOG_STATE_DIM: ("x0", "x1"),
+            EXOG_COEF_STATE_DIM: ("beta_x0[shared]", "beta_x1[shared]"),
+            NON_EXOG_STATE_DIM: (
+                "L0.factor_1",
+                "L0.factor_2",
+                "L0.error_1",
+                "L0.error_2",
+                "L0.error_3",
+            ),
         }
 
         assert mod.param_names == expected_param_names
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order + (
-            k_exog if shared_exog_states else k_exog * k_endog
-        )
         assert mod.observed_states == ("y0", "y1", "y2")
-        assert len(mod.shock_names) == k_factors + k_endog + (
-            k_exog if shared_exog_states else k_exog * k_endog
+        assert mod.shock_names == (
+            "factor_shock_1",
+            "factor_shock_2",
+            "error_shock_1",
+            "error_shock_2",
+            "error_shock_3",
+            "exog_shock_x0[shared]",
+            "exog_shock_x1[shared]",
         )
 
     def test_exog_not_shared_no_exog_innovations(self):
@@ -653,7 +612,7 @@ class TestDFMConfiguration:
             endog_names=["y0", "y1", "y2"],
             error_order=error_order,
             error_var=error_var,
-            exog_names=["x0"],
+            exog_state_names=["x0"],
             shared_exog_states=shared_exog_states,
             exog_innovations=False,
             error_cov_type="scalar",
@@ -670,56 +629,63 @@ class TestDFMConfiguration:
             "beta",
         )
         expected_param_dims = {
-            "x0": (ALL_STATE_DIM,),
+            "x0": (NON_EXOG_STATE_DIM,),
             "P0": (ALL_STATE_DIM, ALL_STATE_AUX_DIM),
             "factor_loadings": (OBS_STATE_DIM, FACTOR_DIM),
             "factor_ar": (FACTOR_DIM, AR_PARAM_DIM),
             "error_ar": (OBS_STATE_DIM, ERROR_AR_PARAM_DIM),
             "error_sigma": (),
-            "beta": (EXOG_STATE_DIM,),
+            "beta": (EXOG_COEF_STATE_DIM,),
         }
         expected_coords = {
             OBS_STATE_DIM: ("y0", "y1", "y2"),
             ALL_STATE_DIM: (
-                "L0.factor_0",
-                "L1.factor_0",
-                "L0.error_0",
+                "L0.factor_1",
+                "L1.factor_1",
                 "L0.error_1",
                 "L0.error_2",
+                "L0.error_3",
                 "beta_x0[y0]",
                 "beta_x0[y1]",
                 "beta_x0[y2]",
             ),
             ALL_STATE_AUX_DIM: (
-                "L0.factor_0",
-                "L1.factor_0",
-                "L0.error_0",
+                "L0.factor_1",
+                "L1.factor_1",
                 "L0.error_1",
                 "L0.error_2",
+                "L0.error_3",
                 "beta_x0[y0]",
                 "beta_x0[y1]",
                 "beta_x0[y2]",
             ),
             FACTOR_DIM: ("factor_1",),
             AR_PARAM_DIM: tuple(range(1, k_factors * max(factor_order, 1) + 1)),
-            ERROR_AR_PARAM_DIM: tuple(range(1, (error_order * k_endog) + 1))
-            if error_var
-            else tuple(range(1, error_order + 1)),
-            EXOG_STATE_DIM: tuple(range(1, k_exog + 1))
-            if shared_exog_states
-            else tuple(range(1, k_exog * k_endog + 1)),
+            ERROR_AR_PARAM_DIM: tuple(range(1, error_order + 1)),
+            EXOG_STATE_DIM: ("x0",),
+            EXOG_COEF_STATE_DIM: ("beta_x0[y0]", "beta_x0[y1]", "beta_x0[y2]"),
+            NON_EXOG_STATE_DIM: (
+                "L0.factor_1",
+                "L1.factor_1",
+                "L0.error_1",
+                "L0.error_2",
+                "L0.error_3",
+            ),
         }
 
         assert mod.param_names == expected_param_names
         assert mod.param_dims == expected_param_dims
         for k, v in expected_coords.items():
             assert mod.coords[k] == v
-        assert len(mod.state_names) == k_factors * max(factor_order, 1) + k_endog * error_order + (
-            k_exog if shared_exog_states else k_exog * k_endog
-        )
         assert mod.observed_states == ("y0", "y1", "y2")
-        assert len(mod.shock_names) == k_factors + k_endog + (
-            k_exog if shared_exog_states else k_exog * k_endog
+        assert mod.shock_names == (
+            "factor_shock_1",
+            "error_shock_1",
+            "error_shock_2",
+            "error_shock_3",
+            "exog_shock_x0[y0]",
+            "exog_shock_x0[y1]",
+            "exog_shock_x0[y2]",
         )
 
 
@@ -768,3 +734,250 @@ def test_dfm_workflow(rng, mock_sample):
     irf = ss_mod.impulse_response_function(idata, n_steps=10, random_seed=rng)
     assert "irf" in irf
     assert np.isfinite(irf.irf.values).all()
+
+
+def evaluate_matrices(mod, param_values, data_dict=None):
+    matrices = unpack_symbolic_matrices_with_params(mod, param_values, data_dict=data_dict)
+    return dict(zip(MATRIX_NAMES, matrices))
+
+
+def random_param_values(mod, rng):
+    return {
+        name: rng.normal(size=variable.type.shape).astype(floatX)
+        for name, variable in mod._name_to_variable.items()
+    }
+
+
+@pytest.mark.parametrize(
+    "k_factors, factor_order, error_order, error_var",
+    [(2, 3, 0, False), (1, 1, 2, False), (2, 2, 2, False), (1, 1, 2, True), (2, 2, 2, True)],
+    ids=["factor_lags", "error_lags", "both", "error_lags_var", "both_var"],
+)
+def test_lagged_state_names_match_transition_shifts(
+    k_factors, factor_order, error_order, error_var, rng
+):
+    """A state called ``L{lag}.X`` has to be the previous step's ``L{lag - 1}.X``."""
+    mod = BayesianDynamicFactor(
+        k_factors=k_factors,
+        factor_order=factor_order,
+        endog_names=["y0", "y1", "y2"],
+        error_order=error_order,
+        error_var=error_var,
+        verbose=False,
+    )
+    T = evaluate_matrices(mod, random_param_values(mod, rng))["T"]
+    name_to_index = {name: i for i, name in enumerate(mod.state_names)}
+
+    lagged_states = [
+        (i, name) for i, name in enumerate(mod.state_names) if name.startswith(("L1.", "L2."))
+    ]
+    assert lagged_states, "this configuration has no lagged states to check"
+
+    for index, name in lagged_states:
+        lag, component = name.split(".", 1)
+        expected = np.zeros(mod.k_states)
+        expected[name_to_index[f"L{int(lag[1:]) - 1}.{component}"]] = 1.0
+
+        assert_allclose(T[index], expected, err_msg=f"state {name!r} does not shift from its lag")
+
+
+@pytest.mark.parametrize("shared_exog_states", [True, False], ids=["shared", "per_series"])
+def test_exog_state_names_match_design_columns(shared_exog_states, rng):
+    """A state called ``beta_x[y]`` has to be the column of Z carrying x onto series y."""
+    endog_names = ["y0", "y1", "y2"]
+    exog_state_names = ["a", "b"]
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=endog_names,
+        exog_state_names=exog_state_names,
+        shared_exog_states=shared_exog_states,
+        verbose=False,
+    )
+
+    exog_data = np.array([[2.0, 5.0]], dtype=floatX)
+    Z = evaluate_matrices(mod, random_param_values(mod, rng), data_dict={"exog_data": exog_data})[
+        "Z"
+    ][0]
+    exog_values = dict(zip(exog_state_names, exog_data[0]))
+
+    beta_states = [(i, name) for i, name in enumerate(mod.state_names) if name.startswith("beta_")]
+    assert len(beta_states) == mod.k_exog_states
+
+    for column, name in beta_states:
+        exog_name, endog_name = name.removeprefix("beta_").rstrip("]").split("[")
+        value = exog_values[exog_name]
+
+        if endog_name == "shared":
+            expected = np.full(len(endog_names), value)
+        else:
+            expected = np.zeros(len(endog_names))
+            expected[endog_names.index(endog_name)] = value
+
+        assert_allclose(Z[:, column], expected, err_msg=f"state {name!r} loads the wrong series")
+
+
+def test_unstructured_error_cov_without_error_states():
+    """With error_order=0 the idiosyncratic error has no state, so it is observation noise."""
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=["y0", "y1", "y2"],
+        error_order=0,
+        error_cov_type="unstructured",
+        verbose=False,
+    )
+    error_cov = np.array([[1.0, 0.2, 0.0], [0.2, 1.5, 0.1], [0.0, 0.1, 2.0]], dtype=floatX)
+    matrices = evaluate_matrices(
+        mod,
+        {
+            "x0": np.zeros(mod.k_states, dtype=floatX),
+            "P0": np.eye(mod.k_states, dtype=floatX),
+            "factor_loadings": np.ones((3, 1), dtype=floatX),
+            "factor_ar": np.array([[0.5]], dtype=floatX),
+            "error_cov": error_cov,
+        },
+    )
+
+    assert_allclose(matrices["H"], error_cov)
+    assert_allclose(matrices["Q"], np.eye(1))
+
+
+def test_scalar_error_cov_without_error_states():
+    """A scalar error standard deviation spreads its variance over the observation covariance."""
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=["y0", "y1", "y2"],
+        error_order=0,
+        error_cov_type="scalar",
+        verbose=False,
+    )
+    matrices = evaluate_matrices(
+        mod,
+        {
+            "x0": np.zeros(mod.k_states, dtype=floatX),
+            "P0": np.eye(mod.k_states, dtype=floatX),
+            "factor_loadings": np.ones((3, 1), dtype=floatX),
+            "factor_ar": np.array([[0.5]], dtype=floatX),
+            "error_sigma": np.array(0.75, dtype=floatX),
+        },
+    )
+
+    assert_allclose(matrices["H"], np.eye(3) * 0.75**2)
+
+
+def test_measurement_error_adds_to_idiosyncratic_error():
+    """error_sigma and sigma_obs are standard deviations, so H sums their variances."""
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=["y0", "y1", "y2"],
+        error_order=0,
+        error_cov_type="diagonal",
+        measurement_error=True,
+        verbose=False,
+    )
+    matrices = evaluate_matrices(
+        mod,
+        {
+            "x0": np.zeros(mod.k_states, dtype=floatX),
+            "P0": np.eye(mod.k_states, dtype=floatX),
+            "factor_loadings": np.ones((3, 1), dtype=floatX),
+            "factor_ar": np.array([[0.5]], dtype=floatX),
+            "error_sigma": np.array([1.0, 2.0, 3.0], dtype=floatX),
+            "sigma_obs": np.array([0.5, 0.25, 0.125], dtype=floatX),
+        },
+    )
+
+    assert_allclose(matrices["H"], np.diag([1.0**2 + 0.5**2, 2.0**2 + 0.25**2, 3.0**2 + 0.125**2]))
+
+
+def test_dfm_rejects_unknown_error_cov_type():
+    with pytest.raises(ValueError, match="error_cov_type must be one of"):
+        BayesianDynamicFactor(
+            k_factors=1,
+            factor_order=1,
+            endog_names=["y0", "y1"],
+            error_cov_type="diagnoal",
+            verbose=False,
+        )
+
+
+@pytest.mark.parametrize("filter_type", ["standard", "univariate", "cholesky"])
+def test_dfm_accepts_filter_type_and_mode(filter_type):
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=["y0", "y1"],
+        filter_type=filter_type,
+        mode="FAST_COMPILE",
+        verbose=False,
+    )
+
+    assert isinstance(mod.kalman_filter, FILTER_FACTORY[filter_type])
+    assert mod.mode == "FAST_COMPILE"
+
+
+@pytest.mark.parametrize("shared_exog_states", [True, False], ids=["shared", "per_series"])
+def test_exog_model_builds_from_advertised_dims(shared_exog_states, rng):
+    """Every parameter's advertised dims must be as long as the variable it stands for."""
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=["y0", "y1", "y2"],
+        exog_state_names=["a", "b"],
+        shared_exog_states=shared_exog_states,
+        exog_innovations=True,
+        verbose=False,
+    )
+
+    index = pd.date_range("2020-01-01", periods=20, freq="D")
+    data = pd.DataFrame(rng.normal(size=(20, 3)), columns=["y0", "y1", "y2"], index=index)
+    exog = rng.normal(size=(20, 2))
+
+    assert len(mod.coords[EXOG_STATE_DIM]) == exog.shape[1]
+
+    with pm.Model(coords=mod.coords) as pymc_mod:
+        pm.Data("exog_data", exog, dims=[TIME_DIM, EXOG_STATE_DIM])
+        pm.Normal("x0", dims=mod.param_dims["x0"])
+        P0_diag = pm.Exponential("P0_diag", 1, dims=[ALL_STATE_DIM])
+        pm.Deterministic("P0", pt.diag(P0_diag), dims=[ALL_STATE_DIM, ALL_STATE_AUX_DIM])
+        pm.Normal("factor_loadings", dims=mod.param_dims["factor_loadings"])
+        pm.Normal("factor_ar", dims=mod.param_dims["factor_ar"])
+        pm.Exponential("error_sigma", 1, dims=mod.param_dims["error_sigma"])
+        pm.Normal("beta", dims=mod.param_dims["beta"])
+        pm.Exponential("beta_sigma", 1, dims=mod.param_dims["beta_sigma"])
+
+        mod.build_statespace_graph(data)
+
+    assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
+
+
+@pytest.mark.parametrize("shared_exog_states", [True, False], ids=["shared", "per_series"])
+def test_exog_shock_names_match_the_states_they_drive(shared_exog_states, rng):
+    """An exogenous shock is named for the coefficient state its column of R feeds."""
+    mod = BayesianDynamicFactor(
+        k_factors=1,
+        factor_order=1,
+        endog_names=["y0", "y1", "y2"],
+        exog_state_names=["a", "b"],
+        shared_exog_states=shared_exog_states,
+        exog_innovations=True,
+        verbose=False,
+    )
+    R = evaluate_matrices(
+        mod,
+        random_param_values(mod, rng),
+        data_dict={"exog_data": np.zeros((1, 2), dtype=floatX)},
+    )["R"]
+
+    exog_shocks = [(i, n) for i, n in enumerate(mod.shock_names) if n.startswith("exog_shock_")]
+    assert len(exog_shocks) == mod.k_exog_states
+
+    for shock_index, shock_name in exog_shocks:
+        driven_states = np.flatnonzero(R[:, shock_index])
+        assert len(driven_states) == 1, f"{shock_name!r} does not drive exactly one state"
+
+        state_name = mod.state_names[driven_states[0]]
+        assert shock_name == state_name.replace("beta_", "exog_shock_", 1)
