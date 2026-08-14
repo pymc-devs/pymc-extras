@@ -160,6 +160,14 @@ def test_saturated_trial_point_rejected():
         assert np.all(np.isfinite(it["g"]))
 
 
+def test_zero_accepted_steps_raises():
+    """A run that never accepts a step must refuse to sample, not sample garbage."""
+    model, packed = logistic_case(seed=1, n=400)
+    loader = ArrayLoader(packed, batch_size=64)
+    with pytest.raises(RuntimeError, match="no accepted steps"):
+        fit_streaming_pathfinder(model, loader, num_iters=0, random_seed=2, lbfgs_config=CFG)
+
+
 def test_smoke_streaming_logistic():
     """A short streaming fit on logistic data returns finite, correctly shaped draws."""
     model, packed = logistic_case(seed=1, n=400)

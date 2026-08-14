@@ -130,7 +130,7 @@ def test_no_duplicate_gradient_evaluations():
     assert all(c == 2 for c in list(per_batch.values())[:-1]), dict(per_batch)
 
 
-@pytest.mark.parametrize("kw", [{"backtrack": -0.5}, {"maxcor": 0}])
+@pytest.mark.parametrize("kw", [{"backtrack": -0.5}, {"maxcor": 0}, {"maxls": 0}])
 def test_config_rejects_invalid_settings(kw):
     """Settings that would silently break the line search or the history are refused."""
     with pytest.raises(ValueError):
