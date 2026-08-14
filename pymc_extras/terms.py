@@ -97,6 +97,46 @@ Gotchas
           model = pm.modelcontext(None)
           unique = list(dict.fromkeys(ds[self.data_source].values))
           model.add_coords({self.data_source: unique})
+
+Extending
+---------
+``Parameter`` and ``Intercept`` are the same kind of term.  ``Intercept``
+is a convenience alias with ``name`` defaulting to ``"intercept"``; use
+``Parameter`` when the role is not an intercept (e.g. a cohort scale or
+product effect).  When the prior carries ``dims``, coordinates are
+automatically extracted from the dataset during ``collect_coords``.
+
+Custom terms subclass ``ModelTerm`` and implement the five lifecycle
+methods.  Here is an example of a gather / index term that maps a
+cohort-level parameter to customer-level via an index column.  This is
+**not shipped** — copy it into your project as a starting point:
+
+.. code-block:: python
+
+    @dataclass
+    class Indexed(ModelTerm):
+        base: Any  # e.g. Parameter("alpha", prior=Prior(..., dims="cohort"))
+        index_var: str  # e.g. "cohort_idx" (integer codes, dims="customer_id")
+
+        def get_coords(self, ds):
+            return get_coords(self.base, ds)
+
+        def register_data(self, ds):
+            register_data(self.base, ds=ds)
+            model = pm.modelcontext(None)
+            if self.index_var not in model:
+                pmd.Data(self.index_var, ds[self.index_var], dims=ds[self.index_var].dims)
+
+        def create_variable(self):
+            base_val = build_param(self.base)
+            model = pm.modelcontext(None)
+            idx = model[self.index_var]
+            return base_val[idx]
+
+        def set_data(self, ds, model=None):
+            set_data(self.base, ds=ds, model=model)
+            if self.index_var in ds:
+                pm.set_data({self.index_var: ds[self.index_var].values}, model=model)
 """
 
 from __future__ import annotations
@@ -118,6 +158,7 @@ __all__ = [
     "Dot",
     "Intercept",
     "ModelTerm",
+    "Parameter",
     "Product",
     "Sum",
     "Transform",
@@ -300,29 +341,64 @@ class Product:
 
 
 @dataclass
-class Intercept(ModelTerm):
-    """Constant intercept term.
+class Parameter(ModelTerm):
+    """Named free parameter (scalar or dimensional via ``prior.dims``).
 
-    Each intercept in the same ``pm.Model`` must have a unique ``name``.
-    Two intercepts with the same name (even in different parameter trees,
+    ``Parameter`` is the general-purpose leaf for free random variables.
+    ``Intercept`` is a convenience alias that defaults ``name`` to
+    ``"intercept"``; both share the same lifecycle.
+
+    Each parameter in the same ``pm.Model`` must have a unique ``name``.
+    Two parameters with the same name (even in different expression trees,
     e.g., a ``mu`` expression and a ``sigma`` expression) will clash when
     ``build_param`` creates the variables.
 
     Parameters
     ----------
     name : str
-        Name for the PyMC variable.
+        Name for the PyMC variable (required).
     prior : VariableFactory
-        Prior distribution for the intercept. Any ``VariableFactory``
+        Prior distribution for the parameter. Any ``VariableFactory``
         (``Prior``, ``Censored``, ``Scaled``, custom) is accepted.
+        When the prior carries ``dims`` (e.g. ``Prior(..., dims="cohort")``),
+        ``get_coords`` will extract those coordinates from the dataset.
+    """
+
+    name: str
+    prior: VariableFactory = field(default_factory=lambda: Prior("Normal"))
+
+    def get_coords(self, ds: xr.Dataset) -> dict[str, Any]:
+        """Collect coordinates from ``prior.dims`` present in the dataset."""
+        dims = getattr(self.prior, "dims", None)
+        if dims is None:
+            return {}
+        if isinstance(dims, str):
+            dims = (dims,)
+        return {d: ds.coords[d].values.tolist() for d in dims if d in ds.coords}
+
+    def create_variable(self) -> pt.TensorVariable:
+        """Build a free parameter variable."""
+        return self.prior.create_variable(self.name, xdist=True)
+
+
+@dataclass
+class Intercept(Parameter):
+    """GLM-style intercept term; same as :class:`Parameter` with a default name.
+
+    ``Intercept`` is provided for familiar GLM notation.  It is identical
+    to ``Parameter`` in behavior and lifecycle.  Use ``Parameter`` when the
+    role is not an intercept (e.g. a cohort scale or product effect).
+
+    Parameters
+    ----------
+    name : str
+        Name for the PyMC variable.  Defaults to ``"intercept"``.
+    prior : VariableFactory
+        Prior distribution.  Any ``VariableFactory`` is accepted.
     """
 
     name: str = "intercept"
     prior: VariableFactory = field(default_factory=lambda: Prior("Normal"))
-
-    def create_variable(self) -> pt.TensorVariable:
-        """Build a scalar intercept variable."""
-        return self.prior.create_variable(self.name, xdist=True)
 
 
 @dataclass(kw_only=True)
