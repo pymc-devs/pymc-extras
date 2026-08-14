@@ -109,12 +109,12 @@ def create_sm_test_values_mapping(
             }
         )
 
-    # Observation error variances:
+    # statsmodels parameterizes the observation error by its variance, not its standard deviation.
     if "error_sigma" in test_values:
         error_sigma = test_values["error_sigma"]
         sm_test_values.update(
             {
-                f"sigma2.{endog_name}": error_sigma[endog_idx]
+                f"sigma2.{endog_name}": error_sigma[endog_idx] ** 2
                 for endog_idx, endog_name in enumerate(data.columns)
             }
         )
@@ -844,7 +844,7 @@ def test_unstructured_error_cov_without_error_states():
 
 
 def test_scalar_error_cov_without_error_states():
-    """A scalar error variance spreads over the observation covariance diagonal."""
+    """A scalar error standard deviation spreads its variance over the observation covariance."""
     mod = BayesianDynamicFactor(
         k_factors=1,
         factor_order=1,
@@ -864,11 +864,11 @@ def test_scalar_error_cov_without_error_states():
         },
     )
 
-    assert_allclose(matrices["H"], np.eye(3) * 0.75)
+    assert_allclose(matrices["H"], np.eye(3) * 0.75**2)
 
 
 def test_measurement_error_adds_to_idiosyncratic_error():
-    """error_sigma and sigma_obs are both variances, so H is their sum on the diagonal."""
+    """error_sigma and sigma_obs are standard deviations, so H sums their variances."""
     mod = BayesianDynamicFactor(
         k_factors=1,
         factor_order=1,
@@ -890,7 +890,7 @@ def test_measurement_error_adds_to_idiosyncratic_error():
         },
     )
 
-    assert_allclose(matrices["H"], np.diag([1.5, 2.25, 3.125]))
+    assert_allclose(matrices["H"], np.diag([1.0**2 + 0.5**2, 2.0**2 + 0.25**2, 3.0**2 + 0.125**2]))
 
 
 def test_dfm_rejects_unknown_error_cov_type():

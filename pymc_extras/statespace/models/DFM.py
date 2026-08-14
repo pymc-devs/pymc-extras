@@ -703,12 +703,12 @@ class BayesianDynamicFactor(PyMCStateSpace):
         """Build the covariance of the idiosyncratic observation errors."""
         if self.error_cov_type == "scalar":
             error_sigma = self.make_and_register_variable("error_sigma", shape=(), dtype=floatX)
-            return pt.eye(self.k_endog, dtype=floatX) * error_sigma
+            return pt.eye(self.k_endog, dtype=floatX) * error_sigma**2
         elif self.error_cov_type == "diagonal":
             error_sigma = self.make_and_register_variable(
                 "error_sigma", shape=(self.k_endog,), dtype=floatX
             )
-            return pt.diag(error_sigma)
+            return pt.diag(error_sigma**2)
         elif self.error_cov_type == "unstructured":
             return self.make_and_register_variable(
                 "error_cov", shape=(self.k_endog, self.k_endog), dtype=floatX
@@ -750,6 +750,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
             sigma_obs = self.make_and_register_variable(
                 "sigma_obs", shape=(self.k_endog,), dtype=floatX
             )
-            obs_cov = obs_cov + pt.diag(sigma_obs)
+            obs_cov = obs_cov + pt.diag(sigma_obs**2)
 
         self.ssm["obs_cov", :, :] = obs_cov
