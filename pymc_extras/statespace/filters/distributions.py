@@ -10,8 +10,6 @@ from pymc.pytensorf import intX, normalize_rng_param
 from pytensor.graph.basic import Node
 from pytensor.tensor.random import multivariate_normal
 
-from pymc_extras.statespace.utils.constants import SHORT_NAME_TO_LONG
-
 floatX = pytensor.config.floatX
 COV_ZERO_TOL = 0
 
@@ -655,9 +653,7 @@ class SimulationSmoother(Continuous):
             y_plus = pt.specify_shape(y_plus, (T_static, *y_plus.type.shape[1:]))
             alpha_plus = pt.specify_shape(alpha_plus, (T_static, *alpha_plus.type.shape[1:]))
 
-        # 2. Filter + smooth y_plus under the same theta. The build_graph helpers
-        # consume long names; translate once.
-        long_names = {SHORT_NAME_TO_LONG[s] for s in sequence_names}
+        # 2. Filter + smooth y_plus under the same theta.
         a_filt_plus, _, _, P_filt_plus, *_ = kalman_filter.build_graph(
             y_plus,
             x0_,
@@ -669,19 +665,9 @@ class SimulationSmoother(Continuous):
             R_,
             H_,
             Q_,
-            time_varying_names=long_names,
         )
 
-        # The smoother only ever iterates over (T, R, Q); intersect.
-        smoother_long_names = long_names & {"transition", "selection", "state_cov"}
-        a_smooth_plus, _ = kalman_smoother.build_graph(
-            T_,
-            R_,
-            Q_,
-            a_filt_plus,
-            P_filt_plus,
-            time_varying_names=smoother_long_names,
-        )
+        a_smooth_plus, _ = kalman_smoother.build_graph(T_, R_, Q_, a_filt_plus, P_filt_plus)
 
         if T_static is not None:
             a_smooth_plus = pt.specify_shape(

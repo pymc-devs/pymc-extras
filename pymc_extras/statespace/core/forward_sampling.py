@@ -14,7 +14,7 @@ from pymc_extras.statespace.filters.distributions import (
     SequenceMvNormal,
     SimulationSmoother,
 )
-from pymc_extras.statespace.filters.utilities import stabilize
+from pymc_extras.statespace.filters.utilities import scan_sequence_names, stabilize
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     FILTER_OUTPUT_DIMS,
@@ -123,6 +123,7 @@ def _sample_conditional(
             if name == "smoothed":
                 # The simulation smoother draws the whole latent path jointly, so the
                 # states carry their cross-time posterior covariance.
+                kalman_filter, kalman_smoother = ss_mod.make_filters()
                 latent_states = SimulationSmoother(
                     f"{name}_{group}",
                     a_smooth=mu,
@@ -135,9 +136,9 @@ def _sample_conditional(
                     R=R,
                     H=H,
                     Q=Q,
-                    kalman_filter=ss_mod.kalman_filter.copy(),
-                    kalman_smoother=ss_mod.kalman_smoother.copy(),
-                    sequence_names=tuple(ss_mod.kalman_filter.seq_names),
+                    kalman_filter=kalman_filter,
+                    kalman_smoother=kalman_smoother,
+                    sequence_names=tuple(scan_sequence_names(ss_mod.ssm.time_varying_names)),
                     dims=state_dims,
                     method=mvn_method,
                 )
@@ -301,7 +302,7 @@ def _sample_unconditional(
             steps=steps,
             dims=dims,
             method=mvn_method,
-            sequence_names=ss_mod.kalman_filter.seq_names,
+            sequence_names=scan_sequence_names(ss_mod.ssm.time_varying_names),
             k_endog=ss_mod.k_endog,
         )
 
@@ -493,30 +494,11 @@ def sample_filter_outputs(
             obs_coords=obs_coords,
         )
 
-        filter_outputs = ss_mod.kalman_filter.build_graph(
-            data,
-            x0,
-            P0,
-            c,
-            d,
-            T,
-            Z,
-            R,
-            H,
-            Q,
-            missing_fill_value=ss_mod.missing_fill_value,
-            cov_jitter=ss_mod.cov_jitter,
-            time_varying_names=ss_mod.ssm.time_varying_names,
-        )
+        kalman_filter, kalman_smoother = ss_mod.make_filters()
+        filter_outputs = kalman_filter.build_graph(data, x0, P0, c, d, T, Z, R, H, Q)
 
-        smoother_outputs = ss_mod.kalman_smoother.build_graph(
-            T,
-            R,
-            Q,
-            filter_outputs[0],
-            filter_outputs[3],
-            cov_jitter=ss_mod.cov_jitter,
-            time_varying_names=ss_mod.ssm.time_varying_names,
+        smoother_outputs = kalman_smoother.build_graph(
+            T, R, Q, filter_outputs[0], filter_outputs[3]
         )
 
         filter_outputs = filter_outputs[:-1] + list(smoother_outputs)

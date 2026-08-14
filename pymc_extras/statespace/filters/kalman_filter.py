@@ -1,12 +1,10 @@
-import copy
-
 from abc import ABC
+from collections.abc import Iterable
 
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
-from pymc.pytensorf import constant_fold
 from pytensor.compile.builders import SymbolicOp
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.gradient import disconnected_grad
@@ -17,20 +15,19 @@ from pytensor.tensor import TensorConstant, TensorVariable
 from pytensor.tensor.linalg import solve_triangular
 
 from pymc_extras.statespace.filters.utilities import (
+    PARAM_NAMES,
+    dim_of,
     quad_form_sym,
-    split_vars_into_seq_and_nonseq,
+    scan_sequence_names,
     stabilize,
 )
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_NAMES,
     JITTER_DEFAULT,
-    LONG_NAME_TO_SHORT,
-    MATRIX_NAMES,
     MISSING_FILL,
 )
 
 MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
-PARAM_NAMES = MATRIX_NAMES[2:]
 
 assert_time_varying_dim_correct = Assert(
     "The first dimension of a time varying matrix (the time dimension) must be "
@@ -39,38 +36,33 @@ assert_time_varying_dim_correct = Assert(
 
 
 class BaseFilter(ABC):
-    def __init__(self):
+    def __init__(
+        self,
+        time_varying_names: Iterable[str] = (),
+        cov_jitter: float | None = None,
+        missing_fill_value: float | None = None,
+    ):
         """
-        Kalman Filter.
+        Abstract base class for Kalman filter implementations.
 
-        Notes
-        -----
-        The BaseFilter class is an abstract base class (ABC) for implementing kalman filters.
-        It defines common attributes and methods used by kalman filter implementations.
+        :meth:`build_graph` only reads these settings, so one filter builds any number of graphs.
 
-        Attributes
+        Parameters
         ----------
-        seq_names : list[str]
-            A list of name representing time-varying statespace matrices. That is, inputs that will need to be
-            provided to the `sequences` argument of `pytensor.scan`
-
-        non_seq_names : list[str]
-            A list of names representing static statespace matrices. That is, inputs that will need to be provided
-            to the `non_sequences` argument of `pytensor.scan`
+        time_varying_names : iterable of str, optional
+            Long names of the matrices the model declared time-varying, which the filter passes to
+            ``scan`` as sequences rather than non-sequences. Default is no time-varying matrices.
+        cov_jitter : float, optional
+            Jitter added to the diagonal of every covariance matrix at each step. Default 1e-8, or
+            1e-6 if ``pytensor.config.floatX`` is float32.
+        missing_fill_value : float, optional
+            Sentinel marking missing observations in the data. Default -9999.0.
         """
+        self.cov_jitter = JITTER_DEFAULT if cov_jitter is None else cov_jitter
+        self.missing_fill_value = MISSING_FILL if missing_fill_value is None else missing_fill_value
 
-        self.seq_names: list[str] = []
-        self.non_seq_names: list[str] = []
-
-        self.n_states = None
-        self.n_endog = None
-
-        self.missing_fill_value: float | None = None
-        self.cov_jitter = None
-
-    def copy(self) -> "BaseFilter":
-        """Return a shallow copy whose ``seq_names``/``non_seq_names`` are independent."""
-        return copy.copy(self)
+        self.seq_names = scan_sequence_names(time_varying_names)
+        self.non_seq_names = [name for name in PARAM_NAMES if name not in self.seq_names]
 
     def check_params(self, data, a0, P0, c, d, T, Z, R, H, Q):
         """
@@ -158,9 +150,6 @@ class BaseFilter(ABC):
         R,
         H,
         Q,
-        missing_fill_value=None,
-        cov_jitter=None,
-        time_varying_names=(),
     ) -> list[TensorVariable]:
         """
         Construct the computation graph for the Kalman filter. See [1] for details.
@@ -195,31 +184,15 @@ class BaseFilter(ABC):
            Statistical Algorithms for Models in State Space Using SsfPack 2.2.
            Econometrics Journal 2 (1): 107-60. doi:10.1111/1368-423X.00023.
         """
-        if missing_fill_value is None:
-            missing_fill_value = MISSING_FILL
-        if cov_jitter is None:
-            cov_jitter = JITTER_DEFAULT
-
-        self.missing_fill_value = missing_fill_value
-        self.cov_jitter = cov_jitter
-
-        [R_shape] = constant_fold([R.shape], raise_not_constant=False)
-        [Z_shape] = constant_fold([Z.shape], raise_not_constant=False)
-
-        self.n_states = R_shape[-2]
-        self.n_endog = Z_shape[-2]
-
         data, a0, P0, *params = self.check_params(data, a0, P0, c, d, T, Z, R, H, Q)
-        data = pt.specify_shape(data, (data.type.shape[0], self.n_endog))
-        # ``time_varying_names`` is keyed on long names ("transition", ...) but the filter
-        # tracks ordering with the short single-letter names. Translate.
-        time_varying_short = {LONG_NAME_TO_SHORT[n] for n in time_varying_names}
-        sequences, non_sequences, seq_names, non_seq_names = split_vars_into_seq_and_nonseq(
-            params, PARAM_NAMES, time_varying_short
-        )
-
-        self.seq_names = seq_names
-        self.non_seq_names = non_seq_names
+        k_states, k_endog = dim_of(a0, 0), dim_of(Z, -2)
+        data = pt.specify_shape(data, (data.type.shape[0], k_endog))
+        sequences = [
+            p for p, name in zip(params, PARAM_NAMES, strict=True) if name in self.seq_names
+        ]
+        non_sequences = [
+            p for p, name in zip(params, PARAM_NAMES, strict=True) if name in self.non_seq_names
+        ]
 
         if len(sequences) > 0:
             sequences = self.add_check_on_time_varying_shapes(data, sequences)
@@ -234,9 +207,13 @@ class BaseFilter(ABC):
             return_updates=False,
         )
 
-        return self._postprocess_scan_results(results, a0, P0, n=data.type.shape[0])
+        return self._postprocess_scan_results(
+            results, a0, P0, n=data.type.shape[0], k_states=k_states, k_endog=k_endog
+        )
 
-    def _postprocess_scan_results(self, results, a0, P0, n) -> list[TensorVariable]:
+    def _postprocess_scan_results(
+        self, results, a0, P0, n, k_states, k_endog
+    ) -> list[TensorVariable]:
         """
         Transform the values returned by the Kalman Filter scan into a form expected by users. In particular:
         1. Append the initial state and covariance matrix to their respective Kalman predictions. This matches the
@@ -267,28 +244,22 @@ class BaseFilter(ABC):
             [pt.expand_dims(P0, axis=(0,)), predicted_covariances[:-1]], axis=0
         )
 
-        filtered_states = pt.specify_shape(filtered_states, (n, self.n_states))
+        filtered_states = pt.specify_shape(filtered_states, (n, k_states))
         filtered_states.name = FILTER_OUTPUT_NAMES[0]
 
-        predicted_states = pt.specify_shape(predicted_states, (n, self.n_states))
+        predicted_states = pt.specify_shape(predicted_states, (n, k_states))
         predicted_states.name = FILTER_OUTPUT_NAMES[1]
 
-        filtered_covariances = pt.specify_shape(
-            filtered_covariances, (n, self.n_states, self.n_states)
-        )
+        filtered_covariances = pt.specify_shape(filtered_covariances, (n, k_states, k_states))
         filtered_covariances.name = FILTER_OUTPUT_NAMES[2]
 
-        predicted_covariances = pt.specify_shape(
-            predicted_covariances, (n, self.n_states, self.n_states)
-        )
+        predicted_covariances = pt.specify_shape(predicted_covariances, (n, k_states, k_states))
         predicted_covariances.name = FILTER_OUTPUT_NAMES[3]
 
-        observed_states = pt.specify_shape(observed_states, (n, self.n_endog))
+        observed_states = pt.specify_shape(observed_states, (n, k_endog))
         observed_states.name = FILTER_OUTPUT_NAMES[4]
 
-        observed_covariances = pt.specify_shape(
-            observed_covariances, (n, self.n_endog, self.n_endog)
-        )
+        observed_covariances = pt.specify_shape(observed_covariances, (n, k_endog, k_endog))
         observed_covariances.name = FILTER_OUTPUT_NAMES[5]
 
         loglike_obs = pt.specify_shape(loglike_obs.squeeze(), (n,))
@@ -612,7 +583,7 @@ class StandardFilter(BaseFilter):
         F_chol = pt.linalg.cholesky(F, lower=True)
 
         K = pt.linalg.cho_solve((F_chol, True), PZT.mT).mT
-        I_KZ = pt.eye(self.n_states) - K.dot(Z)
+        I_KZ = pt.eye(dim_of(a, 0)) - K.dot(Z)
 
         a_filtered = a + K @ v
         P_filtered = quad_form_sym(I_KZ, P) + quad_form_sym(K, H)
@@ -657,7 +628,8 @@ class SquareRootFilter(BaseFilter):
 
         M = pt.horizontal_stack(T @ P_chol, R @ Q_chol).mT
         R_decomp = pt.linalg.qr(M, mode="r")
-        P_chol_hat = R_decomp[..., : self.n_states, : self.n_states].mT
+        k_states = dim_of(P_chol, -1)
+        P_chol_hat = R_decomp[..., :k_states, :k_states].mT
 
         return a_hat, P_chol_hat
 
@@ -685,15 +657,16 @@ class SquareRootFilter(BaseFilter):
         # more interested in B^T:
         # Structure of B^T = [[chol(F),     0              ],
         #                    [K @ chol(F), chol(P_filtered)]
-        zeros = pt.zeros((self.n_states, self.n_endog))
+        k_states, k_endog = dim_of(P_chol, -1), dim_of(Z, -2)
+        zeros = pt.zeros((k_states, k_endog))
         upper = pt.horizontal_stack(H_chol, Z @ P_chol)
         lower = pt.horizontal_stack(zeros, P_chol)
         A_T = pt.vertical_stack(upper, lower)
         B = pt.linalg.qr(A_T.mT, mode="r").mT
 
-        F_chol = B[: self.n_endog, : self.n_endog]
-        K_F_chol = B[self.n_endog :, : self.n_endog]
-        P_chol_filtered = B[self.n_endog :, self.n_endog :]
+        F_chol = B[:k_endog, :k_endog]
+        K_F_chol = B[k_endog:, :k_endog]
+        P_chol_filtered = B[k_endog:, k_endog:]
 
         def compute_non_degenerate(P_chol_filtered, F_chol, K_F_chol, v):
             a_filtered = a + K_F_chol @ solve_triangular(F_chol, v, lower=True)
@@ -707,7 +680,7 @@ class SquareRootFilter(BaseFilter):
             # abs necessary because we're not guaranteed a positive diagonal from the schur decomposition
             logdet = 2 * pt.log(pt.abs(pt.diag(F_chol))).sum()
 
-            ll = -0.5 * (self.n_endog * (MVN_CONST + logdet) + loss)[0]
+            ll = -0.5 * (k_endog * (MVN_CONST + logdet) + loss)[0]
 
             return [a_filtered, P_chol_filtered, ll]
 
@@ -726,16 +699,18 @@ class SquareRootFilter(BaseFilter):
             compute_non_degenerate(P_chol_filtered, F_chol, K_F_chol, v),
         )
 
-        a_filtered = pt.specify_shape(a_filtered, (self.n_states,))
-        P_chol_filtered = pt.specify_shape(P_chol_filtered, (self.n_states, self.n_states))
+        a_filtered = pt.specify_shape(a_filtered, (k_states,))
+        P_chol_filtered = pt.specify_shape(P_chol_filtered, (k_states, k_states))
 
         return a_filtered, P_chol_filtered, y_hat, F_chol, ll
 
-    def _postprocess_scan_results(self, results, a0, P0, n) -> list[TensorVariable]:
+    def _postprocess_scan_results(
+        self, results, a0, P0, n, k_states, k_endog
+    ) -> list[TensorVariable]:
         """
         Convert the Cholesky factor of the covariance matrix back to the covariance matrix itself.
         """
-        results = super()._postprocess_scan_results(results, a0, P0, n)
+        results = super()._postprocess_scan_results(results, a0, P0, n, k_states, k_endog)
         (
             filtered_states,
             predicted_states,
@@ -751,9 +726,9 @@ class SquareRootFilter(BaseFilter):
             X = pt.specify_shape(X, (n, k, k))
             return X
 
-        filtered_covariances = square_sequnece(filtered_covariances_cholesky, k=self.n_states)
-        predicted_covariances = square_sequnece(predicted_covariances_cholesky, k=self.n_states)
-        observed_covariances = square_sequnece(observed_covariances_cholesky, k=self.n_endog)
+        filtered_covariances = square_sequnece(filtered_covariances_cholesky, k=k_states)
+        predicted_covariances = square_sequnece(predicted_covariances_cholesky, k=k_states)
+        observed_covariances = square_sequnece(observed_covariances_cholesky, k=k_endog)
 
         return [
             filtered_states,
@@ -894,8 +869,23 @@ class ConvergentFilter(StandardFilter):
         "Use StandardFilter for data with missing values."
     )
 
-    def __init__(self, tol: float = 1e-10):
-        super().__init__()
+    def __init__(
+        self,
+        time_varying_names: Iterable[str] = (),
+        cov_jitter: float | None = None,
+        missing_fill_value: float | None = None,
+        tol: float = 1e-10,
+    ):
+        super().__init__(
+            time_varying_names=time_varying_names,
+            cov_jitter=cov_jitter,
+            missing_fill_value=missing_fill_value,
+        )
+        if self.seq_names:
+            raise ValueError(
+                "ConvergentFilter requires time-invariant matrices; got time-varying: "
+                f"{sorted(time_varying_names)}. Use StandardFilter instead."
+            )
         self.tol = tol
 
     def _check_data(self, data):
@@ -983,7 +973,7 @@ class ConvergentFilter(StandardFilter):
         K_star = pt.linalg.solve(
             F_star.mT, (P_star @ Z.mT).mT, assume_a="pos", check_finite=False
         ).mT
-        I_KZ_star = pt.eye(self.n_states) - K_star @ Z
+        I_KZ_star = pt.eye(dim_of(P_star, -1)) - K_star @ Z
         P_filt_star = stabilize(
             quad_form_sym(I_KZ_star, P_star) + quad_form_sym(K_star, H), self.cov_jitter
         )
@@ -1007,10 +997,10 @@ class ConvergentFilter(StandardFilter):
 
         # Stitch: in the tail, P_filt, P_hat, F are constants (broadcast).
         n_fx = n - k
-        m_shape = (n_fx, self.n_states, self.n_states)
+        m_shape = (n_fx, dim_of(P_star, -1), dim_of(P_star, -1))
         P_filt_fx = pt.broadcast_to(P_filt_star, m_shape)
         P_hat_fx = pt.broadcast_to(P_star, m_shape)
-        F_fx = pt.broadcast_to(F_star, (n_fx, self.n_endog, self.n_endog))
+        F_fx = pt.broadcast_to(F_star, (n_fx, dim_of(Z, -2), dim_of(Z, -2)))
 
         def cat(a, b):
             return pt.concatenate([a, b], axis=0)
@@ -1166,34 +1156,22 @@ class ConvergentFilter(StandardFilter):
         R,
         H,
         Q,
-        missing_fill_value=None,
-        cov_jitter=None,
-        time_varying_names=(),
     ):
-        if time_varying_names:
-            raise ValueError(
-                "ConvergentFilter requires time-invariant matrices; got time-varying: "
-                f"{sorted(time_varying_names)}. Use StandardFilter instead."
-            )
-        self.missing_fill_value = MISSING_FILL if missing_fill_value is None else missing_fill_value
-        self.cov_jitter = JITTER_DEFAULT if cov_jitter is None else cov_jitter
-
-        [R_shape] = constant_fold([R.shape], raise_not_constant=False)
-        [Z_shape] = constant_fold([Z.shape], raise_not_constant=False)
-        self.n_states, self.n_shocks = R_shape[-2:]
-        self.n_endog = Z_shape[-2]
-
         data = self._check_data(data)
         data, a0, P0, c, d, T, Z, R, H, Q = self.check_params(data, a0, P0, c, d, T, Z, R, H, Q)
-        data = pt.specify_shape(data, (data.type.shape[0], self.n_endog))
-        self.seq_names = []
-        self.non_seq_names = list(PARAM_NAMES)
+        k_states, k_endog = dim_of(a0, 0), dim_of(Z, -2)
+        data = pt.specify_shape(data, (data.type.shape[0], k_endog))
 
         op = ConvergentKalmanOp(filt=self)
         a_filt, a_hat, y_hat, P_filt, P_hat, F, ll, _k = op(data, a0, P0, c, d, T, Z, R, H, Q)
         n = data.type.shape[0]
         return self._postprocess_scan_results(
-            (a_filt, a_hat, y_hat, P_filt, P_hat, F, ll[..., None]), a0, P0, n=n
+            (a_filt, a_hat, y_hat, P_filt, P_hat, F, ll[..., None]),
+            a0,
+            P0,
+            n=n,
+            k_states=k_states,
+            k_endog=k_endog,
         )
 
 
@@ -1277,7 +1255,7 @@ class ConvergentKalmanOp(SymbolicOp):
 
         # Use chain rule to recover dZ and dH from dK*, dF*. Fully analytic.
         dK, dF = disconnected_grad(dK_s), disconnected_grad(dF_s)
-        P_filt_s = (pt.eye(self._filt.n_states) - K_star @ Z_) @ P_star
+        P_filt_s = (pt.eye(dim_of(P_star, -1)) - K_star @ Z_) @ P_star
         d_Z_chain = (
             F_inv @ dK.mT @ P_filt_s - K_star.mT @ dK @ K_star.mT + (dF + dF.mT) @ Z_ @ P_star
         )

@@ -915,7 +915,8 @@ def test_dfm_accepts_filter_type_and_mode(filter_type):
         verbose=False,
     )
 
-    assert isinstance(mod.kalman_filter, FILTER_FACTORY[filter_type])
+    kalman_filter, _ = mod.make_filters()
+    assert isinstance(kalman_filter, FILTER_FACTORY[filter_type])
     assert mod.mode == "FAST_COMPILE"
 
 

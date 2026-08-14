@@ -106,7 +106,8 @@ def test_loglike_vectors_agree(kfilter, pymc_model):
         ss_mod._insert_random_variables()
         matrices = ss_mod.unpack_statespace()
 
-        filter_outputs = ss_mod.kalman_filter.build_graph(pymc_model["data"], *matrices)
+        kalman_filter, _ = ss_mod.make_filters()
+        filter_outputs = kalman_filter.build_graph(pymc_model["data"], *matrices)
         filter_mus, pred_mus, obs_mu, filter_covs, pred_covs, obs_cov, ll = filter_outputs
 
     test_ll = fast_eval(ll)
@@ -461,7 +462,7 @@ def test_simulation_smoother_signature(small_lgssm):
         pt.as_tensor_variable(params["R"]),
         pt.as_tensor_variable(params["H"]),
         pt.as_tensor_variable(params["Q"]),
-        kalman_filter=StandardFilter(),
+        kalman_filter=StandardFilter(time_varying_names=["obs_intercept"]),
         kalman_smoother=KalmanSmoother(),
         sequence_names=("d",),
     )
@@ -530,7 +531,7 @@ def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
     d = pt.as_tensor_variable(d_time_varying)
     y = pt.as_tensor_variable(np.asarray(params["y"], dtype=floatX))
 
-    filt = StandardFilter().build_graph(
+    filt = StandardFilter(time_varying_names=["obs_intercept"]).build_graph(
         y,
         tensors["a0"],
         tensors["P0"],
@@ -541,7 +542,6 @@ def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
         tensors["R"],
         tensors["H"],
         tensors["Q"],
-        time_varying_names=["obs_intercept"],
     )
     a_smooth, _ = KalmanSmoother().build_graph(
         tensors["T"], tensors["R"], tensors["Q"], filt[0], filt[3]
@@ -558,7 +558,7 @@ def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
         tensors["R"],
         tensors["H"],
         tensors["Q"],
-        kalman_filter=StandardFilter(),
+        kalman_filter=StandardFilter(time_varying_names=["obs_intercept"]),
         kalman_smoother=KalmanSmoother(),
         sequence_names=("d",),
         rng=pytensor.shared(np.random.default_rng(7), name="rng"),
