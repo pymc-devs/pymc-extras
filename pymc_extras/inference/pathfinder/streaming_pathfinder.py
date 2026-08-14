@@ -117,6 +117,8 @@ def _full_data_logp(phi, full_pass, model, batch_var, prior_fn, obs_fn, n_total)
     seen = 0
     for batch in full_pass:  # one complete epoch; order is irrelevant to the sum
         b = np.asarray(batch)
+        if b.shape[0] == 0:
+            continue  # a zero-row block contributes nothing; scoring it makes 0 * inf
         model.set_data(batch_var, b)
         lp = lp + (b.shape[0] / n_total) * np.asarray(obs_fn(phi), dtype=np.float64)
         seen += b.shape[0]
@@ -191,10 +193,15 @@ def fit_streaming_pathfinder(
     lbfgs_config : StochasticLBFGSConfig, optional
     callbacks : iterable of callable, optional
         ``pm.fit`` callbacks, called ``(None, losses, i)`` after each optimizer step;
+        they must not mutate the model's data: the optimizer caches the current batch's
+        value and gradient across the callback boundary.
         one raising ``StopIteration`` stops the optimization and the fit proceeds with
         the iterates recorded so far. ``losses`` are minibatch objectives, so they are
         noisy; ``approx`` is ``None`` because there is no ``Approximation`` here.
     random_seed : int, optional
+        Seeds the initial point, the jitter, the proposal draws, and the resampling.
+        The minibatch sequence is the loader's own: construct the loader with an
+        explicit seed for a reproducible stream.
 
     Returns
     -------
@@ -233,18 +240,22 @@ def fit_streaming_pathfinder(
     cfg = lbfgs_config or StochasticLBFGSConfig()
     J = cfg.maxcor
 
-    init_ss, final_ss, resample_ss = np.random.SeedSequence(random_seed).spawn(3)
+    init_ss, final_ss, resample_ss, ip_ss = np.random.SeedSequence(random_seed).spawn(4)
 
     # Compile once; all functions below close over the batch_var pm.Data shared variable.
     neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=jacobian_correction)
-    ip = Point(make_initial_point_fn(model=model)(None), model=model)
+    # Seeded: an initval="prior" model draws its starting point here, and an unseeded
+    # draw silently breaks the random_seed reproducibility contract.
+    ip_seed = int(ip_ss.generate_state(1)[0])
+    ip = Point(make_initial_point_fn(model=model)(ip_seed), model=model)
     x_base = DictToArrayBijection.map(ip).data
     N = x_base.shape[0]
     sample_logp = make_pathfinder_sample_fn(model, N=N, J=J, jacobian=jacobian_correction)
-    if model.potentials and model[batch_var] in set(ancestors(model.potentials)):
+    once_terms = [*model.free_RVs, *model.potentials]
+    if model[batch_var] in set(ancestors(once_terms)):
         raise NotImplementedError(
-            "a pm.Potential that depends on the minibatch cannot be evaluated once "
-            "against the full data; move it out of the batch or fold it into the "
+            "a prior or pm.Potential that depends on the minibatch cannot be evaluated "
+            "once against the full data; move it out of the batch or fold it into the "
             "observed likelihood."
         )
     prior_logp_fn = _compile_batched_logp(

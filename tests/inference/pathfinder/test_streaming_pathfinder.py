@@ -2,6 +2,7 @@
 
 import numpy as np
 import pymc as pm
+import pytensor.tensor as pt
 import pytest
 
 from pymc_extras.inference.pathfinder import fit_streaming_pathfinder
@@ -158,6 +159,66 @@ def test_saturated_trial_point_rejected():
     # mu = x - H_inv @ g, so an iterate carrying a NaN g is a NaN Gaussian mean.
     for it in traj.iterates:
         assert np.all(np.isfinite(it["g"]))
+
+
+def test_batch_dependent_prior_is_rejected():
+    """A prior that reads the minibatch would be scored once, on a stale batch, silently."""
+    full = np.array([0.0, 0.0, 10.0, 10.0])
+    with pm.Model() as m:
+        batch = pm.Data("batch", full[:2])
+        theta = pm.Normal("theta", mu=pt.mean(batch), sigma=1)
+        pm.Normal("obs", theta, 1, observed=batch, total_size=4)
+    loader = ArrayLoader(full[:, None], batch_size=2)
+    with pytest.raises(NotImplementedError, match=r"prior or pm\.Potential"):
+        fit_streaming_pathfinder(m, loader, num_iters=2, random_seed=0, lbfgs_config=CFG)
+
+
+def test_prior_initval_is_reproducible():
+    """initval="prior" draws the starting point inside the fit; same seed, same draws."""
+
+    def make():
+        model, packed = logistic_case(seed=1, n=400)
+        with model:
+            pm.Normal("extra", 0, 1, initval="prior")
+        return model, packed
+
+    results = []
+    for _ in range(2):
+        model, packed = make()
+        loader = ArrayLoader(packed, batch_size=64)
+        results.append(
+            fit_streaming_pathfinder(
+                model,
+                loader,
+                num_iters=10,
+                num_draws=100,
+                jitter=0.0,
+                random_seed=11,
+                lbfgs_config=CFG,
+            )
+        )
+    assert np.array_equal(results[0].samples, results[1].samples)
+
+
+def test_empty_blocks_in_full_pass_are_skipped():
+    """A zero-row block must not poison logP with 0 * inf."""
+    model, packed = logistic_case(seed=1, n=400)
+    loader = ArrayLoader(packed, batch_size=64)
+
+    def full_pass_with_empties():
+        yield packed[:0]
+        yield from (packed[i : i + 100] for i in range(0, 400, 100))
+
+    res = fit_streaming_pathfinder(
+        model,
+        loader,
+        num_iters=10,
+        num_draws=100,
+        random_seed=3,
+        lbfgs_config=CFG,
+        full_pass=full_pass_with_empties(),
+    )
+    assert np.isfinite(res.logP).all()
 
 
 def test_zero_accepted_steps_raises():
