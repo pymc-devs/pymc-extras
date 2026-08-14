@@ -14,40 +14,133 @@
 
 """Composable model terms for building ``pymc.dims`` subgraphs from xarray data.
 
-Terms define reusable recipes for creating PyMC model components from an
-``xarray.Dataset``. They compose with ``+``, ``*``, and ``-`` operators and
-produce coordinates, data registration, tensor construction, and data updating.
+``pymc_extras.terms`` provides a small set of built-in pieces
+(``Parameter`` / ``Intercept``, ``Dot``, ``Transform``) that compose with
+``+``, ``*``, and ``-`` into predictors.  **This module is not a full
+modeling toolkit** --- it does not ship complete hierarchical,
+domain-specific, or observation-model wrappers.  It is a **thin, expressive
+core** that lets you build what you need by subclassing ``ModelTerm`` and
+reusing the same helpers and operators that built-ins use.  If a term is
+missing from this package, that is the intended path: write a custom term,
+compose it with ``+`` / ``*`` / ``-``, and the framework handles coords,
+data registration, tensor construction, and prediction updates.
 
-The framework is ``pymc.dims``-native. ``create_variable()`` returns an
-``XTensorVariable`` (dimensional tensor). Built-in terms use ``pmd.Data``
+The framework is ``pymc.dims``-native.  ``create_variable()`` returns an
+``XTensorVariable`` (dimensional tensor).  Built-in terms use ``pmd.Data``
 for shared data and ``pmd.Normal`` with ``xdist=True`` for variables.
 Custom terms should use ``pymc.dims`` and ``pytensor.xtensor`` throughout
 to ensure compatibility during composition.
 
-Each term implements five lifecycle methods:
+Extending
+---------
+This module is designed so that **the parts you do not find here are the
+parts you are meant to write.**  ``ModelTerm`` is the extension base;
+subclass it, implement five lifecycle methods, and the result composes
+with the built-ins via ``+`` / ``*`` / ``-`` --- no framework changes
+required.
 
+Lifecycle (per term)
+^^^^^^^^^^^^^^^^^^^^
 - ``get_coords(ds)`` -- return coordinates from data variables (outside model)
-- ``add_coords(ds)`` -- add coordinates to the model (inside model context)
+- ``add_coords(ds)`` -- add model-only coordinates, if not in dataset (inside model context)
 - ``register_data(ds)`` -- register ``pmd.Data`` shared variables (inside model)
 - ``create_variable()`` -- build a dimensional tensor **inside** a ``pm.Model`` context
 - ``set_data(ds, model)`` -- update shared variables for prediction
 
-The ``register_data`` helper calls ``add_coords`` before ``register_data``
-on each ``ModelTerm``, so dynamic coordinates are handled automatically.
-Override ``add_coords`` for coordinates that are not discoverable from the
-dataset alone (e.g., unique group labels from a data column).
+``register_data`` calls ``add_coords`` before ``register_data`` on each
+``ModelTerm``, so dynamic coordinates are handled automatically.
 
-The ``build_param`` helper accepts any ``VariableFactory`` (``Prior``,
-``Censored``, ``Scaled``, custom), ``ModelTerm``, ``xr.DataArray``,
-or numeric literal. ``Prior.create_variable`` is called with ``xdist=True``
-to produce dimensional output.
+Rules
+^^^^^
+- ``get_coords`` should be **pure** (no model context).
+- Guard ``pmd.Data`` registration with ``if name not in model`` to share
+  data between terms.
+- ``create_variable`` must return a dims-compatible (xtensor) tensor.
+- Each RV name must be unique across the full expression tree.
+- ``build_param`` accepts ``VariableFactory``, ``ModelTerm``, ``xr.DataArray``,
+  or numeric literal.  ``Prior.create_variable`` is called with ``xdist=True``.
+
+``Parameter`` and ``Intercept``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+These are the same kind of term: a named free parameter whose shape
+comes from the prior (scalar when no ``dims``; dimensional when the prior
+carries ``dims``).  ``Intercept`` is a convenience alias with ``name``
+defaulting to ``"intercept"``; use ``Parameter`` when the role is not an
+intercept (e.g. a cohort scale or product effect).  When the prior
+carries ``dims``, coordinates are automatically extracted from the dataset
+during ``collect_coords``.
+
+Example: custom gather term
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Copy this into your project as a starting point for cohort / index /
+group gathers:
+
+.. code-block:: python
+
+    @dataclass
+    class Indexed(ModelTerm):
+        base: Any
+        index_var: str
+
+        def get_coords(self, ds):
+            return get_coords(self.base, ds)
+
+        def register_data(self, ds):
+            register_data(self.base, ds=ds)
+            model = pm.modelcontext(None)
+            if self.index_var not in model:
+                pmd.Data(self.index_var, ds[self.index_var], dims=ds[self.index_var].dims)
+
+        def create_variable(self):
+            base_val = build_param(self.base)
+            model = pm.modelcontext(None)
+            idx = model[self.index_var]
+            return base_val[idx]
+
+        def set_data(self, ds, model=None):
+            set_data(self.base, ds=ds, model=model)
+            if self.index_var in ds:
+                pm.set_data({self.index_var: ds[self.index_var].values}, model=model)
+
+Usage (custom + built-ins composed in one expression):
+
+.. code-block:: python
+
+    import pytensor.xtensor as ptx
+    from pymc_extras.prior import Prior
+    from pymc_extras.terms import (
+        Dot,
+        Parameter,
+        Transform,
+        build_param,
+        collect_coords,
+        get_coords,
+        register_data,
+        set_data,
+    )
+
+    mu = Indexed(
+        Parameter("alpha_scale", prior=Prior("HalfNormal", dims="cohort")),
+        "cohort_idx",
+    ) * Transform(
+        -Dot(var_name="covars", name="coef_alpha", prior=Prior("Normal", dims="covar")),
+        ptx.math.exp,
+    )
+    coords = collect_coords(mu, ds=ds)
+    with pm.Model(coords=coords) as model:
+        register_data(mu, ds=ds)
+        alpha = build_param(mu)
 
 Examples
 --------
+Built-ins cover the common pieces.  The explicit four-step lifecycle
+(``collect_coords`` / ``register_data`` / ``build_param`` / ``set_data``)
+works the same for built-ins and custom terms --- no hidden helpers.
+
 .. code-block:: python
 
     import pymc.dims as pmd
-    import pytensor.xtensor.math as ptx
+    import pytensor.xtensor as ptx
     from pymc_extras.prior import Prior
     from pymc_extras.terms import (
         Dot,
@@ -59,7 +152,7 @@ Examples
     )
 
     mu = Intercept(name="mu") + Dot(var_name="x", prior=Prior("Normal", dims="feature"))
-    sigma = Transform(Intercept(name="sigma"), func=ptx.exp)
+    sigma = Transform(Intercept(name="sigma"), func=ptx.math.exp)
 
     coords = collect_coords(mu, sigma, ds=ds)
 
@@ -67,6 +160,27 @@ Examples
         register_data(mu, ds=ds)
         register_data(sigma, ds=ds)
         pmd.Normal("y_obs", mu=build_param(mu), sigma=build_param(sigma), observed=ds["y"])
+
+.. code-block:: python
+
+    from pymc_extras.terms import Parameter, Dot, collect_coords, register_data, build_param
+
+    mu = Parameter("baseline", prior=Prior("Normal", dims="product")) + Dot(
+        var_name="x", prior=Prior("Normal", dims="feature")
+    )
+    coords = collect_coords(mu, ds=ds)
+    with pm.Model(coords=coords) as model:
+        register_data(mu, ds=ds)
+        build_param(mu)
+
+.. code-block:: python
+
+    from pymc_extras.terms import Dot, Intercept, collect_coords, register_data, build_param
+
+    alpha_branch = Dot(var_name="x", name="alpha_coef", prior=Prior("Normal", dims="feature"))
+    beta_branch = Dot(var_name="x", name="beta_coef", prior=Prior("Normal", dims="feature"))
+    mu = alpha_branch + Intercept(name="offset")
+    # beta_branch can be used in a separate expression tree
 
 Gotchas
 -------
@@ -97,46 +211,6 @@ Gotchas
           model = pm.modelcontext(None)
           unique = list(dict.fromkeys(ds[self.data_source].values))
           model.add_coords({self.data_source: unique})
-
-Extending
----------
-``Parameter`` and ``Intercept`` are the same kind of term.  ``Intercept``
-is a convenience alias with ``name`` defaulting to ``"intercept"``; use
-``Parameter`` when the role is not an intercept (e.g. a cohort scale or
-product effect).  When the prior carries ``dims``, coordinates are
-automatically extracted from the dataset during ``collect_coords``.
-
-Custom terms subclass ``ModelTerm`` and implement the five lifecycle
-methods.  Here is an example of a gather / index term that maps a
-cohort-level parameter to customer-level via an index column.  This is
-**not shipped** — copy it into your project as a starting point:
-
-.. code-block:: python
-
-    @dataclass
-    class Indexed(ModelTerm):
-        base: Any  # e.g. Parameter("alpha", prior=Prior(..., dims="cohort"))
-        index_var: str  # e.g. "cohort_idx" (integer codes, dims="customer_id")
-
-        def get_coords(self, ds):
-            return get_coords(self.base, ds)
-
-        def register_data(self, ds):
-            register_data(self.base, ds=ds)
-            model = pm.modelcontext(None)
-            if self.index_var not in model:
-                pmd.Data(self.index_var, ds[self.index_var], dims=ds[self.index_var].dims)
-
-        def create_variable(self):
-            base_val = build_param(self.base)
-            model = pm.modelcontext(None)
-            idx = model[self.index_var]
-            return base_val[idx]
-
-        def set_data(self, ds, model=None):
-            set_data(self.base, ds=ds, model=model)
-            if self.index_var in ds:
-                pm.set_data({self.index_var: ds[self.index_var].values}, model=model)
 """
 
 from __future__ import annotations
@@ -175,8 +249,12 @@ __all__ = [
 class ModelTerm:
     """Base class for composable model terms.
 
-    Subclass and implement the lifecycle methods to define a reusable
-    PyMC subgraph recipe. Terms compose with ``+``, ``*``, and ``-``.
+    Subclass ``ModelTerm`` to define reusable PyMC subgraph recipes.
+    Custom terms compose with the built-ins (``Parameter``, ``Intercept``,
+    ``Dot``, ``Transform``) via ``+``, ``*``, and ``-`` and use the same
+    helpers (``collect_coords``, ``register_data``, ``build_param``,
+    ``set_data``) --- no framework changes required.  See the module
+    docstring **Extending** section for the full contract and an example.
     """
 
     def get_coords(self, ds: xr.Dataset) -> dict[str, Any]:
@@ -362,6 +440,29 @@ class Parameter(ModelTerm):
         (``Prior``, ``Censored``, ``Scaled``, custom) is accepted.
         When the prior carries ``dims`` (e.g. ``Prior(..., dims="cohort")``),
         ``get_coords`` will extract those coordinates from the dataset.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        from pymc_extras.prior import Prior
+        from pymc_extras.terms import (
+            Parameter,
+            Dot,
+            Intercept,
+            collect_coords,
+            register_data,
+            build_param,
+        )
+
+        # scalar
+        mu = Parameter("mu") + Dot(var_name="x", prior=Prior("Normal", dims="feature"))
+
+        # dimensional (cohort)
+        alpha = Parameter("alpha_scale", prior=Prior("HalfNormal", dims="cohort"))
+
+        # same concept, GLM sugar
+        intercept = Intercept("intercept")  # defaults to name="intercept"
     """
 
     name: str
@@ -420,6 +521,20 @@ class Dot(ModelTerm):
         Provide a distinct ``name`` to reference the same ``var_name`` from
         multiple terms (e.g. separate alpha and beta coefficient branches)
         without colliding on the coefficient variable name.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        from pymc_extras.prior import Prior
+        from pymc_extras.terms import Dot, Intercept, collect_coords, register_data, build_param
+
+        # basic
+        mu = Intercept("mu") + Dot(var_name="x", prior=Prior("Normal", dims="feature"))
+
+        # two branches on the same data, distinct coefficient names
+        alpha_branch = Dot(var_name="x", name="alpha_coef", prior=Prior("Normal", dims="feature"))
+        beta_branch = Dot(var_name="x", name="beta_coef", prior=Prior("Normal", dims="feature"))
     """
 
     var_name: str
@@ -476,9 +591,21 @@ class Transform(ModelTerm):
     --------
     .. code-block:: python
 
-        import pytensor.xtensor.math as ptx
+        import pytensor.xtensor as ptx
 
-        sigma = Transform(Intercept(name="sigma"), func=ptx.exp)
+        sigma = Transform(Intercept(name="sigma"), func=ptx.math.exp)
+
+    ``inner`` may be any expression, including custom ``ModelTerm``
+    subclasses and composed trees:
+
+    .. code-block:: python
+
+        from pymc_extras.terms import Dot, Transform
+
+        effect = Transform(
+            Dot(var_name="x", prior=Prior("Normal", dims="feature")),
+            func=ptx.math.softplus,
+        )
     """
 
     inner: Any

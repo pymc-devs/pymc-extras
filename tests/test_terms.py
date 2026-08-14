@@ -31,6 +31,7 @@ from pymc_extras.terms import (
     Dot,
     Intercept,
     ModelTerm,
+    Parameter,
     Product,
     Sum,
     Transform,
@@ -155,10 +156,18 @@ def test_intercept_create_variable():
 def test_dot_register_data(simple_ds):
     dot = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     coords = dot.get_coords(simple_ds)
-    with pm.Model(coords=coords):
+    with pm.Model(coords=coords) as model:
         dot.register_data(simple_ds)
         data = pm.modelcontext(None)["x"]
         assert data is not None
+        assert "feature" in model.coords
+
+
+def test_dot_get_coords(simple_ds):
+    dot = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
+    coords = dot.get_coords(simple_ds)
+    assert "feature" in coords
+    assert coords["feature"] == list("ABC")
 
 
 def test_dot_create_variable(simple_ds):
@@ -171,12 +180,14 @@ def test_dot_create_variable(simple_ds):
 
 
 def test_dot_set_data(simple_ds):
-    ds2 = simple_ds.copy()
     dot = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     coords = dot.get_coords(simple_ds)
-    with pm.Model(coords=coords):
+    with pm.Model(coords=coords) as model:
         dot.register_data(simple_ds)
+        ds2 = simple_ds.copy()
+        ds2["x"] = xr.DataArray(np.roll(simple_ds["x"].values, 1, axis=0), dims=("obs", "feature"))
         dot.set_data(ds2)
+        assert np.allclose(model["x"].get_value(), ds2["x"].values)
 
 
 def test_transform_create_variable():
@@ -198,11 +209,15 @@ def test_transform_with_dot(simple_ds):
 
 
 def test_transform_set_data(simple_ds):
-    inner = Intercept(name="sigma")
+    inner = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     transformed = Transform(inner, func=ptx.exp)
-    ds2 = simple_ds.copy()
-    with pm.Model():
-        transformed.set_data(ds2)
+    coords = transformed.get_coords(simple_ds)
+    with pm.Model(coords=coords) as model:
+        transformed.register_data(simple_ds)
+        ds2 = simple_ds.copy()
+        ds2["x"] = xr.DataArray(np.roll(simple_ds["x"].values, 1, axis=0), dims=("obs", "feature"))
+        transformed.set_data(ds=ds2, model=model)
+        assert np.allclose(model["x"].get_value(), ds2["x"].values)
 
 
 def test_build_param_int():
@@ -380,9 +395,10 @@ def test_dot_set_data_renamed_dim(simple_ds):
 
     dot = Dot(var_name="x", prior=Prior("Normal", dims="feature"))
     coords = get_coords(dot, simple_ds)
-    with pm.Model(coords=coords):
+    with pm.Model(coords=coords) as model:
         dot.register_data(simple_ds)
         dot.set_data(ds2)
+        assert np.allclose(model["x"].get_value(), ds2["x"].values)
 
 
 def test_build_param_with_subtraction():
@@ -409,8 +425,10 @@ def test_register_data_skips_literals(simple_ds):
     """register_data ignores int/float terms in a Sum."""
     terms = Sum([Intercept(name="a"), 5, 3.0])
     coords = collect_coords(terms, ds=simple_ds)
-    with pm.Model(coords=coords):
-        register_data(terms, ds=simple_ds)  # should not raise
+    with pm.Model(coords=coords) as model:
+        register_data(terms, ds=simple_ds)
+        # Literals are skipped; Intercept has no data to register
+        assert len(model.data_vars) == 0
 
 
 def test_product_rmul():
@@ -537,3 +555,79 @@ def test_register_data_subtraction(simple_ds):
     with pm.Model(coords=coords) as model:
         register_data(mu, ds=simple_ds)
         assert "x" in model
+
+
+@pytest.fixture
+def ds_with_dims():
+    """Dataset with an extra non-obs dimension for free-parameter dims."""
+    rng = np.random.default_rng(42)
+    return xr.Dataset(
+        {
+            "x": (("obs", "feature"), rng.normal(size=(20, 3))),
+            "y": ("obs", rng.normal(size=20)),
+        },
+        coords={
+            "obs": range(20),
+            "feature": list("ABC"),
+            "product": ["p1", "p2", "p3"],
+        },
+    )
+
+
+def test_parameter_requires_name():
+    """Parameter without a name raises TypeError."""
+    with pytest.raises(TypeError):
+        Parameter()
+
+
+def test_parameter_get_coords_with_dims(ds_with_dims):
+    """Parameter with prior.dims extracts matching coordinates."""
+    p = Parameter("alpha", prior=Prior("Normal", dims="product"))
+    coords = p.get_coords(ds_with_dims)
+    assert "product" in coords
+    assert coords["product"] == ["p1", "p2", "p3"]
+
+
+def test_parameter_get_coords_no_dims(ds_with_dims):
+    """Parameter without dims returns empty coords."""
+    p = Parameter("mu")
+    coords = p.get_coords(ds_with_dims)
+    assert coords == {}
+
+
+def test_parameter_get_coords_missing_dim():
+    """Parameter with dims not in ds returns empty coords."""
+    ds = xr.Dataset({"x": ("obs", [1, 2])}, coords={"obs": range(2)})
+    p = Parameter("alpha", prior=Prior("Normal", dims="nonexistent"))
+    coords = p.get_coords(ds)
+    assert coords == {}
+
+
+def test_intercept_get_coords_with_dims(ds_with_dims):
+    """Intercept (subclass of Parameter) also extracts prior.dims coords."""
+    p = Intercept("baseline", prior=Prior("Normal", dims="product"))
+    coords = p.get_coords(ds_with_dims)
+    assert "product" in coords
+    assert coords["product"] == ["p1", "p2", "p3"]
+
+
+def test_intercept_default_name():
+    """Intercept defaults name to 'intercept'."""
+    p = Intercept()
+    assert p.name == "intercept"
+
+
+def test_collect_coords_includes_parameter_dims(ds_with_dims):
+    """collect_coords picks up coords from a dimmed Parameter in a Sum."""
+    mu = Intercept("a") + Parameter("alpha", prior=Prior("Normal", dims="product"))
+    coords = collect_coords(mu, ds=ds_with_dims)
+    assert "product" in coords
+
+
+def test_parameter_create_variable():
+    """Parameter create_variable builds a named tensor."""
+    with pm.Model():
+        p = Parameter("alpha", prior=Prior("Normal", dims="product"))
+        with pm.Model(coords={"product": ["p1", "p2", "p3"]}):
+            v = p.create_variable()
+            assert v is not None
