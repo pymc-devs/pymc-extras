@@ -465,7 +465,7 @@ class BayesianVARMAX(PyMCStateSpace):
             sigma_obs = self.make_and_register_variable(
                 "sigma_obs", shape=(self.k_endog,), dtype=floatX
             )
-            self.ssm["obs_cov"] = pt.diag(sigma_obs)
+            self.ssm["obs_cov"] = pt.diag(sigma_obs**2)
 
         state_cov = self.make_and_register_variable(
             "state_cov", shape=(self.k_posdef, self.k_posdef), dtype=floatX
