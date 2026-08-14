@@ -218,8 +218,15 @@ def fit_streaming_pathfinder(
     4 seeds it was 2.7-4.3 and 52-59, nothing raises, and two of the four came back with a
     nonzero ``n_ls_failures``; ``violation_rate`` read 0.0 throughout.
 
+    Held-out families at N=1e5, shipped defaults, three seeds each, against full-data Laplace
+    references: a Poisson GLM (4 params) ran ``pareto_k`` 0.08-0.33 with worst coordinate 0.07;
+    Student-t regression with estimated ``nu`` (5 params) ran 0.58-0.84 and 0.26; a hierarchical
+    random-intercept model (23 params) failed at 1.9-2.4 with the worst coordinate 4.7-7.2 out.
+    Partial pooling's coupled scales defeat a single tail-averaged Gaussian well below the
+    dimension wall.
+
     These draws are a *proposal*, not a posterior. Read ``pareto_k`` on every fit, and do not run
-    this above a few tens of dimensions.
+    this above a few tens of dimensions or on hierarchical posteriors.
 
     References
     ----------
