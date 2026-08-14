@@ -306,9 +306,9 @@ class LevelTrend(Component):
         Z = np.array([1.0] + [0.0] * (k_states - 1)).reshape((1, -1))
 
         if self.share_states:
-            self.ssm["design", :, :] = pt.join(0, *[Z for _ in range(k_endog)])
+            self.ssm["design"] = pt.join(0, *[Z for _ in range(k_endog)])
         else:
-            self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
+            self.ssm["design"] = pt.linalg.block_diag(*[Z for _ in range(k_endog)])
 
         if k_posdef > 0:
             sigma_trend = self.make_and_register_variable(

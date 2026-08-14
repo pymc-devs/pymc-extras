@@ -306,8 +306,11 @@ class Cycle(Component):
         k_endog_effective = 1 if self.share_states else k_endog
 
         Z = np.array([1.0, 0.0]).reshape((1, -1))
-        design_matrix = block_diag(*[Z for _ in range(k_endog_effective)])
-        self.ssm["design", :, :] = pt.as_tensor_variable(design_matrix)
+        if self.share_states:
+            # Shared states: every series observes the same cycle.
+            self.ssm["design"] = pt.join(0, *[Z for _ in range(k_endog)])
+        else:
+            self.ssm["design"] = block_diag(*[Z for _ in range(k_endog_effective)])
 
         # selection matrix R defines structure of innovations (always identity for cycle components)
         # when innovations=False, state cov Q=0, hence R @ Q @ R.T = 0

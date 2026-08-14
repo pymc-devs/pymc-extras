@@ -484,6 +484,9 @@ class TimeSeasonality(Component):
         k_states = self._k_states_per_endog()
         k_endog_effective = self._k_endog_effective()
         Z = pt.zeros((1, k_states))[0, 0].set(1)
+        if self.share_states:
+            # Shared states: every series observes the same seasonal states.
+            return pt.join(0, *[Z for _ in range(self.k_endog)])
         return pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
 
     def _build_initial_state_dk(self, initial_params: TensorVariable) -> TensorVariable:
@@ -595,7 +598,7 @@ class TimeSeasonality(Component):
             self.ssm["transition", :, :] = T
 
         # Design matrix
-        self.ssm["design", :, :] = self._build_design_matrix()
+        self.ssm["design"] = self._build_design_matrix()
 
         # Initial state parameters
         initial_params = self.make_and_register_variable(
@@ -817,7 +820,11 @@ class FrequencySeasonality(Component):
 
         Z = pt.zeros((1, k_states))[0, slice(0, k_states, 2)].set(1.0)
 
-        self.ssm["design", :, :] = pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
+        if self.share_states:
+            # Shared states: every series observes the same frequency states.
+            self.ssm["design"] = pt.join(0, *[Z for _ in range(k_endog)])
+        else:
+            self.ssm["design"] = pt.linalg.block_diag(*[Z for _ in range(k_endog_effective)])
 
         init_state = self.make_and_register_variable(
             f"params_{self.name}", shape=(n_coefs,) if k_endog == 1 else (k_endog, n_coefs)
