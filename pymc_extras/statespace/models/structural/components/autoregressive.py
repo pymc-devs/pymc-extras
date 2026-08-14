@@ -192,7 +192,6 @@ class Autoregressive(Component):
         k_endog_effective = 1 if self.share_states else k_endog
 
         k_states = self.k_states // k_endog_effective
-        k_posdef = self.k_posdef
 
         k_nonzero = int(sum(self.order))
         ar_params = self.make_and_register_variable(
@@ -218,14 +217,14 @@ class Autoregressive(Component):
                 transition_matrices.append(T)
             T = pt.linalg.block_diag(*transition_matrices)
 
-        self.ssm["transition", :, :] = T
+        self.ssm["transition"] = T
 
         R = np.eye(k_states)
         R_mask = np.full((k_states,), False)
         R_mask[0] = True
         R = R[:, R_mask]
 
-        self.ssm["selection", :, :] = pt.linalg.block_diag(*[R for _ in range(k_endog_effective)])
+        self.ssm["selection"] = pt.linalg.block_diag(*[R for _ in range(k_endog_effective)])
 
         Zs = [pt.zeros((1, k_states))[0, 0].set(1.0) for _ in range(k_endog)]
 
@@ -233,10 +232,9 @@ class Autoregressive(Component):
             Z = pt.join(0, *Zs)
         else:
             Z = pt.linalg.block_diag(*Zs)
-        self.ssm["design", :, :] = Z
+        self.ssm["design"] = Z
 
-        cov_idx = ("state_cov", *np.diag_indices(k_posdef))
-        self.ssm[cov_idx] = sigma_ar**2
+        self.ssm["state_cov"] = pt.diag(pt.atleast_1d(sigma_ar**2))
 
 
 def __getattr__(name: str):
