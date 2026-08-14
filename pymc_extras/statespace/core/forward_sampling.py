@@ -14,7 +14,7 @@ from pymc_extras.statespace.filters.distributions import (
     SequenceMvNormal,
     SimulationSmoother,
 )
-from pymc_extras.statespace.filters.utilities import stabilize
+from pymc_extras.statespace.filters.utilities import scan_sequence_names, stabilize
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     FILTER_OUTPUT_DIMS,
@@ -137,7 +137,7 @@ def _sample_conditional(
                     Q=Q,
                     kalman_filter=ss_mod.kalman_filter.copy(),
                     kalman_smoother=ss_mod.kalman_smoother.copy(),
-                    sequence_names=tuple(ss_mod.kalman_filter.seq_names),
+                    sequence_names=tuple(scan_sequence_names(ss_mod.ssm.time_varying_names)),
                     dims=state_dims,
                     method=mvn_method,
                 )
@@ -301,7 +301,7 @@ def _sample_unconditional(
             steps=steps,
             dims=dims,
             method=mvn_method,
-            sequence_names=ss_mod.kalman_filter.seq_names,
+            sequence_names=scan_sequence_names(ss_mod.ssm.time_varying_names),
             k_endog=ss_mod.k_endog,
         )
 

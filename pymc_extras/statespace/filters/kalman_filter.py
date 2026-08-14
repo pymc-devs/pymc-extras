@@ -17,6 +17,7 @@ from pytensor.tensor import TensorConstant, TensorVariable
 from pytensor.tensor.linalg import solve_triangular
 
 from pymc_extras.statespace.filters.utilities import (
+    PARAM_NAMES,
     quad_form_sym,
     split_vars_into_seq_and_nonseq,
     stabilize,
@@ -25,12 +26,10 @@ from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_NAMES,
     JITTER_DEFAULT,
     LONG_NAME_TO_SHORT,
-    MATRIX_NAMES,
     MISSING_FILL,
 )
 
 MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
-PARAM_NAMES = MATRIX_NAMES[2:]
 
 assert_time_varying_dim_correct = Assert(
     "The first dimension of a time varying matrix (the time dimension) must be "
