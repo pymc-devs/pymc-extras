@@ -34,6 +34,49 @@ from pymc_extras.statespace.utils.constants import (
 )
 
 
+def _fill_axis(
+    base: np.ndarray,
+    index: int,
+    positions: Sequence[np.ndarray],
+    values: Sequence[pt.TensorVariable],
+    axis: int,
+) -> pt.TensorVariable:
+    """
+    Write ``values`` into one row or column of ``base``, in a single assignment.
+
+    Parameters
+    ----------
+    base : ndarray
+        Constant matrix the parameters are written into.
+    index : int
+        Row (``axis=0``) or column (``axis=1``) receiving the values.
+    positions : sequence of ndarray
+        Index arrays giving the offsets along the other axis, one per block of values.
+    values : sequence of TensorVariable
+        Parameter blocks, aligned with ``positions``.
+    axis : int
+        0 to fill a row, 1 to fill a column.
+
+    Returns
+    -------
+    filled : TensorVariable
+        ``base`` with the parameters written in.
+    """
+    base = pt.as_tensor_variable(base)
+    if not values:
+        return base
+
+    offsets = np.concatenate(positions)
+    # Blocks write to disjoint lags -- ``_verify_order`` rejects the orders that would overlap --
+    # so one assignment is equivalent to writing each block in turn.
+    assert len(np.unique(offsets)) == len(offsets), "parameter blocks overlap"
+
+    block = pt.concatenate([pt.atleast_1d(value) for value in values])
+    key = (index, offsets) if axis == 0 else (offsets, index)
+
+    return pt.set_subtensor(base[key], block)
+
+
 def _verify_order(p, d, q, P, D, Q, S):
     for name, terms in zip(["AR", "MA"], [(p, P), (q, Q)]):
         a, A = terms
@@ -480,112 +523,99 @@ class BayesianSARIMAX(PyMCStateSpace):
                 [0] * self._k_diffs, [1.0], np.zeros(self.k_states - self._k_diffs - 1)
             ][:, None]
 
-            ar_param_idx = np.s_[
-                "transition", self._k_diffs : self._k_diffs + self.p, self._k_diffs
-            ]
-            ma_param_idx = np.s_["selection", 1 + self._k_diffs : 1 + self._k_diffs + self.q, 0]
-
-            self.ssm["transition"] = transition
-            self.ssm["selection"] = selection
+            ar_rows, ar_values = [], []
+            ma_rows, ma_values = [], []
 
             if p > 0:
                 ar_params = self.make_and_register_variable("ar_params", shape=(p,), dtype=floatX)
-                self.ssm[ar_param_idx] = ar_params
+                ar_rows.append(np.arange(self._k_diffs, self._k_diffs + p))
+                ar_values.append(ar_params)
 
             if P > 0:
                 seasonal_ar_params = self.make_and_register_variable(
                     "seasonal_ar_params", shape=(P,), dtype=floatX
                 )
                 idx_rows = self._k_diffs + (np.arange(1, P + 1) * S) - 1
-                S_ar_param_idx = np.s_["transition", idx_rows, self._k_diffs]
-                self.ssm[S_ar_param_idx] = seasonal_ar_params
+                ar_rows.append(idx_rows)
+                ar_values.append(seasonal_ar_params)
 
                 if p > 0:
-                    cross_term_idx = np.s_[
-                        "transition",
-                        idx_rows.repeat(p) + np.tile(np.arange(p), P) + 1,
-                        self._k_diffs,
-                    ]
-                    self.ssm[cross_term_idx] = -pt.repeat(seasonal_ar_params, p) * pt.tile(
-                        ar_params, P
-                    )
+                    ar_rows.append(idx_rows.repeat(p) + np.tile(np.arange(p), P) + 1)
+                    ar_values.append(-pt.repeat(seasonal_ar_params, p) * pt.tile(ar_params, P))
 
             if q > 0:
                 ma_params = self.make_and_register_variable("ma_params", shape=(q,), dtype=floatX)
-                self.ssm[ma_param_idx] = ma_params
+                ma_rows.append(np.arange(1 + self._k_diffs, 1 + self._k_diffs + q))
+                ma_values.append(ma_params)
 
             if Q > 0:
                 seasonal_ma_params = self.make_and_register_variable(
                     "seasonal_ma_params", shape=(Q,), dtype=floatX
                 )
                 idx_rows = self._k_diffs + np.arange(1, Q + 1) * S
-                S_ma_param_idx = np.s_["selection", idx_rows, 0]
-                self.ssm[S_ma_param_idx] = seasonal_ma_params
+                ma_rows.append(idx_rows)
+                ma_values.append(seasonal_ma_params)
 
                 if q > 0:
-                    cross_term_idx = np.s_[
-                        "selection", idx_rows.repeat(q) + np.tile(np.arange(q), Q) + 1, 0
-                    ]
-                    self.ssm[cross_term_idx] = pt.repeat(seasonal_ma_params, q) * pt.tile(
-                        ma_params, Q
-                    )
+                    ma_rows.append(idx_rows.repeat(q) + np.tile(np.arange(q), Q) + 1)
+                    ma_values.append(pt.repeat(seasonal_ma_params, q) * pt.tile(ma_params, Q))
+
+            # Every AR term lands in one column of T, and every MA term in one column of R.
+            self.ssm["transition"] = _fill_axis(
+                transition, self._k_diffs, ar_rows, ar_values, axis=1
+            )
+            self.ssm["selection"] = _fill_axis(selection, 0, ma_rows, ma_values, axis=1)
 
         elif self.state_structure == "interpretable":
-            ar_param_idx = np.s_["transition", 0, : max(1, p)]
-            ma_param_idx = np.s_["transition", 0, self._p_max : self._p_max + max(1, q)]
-
             transition = np.eye(self.k_states, k=-1)
             transition[-self._q_max, self._p_max - 1] = 0
 
             selection = np.r_[[1.0], np.zeros(self.k_states - 1)][:, None]
             selection[-self._q_max, 0] = 1
 
-            self.ssm["transition"] = transition
-            self.ssm["selection"] = selection
+            param_cols, param_values = [], []
 
             if self.p > 0:
                 ar_params = self.make_and_register_variable(
                     "ar_params", shape=(self.p,), dtype=floatX
                 )
-                self.ssm[ar_param_idx] = ar_params
+                param_cols.append(np.arange(max(1, p)))
+                param_values.append(ar_params)
 
             if self.P > 0:
                 seasonal_ar_params = self.make_and_register_variable(
                     "seasonal_ar_params", shape=(P,), dtype=floatX
                 )
                 idx_cols = np.arange(1, P + 1) * S - 1
-                S_ar_param_idx = np.s_["transition", 0, idx_cols]
-                self.ssm[S_ar_param_idx] = seasonal_ar_params
+                param_cols.append(idx_cols)
+                param_values.append(seasonal_ar_params)
 
                 if p > 0:
-                    cross_term_idx = np.s_[
-                        "transition", 0, idx_cols.repeat(p) + np.tile(np.arange(p), P) + 1
-                    ]
-                    self.ssm[cross_term_idx] = -pt.repeat(seasonal_ar_params, p) * pt.tile(
-                        ar_params, P
-                    )
+                    param_cols.append(idx_cols.repeat(p) + np.tile(np.arange(p), P) + 1)
+                    param_values.append(-pt.repeat(seasonal_ar_params, p) * pt.tile(ar_params, P))
 
             if self.q > 0:
                 ma_params = self.make_and_register_variable(
                     "ma_params", shape=(self.q,), dtype=floatX
                 )
-                self.ssm[ma_param_idx] = ma_params
+                param_cols.append(np.arange(self._p_max, self._p_max + max(1, q)))
+                param_values.append(ma_params)
 
             if Q > 0:
                 seasonal_ma_params = self.make_and_register_variable(
                     "seasonal_ma_params", shape=(Q,), dtype=floatX
                 )
                 idx_cols = self._p_max + np.arange(1, Q + 1) * S - 1
-                S_ma_param_idx = np.s_["transition", 0, idx_cols]
-                self.ssm[S_ma_param_idx] = seasonal_ma_params
+                param_cols.append(idx_cols)
+                param_values.append(seasonal_ma_params)
 
                 if q > 0:
-                    cross_term_idx = np.s_[
-                        "transition", 0, idx_cols.repeat(q) + np.tile(np.arange(q), Q) + 1
-                    ]
-                    self.ssm[cross_term_idx] = pt.repeat(seasonal_ma_params, q) * pt.tile(
-                        ma_params, Q
-                    )
+                    param_cols.append(idx_cols.repeat(q) + np.tile(np.arange(q), Q) + 1)
+                    param_values.append(pt.repeat(seasonal_ma_params, q) * pt.tile(ma_params, Q))
+
+            # In this parameterization every AR and MA term lands in the first row of T.
+            self.ssm["transition"] = _fill_axis(transition, 0, param_cols, param_values, axis=0)
+            self.ssm["selection"] = selection
 
         # If exogenous regressors are present, register them as data and include a regression term
         # in the observation intercept
@@ -601,18 +631,16 @@ class BayesianSARIMAX(PyMCStateSpace):
             self.ssm.declare_time_varying("obs_intercept")
 
         # Set up the state covariance matrix
-        state_cov_idx = ("state_cov", *np.diag_indices(self.k_posdef))
         state_cov = self.make_and_register_variable(
             "sigma_state", shape=() if self.k_posdef == 1 else (self.k_posdef,), dtype=floatX
         )
-        self.ssm[state_cov_idx] = state_cov**2
+        self.ssm["state_cov"] = pt.diag(pt.atleast_1d(state_cov**2))
 
         if self.measurement_error:
-            obs_cov_idx = ("obs_cov", *np.diag_indices(self.k_endog))
             obs_cov = self.make_and_register_variable(
                 "sigma_obs", shape=() if self.k_endog == 1 else (self.k_endog,), dtype=floatX
             )
-            self.ssm[obs_cov_idx] = obs_cov**2
+            self.ssm["obs_cov"] = pt.diag(pt.atleast_1d(obs_cov**2))
 
         # The initial conditions have to be done last in the case of stationary initialization, because it will depend
         # on c, T, R and Q
