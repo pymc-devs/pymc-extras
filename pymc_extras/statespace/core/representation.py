@@ -310,14 +310,3 @@ class PytensorRepresentation:
             return
 
         raise IndexError("First index must the name of a valid state space matrix.")
-
-    def __copy__(self) -> "PytensorRepresentation":
-        new = self.__class__.__new__(self.__class__)
-        for slot in self.__slots__:
-            setattr(new, slot, getattr(self, slot))
-        new._time_varying_names = set(self._time_varying_names)
-        return new
-
-    def copy(self) -> "PytensorRepresentation":
-        """Return a copy sharing this object's matrix graphs but owning its time-varying names."""
-        return copy.copy(self)
