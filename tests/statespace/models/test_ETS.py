@@ -140,7 +140,7 @@ def test_statespace_matrices(
         "initial_level": rng.normal() ** 2,
         "initial_trend": rng.normal() ** 2,
         "initial_seasonal": np.ones(seasonal_periods),
-        "initial_state_cov": np.eye(expected_states),
+        "P0": np.eye(expected_states),
     }
 
     matrices = x0, P0, c, d, T, Z, R, H, Q = mod._unpack_statespace_with_placeholders()
@@ -237,7 +237,7 @@ def test_statespace_matches_statsmodels(rng, order: tuple[str, str, str], params
     test_values["initial_level"] = rng.normal()
     test_values["initial_trend"] = rng.normal()
     test_values["initial_seasonal"] = rng.normal(size=seasonal_periods)
-    test_values["initial_state_cov"] = np.eye(mod.k_states)
+    test_values["P0"] = np.eye(mod.k_states)
     test_values["sigma_state"] = 1.0
 
     sm_test_values = test_values.copy()
@@ -306,7 +306,7 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
         size=mod.k_endog,
     )
     test_values["initial_seasonal"] = rng.normal(size=(mod.k_endog, seasonal_periods))
-    test_values["initial_state_cov"] = np.eye(mod.k_states)
+    test_values["P0"] = np.eye(mod.k_states)
 
     if not dense_cov:
         test_values["sigma_state"] = np.ones(
@@ -338,7 +338,7 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
         d = {
             name: (
                 test_values[name][i]
-                if name != "initial_state_cov"
+                if name != "P0"
                 else test_values_subset[name][single_slice, single_slice]
             )
             for name in single_input_names

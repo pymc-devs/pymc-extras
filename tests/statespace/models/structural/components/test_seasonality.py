@@ -338,7 +338,7 @@ def test_add_two_time_seasonality_different_observed(rng, d1, d2):
         "params_season2": np.array([3.0, 0.0, 0.0, 0.0], dtype=config.floatX),
         "sigma_season1": np.array(0.0, dtype=config.floatX),
         "sigma_season2": np.array(0.0, dtype=config.floatX),
-        "initial_state_cov": np.eye(mod.k_states, dtype=config.floatX),
+        "P0": np.eye(mod.k_states, dtype=config.floatX),
     }
 
     x, y = simulate_from_numpy_model(mod, rng, params, steps=3 * 5 * 5 * d1 * d2)
@@ -395,7 +395,7 @@ def test_add_two_time_seasonality_different_observed_time_varying(rng, d1, d2):
         "params_season2": np.array([3.0, 0.0, 0.0, 0.0], dtype=config.floatX),
         "sigma_season1": np.array(0.0, dtype=config.floatX),
         "sigma_season2": np.array(0.0, dtype=config.floatX),
-        "initial_state_cov": np.eye(mod.k_states, dtype=config.floatX),
+        "P0": np.eye(mod.k_states, dtype=config.floatX),
     }
     x, y = simulate_from_numpy_model(mod, rng, params, steps=s1 * s2 * max(d1, d2) * 2)
     assert_pattern_repeats(y[:, 0], s1 * d1, atol=ATOL, rtol=RTOL)
@@ -435,7 +435,7 @@ def test_add_time_varying_and_static_seasonality(rng):
         "params_monthly": np.array([2.0, 0.0, 0.0, 0.0], dtype=config.floatX),
         "sigma_weekly": np.array(0.0, dtype=config.floatX),
         "sigma_monthly": np.array(0.0, dtype=config.floatX),
-        "initial_state_cov": np.eye(mod.k_states, dtype=config.floatX),
+        "P0": np.eye(mod.k_states, dtype=config.floatX),
     }
     # Pattern repeats every LCM(s1*d1, s2*d2) = LCM(12, 10) = 60
     steps = 60 * 3
@@ -565,7 +565,7 @@ def test_add_two_frequency_seasonality_different_observed(rng):
         "params_freq2": np.array([3.0, 0.0], dtype=config.floatX),
         "sigma_freq1": np.array(0.0, dtype=config.floatX),
         "sigma_freq2": np.array(0.0, dtype=config.floatX),
-        "initial_state_cov": np.eye(mod.k_states, dtype=config.floatX),
+        "P0": np.eye(mod.k_states, dtype=config.floatX),
     }
 
     x, y = simulate_from_numpy_model(mod, rng, params, steps=4 * 6 * 3)

@@ -410,7 +410,7 @@ def test_representations_are_equivalent(p, d, q, P, D, Q, S, data, rng):
         shared_params.update(
             {
                 "x0": np.zeros(mod.k_states, dtype=floatX),
-                "initial_state_cov": np.eye(mod.k_states, dtype=floatX) * 100,
+                "P0": np.eye(mod.k_states, dtype=floatX) * 100,
             }
         )
         x, y = simulate_from_numpy_model(mod, rng, shared_params)

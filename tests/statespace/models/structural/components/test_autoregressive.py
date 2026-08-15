@@ -124,7 +124,7 @@ def test_autoregressive_multiple_observed_data(rng):
     params = {
         "params_auto_regressive": np.array([0.9, 0.8, 0.5]).reshape((3, 1)),
         "sigma_auto_regressive": np.array([0.05, 0.12, 0.22]),
-        "initial_state_cov": np.eye(3),
+        "P0": np.eye(3),
     }
 
     # Recover the AR(1) coefficients from the simulated data via OLS

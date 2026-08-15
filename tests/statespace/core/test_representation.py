@@ -125,6 +125,16 @@ class BasicFunctionality(unittest.TestCase):
         assert_allclose(fast_eval(ssm["selection"][-1, -1]), 9.9, atol=atol)
         assert_allclose(fast_eval(ssm["state_intercept"][:, 0]), np.arange(n), atol=atol)
 
+    def test_assignment_does_not_rename_the_assigned_variable(self):
+        """Model parameters are looked up by name, so storing one must leave its name alone."""
+        ssm = PytensorRepresentation(k_endog=1, k_states=3, k_posdef=1)
+        x0 = pt.vector("x0", shape=(3,))
+
+        ssm["initial_state"] = x0
+
+        self.assertEqual(x0.name, "x0")
+        self.assertEqual(ssm["initial_state"].name, "initial_state")
+
     def test_invalid_key_name_raises(self):
         ssm = PytensorRepresentation(k_endog=3, k_states=5, k_posdef=1)
         with self.assertRaises(IndexError) as e:
