@@ -507,7 +507,7 @@ class BayesianSARIMAX(PyMCStateSpace):
                 "P0", shape=(self.k_states, self.k_states), dtype=floatX
             )
 
-            self.ssm["initial_state", :] = x0
+            self.ssm["initial_state"] = x0
             self.ssm["initial_state_cov"] = P0
 
         # Design matrix has no RVs
@@ -646,5 +646,5 @@ class BayesianSARIMAX(PyMCStateSpace):
         # on c, T, R and Q
         if self.stationary_initialization:
             x0, P0 = self._stationary_initialization()
-            self.ssm["initial_state", :] = x0
-            self.ssm["initial_state_cov", :, :] = P0
+            self.ssm["initial_state"] = x0
+            self.ssm["initial_state_cov"] = P0

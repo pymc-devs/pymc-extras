@@ -236,9 +236,9 @@ class Regression(Component):
         )
         regression_data = self.make_and_register_data(f"data_{self.name}", shape=(None, k_states))
 
-        self.ssm["initial_state", :] = betas.ravel()
-        self.ssm["transition", :, :] = pt.eye(self.k_states)
-        self.ssm["selection", :, :] = pt.eye(self.k_states)
+        self.ssm["initial_state"] = betas.ravel()
+        self.ssm["transition"] = pt.eye(self.k_states)
+        self.ssm["selection"] = pt.eye(self.k_states)
 
         if self.share_states:
             self.ssm["design"] = pt.join(

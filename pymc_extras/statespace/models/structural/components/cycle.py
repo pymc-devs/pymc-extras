@@ -313,13 +313,13 @@ class Cycle(Component):
         # when innovations=False, state cov Q=0, hence R @ Q @ R.T = 0
         R = np.eye(2)  # 2x2 identity for each cycle component
         selection_matrix = block_diag(*[R for _ in range(k_endog_effective)])
-        self.ssm["selection", :, :] = pt.as_tensor_variable(selection_matrix)
+        self.ssm["selection"] = pt.as_tensor_variable(selection_matrix)
 
         init_state = self.make_and_register_variable(
             f"params_{self.name}",
             shape=(k_endog_effective, 2) if k_endog_effective > 1 else (self.k_states,),
         )
-        self.ssm["initial_state", :] = init_state.ravel()
+        self.ssm["initial_state"] = init_state.ravel()
 
         if self.estimate_cycle_length:
             lamb = self.make_and_register_variable(f"length_{self.name}", shape=())
@@ -332,22 +332,22 @@ class Cycle(Component):
             rho = 1
 
         T = rho * _frequency_transition_block(lamb, j=1)
-        self.ssm["transition", :, :] = block_diag(*[T for _ in range(k_endog_effective)])
+        self.ssm["transition"] = block_diag(*[T for _ in range(k_endog_effective)])
 
         if self.innovations:
             if k_endog_effective == 1:
                 sigma_cycle = self.make_and_register_variable(f"sigma_{self.name}", shape=())
-                self.ssm["state_cov", :, :] = pt.eye(self.k_posdef) * sigma_cycle**2
+                self.ssm["state_cov"] = pt.eye(self.k_posdef) * sigma_cycle**2
             else:
                 sigma_cycle = self.make_and_register_variable(
                     f"sigma_{self.name}", shape=(k_endog_effective,)
                 )
-                self.ssm["state_cov", :, :] = block_diag(
+                self.ssm["state_cov"] = block_diag(
                     *[pt.eye(2) * sigma_cycle[i] ** 2 for i in range(k_endog_effective)]
                 )
         else:
             # explicitly set state cov to 0 when no innovations
-            self.ssm["state_cov", :, :] = pt.zeros((self.k_posdef, self.k_posdef))
+            self.ssm["state_cov"] = pt.zeros((self.k_posdef, self.k_posdef))
 
 
 def __getattr__(name: str):

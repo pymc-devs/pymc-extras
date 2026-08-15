@@ -291,17 +291,17 @@ class LevelTrend(Component):
             f"initial_{self.name}",
             shape=(k_states,) if k_endog_effective == 1 else (k_endog, k_states),
         )
-        self.ssm["initial_state", :] = initial_trend.ravel()
+        self.ssm["initial_state"] = initial_trend.ravel()
 
         triu_idx = pt.triu_indices(k_states)
         T = pt.zeros((k_states, k_states))[triu_idx[0], triu_idx[1]].set(1)
 
-        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
+        self.ssm["transition"] = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
 
         R = np.eye(k_states)
         R = R[:, self.innovations_order]
 
-        self.ssm["selection", :, :] = pt.linalg.block_diag(*[R for _ in range(k_endog_effective)])
+        self.ssm["selection"] = pt.linalg.block_diag(*[R for _ in range(k_endog_effective)])
 
         Z = np.array([1.0] + [0.0] * (k_states - 1)).reshape((1, -1))
 

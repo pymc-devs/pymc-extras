@@ -564,18 +564,18 @@ class BayesianDynamicFactor(PyMCStateSpace):
         else:
             x0 = self.make_and_register_variable("x0", shape=(self.k_states,), dtype=floatX)
 
-        self.ssm["initial_state", :] = x0
+        self.ssm["initial_state"] = x0
 
         P0 = self.make_and_register_variable(
             "P0", shape=(self.k_states, self.k_states), dtype=floatX
         )
-        self.ssm["initial_state_cov", :, :] = P0
+        self.ssm["initial_state_cov"] = P0
 
         self.ssm["design"] = self._build_design_matrix()
         if self.has_exog:
             self.ssm.declare_time_varying("design")
 
-        self.ssm["transition", :, :] = pt.linalg.block_diag(*self._build_transition_blocks())
+        self.ssm["transition"] = pt.linalg.block_diag(*self._build_transition_blocks())
 
         self._build_selection_matrix()
 
@@ -736,7 +736,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             else:
                 blocks.append(pt.zeros((self.k_exog_states, self.k_exog_states), dtype=floatX))
 
-        self.ssm["state_cov", :, :] = pt.linalg.block_diag(*blocks)
+        self.ssm["state_cov"] = pt.linalg.block_diag(*blocks)
 
     def _build_obs_cov(self, error_cov) -> None:
         r"""Build the observation covariance :math:`H`."""
@@ -752,4 +752,4 @@ class BayesianDynamicFactor(PyMCStateSpace):
             )
             obs_cov = obs_cov + pt.diag(sigma_obs**2)
 
-        self.ssm["obs_cov", :, :] = obs_cov
+        self.ssm["obs_cov"] = obs_cov

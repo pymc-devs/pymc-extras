@@ -397,13 +397,13 @@ class BayesianVARMAX(PyMCStateSpace):
         if not self.stationary_initialization:
             # initial states
             x0 = self.make_and_register_variable("x0", shape=(self.k_states,), dtype=floatX)
-            self.ssm["initial_state", :] = x0
+            self.ssm["initial_state"] = x0
 
             # initial covariance
             P0 = self.make_and_register_variable(
                 "P0", shape=(self.k_states, self.k_states), dtype=floatX
             )
-            self.ssm["initial_state_cov", :, :] = P0
+            self.ssm["initial_state_cov"] = P0
 
         # Design matrix is a truncated identity (first k_obs states observed). Written as an
         # indexed update rather than a whole matrix because of #736.
@@ -470,7 +470,7 @@ class BayesianVARMAX(PyMCStateSpace):
         state_cov = self.make_and_register_variable(
             "state_cov", shape=(self.k_posdef, self.k_posdef), dtype=floatX
         )
-        self.ssm["state_cov", :, :] = state_cov
+        self.ssm["state_cov"] = state_cov
 
         if self.exog_state_names is not None:
             if isinstance(self.exog_state_names, list):
@@ -541,5 +541,5 @@ class BayesianVARMAX(PyMCStateSpace):
                 pt.linalg.matrix_dot(R, Q, R.T),
                 method="direct" if self.k_states < 10 else "bilinear",
             )
-            self.ssm["initial_state", :] = x0
-            self.ssm["initial_state_cov", :, :] = P0
+            self.ssm["initial_state"] = x0
+            self.ssm["initial_state_cov"] = P0
