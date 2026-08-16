@@ -4,7 +4,7 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.core.assumptions import declare_time_varying
+from pymc_extras.statespace.core.assumptions import declare_time_varying, is_time_varying
 
 floatX = pytensor.config.floatX
 KeyLike = tuple[str | int, ...] | str
@@ -270,10 +270,23 @@ class PytensorRepresentation:
         ----------
         *names : str
             Names of the matrices to mark.
+
+        Raises
+        ------
+        ValueError
+            If a named matrix is at its core rank, leaving no leading axis to iterate over.
         """
         for name in names:
             self._validate_name(name)
-            setattr(self, name, declare_time_varying(getattr(self, name)))
+            tensor = getattr(self, name)
+            if tensor.ndim == _CORE_NDIM[name]:
+                raise ValueError(
+                    f"{name} has ndim={tensor.ndim}, its core rank, so it has no leading axis "
+                    f"to iterate over. Assign a matrix of shape "
+                    f"(time, {', '.join(map(str, self._core_shape(name)))}) before declaring it "
+                    f"time-varying."
+                )
+            setattr(self, name, declare_time_varying(tensor))
 
     def __getitem__(self, key: KeyLike) -> pt.TensorVariable:
         if isinstance(key, str):
@@ -295,7 +308,16 @@ class PytensorRepresentation:
     ) -> None:
         if isinstance(key, str):
             self._validate_name(key)
-            setattr(self, key, self._coerce(key, value))
+            tensor = self._coerce(key, value)
+            existing = getattr(self, key)
+            # A replacement of the same rank describes the same axes as what it replaces, so a
+            # declared time axis carries over. A change of rank redefines them, and the model has
+            # to say again what the leading axis means.
+            if tensor.ndim == existing.ndim:
+                [time_varying] = is_time_varying(existing)
+                if time_varying:
+                    tensor = declare_time_varying(tensor)
+            setattr(self, key, tensor)
             return
 
         if isinstance(key, tuple) and isinstance(key[0], str):
