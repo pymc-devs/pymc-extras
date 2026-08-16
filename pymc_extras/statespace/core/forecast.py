@@ -13,6 +13,7 @@ from pymc.util import RandomState
 from pytensor.graph.replace import graph_replace
 from xarray import DataTree
 
+from pymc_extras.statespace.core.assumptions import is_time_varying
 from pymc_extras.statespace.core.fit_recovery import (
     coords_from_idata,
     data_from_idata,
@@ -25,9 +26,7 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
     FILTER_OUTPUT_TYPES,
-    MATRIX_NAMES,
     OBS_STATE_DIM,
-    SHORT_NAME_TO_LONG,
     TIME_DIM,
 )
 
@@ -510,13 +509,13 @@ def _build_forecast_model(
                     forecast_matrices, replace=exog_replace, strict=False
                 )
 
-        forecast_names = MATRIX_NAMES[2:]  # c, d, T, Z, R, H, Q
-        time_varying_names = ss_mod.ssm.time_varying_names
         # Start one step early: the transition into the first forecast period uses the
         # matrices of the last training period, and its observation is discarded.
         forecast_matrices = [
-            m[n_train - 1 :] if SHORT_NAME_TO_LONG[name] in time_varying_names else m
-            for m, name in zip(forecast_matrices, forecast_names)
+            m[n_train - 1 :] if varying else m
+            for m, varying in zip(
+                forecast_matrices, is_time_varying(*forecast_matrices), strict=True
+            )
         ]
 
         _ = LinearGaussianStateSpace(

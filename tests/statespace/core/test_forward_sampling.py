@@ -7,6 +7,7 @@ import pytest
 
 from numpy.testing import assert_allclose, assert_array_equal
 
+from pymc_extras.statespace.core.assumptions import is_time_varying
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
@@ -266,11 +267,18 @@ def test_sample_statespace_matrices_keeps_its_dims(exog_ss_mod, idata_exog):
         idata_exog, matrix_names=LONG_MATRIX_NAMES, group="prior"
     )
     sampled = matrix_idata.posterior_predictive
+    varying = dict(
+        zip(
+            LONG_MATRIX_NAMES,
+            is_time_varying(*(exog_ss_mod.ssm[name] for name in LONG_MATRIX_NAMES)),
+            strict=True,
+        )
+    )
 
     for short_name in MATRIX_NAMES:
         long_name = SHORT_NAME_TO_LONG[short_name]
         expected = ("chain", "draw", *MATRIX_DIMS[short_name])
-        if long_name in exog_ss_mod.ssm.time_varying_names:
+        if varying[long_name]:
             expected = ("chain", "draw", TIME_DIM, *MATRIX_DIMS[short_name])
 
         assert sampled[long_name].dims == expected, f"{long_name} lost its dims"
