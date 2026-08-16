@@ -35,6 +35,17 @@ floatX = pytensor.config.floatX
 ATOL = 1e-6 if floatX.endswith("64") else 1e-3
 RTOL = 1e-6 if floatX.endswith("64") else 1e-3
 
+# The order BaseFilter.build_graph returns its outputs in.
+BUILD_GRAPH_OUTPUT_NAMES = (
+    "filtered_states",
+    "predicted_states",
+    "observed_states",
+    "filtered_covariances",
+    "predicted_covariances",
+    "observed_covariances",
+    "loglike_obs",
+)
+
 
 @cache
 def get_filter_function(filter_name: str) -> Callable:
@@ -167,21 +178,34 @@ def f_standard_nd():
 @pytest.mark.parametrize(
     "declared_names",
     [(), ("T",), ("Z", "d"), ("T", "Z", "R", "H", "Q")],
-    ids=["none", "one", "declared_out_of_order", "many"],
+    ids=["none", "one", "two", "many"],
 )
-def test_time_varying_matrices_become_scan_sequences_in_matrix_order(declared_names, rng):
-    """``scan`` receives sequences in matrix order, not the order the caller declared them."""
+def test_declared_matrices_filter_identically_to_their_static_form(declared_names, rng):
+    """A matrix repeated over time filters the same as the static matrix it repeats.
+
+    Any matrix handed to ``scan`` as the wrong sequence, or read at the wrong timestep, moves the
+    filtered states away from the static answer.
+    """
     p, m, r, n = 1, 5, 2, 10
     inputs = [pt.as_tensor_variable(x) for x in make_test_inputs(p, m, r, n, rng)]
 
     # inputs are [data, a0, P0, c, d, T, Z, R, H, Q]; a time-varying matrix needs a leading time axis.
     index_of = dict(zip(MATRIX_NAMES[2:], range(3, 10), strict=True))
+    declared_inputs = list(inputs)
     for name in declared_names:
         i = index_of[name]
-        inputs[i] = declare_time_varying(pt.repeat(inputs[i][None], n, axis=0))
+        declared_inputs[i] = declare_time_varying(pt.repeat(inputs[i][None], n, axis=0))
 
-    # Building proves the split is usable: a mis-ordered sequence fails on a shape mismatch.
-    StandardFilter().build_graph(*inputs)
+    static = StandardFilter().build_graph(*inputs)
+    declared = StandardFilter().build_graph(*declared_inputs)
+
+    results = pytensor.function([], [*static, *declared], on_unused_input="ignore")()
+    n_outputs = len(static)
+
+    for name, expected, got in zip(
+        BUILD_GRAPH_OUTPUT_NAMES, results[:n_outputs], results[n_outputs:], strict=True
+    ):
+        assert_allclose(expected, got, err_msg=name, atol=ATOL, rtol=RTOL)
 
 
 def test_output_shapes_with_time_varying_matrices(f_standard_nd, rng):
