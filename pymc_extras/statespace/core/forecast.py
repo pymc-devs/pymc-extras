@@ -21,7 +21,6 @@ from pymc_extras.statespace.core.fit_recovery import (
     verify_group,
 )
 from pymc_extras.statespace.filters.distributions import LinearGaussianStateSpace
-from pymc_extras.statespace.filters.utilities import scan_sequence_names
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
     ALL_STATE_DIM,
@@ -527,7 +526,6 @@ def _build_forecast_model(
             *forecast_matrices,
             steps=len(forecast_index),
             dims=trajectory_dims,
-            sequence_names=scan_sequence_names(ss_mod.ssm.time_varying_names),
             k_endog=ss_mod.k_endog,
             append_x0=False,
             method=mvn_method,
