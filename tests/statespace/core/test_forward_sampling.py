@@ -8,7 +8,13 @@ import pytest
 from numpy.testing import assert_allclose
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
-from pymc_extras.statespace.utils.constants import MATRIX_NAMES
+from pymc_extras.statespace.utils.constants import (
+    LONG_MATRIX_NAMES,
+    MATRIX_DIMS,
+    MATRIX_NAMES,
+    SHORT_NAME_TO_LONG,
+    TIME_DIM,
+)
 
 
 @pytest.mark.parametrize("group", ["posterior", "prior"])
@@ -119,7 +125,7 @@ def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
 
     assert missing_outputs.size == 0
 
-    msg = "['filter_covariances' 'filter_states'] not a valid filter output name!"
+    msg = "['filter_covariances', 'filter_states'] not a valid filter output name!"
     incorrect_outputs = ["filter_states", "filter_covariances"]
     with pytest.raises(ValueError, match=re.escape(msg)):
         exog_ss_mod.sample_filter_outputs(idata_exog, filter_output_names=incorrect_outputs)
@@ -195,3 +201,57 @@ class TestTimeVaryingTransition:
         assert "irf" in result
         assert result["irf"].shape[2] == 20
         assert not np.any(np.isnan(result["irf"].values))
+
+
+@pytest.mark.filterwarnings("ignore:Provided data contains missing values")
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+def test_sample_statespace_matrices_keeps_its_dims(exog_ss_mod, idata_exog):
+    """Every sampled matrix carries the dims MATRIX_DIMS declares for it.
+
+    The dims are looked up against the fit coords and silently become ``None`` for any coord that is
+    missing, so a coord regression would degrade the output rather than fail.
+    """
+    matrix_idata = exog_ss_mod.sample_statespace_matrices(
+        idata_exog, matrix_names=LONG_MATRIX_NAMES, group="prior"
+    )
+    sampled = matrix_idata.posterior_predictive
+
+    for short_name in MATRIX_NAMES:
+        long_name = SHORT_NAME_TO_LONG[short_name]
+        expected = ("chain", "draw", *MATRIX_DIMS[short_name])
+        if long_name in exog_ss_mod.ssm.time_varying_names:
+            expected = ("chain", "draw", TIME_DIM, *MATRIX_DIMS[short_name])
+
+        assert sampled[long_name].dims == expected, f"{long_name} lost its dims"
+        assert np.all(np.isfinite(sampled[long_name].values)), f"{long_name} is not finite"
+
+
+@pytest.mark.filterwarnings("ignore:Provided data contains missing values")
+@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.parametrize(
+    "mod_name, idata_name",
+    [("ss_mod", "idata"), ("exog_ss_mod", "idata_exog")],
+    ids=["no_exog", "with_exog"],
+)
+def test_sample_statespace_matrices_defaults_to_every_matrix(mod_name, idata_name, request):
+    """The default names must not collide with the x0 and P0 parameters models declare."""
+    ss_mod = request.getfixturevalue(mod_name)
+    idata = request.getfixturevalue(idata_name)
+
+    sampled = ss_mod.sample_statespace_matrices(
+        idata, matrix_names=None, group="prior"
+    ).posterior_predictive
+
+    assert set(sampled.data_vars) == set(LONG_MATRIX_NAMES)
+
+
+def test_sample_statespace_matrices_rejects_unknown_names(ss_mod, idata):
+    """A mistyped name fails naming itself, rather than as a KeyError from inside pymc."""
+    with pytest.raises(ValueError, match="not a valid statespace matrix name"):
+        ss_mod.sample_statespace_matrices(idata, matrix_names="tranistion", group="prior")
+
+    # A valid name alongside an invalid one must not mask the mistake.
+    with pytest.raises(ValueError, match="not a valid statespace matrix name"):
+        ss_mod.sample_statespace_matrices(
+            idata, matrix_names=["transition", "bogus"], group="prior"
+        )

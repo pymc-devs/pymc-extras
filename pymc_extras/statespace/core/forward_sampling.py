@@ -19,6 +19,7 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     FILTER_OUTPUT_DIMS,
     FILTER_OUTPUT_TYPES,
+    LONG_MATRIX_NAMES,
     MATRIX_DIMS,
     MATRIX_NAMES,
     OBS_STATE_DIM,
@@ -403,7 +404,7 @@ def sample_unconditional_posterior(
 def sample_statespace_matrices(
     ss_mod: "PyMCStateSpace",
     idata,
-    matrix_names: str | list[str] | None,
+    matrix_names: str | list[str] | None = None,
     group: str = "posterior",
     **kwargs,
 ):
@@ -412,25 +413,35 @@ def sample_statespace_matrices(
     compile_kwargs = kwargs.pop("compile_kwargs", {})
     compile_kwargs.setdefault("mode", ss_mod.mode)
 
-    if matrix_names is None:
-        matrix_names = MATRIX_NAMES
-    elif isinstance(matrix_names, str):
+    if isinstance(matrix_names, str):
         matrix_names = [matrix_names]
+
+    if matrix_names is None:
+        # Not the short names: x0 and P0 collide with parameters most models declare.
+        matrix_names = LONG_MATRIX_NAMES
+    else:
+        unknown_matrix_names = set(matrix_names).difference(MATRIX_NAMES, LONG_MATRIX_NAMES)
+        if unknown_matrix_names:
+            raise ValueError(f"{sorted(unknown_matrix_names)} not a valid statespace matrix name!")
 
     with pm.Model(coords=ss_mod._fit_coords) as forward_model:
         dummy_graph.build_dummy_graph(ss_mod)
         ss_mod._insert_random_variables()
 
         for name in ss_mod.data_names:
-            pm.Data(**ss_mod.data_info[name])
+            pm.Data(**ss_mod._fit_exog_data[name])
 
         ss_mod._insert_data_variables()
         matrices = ss_mod.unpack_statespace()
-        for short_name, matrix in zip(MATRIX_NAMES, matrices):
+        for short_name, matrix in zip(MATRIX_NAMES, matrices, strict=True):
             long_name = SHORT_NAME_TO_LONG[short_name]
             if (long_name in matrix_names) or (short_name in matrix_names):
                 name = long_name if long_name in matrix_names else short_name
-                dims = [x if x in ss_mod._fit_coords else None for x in MATRIX_DIMS[short_name]]
+                matrix_dims = MATRIX_DIMS[short_name]
+                if matrix.ndim == len(matrix_dims) + 1:
+                    # A time-varying matrix carries a leading time axis its static dims do not name.
+                    matrix_dims = (TIME_DIM, *matrix_dims)
+                dims = [x if x in ss_mod._fit_coords else None for x in matrix_dims]
                 pm.Deterministic(name, matrix, dims=dims)
 
     # TODO: Remove this after pm.Flat has its initial_value fixed
@@ -463,11 +474,11 @@ def sample_filter_outputs(
     if filter_output_names is None:
         filter_output_names = list(FILTER_OUTPUT_DIMS.keys())
     else:
-        unknown_filter_output_names = np.setdiff1d(
-            filter_output_names, list(FILTER_OUTPUT_DIMS.keys())
-        )
-        if unknown_filter_output_names.size > 0:
-            raise ValueError(f"{unknown_filter_output_names} not a valid filter output name!")
+        unknown_filter_output_names = set(filter_output_names).difference(FILTER_OUTPUT_DIMS)
+        if unknown_filter_output_names:
+            raise ValueError(
+                f"{sorted(unknown_filter_output_names)} not a valid filter output name!"
+            )
         filter_output_names = [x for x in FILTER_OUTPUT_DIMS.keys() if x in filter_output_names]
 
     compile_kwargs = kwargs.pop("compile_kwargs", {})
