@@ -4,6 +4,8 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
+from pymc_extras.statespace.core.assumptions import declare_time_varying
+
 floatX = pytensor.config.floatX
 KeyLike = tuple[str | int, ...] | str
 
@@ -271,10 +273,15 @@ class PytensorRepresentation:
         return frozenset(self._time_varying_names)
 
     def declare_time_varying(self, *names: str) -> None:
-        """Mark matrices as time-varying. The filter will iterate over the leading dim."""
+        """Mark matrices as time-varying. The filter will iterate over the leading dim.
+
+        The declaration rides on the tensor itself, so it survives substitution and slicing and
+        travels with the matrix into any graph built from it.
+        """
         for name in names:
             self._validate_name(name)
             self._time_varying_names.add(name)
+            setattr(self, name, declare_time_varying(getattr(self, name)))
 
     def __getitem__(self, key: KeyLike) -> pt.TensorVariable:
         if isinstance(key, str):
