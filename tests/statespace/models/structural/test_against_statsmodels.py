@@ -55,8 +55,8 @@ def _assert_all_statespace_matrices_match(mod, params, sm_mod):
 
 
 def _assert_coord_shapes_match_matrices(mod, params):
-    if "initial_state_cov" not in params:
-        params["initial_state_cov"] = np.eye(mod.k_states)
+    if "P0" not in params:
+        params["P0"] = np.eye(mod.k_states)
 
     x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(mod, params)
 

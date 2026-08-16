@@ -160,6 +160,30 @@ def test_VARMAX_update_matches_statsmodels(data, order, rng):
         assert_allclose(matrix_dict[matrix], sm_var.ssm[matrix])
 
 
+def test_measurement_error_enters_obs_cov_as_a_variance():
+    """``sigma_obs`` is a standard deviation, so the observation covariance holds its square."""
+    mod = BayesianVARMAX(
+        endog_names=["a", "b"],
+        order=(1, 0),
+        measurement_error=True,
+        stationary_initialization=False,
+        verbose=False,
+    )
+    sigma = np.array([0.5, 2.0], dtype=floatX)
+
+    with pm.Model():
+        pm.Deterministic("x0", pt.zeros(mod.k_states, dtype=floatX))
+        pm.Deterministic("P0", pt.eye(mod.k_states, dtype=floatX))
+        pm.Deterministic("ar_params", pt.zeros((mod.k_endog, mod.p, mod.k_endog), dtype=floatX))
+        pm.Deterministic("state_cov", pt.eye(mod.k_posdef, dtype=floatX))
+        pm.Deterministic("sigma_obs", pt.as_tensor_variable(sigma))
+        mod._insert_random_variables()
+        matrices = pm.draw(mod.subbed_ssm)
+
+    obs_cov = dict(zip(SHORT_NAME_TO_LONG.values(), matrices))["obs_cov"]
+    assert_allclose(obs_cov, np.diag(sigma**2))
+
+
 @pytest.mark.parametrize("filter_output", ["filtered", "predicted", "smoothed"])
 def test_all_prior_covariances_are_PSD(filter_output, varma_mod, idata, rng):
     cov_name = f"{filter_output}_covariances"

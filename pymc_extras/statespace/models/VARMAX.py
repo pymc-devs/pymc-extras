@@ -397,15 +397,16 @@ class BayesianVARMAX(PyMCStateSpace):
         if not self.stationary_initialization:
             # initial states
             x0 = self.make_and_register_variable("x0", shape=(self.k_states,), dtype=floatX)
-            self.ssm["initial_state", :] = x0
+            self.ssm["initial_state"] = x0
 
             # initial covariance
             P0 = self.make_and_register_variable(
                 "P0", shape=(self.k_states, self.k_states), dtype=floatX
             )
-            self.ssm["initial_state_cov", :, :] = P0
+            self.ssm["initial_state_cov"] = P0
 
-        # Design matrix is a truncated identity (first k_obs states observed)
+        # Design matrix is a truncated identity (first k_obs states observed). Written as an
+        # indexed update rather than a whole matrix because of #736.
         self.ssm[("design", *np.diag_indices(self.k_endog))] = 1
 
         # Transition matrix has 4 blocks:
@@ -413,24 +414,20 @@ class BayesianVARMAX(PyMCStateSpace):
         # Upper right: MA coefs (k_obs, k_obs * q)
         # Lower left: Truncated identity (k_obs * min(p, 1), k_obs * min(p, 1))
         # Lower right: Shifted identity (k_obs * p, k_obs * q)
-        self.ssm["transition"] = np.zeros((self.k_states, self.k_states))
+        transition = np.zeros((self.k_states, self.k_states))
         if self.p > 1:
-            idx = (
-                slice(self.k_endog, self.k_endog * self.p),
-                slice(0, self.k_endog * (self.p - 1)),
+            transition[self.k_endog : self.k_endog * self.p, : self.k_endog * (self.p - 1)] = (
+                np.eye(self.k_endog * (self.p - 1))
             )
-            self.ssm[("transition", *idx)] = np.eye(self.k_endog * (self.p - 1))
 
         if self.q > 1:
-            idx = (
-                slice(-self.k_endog * (self.q - 1), None),
-                slice(-self.k_endog * self.q, -self.k_endog),
+            transition[-self.k_endog * (self.q - 1) :, -self.k_endog * self.q : -self.k_endog] = (
+                np.eye(self.k_endog * (self.q - 1))
             )
-            self.ssm[("transition", *idx)] = np.eye(self.k_endog * (self.q - 1))
+
+        transition = pt.as_tensor_variable(transition)
 
         if self.p > 0:
-            ar_param_idx = ("transition", slice(0, self.k_endog), slice(0, self.k_endog * self.p))
-
             # Register the AR parameter matrix as a (k, p, k), then reshape it and allocate it in the transition matrix
             # This way the user can use 3 dimensions in the prior (clearer?)
             ar_params = self.make_and_register_variable(
@@ -438,41 +435,42 @@ class BayesianVARMAX(PyMCStateSpace):
             )
 
             ar_params = ar_params.reshape((self.k_endog, self.k_endog * self.p))
-            self.ssm[ar_param_idx] = ar_params
-
-        # The selection matrix is (k_states, k_obs), with two (k_obs, k_obs) identity
-        # matrix blocks inside. One is always on top, the other starts after (k_obs * p) rows
-        self.ssm["selection"] = np.zeros((self.k_states, self.k_endog))
-        self.ssm["selection", slice(0, self.k_endog), :] = np.eye(self.k_endog)
-        if self.q > 0:
-            ma_param_idx = (
-                "transition",
-                slice(0, self.k_endog),
-                slice(self.k_endog * max(1, self.p), None),
+            transition = pt.set_subtensor(
+                transition[: self.k_endog, : self.k_endog * self.p], ar_params
             )
 
+        if self.q > 0:
             # Same as above, register with 3 dimensions then reshape
             ma_params = self.make_and_register_variable(
                 "ma_params", shape=(self.k_endog, self.q, self.k_endog), dtype=floatX
             )
 
             ma_params = ma_params.reshape((self.k_endog, self.k_endog * self.q))
-            self.ssm[ma_param_idx] = ma_params
+            transition = pt.set_subtensor(
+                transition[: self.k_endog, self.k_endog * max(1, self.p) :], ma_params
+            )
 
+        self.ssm["transition"] = transition
+
+        # The selection matrix is (k_states, k_obs), with two (k_obs, k_obs) identity
+        # matrix blocks inside. One is always on top, the other starts after (k_obs * p) rows
+        selection = np.zeros((self.k_states, self.k_endog))
+        selection[: self.k_endog, :] = np.eye(self.k_endog)
+        if self.q > 0:
             end = -self.k_endog * (self.q - 1) if self.q > 1 else None
-            self.ssm["selection", slice(self.k_endog * -self.q, end), :] = np.eye(self.k_endog)
+            selection[-self.k_endog * self.q : end, :] = np.eye(self.k_endog)
+        self.ssm["selection"] = selection
 
         if self.measurement_error:
-            obs_cov_idx = ("obs_cov", *np.diag_indices(self.k_endog))
             sigma_obs = self.make_and_register_variable(
                 "sigma_obs", shape=(self.k_endog,), dtype=floatX
             )
-            self.ssm[obs_cov_idx] = sigma_obs
+            self.ssm["obs_cov"] = pt.diag(sigma_obs**2)
 
         state_cov = self.make_and_register_variable(
             "state_cov", shape=(self.k_posdef, self.k_posdef), dtype=floatX
         )
-        self.ssm["state_cov", :, :] = state_cov
+        self.ssm["state_cov"] = state_cov
 
         if self.exog_state_names is not None:
             if isinstance(self.exog_state_names, list):
@@ -543,5 +541,5 @@ class BayesianVARMAX(PyMCStateSpace):
                 pt.linalg.matrix_dot(R, Q, R.T),
                 method="direct" if self.k_states < 10 else "bilinear",
             )
-            self.ssm["initial_state", :] = x0
-            self.ssm["initial_state_cov", :, :] = P0
+            self.ssm["initial_state"] = x0
+            self.ssm["initial_state_cov"] = P0

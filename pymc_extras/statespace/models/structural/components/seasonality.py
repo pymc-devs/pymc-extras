@@ -576,7 +576,7 @@ class TimeSeasonality(Component):
         k_posdef = self._k_posdef_per_endog()
 
         R = pt.zeros((k_states, k_posdef))[0, 0].set(1.0)
-        self.ssm["selection", :, :] = pt.linalg.block_diag(*[R for _ in range(k_endog_effective)])
+        self.ssm["selection"] = pt.linalg.block_diag(*[R for _ in range(k_endog_effective)])
 
         sigma = self.make_and_register_variable(
             f"sigma_{self.name}",
@@ -595,7 +595,7 @@ class TimeSeasonality(Component):
             self.ssm["transition"] = T
             self.ssm.declare_time_varying("transition")
         else:
-            self.ssm["transition", :, :] = T
+            self.ssm["transition"] = T
 
         # Design matrix
         self.ssm["design"] = self._build_design_matrix()
@@ -620,7 +620,7 @@ class TimeSeasonality(Component):
         )
         initial_state = self._apply_start_state_shift(initial_state, T_for_shift)
 
-        self.ssm["initial_state", :] = initial_state
+        self.ssm["initial_state"] = initial_state
 
         # Selection and state covariance
         self._build_selection_and_state_cov()
@@ -842,12 +842,12 @@ class FrequencySeasonality(Component):
 
         T_mats = [_frequency_transition_block(self.season_length, j + 1) for j in range(self.n)]
         T = pt.linalg.block_diag(*T_mats)
-        self.ssm["transition", :, :] = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
+        self.ssm["transition"] = pt.linalg.block_diag(*[T for _ in range(k_endog_effective)])
 
         if self.innovations:
             sigma_season = self.make_and_register_variable(
                 f"sigma_{self.name}", shape=() if k_endog_effective == 1 else (k_endog_effective,)
             )
             sigma_vec = pt.repeat(sigma_season**2, k_states)
-            self.ssm["selection", :, :] = pt.eye(self.k_states)
-            self.ssm["state_cov", :, :] = pt.diag(sigma_vec)
+            self.ssm["selection"] = pt.eye(self.k_states)
+            self.ssm["state_cov"] = pt.diag(sigma_vec)

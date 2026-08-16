@@ -206,7 +206,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         self._exog_names = data_info.exogenous_names
         self._needs_exog_data = data_info.needs_exogenous_data
 
-        self._init_ssm(ssm, k_posdef)
+        self._init_ssm(ssm)
 
     def _init_info_objects(
         self,
@@ -248,20 +248,24 @@ class StructuralTimeSeries(PyMCStateSpace):
         self._shock_names = strip(self._shock_info.names)
         self._param_names = strip(self._param_info.names)
 
-    def _init_ssm(self, ssm: PytensorRepresentation, k_posdef: int) -> None:
-        """Initialize state space model representation."""
-        self.ssm = ssm.copy()
+    def _init_ssm(self, ssm: PytensorRepresentation) -> None:
+        """Build this model's representation from the component's matrices."""
+        matrices = {name: ssm[name] for name in LONG_MATRIX_NAMES}
+        matrices["initial_state_cov"] = self.make_and_register_variable(
+            "P0", shape=(self.k_states, self.k_states)
+        )
 
-        if k_posdef == 0:
+        if ssm.k_posdef == 0:
             # Components without shocks degrade to a one-shock placeholder so the filter has
             # consistent dims; the placeholder selection/state_cov are zero, so the shock has
             # no effect.
-            self.ssm.k_posdef = self.k_posdef
-            self.ssm["state_cov"] = pt.zeros((1, 1))
-            self.ssm["selection"] = pt.zeros((self.k_states, 1))
+            matrices["state_cov"] = pt.zeros((1, 1))
+            matrices["selection"] = pt.zeros((self.k_states, 1))
 
-        P0 = self.make_and_register_variable("P0", shape=(self.k_states, self.k_states))
-        self.ssm["initial_state_cov"] = P0
+        self.ssm = PytensorRepresentation(
+            k_endog=ssm.k_endog, k_states=ssm.k_states, k_posdef=self.k_posdef, **matrices
+        )
+        self.ssm.declare_time_varying(*ssm.time_varying_names)
 
     def _populate_properties(self) -> None:
         # The base class method needs to be overridden because we directly set properties in

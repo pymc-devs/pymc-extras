@@ -239,8 +239,12 @@ class PytensorRepresentation:
         elif isinstance(value, int | float):
             tensor = pt.as_tensor_variable(np.asarray(value, dtype=floatX), name=name)
         else:
-            tensor = pt.as_tensor_variable(value)
-            tensor.name = name
+            # Name a derived variable, never the caller's own: model parameters are looked up by
+            # name, so renaming one here would quietly break that lookup. ``copy`` drops tags, so
+            # carry them across by hand.
+            given = pt.as_tensor_variable(value)
+            tensor = given.copy(name=name)
+            tensor.tag = copy.copy(given.tag)
 
         if tensor.ndim < core_ndim:
             raise ValueError(
@@ -300,19 +304,9 @@ class PytensorRepresentation:
             self._validate_name(name)
             existing = getattr(self, name)
             updated = pt.set_subtensor(existing[tuple(idx)], value)
-            updated.name = name
+            updated.name = existing.name
+            updated.tag = copy.copy(existing.tag)
             setattr(self, name, updated)
             return
 
         raise IndexError("First index must the name of a valid state space matrix.")
-
-    def __copy__(self) -> "PytensorRepresentation":
-        new = self.__class__.__new__(self.__class__)
-        for slot in self.__slots__:
-            setattr(new, slot, getattr(self, slot))
-        new._time_varying_names = set(self._time_varying_names)
-        return new
-
-    def copy(self) -> "PytensorRepresentation":
-        """Return a copy sharing this object's matrix graphs but owning its time-varying names."""
-        return copy.copy(self)

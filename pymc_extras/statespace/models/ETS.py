@@ -684,18 +684,16 @@ class BayesianETS(PyMCStateSpace):
             self.ssm["state_cov"] = state_cov
 
         else:
-            state_cov_idx = ("state_cov", *np.diag_indices(self.k_posdef))
-            state_cov = self.make_and_register_variable(
+            sigma_state = self.make_and_register_variable(
                 "sigma_state", shape=() if self.k_posdef == 1 else (self.k_posdef,), dtype=floatX
             )
-            self.ssm[state_cov_idx] = state_cov**2
+            self.ssm["state_cov"] = pt.diag(pt.atleast_1d(sigma_state**2))
 
         if self.measurement_error:
-            obs_cov_idx = ("obs_cov", *np.diag_indices(self.k_endog))
-            obs_cov = self.make_and_register_variable(
+            sigma_obs = self.make_and_register_variable(
                 "sigma_obs", shape=() if self.k_endog == 1 else (self.k_endog,), dtype=floatX
             )
-            self.ssm[obs_cov_idx] = obs_cov**2
+            self.ssm["obs_cov"] = pt.diag(pt.atleast_1d(sigma_obs**2))
 
         if self.stationary_initialization:
             T_stationary = graph_replace(T, {stationary_dampening: self.initialization_dampening})

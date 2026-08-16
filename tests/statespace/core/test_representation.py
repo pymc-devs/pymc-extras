@@ -1,4 +1,3 @@
-import copy
 import unittest
 
 import numpy as np
@@ -125,6 +124,16 @@ class BasicFunctionality(unittest.TestCase):
         assert_allclose(fast_eval(ssm["selection"][-1, -1]), 9.9, atol=atol)
         assert_allclose(fast_eval(ssm["state_intercept"][:, 0]), np.arange(n), atol=atol)
 
+    def test_assignment_does_not_rename_the_assigned_variable(self):
+        """Model parameters are looked up by name, so storing one must leave its name alone."""
+        ssm = PytensorRepresentation(k_endog=1, k_states=3, k_posdef=1)
+        x0 = pt.vector("x0", shape=(3,))
+
+        ssm["initial_state"] = x0
+
+        self.assertEqual(x0.name, "x0")
+        self.assertEqual(ssm["initial_state"].name, "initial_state")
+
     def test_invalid_key_name_raises(self):
         ssm = PytensorRepresentation(k_endog=3, k_states=5, k_posdef=1)
         with self.assertRaises(IndexError) as e:
@@ -166,21 +175,6 @@ class BasicFunctionality(unittest.TestCase):
             ssm["transition"] = T
         msg = str(e.exception)
         self.assertEqual(msg, "Trailing dims of transition are (10, 10), expected (5, 5)")
-
-    def test_copy_does_not_alias_time_varying_names(self):
-        for make_copy in (PytensorRepresentation.copy, copy.copy):
-            with self.subTest(make_copy=make_copy.__qualname__):
-                ssm = PytensorRepresentation(k_endog=3, k_states=5, k_posdef=1)
-                copied = make_copy(ssm)
-
-                copied.declare_time_varying("design")
-
-                self.assertNotIn("design", ssm.time_varying_names)
-                self.assertIn("design", copied.time_varying_names)
-
-                # Everything else is still shared, which is what makes this a shallow copy.
-                self.assertIs(copied.transition, ssm.transition)
-                self.assertEqual(copied.k_states, ssm.k_states)
 
 
 if __name__ == "__main__":

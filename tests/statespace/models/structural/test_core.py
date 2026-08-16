@@ -8,6 +8,7 @@ import pytest
 from numpy.testing import assert_allclose
 from pytensor import config
 from pytensor import tensor as pt
+from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
 
 from pymc_extras.statespace.models import structural as st
@@ -16,6 +17,28 @@ from tests.statespace.test_utilities import unpack_symbolic_matrices_with_params
 floatX = config.floatX
 ATOL = 1e-8 if floatX.endswith("64") else 1e-4
 RTOL = 0 if floatX.endswith("64") else 1e-6
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_building_a_component_twice_gives_independent_models():
+    """Each build gets its own representation, so the first model keeps its own P0 placeholder."""
+    component = st.LevelTrend(order=2, innovations_order=1)
+    first = component.build(verbose=False)
+    second = component.build(verbose=False)
+
+    assert first.ssm is not second.ssm
+    assert first._name_to_variable["P0"] is not second._name_to_variable["P0"]
+    for mod in (first, second):
+        inputs = set(explicit_graph_inputs([mod.ssm["initial_state_cov"]]))
+        assert mod._name_to_variable["P0"] in inputs
+
+    # The earlier model must still be able to substitute its own parameters.
+    data = np.zeros((20, 1), dtype=config.floatX)
+    with pm.Model(coords=first.coords):
+        pm.Normal("initial_level_trend", dims=["state_level_trend"])
+        pm.Deterministic("P0", pt.eye(first.k_states, dtype=config.floatX))
+        pm.Exponential("sigma_level_trend", 1, dims=["shock_level_trend"])
+        first.build_statespace_graph(data)
 
 
 def test_add_components():
