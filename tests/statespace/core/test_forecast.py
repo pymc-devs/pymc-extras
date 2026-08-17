@@ -669,7 +669,9 @@ def test_forecast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
     }
 
     # Generate the forecast
-    forecasts = exog_ss_mod.forecast(idata.prior, scenario=scenario, use_scenario_index=True)
+    forecasts = exog_ss_mod.forecast(
+        idata, scenario=scenario, use_scenario_index=True, group="prior"
+    )
     assert "forecast_latent" in forecasts
     assert "forecast_observed" in forecasts
 

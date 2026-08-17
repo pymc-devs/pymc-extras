@@ -12,6 +12,7 @@ from pymc.util import RandomState
 from pytensor.graph.replace import graph_replace
 from xarray import DataTree
 
+from pymc_extras.statespace.core.forward_sampling import _verify_group
 from pymc_extras.statespace.filters.distributions import LinearGaussianStateSpace
 from pymc_extras.statespace.filters.utilities import scan_sequence_names
 from pymc_extras.statespace.utils.constants import (
@@ -525,9 +526,11 @@ def forecast(
     random_seed: RandomState | None = None,
     verbose: bool = True,
     mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+    group: str = "posterior",
     **kwargs,
 ) -> DataTree:
     _validate_filter_arg(filter_output)
+    _verify_group(group)
 
     compile_kwargs = kwargs.pop("compile_kwargs", {})
     compile_kwargs.setdefault("mode", ss_mod.mode)
@@ -596,7 +599,7 @@ def forecast(
 
     with frozen_model:
         idata_forecast = pm.sample_posterior_predictive(
-            idata,
+            idata[group],
             var_names=["forecast_latent", "forecast_observed"],
             random_seed=random_seed,
             compile_kwargs=compile_kwargs,

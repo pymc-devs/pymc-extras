@@ -10,6 +10,7 @@ import pytensor.tensor as pt
 from pymc.util import RandomState
 
 from pymc_extras.statespace.core import dummy_graph
+from pymc_extras.statespace.core.forward_sampling import _verify_group
 from pymc_extras.statespace.utils.constants import ALL_STATE_DIM, SHOCK_DIM, TIME_DIM
 
 if TYPE_CHECKING:
@@ -29,8 +30,10 @@ def impulse_response_function(
     orthogonalize_shocks: bool = False,
     random_seed: RandomState | None = None,
     mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+    group: str = "posterior",
     **kwargs,
 ):
+    _verify_group(group)
     options = [shock_size, shock_cov, shock_trajectory]
     n_options = sum(x is not None for x in options)
     Q = None  # No covariance matrix needed if a trajectory is provided. Will be overwritten later if needed.
@@ -126,7 +129,7 @@ def impulse_response_function(
         pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])
 
         irf_idata = pm.sample_posterior_predictive(
-            idata,
+            idata[group],
             var_names=["irf"],
             random_seed=random_seed,
             compile_kwargs=compile_kwargs,

@@ -1472,6 +1472,7 @@ class PyMCStateSpace:
         random_seed: RandomState | None = None,
         verbose: bool = True,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        group: str = "posterior",
         **kwargs,
     ) -> DataTree:
         """
@@ -1536,6 +1537,11 @@ class PyMCStateSpace:
             In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
             recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
+        group: str, default "posterior"
+            Inference data group to draw parameters from, either "prior" or "posterior". Pass the whole
+            ``idata`` and name the group rather than passing a single group: recovering the time index
+            needs the observed data, which a lone group does not carry.
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1564,6 +1570,7 @@ class PyMCStateSpace:
             random_seed=random_seed,
             verbose=verbose,
             mvn_method=mvn_method,
+            group=group,
             **kwargs,
         )
 
@@ -1578,6 +1585,7 @@ class PyMCStateSpace:
         orthogonalize_shocks: bool = False,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        group: str = "posterior",
         **kwargs,
     ):
         """
@@ -1662,5 +1670,6 @@ class PyMCStateSpace:
             orthogonalize_shocks=orthogonalize_shocks,
             random_seed=random_seed,
             mvn_method=mvn_method,
+            group=group,
             **kwargs,
         )
