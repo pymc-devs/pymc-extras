@@ -12,6 +12,7 @@ from numpy.testing import assert_allclose, assert_array_less
 from pymc.testing import mock_sample_setup_and_teardown
 
 from pymc_extras.statespace import BayesianSARIMAX
+from pymc_extras.statespace.core.fit_recovery import exog_from_idata
 from pymc_extras.statespace.models.utilities import (
     make_harvey_state_names,
     make_SARIMA_transition_matrix,
@@ -477,7 +478,9 @@ def test_SARIMA_with_exogenous(rng, mock_sample):
         100,
         2,
     )
-    np.testing.assert_allclose(ss_mod._fit_exog_data["exogenous_data"]["value"], data_val)
+    np.testing.assert_allclose(
+        exog_from_idata(ss_mod, idata, "constant_data")["exogenous_data"]["value"], data_val
+    )
 
 
 def test_sarimax_workflow(mock_sample):

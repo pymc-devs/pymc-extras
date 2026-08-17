@@ -20,6 +20,12 @@ _OBSERVED_DATA_NAME = "data"
 _GENERATED_DIM = re.compile(r"^(?P<variable>.+)_dim_\d+$")
 
 
+def verify_group(group: str) -> None:
+    """Raise ValueError unless ``group`` names a group parameters can be drawn from."""
+    if group not in ("prior", "posterior"):
+        raise ValueError(f'Argument "group" must be one of "prior" or "posterior", found {group}')
+
+
 def _is_generated(dim: str, variables: Container[str]) -> bool:
     """Report whether ``dim`` is a name PyMC made up for an axis of one of ``variables``."""
     match = _GENERATED_DIM.match(dim)

@@ -12,6 +12,7 @@ from pymc_extras.statespace.core.fit_recovery import (
     data_from_idata,
     dims_from_idata,
     exog_from_idata,
+    verify_group,
 )
 from pymc_extras.statespace.utils.constants import MISSING_FILL
 
@@ -234,6 +235,13 @@ def test_missing_observed_data_names_what_the_group_holds(exog_fit):
 
     with pytest.raises(ValueError, match="holds no 'data' variable"):
         data_from_idata(idata, "prior")
+
+
+@pytest.mark.parametrize("group", ["posterior_predictive", "observed_data", "Posterior", ""])
+def test_verify_group_rejects_groups_parameters_cannot_come_from(group):
+    """It guards the public ``group=`` argument, so it must reject near-misses too."""
+    with pytest.raises(ValueError, match='must be one of "prior" or "posterior"'):
+        verify_group(group)
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")

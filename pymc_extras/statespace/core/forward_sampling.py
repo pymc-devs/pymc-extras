@@ -9,6 +9,13 @@ from pymc.util import RandomState
 from xarray import DataTree
 
 from pymc_extras.statespace.core import dummy_graph
+from pymc_extras.statespace.core.fit_recovery import (
+    coords_from_idata,
+    data_from_idata,
+    dims_from_idata,
+    exog_from_idata,
+    verify_group,
+)
 from pymc_extras.statespace.filters.distributions import (
     LinearGaussianStateSpace,
     SequenceMvNormal,
@@ -30,11 +37,6 @@ from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
 
 if TYPE_CHECKING:
     from pymc_extras.statespace.core.statespace import PyMCStateSpace
-
-
-def _verify_group(group):
-    if group not in ["prior", "posterior"]:
-        raise ValueError(f'Argument "group" must be one of "prior" or "posterior", found {group}')
 
 
 def _sample_conditional(
@@ -82,18 +84,23 @@ def _sample_conditional(
         A DataTree object containing sampled trajectories from the requested conditional distribution,
         with data variables "filtered_{group}", "predicted_{group}", and "smoothed_{group}".
     """
-    if data is None and ss_mod._fit_data is None:
-        raise ValueError("No data provided to condition the model")
-
-    _verify_group(group)
+    verify_group(group)
     group_idata = getattr(idata, group)
 
     compile_kwargs = kwargs.pop("compile_kwargs", {})
     compile_kwargs.setdefault("mode", ss_mod.mode)
 
-    with pm.Model(coords=ss_mod._fit_coords) as forward_model:
+    fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
+    if data is None:
+        data = data_from_idata(idata, "constant_data")
+
+    with pm.Model(coords=fit_coords) as forward_model:
         matrices, grouped_outputs = dummy_graph.kalman_filter_outputs_from_dummy_graph(
-            ss_mod, data=data
+            ss_mod,
+            data,
+            coords=fit_coords,
+            dims=dims_from_idata(ss_mod, idata, group),
+            exog=exog_from_idata(ss_mod, idata, "constant_data"),
         )
         # The returned matrices keep the n_timesteps placeholder; pin it to the span the filter
         # actually ran over so the observed-state graphs line up with grouped_outputs.
@@ -105,12 +112,12 @@ def _sample_conditional(
 
             state_dims = (
                 (TIME_DIM, ALL_STATE_DIM)
-                if all([dim in ss_mod._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM]])
+                if all([dim in fit_coords for dim in [TIME_DIM, ALL_STATE_DIM]])
                 else (None, None)
             )
             obs_dims = (
                 (TIME_DIM, OBS_STATE_DIM)
-                if all([dim in ss_mod._fit_coords for dim in [TIME_DIM, OBS_STATE_DIM]])
+                if all([dim in fit_coords for dim in [TIME_DIM, OBS_STATE_DIM]])
                 else (None, None)
             )
 
@@ -248,14 +255,15 @@ def _sample_unconditional(
         - posterior_observed represents the observed state trajectories `Y[t]`, which is obtained from
           the latent state trajectories: `y[t] = Z @ x[t] + nu[t]`, where `nu ~ N(0, H)`.
     """
-    _verify_group(group)
+    verify_group(group)
 
     compile_kwargs = kwargs.pop("compile_kwargs", {})
     compile_kwargs.setdefault("mode", ss_mod.mode)
 
     group_idata = getattr(idata, group)
     dims = None
-    temp_coords = ss_mod._fit_coords.copy()
+    fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
+    temp_coords = fit_coords.copy()
 
     if not use_data_time_dim and steps is not None:
         temp_coords.update({TIME_DIM: np.arange(1 + steps, dtype="int")})
@@ -270,15 +278,17 @@ def _sample_unconditional(
     else:
         steps = len(temp_coords[TIME_DIM]) - 1
 
-    if all([dim in ss_mod._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]]):
+    if all([dim in fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]]):
         dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
 
     with pm.Model(coords=temp_coords if dims is not None else None) as forward_model:
-        dummy_graph.build_dummy_graph(ss_mod)
+        dummy_graph.build_dummy_graph(
+            ss_mod, coords=fit_coords, dims=dims_from_idata(ss_mod, idata, group)
+        )
         matrices = ss_mod._insert_random_variables()
 
-        for name in ss_mod.data_names:
-            pm.Data(**ss_mod._fit_exog_data[name])
+        for entry in exog_from_idata(ss_mod, idata, "constant_data").values():
+            pm.Data(**entry)
 
         matrices = ss_mod._insert_data_variables(matrices)
         # The unconditional trajectory spans ``steps + 1`` timesteps, and time-varying
@@ -401,7 +411,7 @@ def sample_statespace_matrices(
     group: str = "posterior",
     **kwargs,
 ):
-    _verify_group(group)
+    verify_group(group)
 
     compile_kwargs = kwargs.pop("compile_kwargs", {})
     compile_kwargs.setdefault("mode", ss_mod.mode)
@@ -417,12 +427,16 @@ def sample_statespace_matrices(
         if unknown_matrix_names:
             raise ValueError(f"{sorted(unknown_matrix_names)} not a valid statespace matrix name!")
 
-    with pm.Model(coords=ss_mod._fit_coords) as forward_model:
-        dummy_graph.build_dummy_graph(ss_mod)
+    fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
+
+    with pm.Model(coords=fit_coords) as forward_model:
+        dummy_graph.build_dummy_graph(
+            ss_mod, coords=fit_coords, dims=dims_from_idata(ss_mod, idata, group)
+        )
         matrices = ss_mod._insert_random_variables()
 
-        for name in ss_mod.data_names:
-            pm.Data(**ss_mod._fit_exog_data[name])
+        for entry in exog_from_idata(ss_mod, idata, "constant_data").values():
+            pm.Data(**entry)
 
         matrices = ss_mod._insert_data_variables(matrices)
         for short_name, matrix in zip(MATRIX_NAMES, matrices, strict=True):
@@ -433,7 +447,7 @@ def sample_statespace_matrices(
                 if matrix.ndim == len(matrix_dims) + 1:
                     # A time-varying matrix carries a leading time axis its static dims do not name.
                     matrix_dims = (TIME_DIM, *matrix_dims)
-                dims = [x if x in ss_mod._fit_coords else None for x in matrix_dims]
+                dims = [x if x in fit_coords else None for x in matrix_dims]
                 pm.Deterministic(name, matrix, dims=dims)
 
     # TODO: Remove this after pm.Flat has its initial_value fixed
@@ -477,16 +491,20 @@ def sample_filter_outputs(
     compile_kwargs.setdefault("mode", ss_mod.mode)
 
     with pm.Model(coords=ss_mod.coords) as m:
-        dummy_graph.build_dummy_graph(ss_mod)
+        dummy_graph.build_dummy_graph(
+            ss_mod,
+            coords=coords_from_idata(ss_mod, idata, "observed_data"),
+            dims=dims_from_idata(ss_mod, idata, group),
+        )
         matrices = ss_mod._insert_random_variables()
 
-        for name in ss_mod.data_names:
-            pm.Data(**ss_mod._fit_exog_data[name])
+        for entry in exog_from_idata(ss_mod, idata, "constant_data").values():
+            pm.Data(**entry)
 
         matrices = ss_mod._insert_data_variables(matrices)
 
         x0, P0, c, d, T, Z, R, H, Q = matrices
-        data = ss_mod._fit_data
+        data = data_from_idata(idata, "constant_data")
 
         obs_coords = m.coords.get(OBS_STATE_DIM, None)
 

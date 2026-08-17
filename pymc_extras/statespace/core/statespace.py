@@ -19,6 +19,7 @@ from rich.table import Table
 from xarray import DataTree
 
 from pymc_extras.statespace.core import dummy_graph, forecast, forward_sampling, irf
+from pymc_extras.statespace.core.fit_recovery import coords_from_idata, dims_from_idata
 from pymc_extras.statespace.core.properties import (
     Coord,
     CoordInfo,
@@ -1086,17 +1087,40 @@ class PyMCStateSpace:
         likelihood is registered. The base implementation registers nothing.
         """
 
-    def _build_dummy_graph(self) -> None:
-        return dummy_graph.build_dummy_graph(self)
+    def _build_dummy_graph(self, idata: DataTree, group: str = "posterior") -> None:
+        """Register a ``pm.Flat`` stand-in for every model parameter, shaped as it was fit.
+
+        Parameters
+        ----------
+        idata : DataTree
+            Inference data from the fit, supplying the shapes and dims to recover.
+        group : str, optional
+            Group holding the sampled parameters. Default ``"posterior"``.
+        """
+        return dummy_graph.build_dummy_graph(
+            self,
+            coords=coords_from_idata(self, idata, "observed_data"),
+            dims=dims_from_idata(self, idata, group),
+        )
 
     def _kalman_filter_outputs_from_dummy_graph(
         self,
-        data: pt.TensorLike | None = None,
+        data: pt.TensorLike,
+        *,
+        coords: dict[str, Sequence],
+        dims: dict[str, list[str]],
+        exog: dict[str, dict],
         data_dims: str | tuple[str] | list[str] | None = None,
         scenario: dict[str, pd.DataFrame] | pd.DataFrame | None = None,
     ) -> tuple[list[pt.TensorVariable], list[tuple[pt.TensorVariable, pt.TensorVariable]]]:
         return dummy_graph.kalman_filter_outputs_from_dummy_graph(
-            self, data=data, data_dims=data_dims, scenario=scenario
+            self,
+            data,
+            coords=coords,
+            dims=dims,
+            exog=exog,
+            data_dims=data_dims,
+            scenario=scenario,
         )
 
     def sample_conditional_prior(
@@ -1416,16 +1440,17 @@ class PyMCStateSpace:
             verbose=verbose,
         )
 
-    def _get_fit_time_index(self) -> pd.RangeIndex | pd.DatetimeIndex:
-        return forecast._get_fit_time_index(self)
+    def _get_fit_time_index(self, idata: DataTree) -> pd.RangeIndex | pd.DatetimeIndex:
+        return forecast._get_fit_time_index(self, idata)
 
     def _validate_scenario_data(
         self,
         scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
+        coords: dict[str, Sequence],
         name: str | None = None,
         verbose=True,
     ):
-        return forecast._validate_scenario_data(self, scenario, name=name, verbose=verbose)
+        return forecast._validate_scenario_data(self, scenario, coords, name=name, verbose=verbose)
 
     @staticmethod
     def _build_forecast_index(
@@ -1449,15 +1474,18 @@ class PyMCStateSpace:
         self,
         scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
         forecast_index: pd.RangeIndex | pd.DatetimeIndex,
+        coords: dict[str, Sequence],
         name=None,
     ):
-        return forecast._finalize_scenario_initialization(self, scenario, forecast_index, name=name)
+        return forecast._finalize_scenario_initialization(
+            self, scenario, forecast_index, coords, name=name
+        )
 
     def _build_forecast_model(
-        self, time_index, t0, forecast_index, scenario, filter_output, mvn_method
+        self, idata, group, time_index, t0, forecast_index, scenario, filter_output, mvn_method
     ):
         return forecast._build_forecast_model(
-            self, time_index, t0, forecast_index, scenario, filter_output, mvn_method
+            self, idata, group, time_index, t0, forecast_index, scenario, filter_output, mvn_method
         )
 
     def forecast(

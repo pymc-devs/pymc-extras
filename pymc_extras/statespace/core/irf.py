@@ -10,7 +10,11 @@ import pytensor.tensor as pt
 from pymc.util import RandomState
 
 from pymc_extras.statespace.core import dummy_graph
-from pymc_extras.statespace.core.forward_sampling import _verify_group
+from pymc_extras.statespace.core.fit_recovery import (
+    coords_from_idata,
+    dims_from_idata,
+    verify_group,
+)
 from pymc_extras.statespace.utils.constants import ALL_STATE_DIM, SHOCK_DIM, TIME_DIM
 
 if TYPE_CHECKING:
@@ -33,7 +37,7 @@ def impulse_response_function(
     group: str = "posterior",
     **kwargs,
 ):
-    _verify_group(group)
+    verify_group(group)
     options = [shock_size, shock_cov, shock_trajectory]
     n_options = sum(x is not None for x in options)
     Q = None  # No covariance matrix needed if a trajectory is provided. Will be overwritten later if needed.
@@ -65,11 +69,14 @@ def impulse_response_function(
         n_steps = n  # Overwrite steps with the length of the shock trajectory
         shock_trajectory = pt.as_tensor_variable(shock_trajectory)
 
-    simulation_coords = ss_mod._fit_coords.copy()
+    fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
+    simulation_coords = fit_coords.copy()
     simulation_coords[TIME_DIM] = np.arange(n_steps, dtype="int")
 
     with pm.Model(coords=simulation_coords):
-        dummy_graph.build_dummy_graph(ss_mod)
+        dummy_graph.build_dummy_graph(
+            ss_mod, coords=fit_coords, dims=dims_from_idata(ss_mod, idata, group)
+        )
         matrices = ss_mod._insert_random_variables()
 
         matrices = ss_mod._insert_constant_timestep(matrices, step=n_steps)

@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -13,12 +14,30 @@ if TYPE_CHECKING:
     from pymc_extras.statespace.core.statespace import PyMCStateSpace
 
 
-def build_dummy_graph(ss_mod: "PyMCStateSpace") -> None:
+def build_dummy_graph(
+    ss_mod: "PyMCStateSpace", *, coords: dict[str, Sequence], dims: dict[str, list[str]]
+) -> None:
     """
     Build a dummy computation graph for the state space model matrices.
 
     Create "dummy" ``pm.Flat`` variables representing the deep parameters used in the state space model, so
     post-estimation sampling functions can re-derive the statespace matrices from posterior draws.
+
+    Parameters
+    ----------
+    ss_mod : PyMCStateSpace
+        Model whose parameters to stand in for.
+    coords : dict mapping str to sequence
+        Coords the model was fit with, from
+        :func:`~pymc_extras.statespace.core.fit_recovery.coords_from_idata`.
+    dims : dict mapping str to list of str
+        Dims each parameter was fit with, from
+        :func:`~pymc_extras.statespace.core.fit_recovery.dims_from_idata`.
+
+    Raises
+    ------
+    ValueError
+        If a parameter's shape is not fully known and no dims were recovered to size it from.
     """
 
     def infer_variable_shape(name):
@@ -26,14 +45,16 @@ def build_dummy_graph(ss_mod: "PyMCStateSpace") -> None:
         if not any(dim is None for dim in shape):
             return shape
 
-        dim_names = ss_mod._fit_dims.get(name, None)
+        dim_names = dims.get(name, None)
         if dim_names is None:
             raise ValueError(
-                f"Could not infer shape for {name}, because it was not given coords during model"
-                f"fitting"
+                f"Could not infer a shape for {name}, which was given no coords when the model was "
+                f"fit. If you did give it one, check its name: a dim called exactly "
+                f"{name}_dim_0 cannot be told apart from the name PyMC generates for a variable "
+                f"declared without dims, so it is discarded. Rename it."
             )
 
-        shape_from_coords = tuple([len(ss_mod._fit_coords[dim]) for dim in dim_names])
+        shape_from_coords = tuple([len(coords[dim]) for dim in dim_names])
         return tuple(
             [shape[i] if shape[i] is not None else shape_from_coords[i] for i in range(len(shape))]
         )
@@ -42,13 +63,17 @@ def build_dummy_graph(ss_mod: "PyMCStateSpace") -> None:
         pm.Flat(
             name,
             shape=infer_variable_shape(name),
-            dims=ss_mod._fit_dims.get(name, None),
+            dims=dims.get(name, None),
         )
 
 
 def kalman_filter_outputs_from_dummy_graph(
     ss_mod: "PyMCStateSpace",
-    data: pt.TensorLike | None = None,
+    data: pt.TensorLike,
+    *,
+    coords: dict[str, Sequence],
+    dims: dict[str, list[str]],
+    exog: dict[str, dict],
     data_dims: str | tuple[str] | list[str] | None = None,
     scenario: dict[str, pd.DataFrame] | pd.DataFrame | None = None,
 ) -> tuple[list[pt.TensorVariable], list[tuple[pt.TensorVariable, pt.TensorVariable]]]:
@@ -80,21 +105,18 @@ def kalman_filter_outputs_from_dummy_graph(
         scenario = dict()
 
     pm_mod = modelcontext(None)
-    build_dummy_graph(ss_mod)
+    build_dummy_graph(ss_mod, coords=coords, dims=dims)
     matrices = ss_mod._insert_random_variables()
 
     for name in ss_mod.data_names:
         if name not in pm_mod:
-            pm.Data(**ss_mod._fit_exog_data[name])
+            pm.Data(**exog[name])
 
     matrices = ss_mod._insert_data_variables(matrices)
 
     for name in ss_mod.data_names:
         if name in scenario.keys():
             pm.set_data({name: scenario[name]})
-
-    if data is None:
-        data = ss_mod._fit_data
 
     # Pinned to the data length only for the filter below; the returned matrices keep the
     # n_timesteps placeholder so a caller can build over a different span.
