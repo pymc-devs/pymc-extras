@@ -483,6 +483,13 @@ class PyMCStateSpace:
         """
         return list(self._unpack_statespace_with_placeholders())
 
+    def _free_n_timesteps(self, matrices: list[pt.TensorVariable]) -> tuple[Variable, ...]:
+        """Return the ``n_timesteps`` inputs of ``matrices`` that no substitution has resolved."""
+        name = self.n_timesteps.name
+        return tuple(
+            variable for variable in explicit_graph_inputs(matrices) if variable.name == name
+        )
+
     @property
     def n_timesteps(self) -> Variable:
         """Symbolic placeholder for the number of time steps in the data."""
@@ -856,11 +863,7 @@ class PyMCStateSpace:
         # Otherwise, we don't get symbolic linkage between time-varying matrix shapes and the data when the user calls
         # pm.set_data
         assert isinstance(data, pt.TensorVariable)
-        n_timestep_variables = tuple(
-            variable
-            for variable in explicit_graph_inputs(matrices)
-            if variable.name == "n_timesteps"
-        )
+        n_timestep_variables = self._free_n_timesteps(matrices)
         if not n_timestep_variables:
             return matrices
 
@@ -879,12 +882,7 @@ class PyMCStateSpace:
         """
         step = pt.as_tensor_variable(step).astype("int32")
 
-        n_timestep_variables = tuple(
-            variable
-            for variable in explicit_graph_inputs(matrices)
-            if variable.name == "n_timesteps"
-        )
-
+        n_timestep_variables = self._free_n_timesteps(matrices)
         if not n_timestep_variables:
             return matrices
 
