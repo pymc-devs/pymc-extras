@@ -782,9 +782,9 @@ class PyMCStateSpace:
                 x0, P0, c, d, T, Z, R, H, Q = ss_mod._insert_random_variables()
 
             pm.draw(T, random_seed=RANDOM_SEED)
-            >>> array([[-0.90590386,  1.        ,  0.        ],
-            >>>        [ 1.25190143,  0.        ,  1.        ],
-            >>>        [ 0.        ,  0.        ,  0.        ]])
+            # array([[-0.90590386,  1.        ,  0.        ],
+            #        [ 1.25190143,  0.        ,  1.        ],
+            #        [ 0.        ,  0.        ,  0.        ]])
         """
 
         pymc_model = modelcontext(None)
