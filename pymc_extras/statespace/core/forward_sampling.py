@@ -480,9 +480,8 @@ def sample_filter_outputs(
         dummy_graph.build_dummy_graph(ss_mod)
         matrices = ss_mod._insert_random_variables()
 
-        if ss_mod.data_names:
-            for name in ss_mod.data_names:
-                pm.Data(**ss_mod._fit_exog_data[name])
+        for name in ss_mod.data_names:
+            pm.Data(**ss_mod._fit_exog_data[name])
 
         matrices = ss_mod._insert_data_variables(matrices)
 
