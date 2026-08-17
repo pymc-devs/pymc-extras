@@ -92,20 +92,13 @@ def _sample_conditional(
     compile_kwargs.setdefault("mode", ss_mod.mode)
 
     with pm.Model(coords=ss_mod._fit_coords) as forward_model:
-        (
-            [
-                x0,
-                P0,
-                c,
-                d,
-                T,
-                Z,
-                R,
-                H,
-                Q,
-            ],
-            grouped_outputs,
-        ) = dummy_graph.kalman_filter_outputs_from_dummy_graph(ss_mod, data=data)
+        matrices, grouped_outputs = dummy_graph.kalman_filter_outputs_from_dummy_graph(
+            ss_mod, data=data
+        )
+        # The returned matrices keep the n_timesteps placeholder; pin it to the span the filter
+        # actually ran over so the observed-state graphs line up with grouped_outputs.
+        n_timesteps = grouped_outputs[0][0].shape[0]
+        x0, P0, c, d, T, Z, R, H, Q = ss_mod._insert_constant_timestep(matrices, n_timesteps)
 
         for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs):
             dummy_ll = pt.zeros_like(mu)
@@ -282,15 +275,15 @@ def _sample_unconditional(
 
     with pm.Model(coords=temp_coords if dims is not None else None) as forward_model:
         dummy_graph.build_dummy_graph(ss_mod)
-        ss_mod._insert_random_variables()
+        matrices = ss_mod._insert_random_variables()
 
         for name in ss_mod.data_names:
             pm.Data(**ss_mod._fit_exog_data[name])
 
-        ss_mod._insert_data_variables()
+        matrices = ss_mod._insert_data_variables(matrices)
         # The unconditional trajectory spans ``steps + 1`` timesteps, and time-varying
         # matrices carry one row per timestep.
-        matrices = ss_mod._insert_constant_timestep(ss_mod.unpack_statespace(), step=steps + 1)
+        matrices = ss_mod._insert_constant_timestep(matrices, step=steps + 1)
         x0, P0, c, d, T, Z, R, H, Q = matrices
 
         if not ss_mod.measurement_error:
@@ -426,13 +419,12 @@ def sample_statespace_matrices(
 
     with pm.Model(coords=ss_mod._fit_coords) as forward_model:
         dummy_graph.build_dummy_graph(ss_mod)
-        ss_mod._insert_random_variables()
+        matrices = ss_mod._insert_random_variables()
 
         for name in ss_mod.data_names:
             pm.Data(**ss_mod._fit_exog_data[name])
 
-        ss_mod._insert_data_variables()
-        matrices = ss_mod.unpack_statespace()
+        matrices = ss_mod._insert_data_variables(matrices)
         for short_name, matrix in zip(MATRIX_NAMES, matrices, strict=True):
             long_name = SHORT_NAME_TO_LONG[short_name]
             if (long_name in matrix_names) or (short_name in matrix_names):
@@ -486,15 +478,14 @@ def sample_filter_outputs(
 
     with pm.Model(coords=ss_mod.coords) as m:
         dummy_graph.build_dummy_graph(ss_mod)
-        ss_mod._insert_random_variables()
+        matrices = ss_mod._insert_random_variables()
 
-        if ss_mod.data_names:
-            for name in ss_mod.data_names:
-                pm.Data(**ss_mod._fit_exog_data[name])
+        for name in ss_mod.data_names:
+            pm.Data(**ss_mod._fit_exog_data[name])
 
-        ss_mod._insert_data_variables()
+        matrices = ss_mod._insert_data_variables(matrices)
 
-        x0, P0, c, d, T, Z, R, H, Q = ss_mod.unpack_statespace()
+        x0, P0, c, d, T, Z, R, H, Q = matrices
         data = ss_mod._fit_data
 
         obs_coords = m.coords.get(OBS_STATE_DIM, None)

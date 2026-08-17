@@ -151,9 +151,8 @@ def test_VARMAX_update_matches_statsmodels(data, order, rng):
         state_chol = np.zeros((mod.k_posdef, mod.k_posdef), dtype=floatX)
         state_chol[np.tril_indices(mod.k_posdef)] = np.array([param_d[var] for var in state_cov])
         state_cov = pm.Deterministic("state_cov", pt.as_tensor_variable(state_chol @ state_chol.T))
-        mod._insert_random_variables()
 
-        matrices = pm.draw(mod.subbed_ssm)
+        matrices = pm.draw(mod._insert_random_variables())
         matrix_dict = dict(zip(SHORT_NAME_TO_LONG.values(), matrices))
 
     for matrix in ["transition", "selection", "state_cov", "obs_cov", "design"]:
@@ -177,8 +176,7 @@ def test_measurement_error_enters_obs_cov_as_a_variance():
         pm.Deterministic("ar_params", pt.zeros((mod.k_endog, mod.p, mod.k_endog), dtype=floatX))
         pm.Deterministic("state_cov", pt.eye(mod.k_posdef, dtype=floatX))
         pm.Deterministic("sigma_obs", pt.as_tensor_variable(sigma))
-        mod._insert_random_variables()
-        matrices = pm.draw(mod.subbed_ssm)
+        matrices = pm.draw(mod._insert_random_variables())
 
     obs_cov = dict(zip(SHORT_NAME_TO_LONG.values(), matrices))["obs_cov"]
     assert_allclose(obs_cov, np.diag(sigma**2))

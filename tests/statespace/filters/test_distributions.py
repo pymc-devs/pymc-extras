@@ -103,8 +103,7 @@ def test_loglike_vectors_agree(kfilter, pymc_model):
     # TODO: This test might be flakey, I've gotten random failures
     ss_mod = structural.LevelTrend(order=2).build("data", verbose=False, filter_type=kfilter)
     with pymc_model:
-        ss_mod._insert_random_variables()
-        matrices = ss_mod.unpack_statespace()
+        matrices = ss_mod._insert_random_variables()
 
         kalman_filter, _ = ss_mod.make_filters()
         filter_outputs = kalman_filter.build_graph(pymc_model["data"], *matrices)
@@ -150,8 +149,7 @@ def test_sequence_mvn_distribution():
 @pytest.mark.parametrize("output_name", ["states_latent", "states_observed"])
 def test_lgss_distribution_from_steps(output_name, ss_mod_me, pymc_model_2):
     with pymc_model_2:
-        ss_mod_me._insert_random_variables()
-        matrices = ss_mod_me.unpack_statespace()
+        matrices = ss_mod_me._insert_random_variables()
 
         # pylint: disable=unpacking-non-sequence
         latent_states, obs_states = LinearGaussianStateSpace("states", *matrices, steps=100)
@@ -167,8 +165,7 @@ def test_lgss_distribution_from_steps(output_name, ss_mod_me, pymc_model_2):
 @pytest.mark.parametrize("output_name", ["states_latent", "states_observed"])
 def test_lgss_distribution_with_dims(output_name, ss_mod_me, pymc_model_2):
     with pymc_model_2:
-        ss_mod_me._insert_random_variables()
-        matrices = ss_mod_me.unpack_statespace()
+        matrices = ss_mod_me._insert_random_variables()
 
         # pylint: disable=unpacking-non-sequence
         latent_states, obs_states = LinearGaussianStateSpace(
@@ -215,9 +212,8 @@ def test_lgss_with_time_varying_inputs(output_name, rng):
         sigma_trend = pm.Exponential("sigma_level_trend", 1, shape=(2,))
         beta_exog = pm.Normal("beta_exog", shape=(3,))
 
-        mod._insert_random_variables()
-        mod._insert_data_variables()
-        matrices = mod.unpack_statespace()
+        matrices = mod._insert_random_variables()
+        matrices = mod._insert_data_variables(matrices)
 
         # pylint: disable=unpacking-non-sequence
         latent_states, obs_states = LinearGaussianStateSpace(

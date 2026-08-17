@@ -428,7 +428,7 @@ def _build_forecast_model(
         cov_dims = ["data_time", ALL_STATE_DIM, ALL_STATE_AUX_DIM]
 
     with pm.Model(coords=temp_coords) as forecast_model:
-        _, grouped_outputs = ss_mod._kalman_filter_outputs_from_dummy_graph(
+        unpinned_matrices, grouped_outputs = ss_mod._kalman_filter_outputs_from_dummy_graph(
             data_dims=["data_time", OBS_STATE_DIM],
         )
 
@@ -455,13 +455,12 @@ def _build_forecast_model(
             "P0_slice", cov_frozen[t0_idx], dims=cov_dims[1:] if cov_dims is not None else None
         )
 
-        # Get fresh matrices with n_timesteps placeholder still intact.
         # Build for the full timeline (training + forecast) so that time-varying matrices
         # continue at the correct phase, then slice to keep only the forecast portion.
         n_train = len(time_index)
         n_total = n_train + len(forecast_index)
 
-        full_matrices = ss_mod._insert_constant_timestep(ss_mod.unpack_statespace(), n_total)
+        full_matrices = ss_mod._insert_constant_timestep(unpinned_matrices, n_total)
         _, _, *forecast_matrices = full_matrices
 
         # For exogenous-data-driven matrices the time dimension comes from the

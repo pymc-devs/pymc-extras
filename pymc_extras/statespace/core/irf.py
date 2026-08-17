@@ -67,9 +67,9 @@ def impulse_response_function(
 
     with pm.Model(coords=simulation_coords):
         dummy_graph.build_dummy_graph(ss_mod)
-        ss_mod._insert_random_variables()
+        matrices = ss_mod._insert_random_variables()
 
-        matrices = ss_mod._insert_constant_timestep(ss_mod.unpack_statespace(), step=n_steps)
+        matrices = ss_mod._insert_constant_timestep(matrices, step=n_steps)
         P0, _, c, d, T, Z, R, H, post_Q = matrices
         x0 = pm.Deterministic("x0_new", pt.zeros(ss_mod.k_states), dims=[ALL_STATE_DIM])
 

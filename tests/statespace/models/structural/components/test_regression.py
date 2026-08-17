@@ -222,7 +222,8 @@ class TestPyMCIntegration:
                 sigma_beta_exog = pm.Exponential("sigma_beta_exog", 1, dims=["state_exog"])
 
             mod.build_statespace_graph(y)
-            x0, P0, c, d, T, Z, R, H, Q = mod.unpack_statespace()
+            matrices = mod._insert_random_variables()
+            x0, P0, c, d, T, Z, R, H, Q = mod._insert_data_variables(matrices)
             pm.Deterministic("Z", Z)
 
             prior = pm.sample_prior_predictive(draws=10)

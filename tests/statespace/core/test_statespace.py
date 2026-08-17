@@ -8,6 +8,8 @@ import pytest
 
 from numpy.testing import assert_allclose
 from pymc.exceptions import ImputationWarning
+from pytensor.graph.traversal import ancestors
+from pytensor.scan.op import Scan
 
 from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
@@ -32,18 +34,6 @@ def test_invalid_filter_name_raises():
         mod = make_statespace_mod(k_endog=1, k_states=5, k_posdef=1, filter_type="invalid_filter")
 
 
-def test_unpack_before_insert_raises(rng):
-    p, m, r, n = 2, 5, 1, 10
-    data, *inputs = make_test_inputs(p, m, r, n, rng, missing_data=0)
-    mod = make_statespace_mod(
-        k_endog=p, k_states=m, k_posdef=r, filter_type="standard", verbose=False
-    )
-
-    msg = "Cannot unpack the complete statespace system until PyMC model variables have been inserted."
-    with pytest.raises(ValueError, match=msg):
-        outputs = mod.unpack_statespace()
-
-
 def test_unpack_matrices(rng):
     p, m, r, n = 2, 5, 1, 10
     data, *inputs = make_test_inputs(p, m, r, n, rng, missing_data=0)
@@ -51,11 +41,8 @@ def test_unpack_matrices(rng):
         k_endog=p, k_states=m, k_posdef=r, filter_type="standard", verbose=False
     )
 
-    # mod is a dummy statespace, so there are no placeholders to worry about. Monkey patch subbed_ssm with the defaults
-    mod.subbed_ssm = mod._unpack_statespace_with_placeholders()
-
-    outputs = mod.unpack_statespace()
-    for x, y in zip(inputs, outputs):
+    outputs = mod._unpack_statespace_with_placeholders()
+    for x, y in zip(inputs, outputs, strict=True):
         assert_allclose(np.zeros_like(x), fast_eval(y))
 
 
@@ -272,3 +259,72 @@ def test_build_graph_does_not_mutate_the_filters(ss_mod):
 
     assert kalman_filter.__dict__ == filter_state
     assert kalman_smoother.__dict__ == smoother_state
+
+
+def test_unpack_statespace_binds_matrices_to_the_active_model(ss_mod, pymc_mod):
+    """The escape hatch for building further deterministics off the fitted system."""
+    with pymc_mod:
+        matrices = ss_mod.unpack_statespace()
+    x0, P0, c, d, T, Z, R, H, Q = matrices
+
+    assert pymc_mod["rho"] in set(ancestors([T]))
+    assert not set(ss_mod._name_to_variable.values()).intersection(ancestors(matrices))
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_unpack_statespace_does_not_depend_on_the_filter():
+    """A matrix sized against n_timesteps takes its length from the data, not from the filter.
+
+    Taking it from the observation instead would make every deterministic built off these matrices
+    recompute the Kalman filter.
+    """
+    mod = (
+        st.LevelTrend(order=1, innovations_order=1)
+        + st.TimeSeasonality(season_length=4, duration=3, innovations=False, name="s")
+    ).build(verbose=False)
+
+    with pm.Model(coords=mod.coords) as pymc_mod:
+        pm.Normal("initial_level_trend", dims=["state_level_trend"])
+        pm.Deterministic("P0", pt.eye(mod.k_states))
+        pm.Exponential("sigma_level_trend", 1, dims=["shock_level_trend"])
+        pm.Normal("params_s", dims=["state_s"])
+        mod.build_statespace_graph(np.zeros((30, 1), dtype=floatX))
+        matrices = mod.unpack_statespace()
+
+    assert pymc_mod["obs"] not in set(ancestors(matrices))
+    assert not [
+        variable
+        for variable in ancestors(matrices)
+        if variable.owner is not None and isinstance(variable.owner.op, Scan)
+    ]
+
+
+def test_unpack_statespace_outside_a_model_raises(ss_mod):
+    with pytest.raises(TypeError, match="No model on context stack"):
+        ss_mod.unpack_statespace()
+
+
+@pytest.mark.parametrize(
+    ("method_name", "kwargs"),
+    [
+        ("forecast", {"start": -1, "periods": 10}),
+        ("impulse_response_function", {"n_steps": 10}),
+        ("sample_conditional_prior", {}),
+    ],
+    ids=["forecast", "irf", "sample_conditional_prior"],
+)
+def test_post_estimation_leaves_template_matrices_alone(
+    method_name, kwargs, ss_mod, pymc_mod, idata, rng
+):
+    """Each of these substitutes into a throwaway model, so none may touch the template.
+
+    The three cover distinct substitution paths. Identity rather than equality: a cached list of
+    substituted matrices would still compare equal element-wise while pointing at nodes bound to a
+    model that has gone out of scope.
+    """
+    before = list(ss_mod._unpack_statespace_with_placeholders())
+    getattr(ss_mod, method_name)(idata, random_seed=rng, **kwargs)
+    after = list(ss_mod._unpack_statespace_with_placeholders())
+
+    assert all(x is y for x, y in zip(before, after, strict=True))
+    assert not set(pymc_mod.basic_RVs).intersection(ancestors(after))
