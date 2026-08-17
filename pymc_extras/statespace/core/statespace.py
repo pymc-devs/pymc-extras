@@ -8,7 +8,7 @@ import pandas as pd
 import pytensor
 import pytensor.tensor as pt
 
-from pymc.model import modelcontext
+from pymc.model import Model, modelcontext
 from pymc.util import RandomState
 from pytensor.graph.basic import Variable
 from pytensor.graph.replace import graph_replace
@@ -44,6 +44,7 @@ from pymc_extras.statespace.filters import (
     UnivariateFilter,
 )
 from pymc_extras.statespace.filters.distributions import (
+    KalmanFilterRV,
     SequenceMvNormal,
 )
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter
@@ -475,13 +476,50 @@ class PyMCStateSpace:
         return a0, P0, c, d, T, Z, R, H, Q
 
     def unpack_statespace(self) -> list[pt.TensorVariable]:
-        """
-        Return this model's statespace matrices in the standard order.
+        r"""
+        Return the statespace matrices bound to the active model's variables and data.
 
-        These are the template's own symbolic matrices, carrying a placeholder variable for every
-        model parameter. They are not bound to any PyMC model.
+        Call inside the model context :meth:`build_statespace_graph` was called in, to derive
+        further quantities from the fitted system -- the eigenvalues of :math:`T`, a steady-state
+        covariance, and so on:
+
+        .. code:: python
+
+            with pm.Model() as model:
+                ...
+                ss_mod.build_statespace_graph(data)
+                x0, P0, c, d, T, Z, R, H, Q = ss_mod.unpack_statespace()
+                pm.Deterministic("T_eigenvalues", pt.linalg.eigvalsh(T))
+
+        Each call substitutes afresh, so the returned matrices are new graph nodes rather than the
+        ones the filter was built from. They evaluate identically.
+
+        Returns
+        -------
+        matrices : list of TensorVariable
+            ``x0``, ``P0``, ``c``, ``d``, ``T``, ``Z``, ``R``, ``H``, ``Q``.
+
+        Raises
+        ------
+        TypeError
+            If called outside a PyMC model context.
+        ValueError
+            If a matrix is built against ``n_timesteps`` and the active model holds no statespace
+            observation to take that length from.
         """
-        return list(self._unpack_statespace_with_placeholders())
+        pymc_model = modelcontext(None)
+        matrices = self._insert_random_variables()
+        matrices = self._insert_data_variables(matrices)
+
+        # Most models get their time axis from the exogenous data, which the substitution above
+        # already supplied. Only a matrix built directly against ``n_timesteps`` -- a seasonality
+        # with a duration, say -- still needs a length, and only that needs the observation.
+        if not self._free_n_timesteps(matrices):
+            return matrices
+
+        return self._insert_data_shape_into_n_timesteps(
+            matrices, self._observed_statespace_variable(pymc_model)
+        )
 
     def _free_n_timesteps(self, matrices: list[pt.TensorVariable]) -> tuple[Variable, ...]:
         """Return the ``n_timesteps`` inputs of ``matrices`` that no substitution has resolved."""
@@ -489,6 +527,29 @@ class PyMCStateSpace:
         return tuple(
             variable for variable in explicit_graph_inputs(matrices) if variable.name == name
         )
+
+    @staticmethod
+    def _observed_statespace_variable(pymc_model: Model) -> pt.TensorVariable:
+        """Return the filtered observation ``build_statespace_graph`` registered on the model.
+
+        Identified by its ``Op`` rather than by name, so a user variable cannot be mistaken for it.
+        """
+        observed = [
+            variable
+            for variable in pymc_model.observed_RVs
+            if isinstance(variable.owner.op, KalmanFilterRV)
+        ]
+        if not observed:
+            raise ValueError(
+                "The active PyMC model holds no statespace observation. Call "
+                "build_statespace_graph() inside this model context first."
+            )
+        if len(observed) > 1:
+            raise ValueError(
+                f"Found {len(observed)} statespace observations on the active PyMC model, so "
+                "which one supplies the number of timesteps is ambiguous."
+            )
+        return observed[0]
 
     @property
     def n_timesteps(self) -> Variable:

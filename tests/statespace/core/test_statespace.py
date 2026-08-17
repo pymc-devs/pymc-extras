@@ -40,7 +40,7 @@ def test_unpack_matrices(rng):
         k_endog=p, k_states=m, k_posdef=r, filter_type="standard", verbose=False
     )
 
-    outputs = mod.unpack_statespace()
+    outputs = mod._unpack_statespace_with_placeholders()
     for x, y in zip(inputs, outputs, strict=True):
         assert_allclose(np.zeros_like(x), fast_eval(y))
 
@@ -260,6 +260,21 @@ def test_build_graph_does_not_mutate_the_filters(ss_mod):
     assert kalman_smoother.__dict__ == smoother_state
 
 
+def test_unpack_statespace_binds_matrices_to_the_active_model(ss_mod, pymc_mod):
+    """The escape hatch for building further deterministics off the fitted system."""
+    with pymc_mod:
+        matrices = ss_mod.unpack_statespace()
+    x0, P0, c, d, T, Z, R, H, Q = matrices
+
+    assert pymc_mod["rho"] in set(ancestors([T]))
+    assert not set(ss_mod._name_to_variable.values()).intersection(ancestors(matrices))
+
+
+def test_unpack_statespace_outside_a_model_raises(ss_mod):
+    with pytest.raises(TypeError, match="No model on context stack"):
+        ss_mod.unpack_statespace()
+
+
 @pytest.mark.parametrize(
     ("method_name", "kwargs"),
     [
@@ -278,9 +293,9 @@ def test_post_estimation_leaves_template_matrices_alone(
     substituted matrices would still compare equal element-wise while pointing at nodes bound to a
     model that has gone out of scope.
     """
-    before = ss_mod.unpack_statespace()
+    before = list(ss_mod._unpack_statespace_with_placeholders())
     getattr(ss_mod, method_name)(idata, random_seed=rng, **kwargs)
-    after = ss_mod.unpack_statespace()
+    after = list(ss_mod._unpack_statespace_with_placeholders())
 
     assert all(x is y for x, y in zip(before, after, strict=True))
     assert not set(pymc_mod.basic_RVs).intersection(ancestors(after))
