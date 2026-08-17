@@ -9,6 +9,7 @@ import pytest
 from numpy.testing import assert_allclose
 from pymc.exceptions import ImputationWarning
 from pytensor.graph.traversal import ancestors
+from pytensor.scan.op import Scan
 
 from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
@@ -268,6 +269,34 @@ def test_unpack_statespace_binds_matrices_to_the_active_model(ss_mod, pymc_mod):
 
     assert pymc_mod["rho"] in set(ancestors([T]))
     assert not set(ss_mod._name_to_variable.values()).intersection(ancestors(matrices))
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_unpack_statespace_does_not_depend_on_the_filter():
+    """A matrix sized against n_timesteps takes its length from the data, not from the filter.
+
+    Taking it from the observation instead would make every deterministic built off these matrices
+    recompute the Kalman filter.
+    """
+    mod = (
+        st.LevelTrend(order=1, innovations_order=1)
+        + st.TimeSeasonality(season_length=4, duration=3, innovations=False, name="s")
+    ).build(verbose=False)
+
+    with pm.Model(coords=mod.coords) as pymc_mod:
+        pm.Normal("initial_level_trend", dims=["state_level_trend"])
+        pm.Deterministic("P0", pt.eye(mod.k_states))
+        pm.Exponential("sigma_level_trend", 1, dims=["shock_level_trend"])
+        pm.Normal("params_s", dims=["state_s"])
+        mod.build_statespace_graph(np.zeros((30, 1), dtype=floatX))
+        matrices = mod.unpack_statespace()
+
+    assert pymc_mod["obs"] not in set(ancestors(matrices))
+    assert not [
+        variable
+        for variable in ancestors(matrices)
+        if variable.owner is not None and isinstance(variable.owner.op, Scan)
+    ]
 
 
 def test_unpack_statespace_outside_a_model_raises(ss_mod):

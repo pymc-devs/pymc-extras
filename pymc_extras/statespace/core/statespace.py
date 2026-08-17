@@ -517,9 +517,7 @@ class PyMCStateSpace:
         if not self._free_n_timesteps(matrices):
             return matrices
 
-        return self._insert_data_shape_into_n_timesteps(
-            matrices, self._observed_statespace_variable(pymc_model)
-        )
+        return self._insert_data_shape_into_n_timesteps(matrices, self._observed_data(pymc_model))
 
     def _free_n_timesteps(self, matrices: list[pt.TensorVariable]) -> tuple[Variable, ...]:
         """Return the ``n_timesteps`` inputs of ``matrices`` that no substitution has resolved."""
@@ -529,10 +527,13 @@ class PyMCStateSpace:
         )
 
     @staticmethod
-    def _observed_statespace_variable(pymc_model: Model) -> pt.TensorVariable:
-        """Return the filtered observation ``build_statespace_graph`` registered on the model.
+    def _observed_data(pymc_model: Model) -> pt.TensorVariable:
+        """Return the data ``build_statespace_graph`` registered as the filter's observation.
 
-        Identified by its ``Op`` rather than by name, so a user variable cannot be mistaken for it.
+        The observation is found by its ``Op`` rather than its name, so a user variable cannot be
+        mistaken for it. Its *value* is what gets returned, because that is a root of the model
+        graph -- taking the length off the observation itself would make every returned matrix
+        depend on the filter that produced it.
         """
         observed = [
             variable
@@ -549,7 +550,7 @@ class PyMCStateSpace:
                 f"Found {len(observed)} statespace observations on the active PyMC model, so "
                 "which one supplies the number of timesteps is ambiguous."
             )
-        return observed[0]
+        return pymc_model.rvs_to_values[observed[0]]
 
     @property
     def n_timesteps(self) -> Variable:
