@@ -257,11 +257,6 @@ class PyMCStateSpace:
         cov_jitter: float = JITTER_DEFAULT,
         missing_fill_value: float = MISSING_FILL,
     ):
-        self._fit_coords: dict[str, Sequence[str]] | None = None
-        self._fit_dims: dict[str, Sequence[str]] | None = None
-        self._fit_data: pt.TensorVariable | None = None
-        self._fit_exog_data: dict[str, dict] = {}
-
         self._needs_exog_data = None
         self._tensor_variable_info = SymbolicVariableInfo()
         self._tensor_data_info = SymbolicDataInfo()
@@ -821,19 +816,6 @@ class PyMCStateSpace:
         """
         raise NotImplementedError("The make_symbolic_statespace method has not been implemented!")
 
-    def _save_exogenous_data_info(self):
-        """
-        Store exogenous data required by posterior sampling functions
-        """
-        pymc_mod = modelcontext(None)
-        for data_name in self.data_names:
-            data = pymc_mod[data_name]
-            self._fit_exog_data[data_name] = {
-                "name": data_name,
-                "value": data.get_value(),
-                "dims": pymc_mod.named_vars_to_dims.get(data_name, None),
-            }
-
     def _insert_random_variables(self) -> list[pt.TensorVariable]:
         """
         Replace pytensor symbolic variables with PyMC random variables.
@@ -1016,11 +998,9 @@ class PyMCStateSpace:
         pm_mod = modelcontext(None)
 
         matrices = self._insert_random_variables()
-        self._save_exogenous_data_info()
         matrices = self._insert_data_variables(matrices)
 
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
-        self._fit_data = data
 
         data, nan_mask = register_data_with_pymc(
             data,
@@ -1053,9 +1033,6 @@ class PyMCStateSpace:
         )
 
         self._register_additional_statespace_variables()
-
-        self._fit_coords = pm_mod.coords.copy()
-        self._fit_dims = pm_mod.named_vars_to_dims.copy()
 
     def make_filters(self) -> tuple[BaseFilter, KalmanSmoother]:
         """
