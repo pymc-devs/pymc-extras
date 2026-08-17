@@ -8,7 +8,7 @@ import pytest
 
 from numpy.testing import assert_allclose
 from pymc.exceptions import ImputationWarning
-from pytensor.graph.traversal import explicit_graph_inputs
+from pytensor.graph.traversal import ancestors
 
 from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
@@ -260,10 +260,27 @@ def test_build_graph_does_not_mutate_the_filters(ss_mod):
     assert kalman_smoother.__dict__ == smoother_state
 
 
-def test_post_estimation_leaves_template_matrices_alone(ss_mod, pymc_mod, idata, rng):
+@pytest.mark.parametrize(
+    ("method_name", "kwargs"),
+    [
+        ("forecast", {"start": -1, "periods": 10}),
+        ("impulse_response_function", {"n_steps": 10}),
+        ("sample_conditional_prior", {}),
+    ],
+    ids=["forecast", "irf", "sample_conditional_prior"],
+)
+def test_post_estimation_leaves_template_matrices_alone(
+    method_name, kwargs, ss_mod, pymc_mod, idata, rng
+):
+    """Each of these substitutes into a throwaway model, so none may touch the template.
+
+    The three cover distinct substitution paths. Identity rather than equality: a cached list of
+    substituted matrices would still compare equal element-wise while pointing at nodes bound to a
+    model that has gone out of scope.
+    """
     before = ss_mod.unpack_statespace()
-    ss_mod.forecast(idata, start=-1, periods=10, random_seed=rng)
+    getattr(ss_mod, method_name)(idata, random_seed=rng, **kwargs)
     after = ss_mod.unpack_statespace()
 
     assert all(x is y for x, y in zip(before, after, strict=True))
-    assert not set(pymc_mod.basic_RVs).intersection(explicit_graph_inputs(after))
+    assert not set(pymc_mod.basic_RVs).intersection(ancestors(after))
