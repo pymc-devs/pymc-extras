@@ -181,7 +181,30 @@ def mask_missing_values_in_data(values, missing_fill_value=None):
     return filled_values, nan_mask
 
 
-def register_data_with_pymc(data, n_obs, obs_coords, missing_fill_value=None, data_dims=None):
+def prepare_data_for_pymc(data, n_obs, obs_coords, missing_fill_value=None):
+    """
+    Validate observed data and fill its missing values with a sentinel.
+
+    Parameters
+    ----------
+    data : pytensor tensor, numpy array, or pandas DataFrame or Series
+        Observed data to prepare.
+    n_obs : int
+        Number of observed states the model expects.
+    obs_coords : sequence of str, optional
+        Names of the observed states, used to check the columns of a DataFrame.
+    missing_fill_value : float, optional
+        Value substituted for missing observations. Default None, meaning the package default.
+
+    Returns
+    -------
+    filled_values : numpy array
+        Data with missing values replaced by the sentinel.
+    index : pandas Index or numpy array
+        Time index of the data.
+    nan_mask : numpy array
+        Boolean mask that is True where the data was missing.
+    """
     if isinstance(data, pt.TensorVariable | TensorSharedVariable):
         values, index = preprocess_tensor_data(data, n_obs, obs_coords)
     elif isinstance(data, np.ndarray):
@@ -192,6 +215,14 @@ def register_data_with_pymc(data, n_obs, obs_coords, missing_fill_value=None, da
         raise ValueError("Data should be one of pytensor tensor, numpy array, or pandas dataframe")
 
     filled_values, nan_mask = mask_missing_values_in_data(values, missing_fill_value)
+
+    return filled_values, index, nan_mask
+
+
+def register_data_with_pymc(data, n_obs, obs_coords, missing_fill_value=None, data_dims=None):
+    filled_values, index, nan_mask = prepare_data_for_pymc(
+        data, n_obs, obs_coords, missing_fill_value
+    )
     data_variable = add_data_to_active_model(filled_values, index, data_dims)
 
     return data_variable, nan_mask
