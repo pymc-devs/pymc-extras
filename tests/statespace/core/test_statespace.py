@@ -226,6 +226,113 @@ def test_register_additional_statespace_variables_hook():
 
 
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_rebuild_updates_data():
+    """Re-running the build cell points the model at the new data instead of raising."""
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(verbose=False)
+
+    with pm.Model(coords=ss_mod.coords) as rebuilt:
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX) * 1e6, dims=["state", "state_aux"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        ss_mod.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+        ss_mod.build_statespace_graph(np.arange(17, dtype=floatX)[:, None])
+
+    with pm.Model(coords=ss_mod.coords) as built_once:
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX) * 1e6, dims=["state", "state_aux"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        ss_mod.build_statespace_graph(np.arange(17, dtype=floatX)[:, None])
+
+    assert rebuilt["data"].get_value().shape == (17, 1)
+    assert len(rebuilt.coords["time"]) == 17
+
+    # The updated graph has to filter all 17 observations, not the 10 it was built with.
+    assert_allclose(
+        rebuilt.compile_logp()(rebuilt.initial_point()),
+        built_once.compile_logp()(built_once.initial_point()),
+    )
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+@pytest.mark.parametrize("name", ["data", "obs"], ids=["data", "obs"])
+def test_build_into_model_owning_reserved_name_raises(name):
+    """A user's own variable is not mistaken for a previous build, or silently overwritten."""
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(verbose=False)
+
+    with pm.Model(coords=ss_mod.coords):
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX) * 1e6, dims=["state", "state_aux"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        pm.Normal(name, observed=np.zeros((10, 1)))
+
+        with pytest.raises(ValueError, match="did not create"):
+            ss_mod.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_rebuild_does_not_duplicate_subclass_variables():
+    """Nodes a subclass registers through the hook do not collide when the build is re-run."""
+
+    class SubclassStateSpace(PyMCStateSpace):
+        def make_symbolic_graph(self):
+            rho = self.make_and_register_variable("rho", ())
+            self.ssm["transition", 0, 0] = rho
+            self.ssm["design", 0, 0] = 1.0
+            self.ssm["selection", 0, 0] = 1.0
+            self.ssm["state_cov", 0, 0] = 1.0
+            self.ssm["initial_state_cov", 0, 0] = 1.0
+
+        @property
+        def param_names(self):
+            return ["rho"]
+
+        def _register_additional_statespace_variables(self):
+            pm.Deterministic("subclass_det", pm.modelcontext(None)["data"].sum())
+            pm.Potential("subclass_check", pt.zeros(()))
+
+    ss_mod = SubclassStateSpace(
+        k_endog=1, k_states=1, k_posdef=1, filter_type="standard", verbose=False
+    )
+
+    with pm.Model() as pymc_mod:
+        pm.Normal("rho")
+        ss_mod.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+        ss_mod.build_statespace_graph(np.arange(12, dtype=floatX)[:, None])
+
+    assert [x.name for x in pymc_mod.deterministics].count("subclass_det") == 1
+    assert [x.name for x in pymc_mod.potentials].count("subclass_check") == 1
+    assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_rebuild_with_stale_exogenous_data_raises():
+    """Exogenous data belongs to the user, so re-entry refuses to desync it from the observations."""
+    ss_mod = (
+        st.LevelTrend(name="trend", order=1, innovations_order=1)
+        + st.Regression(state_names=["x1"], name="exog", innovations=False)
+    ).build(verbose=False)
+
+    with pm.Model(coords=ss_mod.coords) as pymc_mod:
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Normal("beta_exog", dims=["state_exog"])
+        pm.Deterministic("P0", pt.eye(2, dtype=floatX) * 1e6, dims=["state", "state_aux"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        pm.Data("data_exog", np.ones((10, 1), dtype=floatX), dims=["time", "state_exog"])
+        ss_mod.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
+        with pytest.raises(ValueError, match="exogenous data still spans a different number"):
+            ss_mod.build_statespace_graph(np.arange(17, dtype=floatX)[:, None])
+
+        # Updating the exogenous data first is what the error asks for, and it lets the rebuild in.
+        pm.set_data({"data_exog": np.ones((17, 1), dtype=floatX)}, coords={"time": np.arange(17)})
+        ss_mod.build_statespace_graph(np.arange(17, dtype=floatX)[:, None])
+
+    assert pymc_mod["data"].get_value().shape == (17, 1)
+    assert pymc_mod["data_exog"].get_value().shape == (17, 1)
+    assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
 def test_statespace_model_survives_pickling():
     """A statespace model holds no PyMC-model references, so it round-trips and still builds."""
     ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(verbose=False)

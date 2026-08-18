@@ -54,8 +54,15 @@ from pymc_extras.statespace.utils.constants import (
     JITTER_DEFAULT,
     MISSING_FILL,
     OBS_STATE_DIM,
+    OBSERVED_DATA_NAME,
+    OBSERVED_LIKELIHOOD_NAME,
+    TIME_DIM,
 )
-from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
+from pymc_extras.statespace.utils.data_tools import (
+    add_data_to_active_model,
+    prepare_data_for_pymc,
+    update_data_in_active_model,
+)
 
 _log = logging.getLogger("pymc.experimental.statespace")
 
@@ -82,6 +89,29 @@ def _validate_property(props, property_name, expected_type):
             f"All elements of the {property_name} property must be instances of "
             f"{expected_type.__name__}."
         )
+
+
+def _statespace_likelihood(model: Model) -> Variable | None:
+    """
+    Return the observation likelihood a state space build put into ``model``, if it holds one.
+
+    A variable named ``obs`` is only ours if a Kalman filter produced it, so a user's own variable
+    of that name is never mistaken for a previous build.
+
+    Parameters
+    ----------
+    model : Model
+        PyMC model to inspect.
+
+    Returns
+    -------
+    likelihood : TensorVariable or None
+        The observation likelihood, or None if the model holds no state space graph.
+    """
+    likelihood = model.named_vars.get(OBSERVED_LIKELIHOOD_NAME, None)
+    if likelihood is None or likelihood.owner is None:
+        return None
+    return likelihood if isinstance(likelihood.owner.op, KalmanFilterRV) else None
 
 
 class PyMCStateSpace:
@@ -954,17 +984,30 @@ class PyMCStateSpace:
         """
         pm_mod = modelcontext(None)
 
-        matrices = self._insert_random_variables()
-        matrices = self._insert_data_variables(matrices)
-
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
-
-        data, nan_mask = register_data_with_pymc(
+        filled_values, index, _ = prepare_data_for_pymc(
             data,
             n_obs=self.ssm.k_endog,
             obs_coords=obs_coords,
             missing_fill_value=self.missing_fill_value,
         )
+
+        if _statespace_likelihood(pm_mod) is not None:
+            self._reenter_statespace_graph(filled_values, index)
+            return
+
+        for name in (OBSERVED_DATA_NAME, OBSERVED_LIKELIHOOD_NAME):
+            if name in pm_mod.named_vars:
+                raise ValueError(
+                    f"The model already contains a variable named {name!r} that this state space "
+                    f"model did not create. Rename it, or build the state space graph into a "
+                    f"model that does not use that name."
+                )
+
+        matrices = self._insert_random_variables()
+        matrices = self._insert_data_variables(matrices)
+
+        data = add_data_to_active_model(filled_values, index)
 
         # Order is important here: only call _insert_data_shape_into_n_timesteps after data has been registered.
         matrices = self._insert_data_shape_into_n_timesteps(matrices, data)
@@ -980,7 +1023,7 @@ class PyMCStateSpace:
         obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
 
         SequenceMvNormal(
-            "obs",
+            OBSERVED_LIKELIHOOD_NAME,
             mus=observed_states,
             covs=observed_covariances,
             logp=logp,
@@ -989,6 +1032,64 @@ class PyMCStateSpace:
         )
 
         self._register_additional_statespace_variables()
+
+    def _reenter_statespace_graph(
+        self, filled_values: np.ndarray, index: pd.Index | np.ndarray
+    ) -> None:
+        """
+        Point an already-built model at new data.
+
+        The filter graph is left as the first build made it, so re-entry cannot change how the
+        model is constructed -- only which observations it is fit against.
+
+        Parameters
+        ----------
+        filled_values : numpy array
+            New data, with missing values already filled.
+        index : pandas Index or numpy array
+            Time index of the new data.
+        """
+        self._verify_exogenous_data_spans(len(filled_values))
+
+        update_data_in_active_model(filled_values, index)
+
+    def _verify_exogenous_data_spans(self, n_timesteps: int) -> None:
+        """
+        Raise unless every exogenous data variable in the active model spans ``n_timesteps``.
+
+        Exogenous data belongs to the user, so re-entry cannot resize it. Left stale it desyncs
+        from the observed data and the filter fails much later, when the log probability is built.
+
+        Parameters
+        ----------
+        n_timesteps : int
+            Number of time steps in the observed data about to be written.
+
+        Raises
+        ------
+        ValueError
+            If any exogenous data variable spans a different number of time steps.
+        """
+        pm_mod = modelcontext(None)
+
+        stale = {}
+        for name in self.data_names:
+            variable = pm_mod.named_vars.get(name, None)
+            if variable is None:
+                continue
+            found = variable.get_value(borrow=True).shape[0]
+            if found != n_timesteps:
+                stale[name] = found
+
+        if not stale:
+            return
+
+        described = ", ".join(f"{name} ({found} steps)" for name, found in sorted(stale.items()))
+        raise ValueError(
+            f"The new observed data spans {n_timesteps} time steps, but the model's exogenous "
+            f"data still spans a different number: {described}. Update it with pm.set_data, "
+            f"passing new {TIME_DIM!r} coords, before rebuilding."
+        )
 
     def make_filters(self) -> tuple[BaseFilter, KalmanSmoother]:
         """

@@ -155,6 +155,37 @@ def add_data_to_active_model(values, index, data_dims=None):
     return data
 
 
+def update_data_in_active_model(values, index, data_dims=None):
+    """
+    Point the active model's observed data variable at new values.
+
+    Parameters
+    ----------
+    values : numpy array
+        Data to write, with missing values already filled.
+    index : pandas Index or numpy array
+        Time index of the data, written to the time coordinate.
+    data_dims : sequence of str, optional
+        Dims of the observed data variable. Default None, meaning the package defaults.
+
+    Returns
+    -------
+    data : TensorVariable
+        The model's observed data variable.
+    """
+    pymc_mod = modelcontext(None)
+    if data_dims is None:
+        data_dims = [TIME_DIM, OBS_STATE_DIM]
+    time_dim = data_dims[0]
+
+    if isinstance(index, pd.Index):
+        index = index.rename(time_dim)
+
+    pymc_mod.set_data(OBSERVED_DATA_NAME, values, coords={time_dim: index})
+
+    return pymc_mod[OBSERVED_DATA_NAME]
+
+
 def mask_missing_values_in_data(values, missing_fill_value=None):
     if missing_fill_value is None:
         missing_fill_value = MISSING_FILL
