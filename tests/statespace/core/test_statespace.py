@@ -254,6 +254,26 @@ def test_rebuild_updates_data():
 
 
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_rebuild_with_a_different_specification_raises():
+    """Re-entry must not let a changed model specification inherit the graph already built."""
+    built = st.LevelTrend(name="trend", order=1, innovations_order=1).build(verbose=False)
+    respecified = (
+        st.LevelTrend(name="trend", order=1, innovations_order=1)
+        + st.MeasurementError(name="obs_err")
+    ).build(verbose=False)
+
+    with pm.Model(coords=built.coords):
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX) * 1e6, dims=["state", "state_aux"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        built.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
+        # The respecified model needs a parameter the graph in this model knows nothing about.
+        with pytest.raises(ValueError, match="sigma_obs_err"):
+            respecified.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
 @pytest.mark.parametrize("name", ["data", "obs"], ids=["data", "obs"])
 def test_build_into_model_owning_reserved_name_raises(name):
     """A user's own variable is not mistaken for a previous build, or silently overwritten."""

@@ -1049,6 +1049,10 @@ class PyMCStateSpace:
         index : pandas Index or numpy array
             Time index of the new data.
         """
+        # Raises unless the model holds this template's parameters, so a template whose
+        # specification has changed cannot silently inherit the graph another one built.
+        self._insert_random_variables()
+
         self._verify_exogenous_data_spans(len(filled_values))
 
         update_data_in_active_model(filled_values, index)
