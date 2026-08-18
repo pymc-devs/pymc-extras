@@ -7,14 +7,13 @@ import pandas as pd
 
 from xarray import Dataset, DataTree
 
+from pymc_extras.statespace.utils.constants import OBSERVED_DATA_NAME
+
 if TYPE_CHECKING:
     from pymc_extras.statespace.core.statespace import PyMCStateSpace
 
 # ``chain`` and ``draw`` index the samples, not the variable, so they are never model dims.
 _SAMPLE_DIMS = frozenset({"chain", "draw"})
-
-# The name ``register_data_with_pymc`` gives the observed data when it registers it.
-_OBSERVED_DATA_NAME = "data"
 
 # What PyMC names the axes of a variable registered without dims.
 _GENERATED_DIM = re.compile(r"^(?P<variable>.+)_dim_\d+$")
@@ -163,13 +162,13 @@ def data_from_idata(idata: DataTree, group: str) -> pd.DataFrame:
         If ``idata`` has no group named ``group``, or that group holds no observed data.
     """
     dataset = _require_group(idata, group)
-    if _OBSERVED_DATA_NAME not in dataset.data_vars:
+    if OBSERVED_DATA_NAME not in dataset.data_vars:
         raise ValueError(
-            f"The {group!r} group holds no {_OBSERVED_DATA_NAME!r} variable, so the observed data "
+            f"The {group!r} group holds no {OBSERVED_DATA_NAME!r} variable, so the observed data "
             f"cannot be recovered. It holds: {', '.join(sorted(dataset.data_vars))}."
         )
 
-    data = dataset[_OBSERVED_DATA_NAME].to_pandas()
+    data = dataset[OBSERVED_DATA_NAME].to_pandas()
     if isinstance(data.index, pd.DatetimeIndex) and data.index.freq is None:
         # A round-trip through the inference data drops the frequency, which the data
         # preprocessor warns about and the forecast index needs.

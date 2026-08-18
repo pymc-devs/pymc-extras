@@ -12,6 +12,7 @@ from pytensor.tensor.sharedvar import TensorSharedVariable
 from pymc_extras.statespace.utils.constants import (
     MISSING_FILL,
     OBS_STATE_DIM,
+    OBSERVED_DATA_NAME,
     TIME_DIM,
 )
 
@@ -149,7 +150,7 @@ def add_data_to_active_model(values, index, data_dims=None):
     else:
         data_shape = (None, values.shape[-1])
 
-    data = pm.Data("data", values, dims=data_dims, shape=data_shape)
+    data = pm.Data(OBSERVED_DATA_NAME, values, dims=data_dims, shape=data_shape)
 
     return data
 

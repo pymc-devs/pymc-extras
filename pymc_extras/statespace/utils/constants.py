@@ -18,6 +18,8 @@ EXOG_STATE_DIM = "exogenous"
 EXOG_COEF_STATE_DIM = "exogenous_coefficient"
 NON_EXOG_STATE_DIM = "non_exogenous_state"
 
+OBSERVED_DATA_NAME = "data"
+
 MISSING_FILL = -9999.0
 JITTER_DEFAULT = 1e-8 if pytensor.config.floatX.endswith("64") else 1e-6
 
