@@ -1079,9 +1079,10 @@ class PyMCStateSpace:
         stale = {}
         for name in self.data_names:
             variable = pm_mod.named_vars.get(name, None)
-            if variable is None:
+            get_value = getattr(variable, "get_value", None)
+            if get_value is None:
                 continue
-            found = variable.get_value(borrow=True).shape[0]
+            found = get_value(borrow=True).shape[0]
             if found != n_timesteps:
                 stale[name] = found
 
