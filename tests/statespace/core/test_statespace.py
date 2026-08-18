@@ -74,7 +74,9 @@ def test_build_statespace_graph_warns_if_data_has_nans():
 
 def test_build_statespace_graph_raises_if_data_has_missing_fill():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(verbose=False)
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(
+        verbose=False, missing_fill_value=1.0
+    )
 
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))
@@ -82,7 +84,7 @@ def test_build_statespace_graph_raises_if_data_has_missing_fill():
         with pytest.raises(ValueError, match=r"Provided data contains the value 1.0"):
             data = np.ones((10, 1), dtype=floatX)
             data[3] = np.nan
-            ss_mod.build_statespace_graph(data=data, missing_fill_value=1.0)
+            ss_mod.build_statespace_graph(data=data)
 
 
 def test_param_dims_coords(ss_mod_multi_component):
@@ -133,20 +135,27 @@ def test_filter_config_defaults_to_the_documented_values():
 
 
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
-def test_filter_config_is_overridable_at_build():
-    """A build-time argument overrides the model's filter settings; others are left alone."""
+def test_filter_config_survives_building_into_several_models():
+    """Filter settings belong to the model, so building again cannot repoint them."""
     ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(
         verbose=False, cov_jitter=1e-4, missing_fill_value=-1234.0
     )
 
-    with pm.Model(coords=ss_mod.coords):
-        pm.Normal("initial_trend", shape=(1,))
-        pm.Deterministic("P0", pt.eye(1, dtype=floatX))
-        pm.Exponential("sigma_trend", 1, shape=(1,))
-        ss_mod.build_statespace_graph(data=np.zeros((20, 1), dtype=floatX), cov_jitter=1e-2)
+    for n_obs in (20, 25):
+        with pm.Model(coords=ss_mod.coords):
+            pm.Normal("initial_trend", shape=(1,))
+            pm.Deterministic("P0", pt.eye(1, dtype=floatX))
+            pm.Exponential("sigma_trend", 1, shape=(1,))
+            ss_mod.build_statespace_graph(data=np.zeros((n_obs, 1), dtype=floatX))
 
-    assert ss_mod.cov_jitter == 1e-2
+    assert ss_mod.cov_jitter == 1e-4
     assert ss_mod.missing_fill_value == -1234.0
+
+    # Post-estimation reads these off the model, so they have to describe every graph it built.
+    kalman_filter, kalman_smoother = ss_mod.make_filters()
+    assert kalman_filter.cov_jitter == 1e-4
+    assert kalman_filter.missing_fill_value == -1234.0
+    assert kalman_smoother.cov_jitter == 1e-4
 
 
 @pytest.mark.parametrize(

@@ -937,64 +937,21 @@ class PyMCStateSpace:
     def build_statespace_graph(
         self,
         data: np.ndarray | pd.DataFrame | pt.TensorVariable,
-        missing_fill_value: float | None = None,
-        cov_jitter: float | None = None,
-        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
     ) -> None:
         """
         Given a parameter vector `theta`, constructs the full computational graph describing the state space model and
         the associated log probability of the data. Hidden states and log probabilities are computed via the Kalman
         Filter.
 
+        The filter is configured with the ``cov_jitter`` and ``missing_fill_value`` given to the model constructor,
+        which are also what post-estimation graphs use.
+
         Parameters
         ----------
         data : numpy array, pandas DataFrame, or pytensor tensor
             The observed data used to fit the state space model. It can be a NumPy array, a Pandas DataFrame,
             or a Pytensor tensor variable.
-
-        missing_fill_value: float, optional
-            A value to mask in missing values. NaN values in the data need to be filled with an arbitrary value to
-            avoid triggering PyMC's automatic imputation machinery (missing values are instead filled by treating them
-            as hidden states during Kalman filtering).
-
-            In general this never needs to be set. But if by a wild coincidence your data includes the value -9999.0,
-            you will need to change the missing_fill_value to something else, to avoid incorrectly mark in
-            data as missing.
-
-            Overrides the value given to the model constructor, which is also what post-estimation graphs use.
-            Default None, meaning the constructor's value is kept.
-
-        cov_jitter: float, optional
-            The Kalman filter is known to be numerically unstable, especially at half precision. This value is added to
-            the diagonal of every covariance matrix -- predicted, filtered, and smoothed -- at every step, to ensure
-            all matrices are strictly positive semi-definite.
-
-            Obviously, if this can be zero, that's best. In general:
-                - Having measurement error makes Kalman Filters more robust. A large source of numerical errors come
-                  from the Filtered and Smoothed covariance matrices having a zero in the (0, 0) position, which always
-                  occurs when there is no measurement error. You can lower this value in the presence of measurement
-                  error.
-
-                - The Univariate Filter is more robust than other filters, and can tolerate a lower jitter value
-
-            Overrides the value given to the model constructor, which is also what post-estimation graphs use.
-            Default None, meaning the constructor's value is kept.
-
-        mvn_method: str, default "svd"
-            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
-            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
-            to ill-conditioned matrices, while "svd" is slow but extremely robust.
-
-            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
-            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
-
         """
-        # Recorded on the model so post-estimation graphs are filtered the same way the fit was.
-        if cov_jitter is not None:
-            self.cov_jitter = cov_jitter
-        if missing_fill_value is not None:
-            self.missing_fill_value = missing_fill_value
-
         pm_mod = modelcontext(None)
 
         matrices = self._insert_random_variables()
@@ -1029,7 +986,6 @@ class PyMCStateSpace:
             logp=logp,
             observed=data,
             dims=obs_dims,
-            method=mvn_method,
         )
 
         self._register_additional_statespace_variables()
