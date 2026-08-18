@@ -91,9 +91,9 @@ def _validate_property(props, property_name, expected_type):
         )
 
 
-def _statespace_likelihood(model: Model) -> Variable | None:
+def _has_statespace_graph(model: Model) -> bool:
     """
-    Return the observation likelihood a state space build put into ``model``, if it holds one.
+    Return whether a state space build has already put an observation likelihood into ``model``.
 
     A variable named ``obs`` is only ours if a Kalman filter produced it, so a user's own variable
     of that name is never mistaken for a previous build.
@@ -105,13 +105,13 @@ def _statespace_likelihood(model: Model) -> Variable | None:
 
     Returns
     -------
-    likelihood : TensorVariable or None
-        The observation likelihood, or None if the model holds no state space graph.
+    has_graph : bool
+        True if the model already holds a state space graph.
     """
     likelihood = model.named_vars.get(OBSERVED_LIKELIHOOD_NAME, None)
     if likelihood is None or likelihood.owner is None:
-        return None
-    return likelihood if isinstance(likelihood.owner.op, KalmanFilterRV) else None
+        return False
+    return isinstance(likelihood.owner.op, KalmanFilterRV)
 
 
 class PyMCStateSpace:
@@ -992,7 +992,7 @@ class PyMCStateSpace:
             missing_fill_value=self.missing_fill_value,
         )
 
-        if _statespace_likelihood(pm_mod) is not None:
+        if _has_statespace_graph(pm_mod):
             self._reenter_statespace_graph(filled_values, index)
             return
 
@@ -1007,13 +1007,13 @@ class PyMCStateSpace:
         matrices = self._insert_random_variables()
         matrices = self._insert_data_variables(matrices)
 
-        data = add_data_to_active_model(filled_values, index)
+        data_variable = add_data_to_active_model(filled_values, index)
 
         # Order is important here: only call _insert_data_shape_into_n_timesteps after data has been registered.
-        matrices = self._insert_data_shape_into_n_timesteps(matrices, data)
+        matrices = self._insert_data_shape_into_n_timesteps(matrices, data_variable)
 
         kalman_filter, _ = self.make_filters()
-        filter_outputs = kalman_filter.build_graph(pt.as_tensor_variable(data), *matrices)
+        filter_outputs = kalman_filter.build_graph(pt.as_tensor_variable(data_variable), *matrices)
 
         logp = filter_outputs.pop(-1)
         *_, observed_states = filter_outputs[:3]
@@ -1027,7 +1027,7 @@ class PyMCStateSpace:
             mus=observed_states,
             covs=observed_covariances,
             logp=logp,
-            observed=data,
+            observed=data_variable,
             dims=obs_dims,
         )
 
