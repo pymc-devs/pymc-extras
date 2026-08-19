@@ -53,6 +53,43 @@ def test_base_class_raises():
         )
 
 
+@pytest.mark.parametrize(
+    "registrar, info_attribute",
+    [
+        ("make_and_register_variable", "_tensor_variable_info"),
+        ("make_and_register_data", "_tensor_data_info"),
+    ],
+    ids=["variable", "data"],
+)
+def test_registering_a_placeholder_twice_reports_the_existing_shape(registrar, info_attribute):
+    """The duplicate-registration error names the shape already registered under that name."""
+
+    class SubclassStateSpace(PyMCStateSpace):
+        def make_symbolic_graph(self):
+            pass
+
+        @property
+        def param_names(self):
+            return ["rho"]
+
+        @property
+        def data_names(self):
+            return ["rho"]
+
+    ss_mod = SubclassStateSpace(
+        k_endog=1, k_states=1, k_posdef=1, filter_type="standard", verbose=False
+    )
+    register = getattr(ss_mod, registrar)
+    register("rho", (3,))
+
+    with pytest.raises(ValueError, match=r"already a registered placeholder variable with shape"):
+        register("rho", (3,))
+
+    # The message reads the shape off the registered placeholder, not off the info wrapper.
+    with pytest.raises(ValueError, match=r"\(3,\)"):
+        register("rho", (3,))
+
+
 def test_update_raises_if_missing_variables(ss_mod):
     with pm.Model() as mod:
         rho = pm.Normal("rho")
