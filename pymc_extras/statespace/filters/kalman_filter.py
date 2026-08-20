@@ -1,5 +1,4 @@
 from abc import ABC
-from collections.abc import Iterable
 
 import numpy as np
 import pytensor
@@ -14,12 +13,14 @@ from pytensor.scan.utils import until
 from pytensor.tensor import TensorConstant, TensorVariable
 from pytensor.tensor.linalg import solve_triangular
 
+from pymc_extras.statespace.core.assumptions import is_time_varying
 from pymc_extras.statespace.filters.utilities import (
     PARAM_NAMES,
     dim_of,
     quad_form_sym,
-    scan_sequence_names,
+    split_by_time_axis,
     stabilize,
+    unpack_scan_step,
 )
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_NAMES,
@@ -38,7 +39,6 @@ assert_time_varying_dim_correct = Assert(
 class BaseFilter(ABC):
     def __init__(
         self,
-        time_varying_names: Iterable[str] = (),
         cov_jitter: float | None = None,
         missing_fill_value: float | None = None,
     ):
@@ -46,12 +46,12 @@ class BaseFilter(ABC):
         Abstract base class for Kalman filter implementations.
 
         :meth:`build_graph` only reads these settings, so one filter builds any number of graphs.
+        Which matrices ``scan`` receives as sequences is read off the matrices themselves, which
+        callers mark with
+        :func:`~pymc_extras.statespace.core.assumptions.declare_time_varying`.
 
         Parameters
         ----------
-        time_varying_names : iterable of str, optional
-            Long names of the matrices the model declared time-varying, which the filter passes to
-            ``scan`` as sequences rather than non-sequences. Default is no time-varying matrices.
         cov_jitter : float, optional
             Jitter added to the diagonal of every covariance matrix at each step. Default 1e-8, or
             1e-6 if ``pytensor.config.floatX`` is float32.
@@ -60,9 +60,6 @@ class BaseFilter(ABC):
         """
         self.cov_jitter = JITTER_DEFAULT if cov_jitter is None else cov_jitter
         self.missing_fill_value = MISSING_FILL if missing_fill_value is None else missing_fill_value
-
-        self.seq_names = scan_sequence_names(time_varying_names)
-        self.non_seq_names = [name for name in PARAM_NAMES if name not in self.seq_names]
 
     def check_params(self, data, a0, P0, c, d, T, Z, R, H, Q):
         """
@@ -103,40 +100,6 @@ class BaseFilter(ABC):
         ]
 
         return params_with_assert
-
-    def unpack_args(self, args) -> tuple:
-        """
-        The order of inputs to the inner scan function is not known, since some, all, or none of the input matrices
-        can be time varying. The order arguments are fed to the inner function is sequences, outputs_info,
-        non-sequences. This function works out which matrices are where, and returns a standardized order expected
-        by the kalman_step function.
-
-        The standard order is: y, a0, P0, c, d, T, Z, R, H, Q
-        """
-        # If there are no sequence parameters (all params are static),
-        # no changes are needed, params will be in order.
-        args = list(args)
-        n_seq = len(self.seq_names)
-        if n_seq == 0:
-            return tuple(args)
-
-        # The first arg is always y
-        y = args.pop(0)
-
-        # There are always two outputs_info wedged between the seqs and non_seqs
-        seqs, (a0, P0), non_seqs = args[:n_seq], args[n_seq : n_seq + 2], args[n_seq + 2 :]
-        return_ordered = []
-        for name in PARAM_NAMES:
-            if name in self.seq_names:
-                idx = self.seq_names.index(name)
-                return_ordered.append(seqs[idx])
-            else:
-                idx = self.non_seq_names.index(name)
-                return_ordered.append(non_seqs[idx])
-
-        c, d, T, Z, R, H, Q = return_ordered
-
-        return y, a0, P0, c, d, T, Z, R, H, Q
 
     def build_graph(
         self,
@@ -187,18 +150,19 @@ class BaseFilter(ABC):
         data, a0, P0, *params = self.check_params(data, a0, P0, c, d, T, Z, R, H, Q)
         k_states, k_endog = dim_of(a0, 0), dim_of(Z, -2)
         data = pt.specify_shape(data, (data.type.shape[0], k_endog))
-        sequences = [
-            p for p, name in zip(params, PARAM_NAMES, strict=True) if name in self.seq_names
-        ]
-        non_sequences = [
-            p for p, name in zip(params, PARAM_NAMES, strict=True) if name in self.non_seq_names
-        ]
 
+        sequences, non_sequences, seq_names, non_seq_names = split_by_time_axis(
+            dict(zip(PARAM_NAMES, params, strict=True))
+        )
         if len(sequences) > 0:
             sequences = self.add_check_on_time_varying_shapes(data, sequences)
 
+        def step_fn(y, *rest):
+            (a, P), matrices = unpack_scan_step(rest, seq_names, non_seq_names, PARAM_NAMES)
+            return self.kalman_step(y, a, P, *matrices)
+
         results = pytensor.scan(
-            self.kalman_step,
+            step_fn,
             sequences=[data, *sequences],
             outputs_info=[None, a0, None, None, P0, None, None],
             non_sequences=non_sequences,
@@ -436,7 +400,7 @@ class BaseFilter(ABC):
         """
         raise NotImplementedError
 
-    def kalman_step(self, *args) -> tuple:
+    def kalman_step(self, y, a, P, c, d, T, Z, R, H, Q) -> tuple:
         """
         Performs a single iteration of the Kalman filter, which is composed of two steps : an update step and a
         prediction step. The timing convention follows [1], in which initial state and covariance estimates a0 and P0
@@ -507,7 +471,6 @@ class BaseFilter(ABC):
         .. [1] Durbin, J., and S. J. Koopman. Time Series Analysis by State Space Methods.
                2nd ed, Oxford University Press, 2012.
         """
-        y, a, P, c, d, T, Z, R, H, Q = self.unpack_args(args)
         y_masked, Z_masked, H_masked, d_masked, all_nan_flag = self.handle_missing_values(
             y, Z, H, d
         )
@@ -779,9 +742,7 @@ class UnivariateFilter(BaseFilter):
 
         return a_filtered, P_filtered, pt.atleast_1d(y_hat), pt.atleast_2d(F), ll_inner
 
-    def kalman_step(self, *args):
-        y, a, P, c, d, T, Z, R, H, Q = self.unpack_args(args)
-
+    def kalman_step(self, y, a, P, c, d, T, Z, R, H, Q):
         nan_mask = pt.or_(pt.isnan(y), pt.eq(y, self.missing_fill_value))
         y_masked, Z_masked, H_masked, d_masked, all_nan_flag = self.handle_missing_values(
             y, Z, H, d
@@ -871,21 +832,11 @@ class ConvergentFilter(StandardFilter):
 
     def __init__(
         self,
-        time_varying_names: Iterable[str] = (),
         cov_jitter: float | None = None,
         missing_fill_value: float | None = None,
         tol: float = 1e-10,
     ):
-        super().__init__(
-            time_varying_names=time_varying_names,
-            cov_jitter=cov_jitter,
-            missing_fill_value=missing_fill_value,
-        )
-        if self.seq_names:
-            raise ValueError(
-                "ConvergentFilter requires time-invariant matrices; got time-varying: "
-                f"{sorted(time_varying_names)}. Use StandardFilter instead."
-            )
+        super().__init__(cov_jitter=cov_jitter, missing_fill_value=missing_fill_value)
         self.tol = tol
 
     def _check_data(self, data):
@@ -1157,6 +1108,17 @@ class ConvergentFilter(StandardFilter):
         H,
         Q,
     ):
+        varying = [
+            name
+            for name, flag in zip(PARAM_NAMES, is_time_varying(c, d, T, Z, R, H, Q), strict=True)
+            if flag
+        ]
+        if varying:
+            raise ValueError(
+                f"ConvergentFilter requires time-invariant matrices; got time-varying: {varying}. "
+                "Use StandardFilter instead."
+            )
+
         data = self._check_data(data)
         data, a0, P0, c, d, T, Z, R, H, Q = self.check_params(data, a0, P0, c, d, T, Z, R, H, Q)
         k_states, k_endog = dim_of(a0, 0), dim_of(Z, -2)

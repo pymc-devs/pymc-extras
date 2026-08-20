@@ -1065,16 +1065,12 @@ class PyMCStateSpace:
         kalman_filter : BaseFilter
             Filter of the type this model was constructed with.
         kalman_smoother : KalmanSmoother
-            Smoother carrying the same time-varying names and jitter.
+            Smoother carrying the same jitter.
         """
         kalman_filter = FILTER_FACTORY[self.filter_type](
-            time_varying_names=self.ssm.time_varying_names,
-            cov_jitter=self.cov_jitter,
-            missing_fill_value=self.missing_fill_value,
+            cov_jitter=self.cov_jitter, missing_fill_value=self.missing_fill_value
         )
-        kalman_smoother = KalmanSmoother(
-            time_varying_names=self.ssm.time_varying_names, cov_jitter=self.cov_jitter
-        )
+        kalman_smoother = KalmanSmoother(cov_jitter=self.cov_jitter)
         return kalman_filter, kalman_smoother
 
     def _register_additional_statespace_variables(self) -> None:

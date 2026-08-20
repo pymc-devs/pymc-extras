@@ -4,12 +4,14 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
+from pymc_extras.statespace.core.assumptions import declare_time_varying, is_time_varying
+
 floatX = pytensor.config.floatX
 KeyLike = tuple[str | int, ...] | str
 
 # Number of trailing dims that define each matrix's "core" shape (1 for vectors, 2 for
 # matrices). Anything to the left is a time and/or batch dim; downstream consumers
-# distinguish them by consulting ``Representation.time_varying_names``.
+# distinguish them with ``is_time_varying``.
 _CORE_NDIM: dict[str, int] = {
     "design": 2,
     "obs_intercept": 1,
@@ -100,8 +102,9 @@ class PytensorRepresentation:
 
     Any matrix may carry a leading dim of length ``n`` (the number of observations) to
     make it time-varying. The model is responsible for declaring which matrices vary over
-    time via :meth:`declare_time_varying`; downstream consumers (filter, smoother, etc.)
-    read :attr:`time_varying_names` to dispatch.
+    time via :meth:`declare_time_varying`; downstream consumers (filter, smoother, etc.) ask
+    each matrix for itself with
+    :func:`~pymc_extras.statespace.core.assumptions.is_time_varying`.
 
     .. warning::
 
@@ -145,7 +148,6 @@ class PytensorRepresentation:
     """
 
     __slots__ = (
-        "_time_varying_names",
         "design",
         "initial_state",
         "initial_state_cov",
@@ -190,8 +192,6 @@ class PytensorRepresentation:
             "initial_state": initial_state,
             "initial_state_cov": initial_state_cov,
         }
-
-        self._time_varying_names: set[str] = set()
 
         for name in _CORE_NDIM:
             value = provided[name]
@@ -260,21 +260,33 @@ class PytensorRepresentation:
 
         return tensor
 
-    @property
-    def time_varying_names(self) -> frozenset[str]:
-        """Names of matrices the model declared as time-varying.
-
-        The Kalman filter iterates over the leading dim of these tensors at scan time;
-        all other matrices are passed in as scan non-sequences (i.e. used unchanged at
-        every step).
-        """
-        return frozenset(self._time_varying_names)
-
     def declare_time_varying(self, *names: str) -> None:
-        """Mark matrices as time-varying. The filter will iterate over the leading dim."""
+        """Mark matrices as time-varying, so the filter iterates over their leading dim.
+
+        The declaration rides on the tensor itself, so it survives substitution and slicing and
+        travels with the matrix into any graph built from it.
+
+        Parameters
+        ----------
+        *names : str
+            Names of the matrices to mark.
+
+        Raises
+        ------
+        ValueError
+            If a named matrix is at its core rank, leaving no leading axis to iterate over.
+        """
         for name in names:
             self._validate_name(name)
-            self._time_varying_names.add(name)
+            tensor = getattr(self, name)
+            if tensor.ndim == _CORE_NDIM[name]:
+                raise ValueError(
+                    f"{name} has ndim={tensor.ndim}, its core rank, so it has no leading axis "
+                    f"to iterate over. Assign a matrix of shape "
+                    f"(time, {', '.join(map(str, self._core_shape(name)))}) before declaring it "
+                    f"time-varying."
+                )
+            setattr(self, name, declare_time_varying(tensor))
 
     def __getitem__(self, key: KeyLike) -> pt.TensorVariable:
         if isinstance(key, str):
@@ -296,7 +308,16 @@ class PytensorRepresentation:
     ) -> None:
         if isinstance(key, str):
             self._validate_name(key)
-            setattr(self, key, self._coerce(key, value))
+            tensor = self._coerce(key, value)
+            existing = getattr(self, key)
+            # A replacement of the same rank describes the same axes as what it replaces, so a
+            # declared time axis carries over. A change of rank redefines them, and the model has
+            # to say again what the leading axis means.
+            if tensor.ndim == existing.ndim:
+                [time_varying] = is_time_varying(existing)
+                if time_varying:
+                    tensor = declare_time_varying(tensor)
+            setattr(self, key, tensor)
             return
 
         if isinstance(key, tuple) and isinstance(key[0], str):

@@ -1,13 +1,13 @@
-from collections.abc import Iterable
-
 import pytensor
 import pytensor.tensor as pt
 
 from pymc_extras.statespace.filters.utilities import (
     quad_form_sym,
+    split_by_time_axis,
     stabilize,
+    unpack_scan_step,
 )
-from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, LONG_NAME_TO_SHORT
+from pymc_extras.statespace.utils.constants import JITTER_DEFAULT
 
 # The smoother's backward pass only ever touches these three matrices.
 SMOOTHER_PARAM_NAMES = ("T", "R", "Q")
@@ -19,71 +19,22 @@ class KalmanSmoother:
 
     """
 
-    def __init__(
-        self,
-        time_varying_names: Iterable[str] = (),
-        cov_jitter: float | None = None,
-    ):
+    def __init__(self, cov_jitter: float | None = None):
         """
         Kalman smoother.
 
-        :meth:`build_graph` only reads these settings, so one smoother builds any number of graphs.
+        :meth:`build_graph` only reads this setting, so one smoother builds any number of graphs.
+        Which matrices ``scan`` receives as sequences is read off the matrices themselves, which
+        callers mark with
+        :func:`~pymc_extras.statespace.core.assumptions.declare_time_varying`.
 
         Parameters
         ----------
-        time_varying_names : iterable of str, optional
-            Long names of the matrices the model declared time-varying. Only the transition, selection
-            and state covariance matrices reach the smoother. Default is no time-varying matrices.
         cov_jitter : float, optional
             Jitter added to the diagonal of every covariance matrix at each step. Default 1e-8, or
             1e-6 if ``pytensor.config.floatX`` is float32.
         """
         self.cov_jitter = JITTER_DEFAULT if cov_jitter is None else cov_jitter
-
-        time_varying_short = {LONG_NAME_TO_SHORT[name] for name in time_varying_names}
-        self.seq_names = [name for name in SMOOTHER_PARAM_NAMES if name in time_varying_short]
-        self.non_seq_names = [
-            name for name in SMOOTHER_PARAM_NAMES if name not in time_varying_short
-        ]
-
-    def unpack_args(self, args):
-        """
-        The order of inputs to the inner scan function is not known, since some, all, or none of the input matrices
-        can be time varying. The order arguments are fed to the inner function is sequences, outputs_info,
-        non-sequences. This function works out which matrices are where, and returns a standardized order expected
-        by the kalman_step function.
-
-        The standard order is: a, P, a_smooth, P_smooth, T, R, Q
-        """
-        # If there are no sequence parameters (all params are static),
-        # no changes are needed, params will be in order.
-        args = list(args)
-        n_seq = len(self.seq_names)
-        if n_seq == 0:
-            return args
-
-        # The first two args are always a and P
-        a = args.pop(0)
-        P = args.pop(0)
-
-        # There are always two outputs_info wedged between the seqs and non_seqs
-        seqs, (a_smooth, P_smooth), non_seqs = (
-            args[:n_seq],
-            args[n_seq : n_seq + 2],
-            args[n_seq + 2 :],
-        )
-        return_ordered = []
-        for name in SMOOTHER_PARAM_NAMES:
-            if name in self.seq_names:
-                idx = self.seq_names.index(name)
-                return_ordered.append(seqs[idx])
-            else:
-                idx = self.non_seq_names.index(name)
-                return_ordered.append(non_seqs[idx])
-
-        T, R, Q = return_ordered
-
-        return a, P, a_smooth, P_smooth, T, R, Q
 
     def build_graph(
         self,
@@ -98,12 +49,18 @@ class KalmanSmoother:
         a_last = pt.specify_shape(filtered_states[-1], (k,))
         P_last = pt.specify_shape(filtered_covariances[-1], (k, k))
 
-        params = dict(zip(SMOOTHER_PARAM_NAMES, [T, R, Q], strict=True))
-        sequences = [params[name] for name in self.seq_names]
-        non_sequences = [params[name] for name in self.non_seq_names]
+        sequences, non_sequences, seq_names, non_seq_names = split_by_time_axis(
+            dict(zip(SMOOTHER_PARAM_NAMES, [T, R, Q], strict=True))
+        )
+
+        def step_fn(a, P, *rest):
+            (a_smooth, P_smooth), matrices = unpack_scan_step(
+                rest, seq_names, non_seq_names, SMOOTHER_PARAM_NAMES
+            )
+            return self.smoother_step(a, P, a_smooth, P_smooth, *matrices)
 
         smoothed_states, smoothed_covariances = pytensor.scan(
-            self.smoother_step,
+            step_fn,
             sequences=[filtered_states[:-1], filtered_covariances[:-1], *sequences],
             outputs_info=[a_last, P_last],
             non_sequences=non_sequences,
@@ -124,8 +81,7 @@ class KalmanSmoother:
 
         return smoothed_states, smoothed_covariances
 
-    def smoother_step(self, *args):
-        a, P, a_smooth, P_smooth, T, R, Q = self.unpack_args(args)
+    def smoother_step(self, a, P, a_smooth, P_smooth, T, R, Q):
         a_hat, P_hat = self.predict(a, P, T, R, Q)
 
         # Use pinv, otherwise P_hat is singular when there is missing data

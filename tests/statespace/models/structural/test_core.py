@@ -11,12 +11,23 @@ from pytensor import tensor as pt
 from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
 
+from pymc_extras.statespace.core.assumptions import is_time_varying
 from pymc_extras.statespace.models import structural as st
 from tests.statespace.test_utilities import unpack_symbolic_matrices_with_params
 
 floatX = config.floatX
 ATOL = 1e-8 if floatX.endswith("64") else 1e-4
 RTOL = 0 if floatX.endswith("64") else 1e-6
+
+
+def test_combining_components_preserves_a_time_varying_declaration():
+    """Composition pads, reorders and concatenates the design matrix; time-variance survives it."""
+    regression = st.Regression(state_names=["a"], name="exog", observed_state_names=["y1"])
+    assert is_time_varying(regression.ssm["design"]) == [True]
+
+    combined = st.LevelTrend(order=1, observed_state_names=["y1", "y2"]) + regression
+    assert is_time_varying(combined.ssm["design"]) == [True]
+    assert is_time_varying(combined.build(verbose=False).ssm["design"]) == [True]
 
 
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
