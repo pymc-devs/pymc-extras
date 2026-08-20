@@ -4,11 +4,12 @@ import pytensor.tensor as pt
 
 from arviz_base import dict_to_dataset
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
-from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import get_untransformed_name, is_transformed_name
 from pytensor.compile import mode
+from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import graph_replace, vectorize_graph
 from pytensor.graph.fg import FunctionGraph
+from pytensor.graph.traversal import graph_inputs
 from pytensor.link.mlx.dispatch import mlx_funcify
 from xarray import Dataset
 
@@ -46,18 +47,22 @@ class MLXLogp:
     reverse rule MLX lacks -- matrix inverse and Cholesky among them -- still differentiate, and
     ``mx.vmap`` and ``mx.compile`` see through the result.
 
+    Dim lengths and ``pm.Data`` containers stay as shared variables of the compiled graph, so
+    the model is used as given and a later ``pm.set_data`` is picked up on the next call. Freeze
+    the model yourself with :func:`~pymc.model.transform.optimization.freeze_dims_and_data` to
+    fold them in as constants, which lets more of the graph constant-fold.
+
     Parameters
     ----------
     model : pm.Model
-        The model whose log-density is compiled. Its dim lengths and data are frozen, and the
-        frozen copy is exposed as :attr:`model`.
+        The model whose log-density is compiled. It is used as given, not copied or rewritten.
     negative : bool
         Whether to return the negative log-density and its gradient. Default is False.
 
     Attributes
     ----------
     model : pm.Model
-        The frozen model the compiled density belongs to.
+        The model the compiled density belongs to.
     dim : int
         Total flattened size of the unconstrained free variables.
     names : list of str
@@ -68,9 +73,6 @@ class MLXLogp:
     """
 
     def __init__(self, model: pm.Model, *, negative: bool = False):
-        # Dim lengths and data are shared variables, which would otherwise show up as unprovided
-        # inputs of the FunctionGraph. Freezing them folds them in as constants.
-        model = freeze_dims_and_data(model)
         initial_point = model.initial_point()
 
         self.model = model
@@ -87,14 +89,41 @@ class MLXLogp:
             logp = -logp
         grad, _ = pt.pack(*pt.grad(logp, value_vars))
 
-        self._raw = _mlxify([flat], [logp, grad])
+        # Dim lengths and pm.Data are shared variables, which are graph inputs rather than
+        # constants unless the caller froze the model. Carrying them as trailing inputs of the
+        # funcified callable keeps that choice hers.
+        self._shared = [
+            variable
+            for variable in graph_inputs([logp, grad])
+            if isinstance(variable, SharedVariable)
+        ]
+        self._shared_cache: list[tuple[object | None, mx.array | None]] = [(None, None)] * len(
+            self._shared
+        )
+
+        self._raw = _mlxify([flat, *self._shared], [logp, grad])
+
+    def _shared_values(self) -> list[mx.array]:
+        """The current shared-variable values as MLX arrays, converted only when they change."""
+        values = []
+        for index, variable in enumerate(self._shared):
+            # pm.set_data swaps in a new array rather than mutating the old one, so identity of
+            # the borrowed value is enough to tell a stale conversion from a live one.
+            borrowed = variable.get_value(borrow=True)
+            cached_source, cached_value = self._shared_cache[index]
+            if cached_source is not borrowed:
+                cached_value = mx.array(np.asarray(borrowed))
+                self._shared_cache[index] = (borrowed, cached_value)
+            values.append(cached_value)
+
+        return values
 
     def __call__(self, x: mx.array) -> mx.array:
-        return self._raw(x)[0]
+        return self._raw(x, *self._shared_values())[0]
 
     def value_and_grad(self, x: mx.array) -> tuple[mx.array, mx.array]:
         """Return the log-density and its gradient with respect to the flat vector ``x``."""
-        value, grad = self._raw(x)
+        value, grad = self._raw(x, *self._shared_values())
 
         return value, grad
 

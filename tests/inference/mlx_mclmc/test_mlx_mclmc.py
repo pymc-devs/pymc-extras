@@ -437,3 +437,43 @@ def test_fit_falls_back_to_an_unfused_step_past_the_metal_limit(conjugate_model,
 
     assert attempted == [True, False]
     assert idata["posterior"]["mu"].shape == (1, 100, 3)
+
+
+def test_logp_leaves_the_model_unfrozen_and_follows_set_data(float32):
+    """Freezing is the caller's choice, so pm.Data stays live and set_data is picked up."""
+    with pm.Model(coords={"obs": range(4)}) as model:
+        x = pm.Data("x", np.ones(4, dtype="float32"), dims="obs")
+        mu = pm.Normal("mu")
+        pm.Normal("y", mu * x, 1.0, observed=np.zeros(4, dtype="float32"), dims="obs")
+
+    logdensity_fn = MLXLogp(model)
+    assert logdensity_fn.model is model
+
+    point = mx.array(np.array([0.4], dtype="float32"))
+    reference = model.compile_logp()
+    before = np.asarray(logdensity_fn(point))
+    np.testing.assert_allclose(before, reference({"mu": 0.4}), rtol=1e-5)
+
+    pm.set_data({"x": np.full(4, 3.0, dtype="float32")}, model=model)
+
+    after = np.asarray(logdensity_fn(point))
+    np.testing.assert_allclose(after, reference({"mu": 0.4}), rtol=1e-5)
+    assert not np.isclose(before, after)
+
+
+def test_fit_samples_a_model_with_live_data_and_dims(float32):
+    """An unfrozen model, whose dim lengths and data are still shared variables, must sample."""
+    rng = np.random.default_rng(1)
+    observed = rng.normal(loc=2.0, scale=0.5, size=60).astype("float32")
+
+    with pm.Model(coords={"obs": range(60)}) as model:
+        x = pm.Data("x", np.ones(60, dtype="float32"), dims="obs")
+        mu = pm.Normal("mu", 0.0, 3.0)
+        sigma = pm.HalfNormal("sigma", 1.0)
+        pm.Normal("y", mu * x, sigma, observed=observed, dims="obs")
+
+    idata = fit_mlx_mclmc(draws=400, tune=400, chains=2, model=model, random_seed=0)
+
+    assert idata["posterior"]["mu"].shape == (2, 400)
+    np.testing.assert_allclose(idata["posterior"]["mu"].mean(), 2.0, atol=0.1)
+    np.testing.assert_allclose(idata["posterior"]["sigma"].mean(), 0.5, atol=0.1)

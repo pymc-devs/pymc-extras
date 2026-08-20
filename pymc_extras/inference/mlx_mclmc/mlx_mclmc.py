@@ -118,10 +118,6 @@ def fit_mlx_mclmc(
     seed = int(_get_seeds_per_chain(random_seed, 1)[0])
     logdensity_fn = MLXLogp(model)
 
-    # Everything downstream reads the frozen model, so the draws are unpacked against exactly the
-    # value variables the density was compiled from.
-    model = logdensity_fn.model
-
     if initial_point is None:
         start = logdensity_fn.flat_initial_point()
     elif isinstance(initial_point, dict):
