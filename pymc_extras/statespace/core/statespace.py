@@ -715,7 +715,7 @@ class PyMCStateSpace:
         if name in self._tensor_variable_info:
             raise ValueError(
                 f"{name} is already a registered placeholder variable with shape "
-                f"{self._tensor_variable_info[name].type.shape}"
+                f"{self._tensor_variable_info[name].symbolic_variable.type.shape}"
             )
 
         placeholder = pt.tensor(name, shape=shape, dtype=dtype)
@@ -755,7 +755,7 @@ class PyMCStateSpace:
         if name in self._tensor_data_info:
             raise ValueError(
                 f"{name} is already a registered placeholder variable with shape "
-                f"{self._tensor_data_info[name].type.shape}"
+                f"{self._tensor_data_info[name].symbolic_data.type.shape}"
             )
 
         placeholder = pt.tensor(name, shape=shape, dtype=dtype)
