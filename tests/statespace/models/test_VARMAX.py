@@ -218,13 +218,13 @@ ids = ["from-posterior-cov", "scalar_shock_size", "array_shock_size", "user-cov"
 @pytest.mark.parametrize("parameters", parameters, ids=ids)
 @pytest.mark.skipif(floatX == "float32", reason="Impulse covariance not PSD if float32")
 def test_impulse_response(parameters, varma_mod, idata, rng):
-    irf = varma_mod.impulse_response_function(idata.prior, random_seed=rng, **parameters)
+    irf = varma_mod.impulse_response_function(idata, random_seed=rng, group="prior", **parameters)
 
     assert np.isfinite(irf.irf.values).all()
 
 
 def test_forecast(varma_mod, idata, rng):
-    forecast = varma_mod.forecast(idata.prior, periods=10, random_seed=rng)
+    forecast = varma_mod.forecast(idata, periods=10, random_seed=rng, group="prior")
 
     assert np.isfinite(forecast.forecast_latent.values).all()
     assert np.isfinite(forecast.forecast_observed.values).all()
@@ -509,11 +509,12 @@ class TestVARMAXWithExogenous:
             match=r"This model was fit using exogenous data. Forecasting cannot be performed "
             r"without providing scenario data",
         ):
-            mod.forecast(prior.prior, periods=10, random_seed=rng)
+            mod.forecast(prior, periods=10, random_seed=rng, group="prior")
 
         forecast = mod.forecast(
-            prior.prior,
+            prior,
             periods=10,
+            group="prior",
             random_seed=rng,
             scenario={
                 "exogenous_data": pd.DataFrame(

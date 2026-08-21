@@ -111,7 +111,9 @@ def test_build_statespace_graph_warns_if_data_has_nans():
 
 def test_build_statespace_graph_raises_if_data_has_missing_fill():
     # Breaks tests if it uses the session fixtures because we can't call build_statespace_graph over and over
-    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(verbose=False)
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=0).build(
+        verbose=False, missing_fill_value=1.0
+    )
 
     with pm.Model() as pymc_mod:
         initial_trend = pm.Normal("initial_trend", shape=(1,))
@@ -119,7 +121,7 @@ def test_build_statespace_graph_raises_if_data_has_missing_fill():
         with pytest.raises(ValueError, match=r"Provided data contains the value 1.0"):
             data = np.ones((10, 1), dtype=floatX)
             data[3] = np.nan
-            ss_mod.build_statespace_graph(data=data, missing_fill_value=1.0)
+            ss_mod.build_statespace_graph(data=data)
 
 
 def test_param_dims_coords(ss_mod_multi_component):
@@ -170,20 +172,27 @@ def test_filter_config_defaults_to_the_documented_values():
 
 
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
-def test_filter_config_is_overridable_at_build():
-    """A build-time argument overrides the model's filter settings; others are left alone."""
+def test_filter_config_survives_building_into_several_models():
+    """Filter settings belong to the model, so building again cannot repoint them."""
     ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(
         verbose=False, cov_jitter=1e-4, missing_fill_value=-1234.0
     )
 
-    with pm.Model(coords=ss_mod.coords):
-        pm.Normal("initial_trend", shape=(1,))
-        pm.Deterministic("P0", pt.eye(1, dtype=floatX))
-        pm.Exponential("sigma_trend", 1, shape=(1,))
-        ss_mod.build_statespace_graph(data=np.zeros((20, 1), dtype=floatX), cov_jitter=1e-2)
+    for n_obs in (20, 25):
+        with pm.Model(coords=ss_mod.coords):
+            pm.Normal("initial_trend", shape=(1,))
+            pm.Deterministic("P0", pt.eye(1, dtype=floatX))
+            pm.Exponential("sigma_trend", 1, shape=(1,))
+            ss_mod.build_statespace_graph(data=np.zeros((n_obs, 1), dtype=floatX))
 
-    assert ss_mod.cov_jitter == 1e-2
+    assert ss_mod.cov_jitter == 1e-4
     assert ss_mod.missing_fill_value == -1234.0
+
+    # Post-estimation reads these off the model, so they have to describe every graph it built.
+    kalman_filter, kalman_smoother = ss_mod.make_filters()
+    assert kalman_filter.cov_jitter == 1e-4
+    assert kalman_filter.missing_fill_value == -1234.0
+    assert kalman_smoother.cov_jitter == 1e-4
 
 
 @pytest.mark.parametrize(
@@ -250,6 +259,133 @@ def test_register_additional_statespace_variables_hook():
 
     assert "subclass_det" in [x.name for x in pymc_mod.deterministics]
     assert "subclass_check" in [x.name for x in pymc_mod.potentials]
+    assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_rebuild_updates_data():
+    """Re-running the build cell points the model at the new data instead of raising."""
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(verbose=False)
+
+    with pm.Model(coords=ss_mod.coords) as rebuilt:
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX) * 1e6, dims=["state", "state_aux"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        ss_mod.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+        ss_mod.build_statespace_graph(np.arange(17, dtype=floatX)[:, None])
+
+    with pm.Model(coords=ss_mod.coords) as built_once:
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX) * 1e6, dims=["state", "state_aux"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        ss_mod.build_statespace_graph(np.arange(17, dtype=floatX)[:, None])
+
+    assert rebuilt["data"].get_value().shape == (17, 1)
+    assert len(rebuilt.coords["time"]) == 17
+
+    # The updated graph has to filter all 17 observations, not the 10 it was built with.
+    assert_allclose(
+        rebuilt.compile_logp()(rebuilt.initial_point()),
+        built_once.compile_logp()(built_once.initial_point()),
+    )
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_rebuild_with_a_different_specification_raises():
+    """Re-entry must not let a changed model specification inherit the graph already built."""
+    built = st.LevelTrend(name="trend", order=1, innovations_order=1).build(verbose=False)
+    respecified = (
+        st.LevelTrend(name="trend", order=1, innovations_order=1)
+        + st.MeasurementError(name="obs_err")
+    ).build(verbose=False)
+
+    with pm.Model(coords=built.coords):
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX) * 1e6, dims=["state", "state_aux"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        built.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
+        # The respecified model needs a parameter the graph in this model knows nothing about.
+        with pytest.raises(ValueError, match="sigma_obs_err"):
+            respecified.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+@pytest.mark.parametrize("name", ["data", "obs"], ids=["data", "obs"])
+def test_build_into_model_owning_reserved_name_raises(name):
+    """A user's own variable is not mistaken for a previous build, or silently overwritten."""
+    ss_mod = st.LevelTrend(name="trend", order=1, innovations_order=1).build(verbose=False)
+
+    with pm.Model(coords=ss_mod.coords):
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX) * 1e6, dims=["state", "state_aux"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        pm.Normal(name, observed=np.zeros((10, 1)))
+
+        with pytest.raises(ValueError, match="did not create"):
+            ss_mod.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_rebuild_does_not_duplicate_subclass_variables():
+    """Nodes a subclass registers through the hook do not collide when the build is re-run."""
+
+    class SubclassStateSpace(PyMCStateSpace):
+        def make_symbolic_graph(self):
+            rho = self.make_and_register_variable("rho", ())
+            self.ssm["transition", 0, 0] = rho
+            self.ssm["design", 0, 0] = 1.0
+            self.ssm["selection", 0, 0] = 1.0
+            self.ssm["state_cov", 0, 0] = 1.0
+            self.ssm["initial_state_cov", 0, 0] = 1.0
+
+        @property
+        def param_names(self):
+            return ["rho"]
+
+        def _register_additional_statespace_variables(self):
+            pm.Deterministic("subclass_det", pm.modelcontext(None)["data"].sum())
+            pm.Potential("subclass_check", pt.zeros(()))
+
+    ss_mod = SubclassStateSpace(
+        k_endog=1, k_states=1, k_posdef=1, filter_type="standard", verbose=False
+    )
+
+    with pm.Model() as pymc_mod:
+        pm.Normal("rho")
+        ss_mod.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+        ss_mod.build_statespace_graph(np.arange(12, dtype=floatX)[:, None])
+
+    assert [x.name for x in pymc_mod.deterministics].count("subclass_det") == 1
+    assert [x.name for x in pymc_mod.potentials].count("subclass_check") == 1
+    assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_rebuild_with_stale_exogenous_data_raises():
+    """Exogenous data belongs to the user, so re-entry refuses to desync it from the observations."""
+    ss_mod = (
+        st.LevelTrend(name="trend", order=1, innovations_order=1)
+        + st.Regression(state_names=["x1"], name="exog", innovations=False)
+    ).build(verbose=False)
+
+    with pm.Model(coords=ss_mod.coords) as pymc_mod:
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Normal("beta_exog", dims=["state_exog"])
+        pm.Deterministic("P0", pt.eye(2, dtype=floatX) * 1e6, dims=["state", "state_aux"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        pm.Data("data_exog", np.ones((10, 1), dtype=floatX), dims=["time", "state_exog"])
+        ss_mod.build_statespace_graph(np.arange(10, dtype=floatX)[:, None])
+
+        with pytest.raises(ValueError, match="exogenous data still spans a different number"):
+            ss_mod.build_statespace_graph(np.arange(17, dtype=floatX)[:, None])
+
+        # Updating the exogenous data first is what the error asks for, and it lets the rebuild in.
+        pm.set_data({"data_exog": np.ones((17, 1), dtype=floatX)}, coords={"time": np.arange(17)})
+        ss_mod.build_statespace_graph(np.arange(17, dtype=floatX)[:, None])
+
+    assert pymc_mod["data"].get_value().shape == (17, 1)
+    assert pymc_mod["data_exog"].get_value().shape == (17, 1)
     assert np.isfinite(pymc_mod.compile_logp()(pymc_mod.initial_point()))
 
 
