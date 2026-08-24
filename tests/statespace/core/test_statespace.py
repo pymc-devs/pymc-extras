@@ -15,7 +15,11 @@ from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
-from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL
+from pymc_extras.statespace.utils.constants import (
+    FILTER_OUTPUT_DIMS,
+    JITTER_DEFAULT,
+    MISSING_FILL,
+)
 from tests.statespace.shared_fixtures import (
     rng,
 )
@@ -475,6 +479,93 @@ def test_unpack_statespace_does_not_depend_on_the_filter():
 def test_unpack_statespace_outside_a_model_raises(ss_mod):
     with pytest.raises(TypeError, match="No model on context stack"):
         ss_mod.unpack_statespace()
+
+
+def test_make_filter_outputs_returns_every_sequence_bound_to_the_model(ss_mod, pymc_mod):
+    """The symbolic counterpart of sample_filter_outputs, for deriving quantities from the states."""
+    with pymc_mod:
+        outputs = ss_mod.make_filter_outputs()
+
+    assert set(outputs) == set(FILTER_OUTPUT_DIMS)
+    for name, sequence in outputs.items():
+        assert sequence.name == name
+        assert sequence.ndim == len(FILTER_OUTPUT_DIMS[name])
+        assert pymc_mod["rho"] in set(ancestors([sequence]))
+
+
+def test_make_filter_outputs_selects_by_name(ss_mod, pymc_mod):
+    with pymc_mod:
+        one = ss_mod.make_filter_outputs(names="predicted_covariances")
+        several = ss_mod.make_filter_outputs(names=["filtered_states", "smoothed_states"])
+
+    assert list(one) == ["predicted_covariances"]
+    assert set(several) == {"filtered_states", "smoothed_states"}
+
+
+def test_make_filter_outputs_skips_the_smoother_when_not_asked_for(ss_mod, pymc_mod):
+    """The smoother is a second scan, so building it for a filtered-only request is wasted work."""
+
+    def count_scans(sequence):
+        # A scan with several outputs contributes one variable per output, so count apply nodes.
+        return len(
+            {
+                id(variable.owner)
+                for variable in ancestors([sequence])
+                if variable.owner is not None and isinstance(variable.owner.op, Scan)
+            }
+        )
+
+    with pymc_mod:
+        filtered = ss_mod.make_filter_outputs(names="filtered_states")["filtered_states"]
+        smoothed = ss_mod.make_filter_outputs(names="smoothed_states")["smoothed_states"]
+
+    assert count_scans(filtered) == 1
+    assert count_scans(smoothed) == 2
+
+
+def test_make_filter_outputs_evaluates(ss_mod, pymc_mod):
+    n_timesteps = pymc_mod["data"].get_value().shape[0]
+    with pymc_mod:
+        outputs = ss_mod.make_filter_outputs(names=["filtered_states", "smoothed_states"])
+        filtered_draw, smoothed_draw = pm.draw(
+            [outputs["filtered_states"], outputs["smoothed_states"]]
+        )
+
+    for draw in (filtered_draw, smoothed_draw):
+        assert draw.shape == (n_timesteps, ss_mod.k_states)
+        assert np.all(np.isfinite(draw))
+
+    # The smoother conditions on the whole sample, so it only agrees with the filter at the end.
+    assert_allclose(smoothed_draw[-1], filtered_draw[-1])
+    assert not np.allclose(smoothed_draw[0], filtered_draw[0])
+
+
+def test_make_filter_outputs_accepts_data_directly(ss_mod, pymc_mod):
+    n_timesteps = pymc_mod["data"].get_value().shape[0] // 2
+    data = np.zeros((n_timesteps, ss_mod.k_endog), dtype=floatX)
+
+    with pymc_mod:
+        outputs = ss_mod.make_filter_outputs(
+            names="filtered_states", data=pt.as_tensor_variable(data)
+        )
+        draw = pm.draw(outputs["filtered_states"])
+
+    assert draw.shape == (n_timesteps, ss_mod.k_states)
+
+
+def test_make_filter_outputs_rejects_unknown_names(ss_mod, pymc_mod):
+    with pymc_mod, pytest.raises(ValueError, match="are not filter outputs"):
+        ss_mod.make_filter_outputs(names="kalman_gain")
+
+
+def test_make_filter_outputs_without_an_observation_raises(ss_mod):
+    with pm.Model(), pytest.raises(ValueError, match="holds no 'data' variable"):
+        ss_mod.make_filter_outputs()
+
+
+def test_make_filter_outputs_outside_a_model_raises(ss_mod):
+    with pytest.raises(TypeError, match="No model on context stack"):
+        ss_mod.make_filter_outputs()
 
 
 @pytest.mark.parametrize(

@@ -56,6 +56,7 @@ from pymc_extras.statespace.utils.constants import (
     OBS_STATE_DIM,
     OBSERVED_DATA_NAME,
     OBSERVED_LIKELIHOOD_NAME,
+    SMOOTHER_OUTPUT_NAMES,
     TIME_DIM,
 )
 from pymc_extras.statespace.utils.data_tools import (
@@ -1116,6 +1117,86 @@ class PyMCStateSpace:
             time_varying_names=self.ssm.time_varying_names, cov_jitter=self.cov_jitter
         )
         return kalman_filter, kalman_smoother
+
+    def make_filter_outputs(
+        self,
+        names: str | Sequence[str] | None = None,
+        data: np.ndarray | pt.TensorVariable | None = None,
+    ) -> dict[str, pt.TensorVariable]:
+        r"""
+        Return the Kalman filter and smoother output sequences as symbolic graphs.
+
+        Call inside the model context :meth:`build_statespace_graph` was called in, to derive
+        further quantities from the inferred states -- a steady-state Kalman gain, an index built
+        from a filtered factor, and so on:
+
+        .. code:: python
+
+            with pm.Model() as model:
+                ...
+                ss_mod.build_statespace_graph(data)
+                outputs = ss_mod.make_filter_outputs(names="smoothed_states")
+                pm.Deterministic("total_state", outputs["smoothed_states"].sum(axis=-1))
+
+        Each call builds the graph afresh, so the returned sequences are new nodes rather than the
+        ones the likelihood was built from. They evaluate identically. To draw values over an
+        existing set of parameter draws instead, use :meth:`sample_filter_outputs`.
+
+        Parameters
+        ----------
+        names : str or sequence of str, optional
+            Which outputs to build: ``filtered_states``, ``predicted_states``, ``smoothed_states``,
+            each of their ``_covariances`` counterparts, and ``predicted_observed_states`` with
+            ``predicted_observed_covariances``. Default None, which builds all of them.
+        data : numpy array or TensorVariable, optional
+            Observations to filter. Default None, which uses the observations
+            :meth:`build_statespace_graph` registered on the active model.
+
+        Returns
+        -------
+        filter_outputs : dict mapping str to TensorVariable
+            The requested sequences, keyed by name.
+        """
+        if isinstance(names, str):
+            names = [names]
+        if names is None:
+            names = list(FILTER_OUTPUT_DIMS)
+        else:
+            unknown_names = set(names).difference(FILTER_OUTPUT_DIMS)
+            if unknown_names:
+                raise ValueError(
+                    f"{sorted(unknown_names)} are not filter outputs. Valid names are "
+                    f"{sorted(FILTER_OUTPUT_DIMS)}."
+                )
+
+        pymc_model = modelcontext(None)
+
+        if data is None:
+            if OBSERVED_DATA_NAME not in pymc_model.named_vars:
+                raise ValueError(
+                    f"The active model holds no {OBSERVED_DATA_NAME!r} variable to filter. Call "
+                    f"build_statespace_graph first, or pass data directly."
+                )
+            data = pymc_model[OBSERVED_DATA_NAME]
+
+        x0, P0, c, d, T, Z, R, H, Q = self.unpack_statespace()
+        kalman_filter, kalman_smoother = self.make_filters()
+
+        # The last output is the pointwise log-likelihood, which the likelihood term owns; every
+        # other output carries its canonical name, so key them by it rather than by position.
+        *filter_outputs, _ = kalman_filter.build_graph(
+            pt.as_tensor_variable(data), x0, P0, c, d, T, Z, R, H, Q
+        )
+        outputs = {output.name: output for output in filter_outputs}
+
+        if not set(SMOOTHER_OUTPUT_NAMES).isdisjoint(names):
+            smoothed_states, smoothed_covariances = kalman_smoother.build_graph(
+                T, R, Q, outputs["filtered_states"], outputs["filtered_covariances"]
+            )
+            outputs[smoothed_states.name] = smoothed_states
+            outputs[smoothed_covariances.name] = smoothed_covariances
+
+        return {name: outputs[name] for name in names}
 
     def _register_additional_statespace_variables(self) -> None:
         """
