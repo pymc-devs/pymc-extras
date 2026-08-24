@@ -19,7 +19,11 @@ except ImportError as exc:  # pragma: no cover
 _log = logging.getLogger(__name__)
 
 # The dynamics, the integrator schedules, and the adaptation are ported from the blackjax
-# isokinetic sampler, so its source is the reference for anything ambiguous here.
+# isokinetic sampler:
+#   https://github.com/blackjax-devs/blackjax/blob/549541cad0870f1a7e5db161ee1534f410ccfe55/blackjax/mcmc/integrators.py
+#   https://github.com/blackjax-devs/blackjax/blob/549541cad0870f1a7e5db161ee1534f410ccfe55/blackjax/mcmc/mclmc.py
+#   https://github.com/blackjax-devs/blackjax/blob/549541cad0870f1a7e5db161ee1534f410ccfe55/blackjax/mcmc/metrics.py
+#   https://github.com/blackjax-devs/blackjax/blob/549541cad0870f1a7e5db161ee1534f410ccfe55/blackjax/adaptation/mclmc_adaptation.py
 _MCLACHLAN_B1 = 0.1931833275037836
 
 INTEGRATOR_COEFFICIENTS = {
@@ -895,6 +899,8 @@ def _ess_per_dim(samples: np.ndarray) -> np.ndarray:
     A NumPy port of ``blackjax.diagnostics.effective_sample_size`` specialized to one chain of
     shape ``(n_samples, dim)``: Geyer's initial positive sequence over an FFT autocovariance,
     followed by his initial monotone sequence.
+
+    https://github.com/blackjax-devs/blackjax/blob/549541cad0870f1a7e5db161ee1534f410ccfe55/blackjax/diagnostics.py#L157
     """
     n_samples, dim = samples.shape
     columns = np.arange(dim)
