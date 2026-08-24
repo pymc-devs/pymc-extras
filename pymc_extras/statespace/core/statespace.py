@@ -19,6 +19,7 @@ from rich.table import Table
 from xarray import DataTree
 
 from pymc_extras.statespace.core import dummy_graph, forecast, forward_sampling, irf
+from pymc_extras.statespace.core.fit_recovery import coords_from_idata, dims_from_idata
 from pymc_extras.statespace.core.properties import (
     Coord,
     CoordInfo,
@@ -53,8 +54,15 @@ from pymc_extras.statespace.utils.constants import (
     JITTER_DEFAULT,
     MISSING_FILL,
     OBS_STATE_DIM,
+    OBSERVED_DATA_NAME,
+    OBSERVED_LIKELIHOOD_NAME,
+    TIME_DIM,
 )
-from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
+from pymc_extras.statespace.utils.data_tools import (
+    add_data_to_active_model,
+    prepare_data_for_pymc,
+    update_data_in_active_model,
+)
 
 _log = logging.getLogger("pymc.experimental.statespace")
 
@@ -81,6 +89,29 @@ def _validate_property(props, property_name, expected_type):
             f"All elements of the {property_name} property must be instances of "
             f"{expected_type.__name__}."
         )
+
+
+def _has_statespace_graph(model: Model) -> bool:
+    """
+    Return whether a state space build has already put an observation likelihood into ``model``.
+
+    A variable named ``obs`` is only ours if a Kalman filter produced it, so a user's own variable
+    of that name is never mistaken for a previous build.
+
+    Parameters
+    ----------
+    model : Model
+        PyMC model to inspect.
+
+    Returns
+    -------
+    has_graph : bool
+        True if the model already holds a state space graph.
+    """
+    likelihood = model.named_vars.get(OBSERVED_LIKELIHOOD_NAME, None)
+    if likelihood is None or likelihood.owner is None:
+        return False
+    return isinstance(likelihood.owner.op, KalmanFilterRV)
 
 
 class PyMCStateSpace:
@@ -256,11 +287,6 @@ class PyMCStateSpace:
         cov_jitter: float = JITTER_DEFAULT,
         missing_fill_value: float = MISSING_FILL,
     ):
-        self._fit_coords: dict[str, Sequence[str]] | None = None
-        self._fit_dims: dict[str, Sequence[str]] | None = None
-        self._fit_data: pt.TensorVariable | None = None
-        self._fit_exog_data: dict[str, dict] = {}
-
         self._needs_exog_data = None
         self._tensor_variable_info = SymbolicVariableInfo()
         self._tensor_data_info = SymbolicDataInfo()
@@ -820,19 +846,6 @@ class PyMCStateSpace:
         """
         raise NotImplementedError("The make_symbolic_statespace method has not been implemented!")
 
-    def _save_exogenous_data_info(self):
-        """
-        Store exogenous data required by posterior sampling functions
-        """
-        pymc_mod = modelcontext(None)
-        for data_name in self.data_names:
-            data = pymc_mod[data_name]
-            self._fit_exog_data[data_name] = {
-                "name": data_name,
-                "value": data.get_value(),
-                "dims": pymc_mod.named_vars_to_dims.get(data_name, None),
-            }
-
     def _insert_random_variables(self) -> list[pt.TensorVariable]:
         """
         Replace pytensor symbolic variables with PyMC random variables.
@@ -954,85 +967,53 @@ class PyMCStateSpace:
     def build_statespace_graph(
         self,
         data: np.ndarray | pd.DataFrame | pt.TensorVariable,
-        missing_fill_value: float | None = None,
-        cov_jitter: float | None = None,
-        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
     ) -> None:
         """
         Given a parameter vector `theta`, constructs the full computational graph describing the state space model and
         the associated log probability of the data. Hidden states and log probabilities are computed via the Kalman
         Filter.
 
+        The filter is configured with the ``cov_jitter`` and ``missing_fill_value`` given to the model constructor,
+        which are also what post-estimation graphs use.
+
         Parameters
         ----------
         data : numpy array, pandas DataFrame, or pytensor tensor
             The observed data used to fit the state space model. It can be a NumPy array, a Pandas DataFrame,
             or a Pytensor tensor variable.
-
-        missing_fill_value: float, optional
-            A value to mask in missing values. NaN values in the data need to be filled with an arbitrary value to
-            avoid triggering PyMC's automatic imputation machinery (missing values are instead filled by treating them
-            as hidden states during Kalman filtering).
-
-            In general this never needs to be set. But if by a wild coincidence your data includes the value -9999.0,
-            you will need to change the missing_fill_value to something else, to avoid incorrectly mark in
-            data as missing.
-
-            Overrides the value given to the model constructor, which is also what post-estimation graphs use.
-            Default None, meaning the constructor's value is kept.
-
-        cov_jitter: float, optional
-            The Kalman filter is known to be numerically unstable, especially at half precision. This value is added to
-            the diagonal of every covariance matrix -- predicted, filtered, and smoothed -- at every step, to ensure
-            all matrices are strictly positive semi-definite.
-
-            Obviously, if this can be zero, that's best. In general:
-                - Having measurement error makes Kalman Filters more robust. A large source of numerical errors come
-                  from the Filtered and Smoothed covariance matrices having a zero in the (0, 0) position, which always
-                  occurs when there is no measurement error. You can lower this value in the presence of measurement
-                  error.
-
-                - The Univariate Filter is more robust than other filters, and can tolerate a lower jitter value
-
-            Overrides the value given to the model constructor, which is also what post-estimation graphs use.
-            Default None, meaning the constructor's value is kept.
-
-        mvn_method: str, default "svd"
-            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
-            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
-            to ill-conditioned matrices, while "svd" is slow but extremely robust.
-
-            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
-            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
-
         """
-        # Recorded on the model so post-estimation graphs are filtered the same way the fit was.
-        if cov_jitter is not None:
-            self.cov_jitter = cov_jitter
-        if missing_fill_value is not None:
-            self.missing_fill_value = missing_fill_value
-
         pm_mod = modelcontext(None)
 
-        matrices = self._insert_random_variables()
-        self._save_exogenous_data_info()
-        matrices = self._insert_data_variables(matrices)
-
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
-        self._fit_data = data
-
-        data, nan_mask = register_data_with_pymc(
+        filled_values, index, _ = prepare_data_for_pymc(
             data,
             n_obs=self.ssm.k_endog,
             obs_coords=obs_coords,
             missing_fill_value=self.missing_fill_value,
         )
 
+        if _has_statespace_graph(pm_mod):
+            self._reenter_statespace_graph(filled_values, index)
+            return
+
+        for name in (OBSERVED_DATA_NAME, OBSERVED_LIKELIHOOD_NAME):
+            if name in pm_mod.named_vars:
+                raise ValueError(
+                    f"The model already contains a variable named {name!r} that this state space "
+                    f"model did not create. Rename it, or build the state space graph into a "
+                    f"model that does not use that name."
+                )
+
+        matrices = self._insert_random_variables()
+        matrices = self._insert_data_variables(matrices)
+
+        data_variable = add_data_to_active_model(filled_values, index)
+
         # Order is important here: only call _insert_data_shape_into_n_timesteps after data has been registered.
-        matrices = self._insert_data_shape_into_n_timesteps(matrices, data)
+        matrices = self._insert_data_shape_into_n_timesteps(matrices, data_variable)
 
         kalman_filter, _ = self.make_filters()
-        filter_outputs = kalman_filter.build_graph(pt.as_tensor_variable(data), *matrices)
+        filter_outputs = kalman_filter.build_graph(pt.as_tensor_variable(data_variable), *matrices)
 
         logp = filter_outputs.pop(-1)
         *_, observed_states = filter_outputs[:3]
@@ -1042,19 +1023,78 @@ class PyMCStateSpace:
         obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
 
         SequenceMvNormal(
-            "obs",
+            OBSERVED_LIKELIHOOD_NAME,
             mus=observed_states,
             covs=observed_covariances,
             logp=logp,
-            observed=data,
+            observed=data_variable,
             dims=obs_dims,
-            method=mvn_method,
         )
 
         self._register_additional_statespace_variables()
 
-        self._fit_coords = pm_mod.coords.copy()
-        self._fit_dims = pm_mod.named_vars_to_dims.copy()
+    def _reenter_statespace_graph(
+        self, filled_values: np.ndarray, index: pd.Index | np.ndarray
+    ) -> None:
+        """
+        Point an already-built model at new data.
+
+        The filter graph is left as the first build made it, so re-entry cannot change how the
+        model is constructed -- only which observations it is fit against.
+
+        Parameters
+        ----------
+        filled_values : numpy array
+            New data, with missing values already filled.
+        index : pandas Index or numpy array
+            Time index of the new data.
+        """
+        # Raises unless the model holds this template's parameters, so a template whose
+        # specification has changed cannot silently inherit the graph another one built.
+        self._insert_random_variables()
+
+        self._verify_exogenous_data_spans(len(filled_values))
+
+        update_data_in_active_model(filled_values, index)
+
+    def _verify_exogenous_data_spans(self, n_timesteps: int) -> None:
+        """
+        Raise unless every exogenous data variable in the active model spans ``n_timesteps``.
+
+        Exogenous data belongs to the user, so re-entry cannot resize it. Left stale it desyncs
+        from the observed data and the filter fails much later, when the log probability is built.
+
+        Parameters
+        ----------
+        n_timesteps : int
+            Number of time steps in the observed data about to be written.
+
+        Raises
+        ------
+        ValueError
+            If any exogenous data variable spans a different number of time steps.
+        """
+        pm_mod = modelcontext(None)
+
+        stale = {}
+        for name in self.data_names:
+            variable = pm_mod.named_vars.get(name, None)
+            get_value = getattr(variable, "get_value", None)
+            if get_value is None:
+                continue
+            found = get_value(borrow=True).shape[0]
+            if found != n_timesteps:
+                stale[name] = found
+
+        if not stale:
+            return
+
+        described = ", ".join(f"{name} ({found} steps)" for name, found in sorted(stale.items()))
+        raise ValueError(
+            f"The new observed data spans {n_timesteps} time steps, but the model's exogenous "
+            f"data still spans a different number: {described}. Update it with pm.set_data, "
+            f"passing new {TIME_DIM!r} coords, before rebuilding."
+        )
 
     def make_filters(self) -> tuple[BaseFilter, KalmanSmoother]:
         """
@@ -1086,17 +1126,40 @@ class PyMCStateSpace:
         likelihood is registered. The base implementation registers nothing.
         """
 
-    def _build_dummy_graph(self) -> None:
-        return dummy_graph.build_dummy_graph(self)
+    def _build_dummy_graph(self, idata: DataTree, group: str = "posterior") -> None:
+        """Register a ``pm.Flat`` stand-in for every model parameter, shaped as it was fit.
+
+        Parameters
+        ----------
+        idata : DataTree
+            Inference data from the fit, supplying the shapes and dims to recover.
+        group : str, optional
+            Group holding the sampled parameters. Default ``"posterior"``.
+        """
+        return dummy_graph.build_dummy_graph(
+            self,
+            coords=coords_from_idata(self, idata, "observed_data"),
+            dims=dims_from_idata(self, idata, group),
+        )
 
     def _kalman_filter_outputs_from_dummy_graph(
         self,
-        data: pt.TensorLike | None = None,
+        data: pt.TensorLike,
+        *,
+        coords: dict[str, Sequence],
+        dims: dict[str, list[str]],
+        exog: dict[str, dict],
         data_dims: str | tuple[str] | list[str] | None = None,
         scenario: dict[str, pd.DataFrame] | pd.DataFrame | None = None,
     ) -> tuple[list[pt.TensorVariable], list[tuple[pt.TensorVariable, pt.TensorVariable]]]:
         return dummy_graph.kalman_filter_outputs_from_dummy_graph(
-            self, data=data, data_dims=data_dims, scenario=scenario
+            self,
+            data,
+            coords=coords,
+            dims=dims,
+            exog=exog,
+            data_dims=data_dims,
+            scenario=scenario,
         )
 
     def sample_conditional_prior(
@@ -1416,16 +1479,17 @@ class PyMCStateSpace:
             verbose=verbose,
         )
 
-    def _get_fit_time_index(self) -> pd.RangeIndex | pd.DatetimeIndex:
-        return forecast._get_fit_time_index(self)
+    def _get_fit_time_index(self, idata: DataTree) -> pd.RangeIndex | pd.DatetimeIndex:
+        return forecast._get_fit_time_index(self, idata)
 
     def _validate_scenario_data(
         self,
         scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
+        coords: dict[str, Sequence],
         name: str | None = None,
         verbose=True,
     ):
-        return forecast._validate_scenario_data(self, scenario, name=name, verbose=verbose)
+        return forecast._validate_scenario_data(self, scenario, coords, name=name, verbose=verbose)
 
     @staticmethod
     def _build_forecast_index(
@@ -1449,15 +1513,18 @@ class PyMCStateSpace:
         self,
         scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
         forecast_index: pd.RangeIndex | pd.DatetimeIndex,
+        coords: dict[str, Sequence],
         name=None,
     ):
-        return forecast._finalize_scenario_initialization(self, scenario, forecast_index, name=name)
+        return forecast._finalize_scenario_initialization(
+            self, scenario, forecast_index, coords, name=name
+        )
 
     def _build_forecast_model(
-        self, time_index, t0, forecast_index, scenario, filter_output, mvn_method
+        self, idata, group, time_index, t0, forecast_index, scenario, filter_output, mvn_method
     ):
         return forecast._build_forecast_model(
-            self, time_index, t0, forecast_index, scenario, filter_output, mvn_method
+            self, idata, group, time_index, t0, forecast_index, scenario, filter_output, mvn_method
         )
 
     def forecast(
@@ -1472,6 +1539,7 @@ class PyMCStateSpace:
         random_seed: RandomState | None = None,
         verbose: bool = True,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        group: str = "posterior",
         **kwargs,
     ) -> DataTree:
         """
@@ -1536,6 +1604,11 @@ class PyMCStateSpace:
             In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
             recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
+        group: str, default "posterior"
+            Inference data group to draw parameters from, either "prior" or "posterior". Pass the whole
+            ``idata`` and name the group rather than passing a single group: recovering the time index
+            needs the observed data, which a lone group does not carry.
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1564,6 +1637,7 @@ class PyMCStateSpace:
             random_seed=random_seed,
             verbose=verbose,
             mvn_method=mvn_method,
+            group=group,
             **kwargs,
         )
 
@@ -1578,6 +1652,7 @@ class PyMCStateSpace:
         orthogonalize_shocks: bool = False,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        group: str = "posterior",
         **kwargs,
     ):
         """
@@ -1662,5 +1737,6 @@ class PyMCStateSpace:
             orthogonalize_shocks=orthogonalize_shocks,
             random_seed=random_seed,
             mvn_method=mvn_method,
+            group=group,
             **kwargs,
         )

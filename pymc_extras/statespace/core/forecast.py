@@ -1,5 +1,6 @@
 import logging
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -12,6 +13,13 @@ from pymc.util import RandomState
 from pytensor.graph.replace import graph_replace
 from xarray import DataTree
 
+from pymc_extras.statespace.core.fit_recovery import (
+    coords_from_idata,
+    data_from_idata,
+    dims_from_idata,
+    exog_from_idata,
+    verify_group,
+)
 from pymc_extras.statespace.filters.distributions import LinearGaussianStateSpace
 from pymc_extras.statespace.filters.utilities import scan_sequence_names
 from pymc_extras.statespace.utils.constants import (
@@ -80,8 +88,10 @@ def _validate_forecast_args(
         )
 
 
-def _get_fit_time_index(ss_mod: "PyMCStateSpace") -> pd.RangeIndex | pd.DatetimeIndex:
-    time_index = ss_mod._fit_coords.get(TIME_DIM, None) if ss_mod._fit_coords is not None else None
+def _get_fit_time_index(
+    ss_mod: "PyMCStateSpace", idata: DataTree
+) -> pd.RangeIndex | pd.DatetimeIndex:
+    time_index = coords_from_idata(ss_mod, idata, "observed_data").get(TIME_DIM, None)
     if time_index is None:
         raise ValueError(
             "No time dimension found on coordinates used to fit the model. Has this model been fit?"
@@ -99,6 +109,7 @@ def _get_fit_time_index(ss_mod: "PyMCStateSpace") -> pd.RangeIndex | pd.Datetime
 def _validate_scenario_data(
     ss_mod: "PyMCStateSpace",
     scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
+    coords: dict[str, Sequence],
     name: str | None = None,
     verbose=True,
 ):
@@ -125,11 +136,7 @@ def _validate_scenario_data(
 
     if any(len(dims) > 1 for dims in var_to_dims.values()):
         raise NotImplementedError(">2d exogenous data is not yet supported.")
-    coords = {
-        var: ss_mod._fit_coords[dim[0]]
-        for var, dim in var_to_dims.items()
-        if dim[0] in ss_mod._fit_coords
-    }
+    var_to_coords = {var: coords[dim[0]] for var, dim in var_to_dims.items() if dim[0] in coords}
 
     if ss_mod._needs_exog_data and scenario is None:
         exog_str = ",".join(ss_mod.data_names)
@@ -149,7 +156,7 @@ def _validate_scenario_data(
 
             # Recursively call this function to trigger the non-dictionary branch of the checks on each object
             # inside the dictionary
-            scenario[name] = ss_mod._validate_scenario_data(data, name)
+            scenario[name] = ss_mod._validate_scenario_data(data, coords, name)
 
         # The provided dictionary might be a mix of numpy arrays and dataframes if the user is truly horrible.
         # For checking shapes, the first object will always be good enough. But we also need to make sure all the
@@ -192,22 +199,22 @@ def _validate_scenario_data(
         # Omit dataframe from this basic shape check so we can give more detailed information about missing columns
         # in the next check
         if not isinstance(scenario, pd.DataFrame | pd.Series) and scenario.shape[1] != len(
-            coords[name]
+            var_to_coords[name]
         ):
             raise ValueError(
                 f"Scenario data for variable '{name}' has the wrong number of columns. Expected "
-                f"{len(coords[name])}, got {scenario.shape[1]}"
+                f"{len(var_to_coords[name])}, got {scenario.shape[1]}"
             )
 
         if isinstance(scenario, pd.Series):
-            if len(coords[name]) > 1:
+            if len(var_to_coords[name]) > 1:
                 raise ValueError(
                     f"Scenario data for variable '{name}' has the wrong number of columns. Expected "
-                    f"{len(coords[name])}, got 1"
+                    f"{len(var_to_coords[name])}, got 1"
                 )
 
         if isinstance(scenario, pd.DataFrame):
-            expected_cols = coords[name]
+            expected_cols = var_to_coords[name]
             cols = scenario.columns
             missing_columns = sorted(list(set(expected_cols) - set(cols)))
             if len(missing_columns) > 0:
@@ -366,6 +373,7 @@ def _finalize_scenario_initialization(
     ss_mod: "PyMCStateSpace",
     scenario: pd.DataFrame | np.ndarray | dict[str, pd.DataFrame | np.ndarray] | None,
     forecast_index: pd.RangeIndex | pd.DatetimeIndex,
+    coords: dict[str, Sequence],
     name=None,
 ):
     if not ss_mod.data_info:
@@ -375,18 +383,16 @@ def _finalize_scenario_initialization(
 
     if any(len(dims) > 1 for dims in var_to_dims.values()):
         raise NotImplementedError(">2d exogenous data is not yet supported.")
-    coords = {
-        var: ss_mod._fit_coords[dim[0]]
-        for var, dim in var_to_dims.items()
-        if dim[0] in ss_mod._fit_coords
-    }
+    var_to_coords = {var: coords[dim[0]] for var, dim in var_to_dims.items() if dim[0] in coords}
 
     if scenario is None:
         return scenario
 
     if isinstance(scenario, dict):
         for name, data in scenario.items():
-            scenario[name] = ss_mod._finalize_scenario_initialization(data, forecast_index, name)
+            scenario[name] = ss_mod._finalize_scenario_initialization(
+                data, forecast_index, coords, name
+            )
         return scenario
 
     # This was already checked as valid
@@ -395,27 +401,38 @@ def _finalize_scenario_initialization(
     # Small tidying up in the case we just have a single scenario that's already a dataframe.
     if isinstance(scenario, pd.DataFrame | pd.Series):
         if isinstance(scenario, pd.Series):
-            scenario = scenario.to_frame(name=coords[name][0])
+            scenario = scenario.to_frame(name=var_to_coords[name][0])
         if not scenario.index.equals(forecast_index):
             scenario.index = forecast_index
 
     # lists and tuples were handled during validation, along with shape check, so just cast arrays to dataframes
     # with the correct index and columns
     if isinstance(scenario, np.ndarray):
-        scenario = pd.DataFrame(scenario, index=forecast_index, columns=coords[name])
+        scenario = pd.DataFrame(scenario, index=forecast_index, columns=var_to_coords[name])
 
     return scenario
 
 
 def _build_forecast_model(
-    ss_mod: "PyMCStateSpace", time_index, t0, forecast_index, scenario, filter_output, mvn_method
+    ss_mod: "PyMCStateSpace",
+    idata,
+    group,
+    time_index,
+    t0,
+    forecast_index,
+    scenario,
+    filter_output,
+    mvn_method,
 ):
     filter_time_dim = TIME_DIM
-    temp_coords = ss_mod._fit_coords.copy()
+    fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
+    fit_dims = dims_from_idata(ss_mod, idata, group)
+    fit_exog = exog_from_idata(ss_mod, idata, "constant_data")
+    temp_coords = fit_coords.copy()
 
-    dims = None
+    trajectory_dims = None
     if all([dim in temp_coords for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]]):
-        dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+        trajectory_dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
 
     t0_idx = np.flatnonzero(time_index == t0)[0]
 
@@ -423,12 +440,16 @@ def _build_forecast_model(
     temp_coords[TIME_DIM] = forecast_index
 
     mu_dims, cov_dims = None, None
-    if all([dim in ss_mod._fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]]):
+    if all([dim in fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]]):
         mu_dims = ["data_time", ALL_STATE_DIM]
         cov_dims = ["data_time", ALL_STATE_DIM, ALL_STATE_AUX_DIM]
 
     with pm.Model(coords=temp_coords) as forecast_model:
         unpinned_matrices, grouped_outputs = ss_mod._kalman_filter_outputs_from_dummy_graph(
+            data_from_idata(idata, "constant_data"),
+            coords=fit_coords,
+            dims=fit_dims,
+            exog=fit_exog,
             data_dims=["data_time", OBS_STATE_DIM],
         )
 
@@ -475,7 +496,7 @@ def _build_forecast_model(
                 if name not in scenario:
                     continue
                 forecast_data = scenario[name]
-                train_val = ss_mod._fit_exog_data[name]["value"]
+                train_val = fit_exog[name]["value"]
                 fc_val = (
                     forecast_data.values
                     if isinstance(forecast_data, pd.DataFrame)
@@ -503,7 +524,7 @@ def _build_forecast_model(
             P0,
             *forecast_matrices,
             steps=len(forecast_index),
-            dims=dims,
+            dims=trajectory_dims,
             sequence_names=scan_sequence_names(ss_mod.ssm.time_varying_names),
             k_endog=ss_mod.k_endog,
             append_x0=False,
@@ -525,14 +546,16 @@ def forecast(
     random_seed: RandomState | None = None,
     verbose: bool = True,
     mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+    group: str = "posterior",
     **kwargs,
 ) -> DataTree:
     _validate_filter_arg(filter_output)
+    verify_group(group)
 
     compile_kwargs = kwargs.pop("compile_kwargs", {})
     compile_kwargs.setdefault("mode", ss_mod.mode)
 
-    time_index = ss_mod._get_fit_time_index()
+    time_index = ss_mod._get_fit_time_index(idata)
 
     if start is None and verbose:
         _log.warning(
@@ -550,7 +573,8 @@ def forecast(
         [data_name] = ss_mod.data_names
         scenario = {data_name: scenario}
 
-    scenario: dict = ss_mod._validate_scenario_data(scenario, verbose=verbose)
+    scenario_coords = coords_from_idata(ss_mod, idata, "constant_data")
+    scenario: dict = ss_mod._validate_scenario_data(scenario, scenario_coords, verbose=verbose)
 
     ss_mod._validate_forecast_args(
         time_index=time_index,
@@ -570,9 +594,11 @@ def forecast(
         scenario=scenario,
         use_scenario_index=use_scenario_index,
     )
-    scenario = ss_mod._finalize_scenario_initialization(scenario, forecast_index)
+    scenario = ss_mod._finalize_scenario_initialization(scenario, forecast_index, scenario_coords)
 
     forecast_model = ss_mod._build_forecast_model(
+        idata=idata,
+        group=group,
         time_index=time_index,
         t0=t0,
         forecast_index=forecast_index,
@@ -596,7 +622,7 @@ def forecast(
 
     with frozen_model:
         idata_forecast = pm.sample_posterior_predictive(
-            idata,
+            idata[group],
             var_names=["forecast_latent", "forecast_observed"],
             random_seed=random_seed,
             compile_kwargs=compile_kwargs,

@@ -10,6 +10,11 @@ import pytensor.tensor as pt
 from pymc.util import RandomState
 
 from pymc_extras.statespace.core import dummy_graph
+from pymc_extras.statespace.core.fit_recovery import (
+    coords_from_idata,
+    dims_from_idata,
+    verify_group,
+)
 from pymc_extras.statespace.utils.constants import ALL_STATE_DIM, SHOCK_DIM, TIME_DIM
 
 if TYPE_CHECKING:
@@ -29,8 +34,10 @@ def impulse_response_function(
     orthogonalize_shocks: bool = False,
     random_seed: RandomState | None = None,
     mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+    group: str = "posterior",
     **kwargs,
 ):
+    verify_group(group)
     options = [shock_size, shock_cov, shock_trajectory]
     n_options = sum(x is not None for x in options)
     Q = None  # No covariance matrix needed if a trajectory is provided. Will be overwritten later if needed.
@@ -62,11 +69,13 @@ def impulse_response_function(
         n_steps = n  # Overwrite steps with the length of the shock trajectory
         shock_trajectory = pt.as_tensor_variable(shock_trajectory)
 
-    simulation_coords = ss_mod._fit_coords.copy()
+    fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
+    fit_dims = dims_from_idata(ss_mod, idata, group)
+    simulation_coords = fit_coords.copy()
     simulation_coords[TIME_DIM] = np.arange(n_steps, dtype="int")
 
     with pm.Model(coords=simulation_coords):
-        dummy_graph.build_dummy_graph(ss_mod)
+        dummy_graph.build_dummy_graph(ss_mod, coords=fit_coords, dims=fit_dims)
         matrices = ss_mod._insert_random_variables()
 
         matrices = ss_mod._insert_constant_timestep(matrices, step=n_steps)
@@ -126,7 +135,7 @@ def impulse_response_function(
         pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])
 
         irf_idata = pm.sample_posterior_predictive(
-            idata,
+            idata[group],
             var_names=["irf"],
             random_seed=random_seed,
             compile_kwargs=compile_kwargs,
