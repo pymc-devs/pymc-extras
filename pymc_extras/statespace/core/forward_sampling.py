@@ -262,7 +262,7 @@ def _sample_unconditional(
     compile_kwargs.setdefault("mode", ss_mod.mode)
 
     group_idata = getattr(idata, group)
-    dims = None
+    trajectory_dims = None
     fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
     fit_dims = dims_from_idata(ss_mod, idata, group)
     temp_coords = fit_coords.copy()
@@ -281,9 +281,9 @@ def _sample_unconditional(
         steps = len(temp_coords[TIME_DIM]) - 1
 
     if all([dim in fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]]):
-        dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+        trajectory_dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
 
-    with pm.Model(coords=temp_coords if dims is not None else None) as forward_model:
+    with pm.Model(coords=temp_coords if trajectory_dims is not None else None) as forward_model:
         dummy_graph.build_dummy_graph(ss_mod, coords=fit_coords, dims=fit_dims)
         matrices = ss_mod._insert_random_variables()
 
@@ -304,7 +304,7 @@ def _sample_unconditional(
             group,
             *matrices,
             steps=steps,
-            dims=dims,
+            dims=trajectory_dims,
             method=mvn_method,
             sequence_names=scan_sequence_names(ss_mod.ssm.time_varying_names),
             k_endog=ss_mod.k_endog,
@@ -446,8 +446,8 @@ def sample_statespace_matrices(
                 if matrix.ndim == len(matrix_dims) + 1:
                     # A time-varying matrix carries a leading time axis its static dims do not name.
                     matrix_dims = (TIME_DIM, *matrix_dims)
-                dims = [x if x in fit_coords else None for x in matrix_dims]
-                pm.Deterministic(name, matrix, dims=dims)
+                known_dims = [x if x in fit_coords else None for x in matrix_dims]
+                pm.Deterministic(name, matrix, dims=known_dims)
 
     # TODO: Remove this after pm.Flat has its initial_value fixed
     forward_model.rvs_to_initial_values = {

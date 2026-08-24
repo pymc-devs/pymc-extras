@@ -430,9 +430,9 @@ def _build_forecast_model(
     fit_exog = exog_from_idata(ss_mod, idata, "constant_data")
     temp_coords = fit_coords.copy()
 
-    dims = None
+    trajectory_dims = None
     if all([dim in temp_coords for dim in [filter_time_dim, ALL_STATE_DIM, OBS_STATE_DIM]]):
-        dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
+        trajectory_dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
 
     t0_idx = np.flatnonzero(time_index == t0)[0]
 
@@ -524,7 +524,7 @@ def _build_forecast_model(
             P0,
             *forecast_matrices,
             steps=len(forecast_index),
-            dims=dims,
+            dims=trajectory_dims,
             sequence_names=scan_sequence_names(ss_mod.ssm.time_varying_names),
             k_endog=ss_mod.k_endog,
             append_x0=False,
