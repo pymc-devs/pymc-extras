@@ -91,6 +91,7 @@ def _sample_conditional(
     compile_kwargs.setdefault("mode", ss_mod.mode)
 
     fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
+    fit_dims = dims_from_idata(ss_mod, idata, group)
     if data is None:
         data = data_from_idata(idata, "constant_data")
 
@@ -99,7 +100,7 @@ def _sample_conditional(
             ss_mod,
             data,
             coords=fit_coords,
-            dims=dims_from_idata(ss_mod, idata, group),
+            dims=fit_dims,
             exog=exog_from_idata(ss_mod, idata, "constant_data"),
         )
         # The returned matrices keep the n_timesteps placeholder; pin it to the span the filter
@@ -263,6 +264,7 @@ def _sample_unconditional(
     group_idata = getattr(idata, group)
     dims = None
     fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
+    fit_dims = dims_from_idata(ss_mod, idata, group)
     temp_coords = fit_coords.copy()
 
     if not use_data_time_dim and steps is not None:
@@ -282,9 +284,7 @@ def _sample_unconditional(
         dims = [TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM]
 
     with pm.Model(coords=temp_coords if dims is not None else None) as forward_model:
-        dummy_graph.build_dummy_graph(
-            ss_mod, coords=fit_coords, dims=dims_from_idata(ss_mod, idata, group)
-        )
+        dummy_graph.build_dummy_graph(ss_mod, coords=fit_coords, dims=fit_dims)
         matrices = ss_mod._insert_random_variables()
 
         for entry in exog_from_idata(ss_mod, idata, "constant_data").values():
@@ -428,11 +428,10 @@ def sample_statespace_matrices(
             raise ValueError(f"{sorted(unknown_matrix_names)} not a valid statespace matrix name!")
 
     fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
+    fit_dims = dims_from_idata(ss_mod, idata, group)
 
     with pm.Model(coords=fit_coords) as forward_model:
-        dummy_graph.build_dummy_graph(
-            ss_mod, coords=fit_coords, dims=dims_from_idata(ss_mod, idata, group)
-        )
+        dummy_graph.build_dummy_graph(ss_mod, coords=fit_coords, dims=fit_dims)
         matrices = ss_mod._insert_random_variables()
 
         for entry in exog_from_idata(ss_mod, idata, "constant_data").values():

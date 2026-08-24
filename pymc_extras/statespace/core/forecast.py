@@ -426,6 +426,8 @@ def _build_forecast_model(
 ):
     filter_time_dim = TIME_DIM
     fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
+    fit_dims = dims_from_idata(ss_mod, idata, group)
+    fit_exog = exog_from_idata(ss_mod, idata, "constant_data")
     temp_coords = fit_coords.copy()
 
     dims = None
@@ -446,8 +448,8 @@ def _build_forecast_model(
         unpinned_matrices, grouped_outputs = ss_mod._kalman_filter_outputs_from_dummy_graph(
             data_from_idata(idata, "constant_data"),
             coords=fit_coords,
-            dims=dims_from_idata(ss_mod, idata, group),
-            exog=exog_from_idata(ss_mod, idata, "constant_data"),
+            dims=fit_dims,
+            exog=fit_exog,
             data_dims=["data_time", OBS_STATE_DIM],
         )
 
@@ -489,7 +491,6 @@ def _build_forecast_model(
         # TODO: Is there a way to handle this in a fully symbolic way, without having to
         #  run the full scan on training data to get the system's state at the start date?
         if scenario is not None and ss_mod._needs_exog_data:
-            fit_exog = exog_from_idata(ss_mod, idata, "constant_data")
             exog_replace = {}
             for name in ss_mod.data_names:
                 if name not in scenario:

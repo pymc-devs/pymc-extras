@@ -70,13 +70,12 @@ def impulse_response_function(
         shock_trajectory = pt.as_tensor_variable(shock_trajectory)
 
     fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
+    fit_dims = dims_from_idata(ss_mod, idata, group)
     simulation_coords = fit_coords.copy()
     simulation_coords[TIME_DIM] = np.arange(n_steps, dtype="int")
 
     with pm.Model(coords=simulation_coords):
-        dummy_graph.build_dummy_graph(
-            ss_mod, coords=fit_coords, dims=dims_from_idata(ss_mod, idata, group)
-        )
+        dummy_graph.build_dummy_graph(ss_mod, coords=fit_coords, dims=fit_dims)
         matrices = ss_mod._insert_random_variables()
 
         matrices = ss_mod._insert_constant_timestep(matrices, step=n_steps)
