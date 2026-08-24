@@ -108,19 +108,19 @@ def _sample_conditional(
         n_timesteps = grouped_outputs[0][0].shape[0]
         x0, P0, c, d, T, Z, R, H, Q = ss_mod._insert_constant_timestep(matrices, n_timesteps)
 
-        for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs):
-            dummy_ll = pt.zeros_like(mu)
+        state_dims = (
+            (TIME_DIM, ALL_STATE_DIM)
+            if all([dim in fit_coords for dim in [TIME_DIM, ALL_STATE_DIM]])
+            else (None, None)
+        )
+        obs_dims = (
+            (TIME_DIM, OBS_STATE_DIM)
+            if all([dim in fit_coords for dim in [TIME_DIM, OBS_STATE_DIM]])
+            else (None, None)
+        )
 
-            state_dims = (
-                (TIME_DIM, ALL_STATE_DIM)
-                if all([dim in fit_coords for dim in [TIME_DIM, ALL_STATE_DIM]])
-                else (None, None)
-            )
-            obs_dims = (
-                (TIME_DIM, OBS_STATE_DIM)
-                if all([dim in fit_coords for dim in [TIME_DIM, OBS_STATE_DIM]])
-                else (None, None)
-            )
+        for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs, strict=True):
+            dummy_ll = pt.zeros_like(mu)
 
             if name == "smoothed":
                 # The simulation smoother draws the whole latent path jointly, so the
