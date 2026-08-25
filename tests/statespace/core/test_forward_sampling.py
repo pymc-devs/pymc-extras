@@ -9,6 +9,7 @@ from numpy.testing import assert_allclose
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.utils.constants import (
+    FILTER_OUTPUT_DIMS,
     LONG_MATRIX_NAMES,
     MATRIX_DIMS,
     MATRIX_NAMES,
@@ -112,6 +113,9 @@ def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
         idata_exog, filter_output_names=None, group="prior"
     )
 
+    # Iterating the returned vars below cannot notice one that never arrived.
+    assert set(idata_filter_prior.posterior_predictive.data_vars) == set(FILTER_OUTPUT_DIMS)
+
     for name, values in idata_filter_prior.posterior_predictive.data_vars.items():
         assert not np.any(np.isnan(values)), f"{name} contains NaNs"
 
@@ -119,11 +123,9 @@ def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
     idata_filter_specific = exog_ss_mod.sample_filter_outputs(
         idata_exog, filter_output_names=specific_outputs
     )
-    missing_outputs = np.setdiff1d(
-        specific_outputs, [x for x in idata_filter_specific.posterior_predictive.data_vars]
-    )
 
-    assert missing_outputs.size == 0
+    # Equality, not containment: the point of the argument is to leave the rest out.
+    assert set(idata_filter_specific.posterior_predictive.data_vars) == set(specific_outputs)
 
     msg = "['filter_covariances', 'filter_states'] not a valid filter output name!"
     incorrect_outputs = ["filter_states", "filter_covariances"]
