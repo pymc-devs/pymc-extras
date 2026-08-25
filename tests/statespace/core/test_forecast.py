@@ -7,6 +7,7 @@ import pytest
 import xarray as xr
 
 from numpy.testing import assert_allclose
+from pandas.testing import assert_index_equal
 from pytensor.compile import SharedVariable
 from pytensor.graph.traversal import graph_inputs
 from xarray import DataTree
@@ -90,7 +91,7 @@ def test_forecast_index(use_datetime_index):
 
     # From start and end
     start = time_idx[-1]
-    delta = pd.DateOffset(years=10) if use_datetime_index else 11
+    delta = pd.DateOffset(years=10) if use_datetime_index else 10
     end = start + delta
 
     x0_index, forecast_idx = ss_mod._build_forecast_index(time_idx, start=start, end=end)
@@ -134,6 +135,29 @@ def test_forecast_index(use_datetime_index):
     assert x0_index == (forecast_idx[0] - delta)
     assert forecast_idx.shape == (10,)
     assert forecast_idx.equals(scenario["a"].index)
+
+
+@pytest.mark.parametrize("use_datetime_index", [True, False])
+def test_end_is_inclusive_for_both_index_types(use_datetime_index):
+    """`end` names the last forecast period, whichever index the model was fit on.
+
+    A datetime index reaches it through pd.date_range and an integer one through pd.RangeIndex,
+    and those disagree about their endpoints, so the horizon is pinned against `periods`.
+    """
+    horizon = 5
+    ss_mod = make_statespace_mod(
+        k_endog=1, k_posdef=1, k_states=2, filter_type="standard", verbose=False
+    )
+    time_idx, _ = _make_time_idx(use_datetime_index)
+
+    start = time_idx[-1]
+    step = time_idx.freq if use_datetime_index else 1
+
+    _, from_end = ss_mod._build_forecast_index(time_idx, start=start, end=start + horizon * step)
+    _, from_periods = ss_mod._build_forecast_index(time_idx, start=start, periods=horizon)
+
+    assert_index_equal(pd.Index(from_end), pd.Index(from_periods))
+    assert from_end[-1] == start + horizon * step
 
 
 @pytest.mark.parametrize(
@@ -403,7 +427,7 @@ def test_invalid_scenarios():
         ("ss_mod_no_exog", "idata_no_exog", None, None, 10),
         ("ss_mod_no_exog", "idata_no_exog", -1, None, 10),
         ("ss_mod_no_exog", "idata_no_exog", 10, None, 10),
-        ("ss_mod_no_exog", "idata_no_exog", 10, 21, None),
+        ("ss_mod_no_exog", "idata_no_exog", 10, 20, None),
         ("ss_mod_no_exog_dt", "idata_no_exog_dt", None, None, 10),
         ("ss_mod_no_exog_dt", "idata_no_exog_dt", -1, None, 10),
         ("ss_mod_no_exog_dt", "idata_no_exog_dt", 10, None, 10),
@@ -413,7 +437,7 @@ def test_invalid_scenarios():
         ("ss_mod_no_exog_mv", "idata_no_exog_mv", None, None, 10),
         ("ss_mod_no_exog_mv", "idata_no_exog_mv", -1, None, 10),
         ("ss_mod_no_exog_mv", "idata_no_exog_mv", 10, None, 10),
-        ("ss_mod_no_exog_mv", "idata_no_exog_mv", 10, 21, None),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv", 10, 20, None),
         ("ss_mod_no_exog_mv", "idata_no_exog_mv_dt", None, None, 10),
         ("ss_mod_no_exog_mv", "idata_no_exog_mv_dt", -1, None, 10),
         ("ss_mod_no_exog_mv", "idata_no_exog_mv_dt", 10, None, 10),
