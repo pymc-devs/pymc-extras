@@ -1645,7 +1645,7 @@ class PyMCStateSpace:
     def impulse_response_function(
         self,
         idata,
-        n_steps: int = 40,
+        n_steps: int | None = None,
         use_posterior_cov: bool = True,
         shock_size: float | np.ndarray | None = None,
         shock_cov: np.ndarray | None = None,
@@ -1669,10 +1669,10 @@ class PyMCStateSpace:
         idata : DataTree
             A DataTree object containing the posterior distribution over model parameters.
 
-        n_steps: int
-            The number of time steps to calculate the impulse response. Default is 40.
-
-            If `shock_trajectory` is provided, the length of the shock trajectory will override this value.
+        n_steps: int, optional
+            The number of time steps to calculate the impulse response. If `shock_trajectory` is
+            provided its length is used instead, and passing a conflicting `n_steps` logs a warning.
+            Default 40.
 
         use_posterior_cov: bool, default=True
             Whether to use the covariance matrix of the posterior distribution to generate the impulse response.

@@ -421,6 +421,43 @@ class TestOrthogonalizedImpulseResponse:
             varma_mod.impulse_response_function(idata, n_steps=3, group="prior", **kwargs)
 
 
+@pytest.mark.skipif(floatX == "float32", reason="Impulse covariance not PSD if float32")
+class TestShockTrajectoryHorizon:
+    """The trajectory sets the horizon; n_steps is only a default when there is no trajectory."""
+
+    trajectory = np.r_[
+        np.zeros((3, 3), dtype=floatX),
+        np.array([[1.0, 0.0, 0.0]]).astype(floatX),
+        np.zeros((6, 3), dtype=floatX),
+    ]
+
+    def test_trajectory_length_wins(self, varma_mod, idata, rng, caplog):
+        irf = varma_mod.impulse_response_function(
+            idata, n_steps=40, shock_trajectory=self.trajectory, group="prior", random_seed=rng
+        )
+
+        assert len(irf.irf.coords["time"]) == self.trajectory.shape[0]
+        assert any("do not agree" in message for message in caplog.messages)
+
+    def test_matching_n_steps_is_quiet(self, varma_mod, idata, rng, caplog):
+        varma_mod.impulse_response_function(
+            idata,
+            n_steps=self.trajectory.shape[0],
+            shock_trajectory=self.trajectory,
+            group="prior",
+            random_seed=rng,
+        )
+
+        assert not any("do not agree" in message for message in caplog.messages)
+
+    def test_omitted_n_steps_is_quiet(self, varma_mod, idata, rng, caplog):
+        varma_mod.impulse_response_function(
+            idata, shock_trajectory=self.trajectory, group="prior", random_seed=rng
+        )
+
+        assert not any("do not agree" in message for message in caplog.messages)
+
+
 def test_forecast(varma_mod, idata, rng):
     forecast = varma_mod.forecast(idata, periods=10, random_seed=rng, group="prior")
 
