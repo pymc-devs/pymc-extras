@@ -1,5 +1,6 @@
 import logging
 
+from types import EllipsisType
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -28,6 +29,96 @@ if TYPE_CHECKING:
 _log = logging.getLogger("pymc.experimental.statespace")
 
 
+def _shock_permutation(
+    shock_names: list[str], shock_order: list[str | EllipsisType] | None
+) -> np.ndarray:
+    """
+    Map a user-supplied recursive ordering onto positions in the model's shock dimension.
+
+    Parameters
+    ----------
+    shock_names : list of str
+        Shock names in the order the model stores them.
+    shock_order : list of str or ellipsis, optional
+        The recursive ordering to impose. Entries name shocks; a single ``...`` stands for every
+        shock not named elsewhere, kept in the model's own order. Without an ``...``, every shock
+        must be named. Defaults to ``shock_names`` itself.
+
+    Returns
+    -------
+    ndarray of int
+        Indices ``perm`` such that ``[shock_names[i] for i in perm]`` is the resolved ordering.
+    """
+    if shock_order is None:
+        return np.arange(len(shock_names), dtype="int")
+
+    named = [name for name in shock_order if name is not Ellipsis]
+    n_ellipsis = len(shock_order) - len(named)
+
+    if n_ellipsis > 1:
+        raise ValueError(
+            f"shock_order may contain at most one `...`, but {n_ellipsis} were given. One `...` "
+            "already stands for every shock not named elsewhere."
+        )
+
+    unknown = [name for name in named if name not in shock_names]
+    if unknown:
+        raise ValueError(
+            f"shock_order names shocks the model does not have: {unknown}. "
+            f"Model shocks are {shock_names}."
+        )
+
+    duplicated = sorted({name for name in named if named.count(name) > 1})
+    if duplicated:
+        raise ValueError(f"shock_order names the same shock more than once: {duplicated}.")
+
+    rest = [name for name in shock_names if name not in named]
+
+    if n_ellipsis:
+        fill = shock_order.index(Ellipsis)
+        resolved = named[:fill] + rest + named[fill:]
+    elif rest:
+        raise ValueError(
+            "shock_order must name every shock in the model, or use `...` to stand for the "
+            f"rest. Missing: {rest}."
+        )
+    else:
+        resolved = named
+
+    return np.array([shock_names.index(name) for name in resolved], dtype="int")
+
+
+def _orthogonal_impulse_matrix(Q: pt.TensorVariable, perm: np.ndarray) -> pt.TensorVariable:
+    r"""
+    Build the impact matrix of a recursive (Cholesky) identification scheme.
+
+    Factor the shock covariance as :math:`Q = B B^\top` with :math:`B` triangular *in the ordering
+    given by* ``perm``, so that the reduced-form shocks satisfy :math:`u = B \varepsilon` for
+    orthonormal structural shocks :math:`\varepsilon`. Column :math:`j` of :math:`B` is the
+    contemporaneous impact of a one-standard-deviation innovation to the :math:`j`-th shock in the
+    chosen ordering.
+
+    Parameters
+    ----------
+    Q : TensorVariable
+        Shock covariance matrix, with rows and columns in the model's own shock order.
+    perm : ndarray of int
+        Recursive ordering, as returned by :func:`_shock_permutation`.
+
+    Returns
+    -------
+    TensorVariable
+        Impact matrix with rows in the model's shock order and columns in ``perm`` order.
+    """
+    Q_ordered = Q[perm][:, perm]
+    L = pt.linalg.cholesky(Q_ordered)
+
+    # Undo the row permutation so rows line up with the model's shock order again; columns stay in
+    # the user's ordering, since they index structural shocks rather than model shocks.
+    inverse_perm = np.argsort(perm)
+    return L[inverse_perm]
+
+
 def impulse_response_function(
     ss_mod: "PyMCStateSpace",
     idata,
@@ -37,6 +128,7 @@ def impulse_response_function(
     shock_cov: np.ndarray | None = None,
     shock_trajectory: np.ndarray | None = None,
     orthogonalize_shocks: bool = False,
+    shock_order: list[str | EllipsisType] | None = None,
     random_seed: RandomState | None = None,
     mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
     group: str = "posterior",
@@ -62,6 +154,9 @@ def impulse_response_function(
             "combined with shock_size or shock_trajectory. Pass shock_cov, or use the posterior "
             "covariance."
         )
+    if shock_order is not None and not orthogonalize_shocks:
+        raise ValueError("shock_order is only meaningful when orthogonalize_shocks=True.")
+
     if shock_trajectory is not None:
         # Validate the shock trajectory
         n, k = shock_trajectory.shape
@@ -86,7 +181,9 @@ def impulse_response_function(
     simulation_coords[TIME_DIM] = np.arange(n_steps, dtype="int")
 
     if orthogonalize_shocks:
-        simulation_coords[STRUCTURAL_SHOCK_DIM] = list(fit_coords[SHOCK_DIM])
+        shock_names = list(fit_coords[SHOCK_DIM])
+        perm = _shock_permutation(shock_names, shock_order)
+        simulation_coords[STRUCTURAL_SHOCK_DIM] = [shock_names[i] for i in perm]
         irf_dims = [STRUCTURAL_SHOCK_DIM, TIME_DIM, ALL_STATE_DIM]
     else:
         irf_dims = [TIME_DIM, ALL_STATE_DIM]
@@ -115,9 +212,8 @@ def impulse_response_function(
                     "shock_cov, or leave use_posterior_cov=True to take it from the posterior."
                 )
 
-            # Q = B B' with B lower triangular, so column j of B is the impulse that isolates
-            # structural shock j: a one-standard-deviation innovation under a recursive ordering.
-            impulse = pt.linalg.cholesky(Q)
+            # Column j of the impact matrix is the impulse that isolates structural shock j.
+            impulse = _orthogonal_impulse_matrix(Q, perm)
             shock_trajectory = pt.set_subtensor(empty_trajectory[0], impulse)
 
         elif shock_trajectory is None:

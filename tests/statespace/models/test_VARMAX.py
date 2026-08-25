@@ -262,6 +262,79 @@ class TestOrthogonalizedImpulseResponse:
 
         assert_array_equal(first.irf.values, second.irf.values)
 
+    def test_shock_order_changes_identification(self, varma_mod, idata, rng):
+        reversed_order = list(varma_mod.coords["shock"])[::-1]
+        irf = varma_mod.impulse_response_function(
+            idata, n_steps=5, orthogonalize_shocks=True, group="prior", random_seed=rng
+        )
+        reordered = varma_mod.impulse_response_function(
+            idata,
+            n_steps=5,
+            orthogonalize_shocks=True,
+            shock_order=reversed_order,
+            group="prior",
+            random_seed=rng,
+        )
+
+        assert list(reordered.irf.coords["structural_shock"].values) == reversed_order
+        assert not np.allclose(irf.irf.values, reordered.irf.values)
+
+        # Whatever the ordering, the impact matrix must still reproduce the shock covariance --
+        # this is what catches a botched un-permutation, which a shape check would sail past.
+        Q = idata.prior["state_cov"].values[0]
+        B = self.impact(reordered, states=list(varma_mod.coords["observed_state"]))
+        assert_allclose(B @ B.transpose(0, 2, 1), Q, atol=1e-8)
+
+    @pytest.mark.parametrize(
+        "shock_order, expected",
+        [
+            ([...], ["realgdp", "realcons", "realinv"]),
+            (["realinv", ...], ["realinv", "realgdp", "realcons"]),
+            ([..., "realgdp"], ["realcons", "realinv", "realgdp"]),
+            (["realinv", ..., "realgdp"], ["realinv", "realcons", "realgdp"]),
+        ],
+        ids=["all", "leading-name", "trailing-name", "both-sides"],
+    )
+    def test_ellipsis_fills_unnamed_shocks(self, varma_mod, idata, rng, shock_order, expected):
+        """`...` takes whatever is left, in the order the fit dims give it."""
+        irf = varma_mod.impulse_response_function(
+            idata,
+            n_steps=3,
+            orthogonalize_shocks=True,
+            shock_order=shock_order,
+            group="prior",
+            random_seed=rng,
+        )
+
+        assert list(irf.irf.coords["structural_shock"].values) == expected
+
+        explicit = varma_mod.impulse_response_function(
+            idata,
+            n_steps=3,
+            orthogonalize_shocks=True,
+            shock_order=expected,
+            group="prior",
+            random_seed=rng,
+        )
+        assert_array_equal(irf.irf.values, explicit.irf.values)
+
+    def test_diagonal_covariance_is_order_invariant(self, varma_mod, idata, rng):
+        """With independent shocks the factorization is a rescaling, so ordering does nothing."""
+        shock_cov = np.diag(np.array([1.0, 4.0, 9.0], dtype=floatX))
+        kwargs = dict(
+            n_steps=3,
+            shock_cov=shock_cov,
+            orthogonalize_shocks=True,
+            group="prior",
+            random_seed=rng,
+        )
+        irf = varma_mod.impulse_response_function(idata, **kwargs)
+        reordered = varma_mod.impulse_response_function(
+            idata, shock_order=list(varma_mod.coords["shock"])[::-1], **kwargs
+        )
+
+        assert_allclose(irf.irf.values, reordered.irf.values[:, :, ::-1], atol=1e-8)
+
     @pytest.mark.parametrize(
         "kwargs, error_msg",
         [
@@ -270,12 +343,38 @@ class TestOrthogonalizedImpulseResponse:
                 {"orthogonalize_shocks": True, "shock_trajectory": np.zeros((3, 3))},
                 "cannot be combined",
             ),
+            ({"shock_order": ["realgdp", "realcons", "realinv"]}, "only meaningful"),
+            (
+                {"orthogonalize_shocks": True, "shock_order": ["realgdp", "realcons"]},
+                "must name every shock",
+            ),
+            (
+                {"orthogonalize_shocks": True, "shock_order": ["realgdp", "realcons", "nope"]},
+                "does not have",
+            ),
+            (
+                {"orthogonalize_shocks": True, "shock_order": ["realgdp", "realgdp", ...]},
+                "more than once",
+            ),
+            (
+                {"orthogonalize_shocks": True, "shock_order": [..., "realgdp", ...]},
+                "at most one",
+            ),
             (
                 {"orthogonalize_shocks": True, "use_posterior_cov": False},
                 "needs a shock covariance matrix",
             ),
         ],
-        ids=["with-shock-size", "with-trajectory", "no-covariance"],
+        ids=[
+            "with-shock-size",
+            "with-trajectory",
+            "order-without-flag",
+            "short-order",
+            "bad-name",
+            "duplicate-name",
+            "two-ellipsis",
+            "no-covariance",
+        ],
     )
     def test_invalid_arguments(self, varma_mod, idata, kwargs, error_msg):
         with pytest.raises(ValueError, match=error_msg):
