@@ -1669,90 +1669,100 @@ class PyMCStateSpace:
         idata : DataTree
             A DataTree object containing the posterior distribution over model parameters.
 
-        n_steps: int, optional
-            The number of time steps to calculate the impulse response. If `shock_trajectory` is
-            provided its length is used instead, and passing a conflicting `n_steps` logs a warning.
-            Default 40.
+        n_steps : int, optional
+            The number of time steps to calculate the impulse response. If ``shock_trajectory`` is
+            provided its length is used instead, and passing a conflicting ``n_steps`` logs a
+            warning. Default 40.
 
-        use_posterior_cov: bool, default=True
-            Whether to use the covariance matrix of the posterior distribution to generate the impulse response.
+        use_posterior_cov : bool, optional
+            Whether to use the covariance matrix of the posterior distribution to generate the
+            impulse response.
 
-            Only one of `use_posterior_cov`, `shock_cov`, `shock_size`, or `shock_trajectory` can be specified.
+            Only one of ``use_posterior_cov``, ``shock_cov``, ``shock_size``, or
+            ``shock_trajectory`` can be specified. Default True.
 
-        shock_size : Optional[Union[float, np.ndarray]], default=None
-            The size of the shock applied to the system. If specified, it will create a covariance
-            matrix for the shock with diagonal elements equal to `shock_size`. If float, the diagonal will be filled
-            with `shock_size`. If an array, `shock_size` must match the number of shocks in the state space model.
-
-            Only one of `use_posterior_cov`, `shock_cov`, `shock_size`, or `shock_trajectory` can be specified.
-
-        shock_cov : Optional[np.ndarray], default=None
-            A user-specified covariance matrix for the shocks. It should be a 2D numpy array with
-            dimensions (n_shocks, n_shocks), where n_shocks is the number of shocks in the state space model.
-
-            Only one of `use_posterior_cov`, `shock_cov`, `shock_size`, or `shock_trajectory` can be specified.
-
-        shock_trajectory : Optional[np.ndarray], default=None
-            A pre-defined trajectory of shocks applied to the system. It should be a 2D numpy array
-            with dimensions (n, n_shocks), where n is the number of time steps and k_posdef is the
+        shock_size : float or ndarray, optional
+            The size of the shock applied to the system. If specified, it creates a covariance
+            matrix for the shock with diagonal elements equal to ``shock_size``. If float, the
+            diagonal is filled with ``shock_size``. If an array, ``shock_size`` must match the
             number of shocks in the state space model.
 
-            Only one of `use_posterior_cov`, `shock_cov`, `shock_size`, or `shock_trajectory` can be specified.
+            Only one of ``use_posterior_cov``, ``shock_cov``, ``shock_size``, or
+            ``shock_trajectory`` can be specified. Default None.
 
-        orthogonalize_shocks : bool, default=False
-            If True, identify structural shocks by a recursive (Cholesky) scheme and return one impulse
-            response per structural shock. See Notes. Incompatible with `shock_size` and
-            `shock_trajectory`, which each describe a single impulse.
+        shock_cov : ndarray, optional
+            A user-specified covariance matrix for the shocks, with shape (n_shocks, n_shocks),
+            where n_shocks is the number of shocks in the state space model.
+
+            Only one of ``use_posterior_cov``, ``shock_cov``, ``shock_size``, or
+            ``shock_trajectory`` can be specified. Default None.
+
+        shock_trajectory : ndarray, optional
+            A pre-defined trajectory of shocks applied to the system, with shape (n, n_shocks),
+            where n is the number of time steps and n_shocks is the number of shocks in the state
+            space model.
+
+            Only one of ``use_posterior_cov``, ``shock_cov``, ``shock_size``, or
+            ``shock_trajectory`` can be specified. Default None.
+
+        orthogonalize_shocks : bool, optional
+            If True, identify structural shocks by a recursive (Cholesky) scheme and return one
+            impulse response per structural shock. See Notes. Incompatible with ``shock_size`` and
+            ``shock_trajectory``, which each describe a single impulse. Default False.
 
         shock_order : list of str or ellipsis, optional
             Recursive ordering imposed by the Cholesky identification, given as shock names. Earlier
             shocks are the ones allowed to move later shocks contemporaneously. A single ``...``
             entry stands for every shock not named elsewhere, kept in the model's own order, so
             ``["realinv", ...]`` orders investment first and leaves the rest alone. Without an
-            ``...``, every shock must be named. Only valid when `orthogonalize_shocks` is True.
+            ``...``, every shock must be named. Only valid when ``orthogonalize_shocks`` is True.
             Defaults to the model's own shock order.
 
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        mvn_method: str, default "svd"
-            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
-            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
-            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+        mvn_method : str, optional
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate
+            normal (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is
+            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely
+            robust.
 
-            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
-            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+            In general, if your model has measurement error, "cholesky" will be safe to use.
+            Otherwise, "svd" is recommended. "eigh" can also be tried if sampling with "svd" is very
+            slow, but it is not as robust as "svd". Default "svd".
 
-        kwargs:
-            Additional keyword arguments are passed to pymc.sample_posterior_predictive
+        **kwargs
+            Additional keyword arguments are passed to :func:`~pymc.sample_posterior_predictive`.
 
         Returns
         -------
         DataTree
-            A DataTree object containing impulse response function in a variable named "irf", with dims
-            ``(time, state)``, or ``(structural_shock, time, state)`` when `orthogonalize_shocks` is True.
+            A DataTree object containing the impulse response function in a variable named "irf",
+            with dims ``(time, state)``, or ``(structural_shock, time, state)`` when
+            ``orthogonalize_shocks`` is True.
 
         Notes
         -----
-        For models with time-varying transition matrices, the IRF is computed starting at phase 0 of the
-        time-varying cycle. This means the response represents the effect of a shock occurring at the first
-        modeled state, T(0).
+        For models with time-varying transition matrices, the IRF is computed starting at phase 0
+        of the time-varying cycle. This means the response represents the effect of a shock
+        occurring at the first modeled state, :math:`T(0)`.
 
         Reduced-form shocks are correlated whenever the shock covariance :math:`Q` has off-diagonal
         entries, so shocking one of them in isolation describes an event the model itself considers
         unlikely. Setting ``orthogonalize_shocks=True`` instead factors :math:`Q = B B^\top` with
         :math:`B` lower triangular, which imposes a recursive contemporaneous ordering: the first
-        shock in `shock_order` moves every variable within the period, the second moves all but the
-        first, and so on. Column :math:`j` of :math:`B` is the impact of a one-standard-deviation
-        innovation to structural shock :math:`j`, and the returned IRF carries a
-        ``structural_shock`` axis holding one response per shock.
+        shock in ``shock_order`` moves every variable within the period, the second moves all but
+        the first, and so on. Column :math:`j` of :math:`B` is the impact of a
+        one-standard-deviation innovation to structural shock :math:`j`, and the returned IRF
+        carries a ``structural_shock`` axis holding one response per shock.
 
-        The ordering is an identifying assumption, not a detail: permuting `shock_order` yields
+        The ordering is an identifying assumption, not a detail: permuting ``shock_order`` yields
         different impulse responses from the same posterior. A diagonal :math:`Q` is the exception,
         where the factorization only rescales each shock to unit standard deviation.
 
-        An orthogonalized IRF is deterministic given the parameters, so its posterior spread reflects
-        parameter uncertainty alone. The default draws a random impulse per posterior draw instead.
+        An orthogonalized IRF is deterministic given the parameters, so its posterior spread
+        reflects parameter uncertainty alone. The default draws a random impulse per posterior draw
+        instead.
         """
         return irf.impulse_response_function(
             self,
