@@ -420,6 +420,26 @@ def test_invalid_scenarios():
 
 
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+@pytest.mark.parametrize("verbose", [True, False], ids=["verbose", "quiet"])
+def test_forecast_defaults_start_regardless_of_verbosity(
+    ss_mod_no_exog, idata_no_exog, rng, caplog, verbose
+):
+    """Silencing the warning must not also silence the default it announces."""
+    time_index = ss_mod_no_exog._get_fit_time_index(idata_no_exog)
+
+    forecast_idata = ss_mod_no_exog.forecast(
+        idata_no_exog, periods=10, verbose=verbose, random_seed=rng
+    )
+
+    forecast_index = forecast_idata.coords["time"].values
+    assert forecast_index.shape == (10,)
+    assert forecast_index[0] == time_index[-1] + 1
+
+    announced = any("No start date provided" in message for message in caplog.messages)
+    assert announced == verbose
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.parametrize("filter_output", ["predicted", "filtered", "smoothed"])
 @pytest.mark.parametrize(
     "mod_name, idata_name, start, end, periods",

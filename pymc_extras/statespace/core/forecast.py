@@ -558,11 +558,12 @@ def forecast(
 
     time_index = ss_mod._get_fit_time_index(idata)
 
-    if start is None and verbose:
-        _log.warning(
-            "No start date provided. Using the last date in the data index. To silence this warning, "
-            "explicitly pass a start date or set verbose = False"
-        )
+    if start is None:
+        if verbose:
+            _log.warning(
+                "No start date provided. Using the last date in the data index. To silence this "
+                "warning, explicitly pass a start date or set verbose = False"
+            )
         start = time_index[-1]
 
     if ss_mod._needs_exog_data and not isinstance(scenario, dict):
