@@ -8,7 +8,7 @@ import pytensor.tensor as pt
 import pytest
 import statsmodels.api as sm
 
-from numpy.testing import assert_allclose, assert_array_less
+from numpy.testing import assert_allclose, assert_array_equal, assert_array_less
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.testing import mock_sample_setup_and_teardown
 
@@ -221,6 +221,65 @@ def test_impulse_response(parameters, varma_mod, idata, rng):
     irf = varma_mod.impulse_response_function(idata, random_seed=rng, group="prior", **parameters)
 
     assert np.isfinite(irf.irf.values).all()
+
+
+@pytest.mark.skipif(floatX == "float32", reason="Cholesky factor not accurate enough in float32")
+class TestOrthogonalizedImpulseResponse:
+    """Recursive (Cholesky) identification of the reduced-form VAR shocks.
+
+    VARMAX has a full state_cov, so the factorization has content and the ordering matters. The
+    identifying assumption lives entirely in the impact period, so that is what these tests pin
+    down; later periods follow from the transition matrix, which the tests above already cover.
+    """
+
+    @staticmethod
+    def impact(irf, states=None):
+        """Impact-period response, as (draw, state, structural_shock)."""
+        response = irf.irf.isel(chain=0, time=0)
+        if states is not None:
+            response = response.sel(state=states)
+        return response.transpose("draw", "state", "structural_shock").values
+
+    def test_impact_is_cholesky_factor(self, varma_mod, idata, rng):
+        irf = varma_mod.impulse_response_function(
+            idata, n_steps=8, orthogonalize_shocks=True, group="prior", random_seed=rng
+        )
+
+        assert irf.irf.dims == ("chain", "draw", "structural_shock", "time", "state")
+        assert list(irf.irf.coords["structural_shock"].values) == list(varma_mod.coords["shock"])
+
+        Q = idata.prior["state_cov"].values[0]
+        R = varma_mod.ssm["selection"].eval()
+        expected = np.stack([R @ np.linalg.cholesky(Q_draw) for Q_draw in Q])
+
+        assert_allclose(self.impact(irf), expected, atol=1e-8)
+
+    def test_is_deterministic_given_parameters(self, varma_mod, idata, rng):
+        """No random node in the graph, so the seed must not move the answer at all."""
+        kwargs = dict(n_steps=5, orthogonalize_shocks=True, group="prior")
+        first = varma_mod.impulse_response_function(idata, random_seed=rng, **kwargs)
+        second = varma_mod.impulse_response_function(idata, random_seed=12345, **kwargs)
+
+        assert_array_equal(first.irf.values, second.irf.values)
+
+    @pytest.mark.parametrize(
+        "kwargs, error_msg",
+        [
+            ({"orthogonalize_shocks": True, "shock_size": 1.0}, "cannot be combined"),
+            (
+                {"orthogonalize_shocks": True, "shock_trajectory": np.zeros((3, 3))},
+                "cannot be combined",
+            ),
+            (
+                {"orthogonalize_shocks": True, "use_posterior_cov": False},
+                "needs a shock covariance matrix",
+            ),
+        ],
+        ids=["with-shock-size", "with-trajectory", "no-covariance"],
+    )
+    def test_invalid_arguments(self, varma_mod, idata, kwargs, error_msg):
+        with pytest.raises(ValueError, match=error_msg):
+            varma_mod.impulse_response_function(idata, n_steps=3, group="prior", **kwargs)
 
 
 def test_forecast(varma_mod, idata, rng):

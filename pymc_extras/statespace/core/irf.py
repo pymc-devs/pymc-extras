@@ -15,7 +15,12 @@ from pymc_extras.statespace.core.fit_recovery import (
     dims_from_idata,
     verify_group,
 )
-from pymc_extras.statespace.utils.constants import ALL_STATE_DIM, SHOCK_DIM, TIME_DIM
+from pymc_extras.statespace.utils.constants import (
+    ALL_STATE_DIM,
+    SHOCK_DIM,
+    STRUCTURAL_SHOCK_DIM,
+    TIME_DIM,
+)
 
 if TYPE_CHECKING:
     from pymc_extras.statespace.core.statespace import PyMCStateSpace
@@ -51,6 +56,12 @@ def impulse_response_function(
         # If the user passed an alternative parameterization for the shocks of the IRF, don't use the posterior
         use_posterior_cov = False
 
+    if orthogonalize_shocks and (shock_size is not None or shock_trajectory is not None):
+        raise ValueError(
+            "orthogonalize_shocks=True identifies shocks from a covariance matrix, so it cannot be "
+            "combined with shock_size or shock_trajectory. Pass shock_cov, or use the posterior "
+            "covariance."
+        )
     if shock_trajectory is not None:
         # Validate the shock trajectory
         n, k = shock_trajectory.shape
@@ -74,6 +85,12 @@ def impulse_response_function(
     simulation_coords = fit_coords.copy()
     simulation_coords[TIME_DIM] = np.arange(n_steps, dtype="int")
 
+    if orthogonalize_shocks:
+        simulation_coords[STRUCTURAL_SHOCK_DIM] = list(fit_coords[SHOCK_DIM])
+        irf_dims = [STRUCTURAL_SHOCK_DIM, TIME_DIM, ALL_STATE_DIM]
+    else:
+        irf_dims = [TIME_DIM, ALL_STATE_DIM]
+
     with pm.Model(coords=simulation_coords):
         dummy_graph.build_dummy_graph(ss_mod, coords=fit_coords, dims=fit_dims)
         matrices = ss_mod._insert_random_variables()
@@ -83,18 +100,27 @@ def impulse_response_function(
 
         if use_posterior_cov:
             Q = post_Q
-            if orthogonalize_shocks:
-                Q = pt.linalg.cholesky(Q) / pt.diag(Q)
         elif shock_cov is not None:
             Q = pt.as_tensor_variable(shock_cov)
-            if orthogonalize_shocks:
-                Q = pt.linalg.cholesky(Q) / pt.diag(Q)
 
-        # The scan state carries one column per impulse, so the trajectory and the state both take
-        # a trailing impulse axis.
-        empty_trajectory = pt.zeros((n_steps, ss_mod.k_posdef, 1))
+        # The scan carries one column per impulse, so orthogonalized IRFs trace every structural
+        # shock through its own copy of the system in a single pass.
+        n_impulse = ss_mod.k_posdef if orthogonalize_shocks else 1
+        empty_trajectory = pt.zeros((n_steps, ss_mod.k_posdef, n_impulse))
 
-        if shock_trajectory is None:
+        if orthogonalize_shocks:
+            if Q is None:
+                raise ValueError(
+                    "orthogonalize_shocks=True needs a shock covariance matrix to factor. Pass "
+                    "shock_cov, or leave use_posterior_cov=True to take it from the posterior."
+                )
+
+            # Q = B B' with B lower triangular, so column j of B is the impulse that isolates
+            # structural shock j: a one-standard-deviation innovation under a recursive ordering.
+            impulse = pt.linalg.cholesky(Q)
+            shock_trajectory = pt.set_subtensor(empty_trajectory[0], impulse)
+
+        elif shock_trajectory is None:
             if Q is not None:
                 init_shock = pm.MvNormal(
                     "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
@@ -110,7 +136,7 @@ def impulse_response_function(
         else:
             shock_trajectory = pt.as_tensor_variable(shock_trajectory)[..., None]
 
-        x0 = pt.zeros((ss_mod.k_states, 1))
+        x0 = pt.zeros((ss_mod.k_states, n_impulse))
         time_varying_T = "transition" in ss_mod.ssm.time_varying_names
 
         def irf_step(*args):
@@ -136,9 +162,9 @@ def impulse_response_function(
         )
 
         # Scan stacks over time, giving (time, state, impulse).
-        irf = irf[..., 0]
+        irf = irf.transpose(2, 0, 1) if orthogonalize_shocks else irf[..., 0]
 
-        pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])
+        pm.Deterministic("irf", irf, dims=irf_dims)
 
         irf_idata = pm.sample_posterior_predictive(
             idata[group],
