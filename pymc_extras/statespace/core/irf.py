@@ -161,19 +161,19 @@ def impulse_response_function(
 
     if shock_trajectory is not None:
         # Validate the shock trajectory
-        n, k = shock_trajectory.shape
+        trajectory_steps, k = shock_trajectory.shape
 
         if k != ss_mod.k_posdef:
             raise ValueError(
                 "If shock_trajectory is provided, there must be a trajectory provided for each shock. "
                 f"Model has {ss_mod.k_posdef} shocks, but shock_trajectory has only {k} columns"
             )
-        if n_steps is not None and n_steps != n:
+        if n_steps is not None and n_steps != trajectory_steps:
             _log.warning(
                 "Both n_steps and shock_trajectory were provided but do not agree. Length of "
                 "shock_trajectory will take priority, and n_steps will be ignored."
             )
-        n_steps = n
+        n_steps = trajectory_steps
         shock_trajectory = pt.as_tensor_variable(shock_trajectory)
 
     elif n_steps is None:
