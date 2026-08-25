@@ -195,32 +195,71 @@ def test_all_prior_covariances_are_PSD(filter_output, varma_mod, idata, rng):
     assert_array_less(0, w, err_msg=f"Smallest eigenvalue: {min(w.ravel())}")
 
 
-parameters = [
-    {"n_steps": 10, "shock_size": None},
-    {"n_steps": 10, "shock_size": 1.0},
-    {"n_steps": 10, "shock_size": np.array([1.0, 0.0, 0.0])},
-    {
-        "n_steps": 10,
-        "shock_cov": np.array([[1.38, 0.58, -1.84], [0.58, 0.99, -0.82], [-1.84, -0.82, 2.51]]),
-    },
-    {
-        "shock_trajectory": np.r_[
-            np.zeros((3, 3), dtype=floatX),
-            np.array([[1.0, 0.0, 0.0]]).astype(floatX),
-            np.zeros((6, 3), dtype=floatX),
-        ]
-    },
-]
-
-ids = ["from-posterior-cov", "scalar_shock_size", "array_shock_size", "user-cov", "trajectory"]
-
-
-@pytest.mark.parametrize("parameters", parameters, ids=ids)
 @pytest.mark.skipif(floatX == "float32", reason="Impulse covariance not PSD if float32")
-def test_impulse_response(parameters, varma_mod, idata, rng):
-    irf = varma_mod.impulse_response_function(idata, random_seed=rng, group="prior", **parameters)
+@pytest.mark.parametrize(
+    "shock_kwargs",
+    [
+        {},
+        {"shock_cov": np.array([[1.38, 0.58, -1.84], [0.58, 0.99, -0.82], [-1.84, -0.82, 2.51]])},
+    ],
+    ids=["from-posterior-cov", "user-cov"],
+)
+def test_impulse_response_from_covariance(varma_mod, idata, rng, shock_kwargs):
+    """A covariance draws the impulse at random, so only states the shock cannot reach are known."""
+    irf = varma_mod.impulse_response_function(
+        idata, n_steps=10, group="prior", random_seed=rng, **shock_kwargs
+    )
 
-    assert np.isfinite(irf.irf.values).all()
+    # The selection matrix routes shocks to a subset of states; the rest can only move via the
+    # intercept in the impact period, whatever impulse was drawn.
+    R = varma_mod.ssm["selection"].eval()
+    c = varma_mod.ssm["state_intercept"].eval()
+    unreachable = ~R.any(axis=1)
+
+    assert unreachable.any(), "Fixture no longer has states outside the shock's reach"
+
+    impact = irf.irf.isel(chain=0, time=0).values[:, unreachable]
+    assert_allclose(impact, np.broadcast_to(c[unreachable], impact.shape), atol=1e-12)
+
+
+@pytest.mark.skipif(floatX == "float32", reason="Impulse covariance not PSD if float32")
+def test_impulse_response_of_fixed_shock(varma_mod, idata, rng):
+    """A fixed shock_size makes the impulse deterministic, so the impact period is known exactly."""
+    shock_size = np.array([1.0, 0.0, 0.0], dtype=floatX)
+    irf = varma_mod.impulse_response_function(
+        idata, n_steps=5, shock_size=shock_size, group="prior", random_seed=rng
+    )
+
+    R = varma_mod.ssm["selection"].eval()
+    impact = irf.irf.isel(chain=0, time=0).values
+    assert_allclose(impact, np.broadcast_to(R @ shock_size, impact.shape), atol=1e-8)
+
+    # The system is linear in the impulse, so doubling the shock doubles the whole path.
+    doubled = varma_mod.impulse_response_function(
+        idata, n_steps=5, shock_size=shock_size * 2, group="prior", random_seed=rng
+    )
+    assert_allclose(doubled.irf.values, 2 * irf.irf.values, rtol=1e-8)
+
+
+@pytest.mark.skipif(floatX == "float32", reason="Impulse covariance not PSD if float32")
+def test_impulse_response_respects_shock_trajectory_timing(varma_mod, idata, rng):
+    """Nothing may move before the trajectory's first non-zero entry."""
+    quiet_steps = 3
+    shock_trajectory = np.zeros((8, varma_mod.k_posdef), dtype=floatX)
+    shock_trajectory[quiet_steps, 0] = 1.0
+
+    irf = varma_mod.impulse_response_function(
+        idata, shock_trajectory=shock_trajectory, group="prior", random_seed=rng
+    )
+
+    # irf[t] is the state after shock t is applied, so the impulse lands on its own index.
+    before = irf.irf.isel(time=slice(None, quiet_steps)).values
+    assert_allclose(before, 0.0, atol=1e-12)
+
+    R = varma_mod.ssm["selection"].eval()
+    impact = irf.irf.isel(chain=0, time=quiet_steps).values
+    expected = np.broadcast_to(R @ shock_trajectory[quiet_steps], impact.shape)
+    assert_allclose(impact, expected, atol=1e-8)
 
 
 @pytest.mark.skipif(floatX == "float32", reason="Cholesky factor not accurate enough in float32")
@@ -333,7 +372,8 @@ class TestOrthogonalizedImpulseResponse:
             idata, shock_order=list(varma_mod.coords["shock"])[::-1], **kwargs
         )
 
-        assert_allclose(irf.irf.values, reordered.irf.values[:, :, ::-1], atol=1e-8)
+        flipped = reordered.irf.isel(structural_shock=slice(None, None, -1))
+        assert_allclose(irf.irf.values, flipped.values, atol=1e-8)
 
     @pytest.mark.parametrize(
         "kwargs, error_msg",
