@@ -80,7 +80,6 @@ def impulse_response_function(
 
         matrices = ss_mod._insert_constant_timestep(matrices, step=n_steps)
         P0, _, c, d, T, Z, R, H, post_Q = matrices
-        x0 = pm.Deterministic("x0_new", pt.zeros(ss_mod.k_states), dims=[ALL_STATE_DIM])
 
         if use_posterior_cov:
             Q = post_Q
@@ -91,8 +90,11 @@ def impulse_response_function(
             if orthogonalize_shocks:
                 Q = pt.linalg.cholesky(Q) / pt.diag(Q)
 
+        # The scan state carries one column per impulse, so the trajectory and the state both take
+        # a trailing impulse axis.
+        empty_trajectory = pt.zeros((n_steps, ss_mod.k_posdef, 1))
+
         if shock_trajectory is None:
-            shock_trajectory = pt.zeros((n_steps, ss_mod.k_posdef))
             if Q is not None:
                 init_shock = pm.MvNormal(
                     "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
@@ -103,11 +105,12 @@ def impulse_response_function(
                     pt.as_tensor_variable(np.atleast_1d(shock_size)),
                     dims=[SHOCK_DIM],
                 )
-            shock_trajectory = pt.set_subtensor(shock_trajectory[0], init_shock)
+            shock_trajectory = pt.set_subtensor(empty_trajectory[0, :, 0], init_shock)
 
         else:
-            shock_trajectory = pt.as_tensor_variable(shock_trajectory)
+            shock_trajectory = pt.as_tensor_variable(shock_trajectory)[..., None]
 
+        x0 = pt.zeros((ss_mod.k_states, 1))
         time_varying_T = "transition" in ss_mod.ssm.time_varying_names
 
         def irf_step(*args):
@@ -116,7 +119,7 @@ def impulse_response_function(
             else:
                 shock, x, c, T, R = args
 
-            next_x = c + T @ x + R @ shock
+            next_x = pt.expand_dims(c, -1) + T @ x + R @ shock
             return next_x
 
         sequences = [shock_trajectory, T] if time_varying_T else [shock_trajectory]
@@ -131,6 +134,9 @@ def impulse_response_function(
             strict=True,
             return_updates=False,
         )
+
+        # Scan stacks over time, giving (time, state, impulse).
+        irf = irf[..., 0]
 
         pm.Deterministic("irf", irf, dims=[TIME_DIM, ALL_STATE_DIM])
 
