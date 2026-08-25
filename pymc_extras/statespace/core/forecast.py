@@ -346,7 +346,8 @@ def _build_forecast_index(
             if start < 0:
                 start = time_index[start]
             if end is not None:
-                # end is inclusive, matching the datetime branch; the start is popped off below.
+                # RangeIndex excludes its stop where date_range includes its end, so add one
+                # to give `end` the same meaning on both index types.
                 forecast_index = pd.RangeIndex(start, end + 1, step=1, dtype="int")
             if periods is not None:
                 forecast_index = pd.RangeIndex(start, start + periods + 1, step=1, dtype="int")

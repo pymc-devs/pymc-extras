@@ -139,11 +139,7 @@ def test_forecast_index(use_datetime_index):
 
 @pytest.mark.parametrize("use_datetime_index", [True, False])
 def test_end_is_inclusive_for_both_index_types(use_datetime_index):
-    """`end` names the last forecast period, whichever index the model was fit on.
-
-    A datetime index reaches it through pd.date_range and an integer one through pd.RangeIndex,
-    and those disagree about their endpoints, so the horizon is pinned against `periods`.
-    """
+    """`end` names the last forecast period, whichever index the model was fit on."""
     horizon = 5
     ss_mod = make_statespace_mod(
         k_endog=1, k_posdef=1, k_states=2, filter_type="standard", verbose=False
@@ -156,7 +152,7 @@ def test_end_is_inclusive_for_both_index_types(use_datetime_index):
     _, from_end = ss_mod._build_forecast_index(time_idx, start=start, end=start + horizon * step)
     _, from_periods = ss_mod._build_forecast_index(time_idx, start=start, periods=horizon)
 
-    assert_index_equal(pd.Index(from_end), pd.Index(from_periods))
+    assert_index_equal(from_end, from_periods)
     assert from_end[-1] == start + horizon * step
 
 
