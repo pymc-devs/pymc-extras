@@ -6,7 +6,7 @@ import xarray as xr
 from pymc import Model, modelcontext
 from xarray import DataTree
 
-from pymc_extras.inference.advi.schedules import ScalarOrSchedule
+from pymc_extras.inference.advi.optimizers import GradientTransformation
 from pymc_extras.inference.advi.training import Trainer
 
 
@@ -16,8 +16,7 @@ def fit_advi(
     n_steps: int = 10_000,
     n_particles: int = 1,
     draws: int = 1_000,
-    learning_rate: ScalarOrSchedule | None = None,
-    clip_norm: float | None = 10.0,
+    optimizer: GradientTransformation | None = None,
     path_derivative_gradient: bool = True,
     random_seed=None,
     backend: str | None = None,
@@ -28,7 +27,7 @@ def fit_advi(
     Fits a mean-field normal approximation to the model posterior in the unconstrained
     space, then returns posterior draws from the fitted guide. A one-shot wrapper around
     :class:`~pymc_extras.inference.advi.training.Trainer` with its default guide; use the
-    trainer directly to keep training, change the learning rate between runs, or sample
+    trainer directly to keep training, change the optimizer between runs, or sample
     more than once.
 
     Parameters
@@ -36,19 +35,14 @@ def fit_advi(
     model : Model, optional
         The PyMC model to fit. If None, the model is inferred from context.
     n_steps : int, optional
-        Number of optimization steps, by default 10_000. Also the horizon the default
-        learning rate schedule anneals over, so it paces the run as well as sizing it.
+        Number of optimization steps, by default 10_000.
     n_particles : int, optional
         Number of guide draws per step used to estimate the ELBO gradient, by default 1.
     draws : int, optional
         Number of posterior draws to sample from the fitted guide, by default 1_000.
-    learning_rate : float or callable, optional
-        Learning rate, or a schedule mapping the step number to one, for the clipped Adam
-        optimizer compiled into the step function. Defaults to a
-        :func:`~pymc_extras.inference.advi.schedules.linear_onecycle_schedule` peaking at
-        0.008 over ``n_steps``.
-    clip_norm : float, optional
-        Clip gradients to this global norm, by default 10. None disables clipping.
+    optimizer : GradientTransformation, optional
+        An optax-like optimizer (actual optax optimizers are compatible). By default,
+        :func:`clipped_adam` is used.
     path_derivative_gradient : bool, optional
         Whether to use the lower-variance path-derivative ("sticking the landing")
         gradient estimator, by default True. It is an unbiased variance reduction (it changes
@@ -76,8 +70,7 @@ def fit_advi(
         init_seed = train_seed = sampling_seed = None
 
     trainer = Trainer(
-        learning_rate=learning_rate,
-        clip_norm=clip_norm,
+        optimizer=optimizer,
         n_particles=n_particles,
         path_derivative_gradient=path_derivative_gradient,
         model=model,

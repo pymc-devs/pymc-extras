@@ -5,13 +5,13 @@ import pytensor
 
 from pymc import Model, compile
 from pymc.pytensorf import rewrite_pregrad
-from pytensor import config
 from pytensor import tensor as pt
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.replace import graph_replace
 
 from pymc_extras.inference.advi.autoguide import AutoGuideModel
 from pymc_extras.inference.advi.objective import advi_objective, get_logp_logq
+from pymc_extras.inference.advi.optimizers import GradientTransformation
 from pymc_extras.inference.advi.pytensorf import vectorize_random_graph
 
 
@@ -26,20 +26,17 @@ class SamplingFn(Protocol):
 def compile_svi_step_fn(
     model: Model,
     guide: AutoGuideModel,
+    optimizer: GradientTransformation,
     draws: int = 1,
     path_derivative_gradient: bool = True,
-    clip_norm: float | None = 10.0,
-    beta1: float = 0.9,
-    beta2: float = 0.999,
-    epsilon: float = 1e-8,
     **compile_kwargs,
 ) -> tuple[TrainingFn, dict[str, SharedVariable], dict[str, SharedVariable]]:
-    """Compile one full SVI step, with clipped-Adam updates applied in-graph.
+    """Compile one full SVI step, with optimizer updates applied in-graph.
 
     The guide parameters and the optimizer state live in shared variables that the
-    compiled function updates in place. Its only input is the learning rate and its
-    only output the negative ELBO estimate, so no parameters or gradients round-trip
-    through Python during training.
+    compiled function updates in place. It takes no inputs and returns only the
+    negative ELBO estimate, so no parameters or gradients round-trip through Python
+    during training.
 
     Together the two returned dicts hold the whole training state: reading their values
     snapshots a run, writing them resumes one exactly.
@@ -47,13 +44,19 @@ def compile_svi_step_fn(
     Returns
     -------
     step_fn :
-        Compiled function ``step_fn(learning_rate) -> negative_elbo``.
+        Compiled function ``step_fn() -> negative_elbo``.
     shared_params : dict
         Maps each guide parameter name to the shared variable holding its value.
     shared_optimizer_state : dict
-        Maps each Adam variable name (the step counter and the two moments per
-        parameter) to the shared variable holding its value.
+        Maps each optimizer state variable name to the shared variable holding its
+        value. Empty for stateless optimizers such as ``sgd``.
     """
+    if optimizer.pytensor is None:
+        raise ValueError(
+            f"The optimizer {optimizer} does not have a PyTensor implementation "
+            "and cannot be compiled into the step function."
+        )
+
     logp, logq = get_logp_logq(model, guide, path_derivative_gradient=path_derivative_gradient)
     scalar_negative_elbo = advi_objective(logp, logq)
     [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
@@ -68,38 +71,19 @@ def compile_svi_step_fn(
 
     grads = pt.grad(rewrite_pregrad(negative_elbo), wrt=shared_params)
 
-    if clip_norm is not None:
-        global_norm = pt.sqrt(pt.sum([pt.sum(pt.square(g)) for g in grads]))
-        scale = pt.minimum(1.0, clip_norm / (global_norm + 1e-12))
-        grads = [g * scale for g in grads]
+    new_grads, updates = optimizer.pytensor(grads, shared_params)
 
-    learning_rate = pt.scalar("learning_rate", dtype=config.floatX)
-    t = pytensor.shared(np.zeros((), dtype="int64"), name="adam_t")
-    t_new = t + 1
-    # The bias-correction powers `beta**t_new` mix a (weak) python float base with an int64
-    # exponent, which pytensor resolves to float64. Under floatX=float32 that upcasts param_new
-    # to float64 and the shared-variable update fails the dtype check. Compute the powers in
-    # floatX so the whole update stays in the parameter dtype.
-    t_new_float = t_new.astype(config.floatX)
-    updates = {t: t_new}
-    shared_optimizer_state = {t.name: t}
-    for shared_param, grad in zip(shared_params, grads):
-        value = shared_param.get_value(borrow=True)
-        m = pytensor.shared(np.zeros_like(value), name=f"adam_m_{shared_param.name}")
-        v = pytensor.shared(np.zeros_like(value), name=f"adam_v_{shared_param.name}")
-        shared_optimizer_state.update({m.name: m, v.name: v})
-        m_new = beta1 * m + (1 - beta1) * grad
-        v_new = beta2 * v + (1 - beta2) * pt.square(grad)
-        m_hat = m_new / (1 - beta1**t_new_float)
-        v_hat = v_new / (1 - beta2**t_new_float)
-        param_new = shared_param - learning_rate * m_hat / (pt.sqrt(v_hat) + epsilon)
-        updates.update({m: m_new, v: v_new, shared_param: param_new})
+    # The optimizer's own state variables are the update keys that are not the guide
+    # parameters themselves.
+    param_ids = {id(param) for param in shared_params}
+    shared_optimizer_state = {var.name: var for var in updates if id(var) not in param_ids}
+
+    for param, grad in zip(shared_params, new_grads):
+        updates[param] = param + grad
 
     compile_kwargs.setdefault("trust_input", True)
 
-    step_fn = compile(
-        inputs=[learning_rate], outputs=negative_elbo, updates=updates, **compile_kwargs
-    )
+    step_fn = compile(inputs=[], outputs=negative_elbo, updates=updates, **compile_kwargs)
 
     shared_params_by_name = {param.name: shared for param, shared in params_to_shared.items()}
 

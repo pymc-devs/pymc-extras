@@ -59,7 +59,7 @@ def test_fit_advi_random_seed_jax(conjugate_model):
 
 def test_fit_continues_and_reset_starts_over(conjugate_model):
     model, *_ = conjugate_model
-    kwargs = dict(model=model, learning_rate=0.01, random_seed=0)
+    kwargs = dict(model=model, random_seed=0)
 
     trainer = Trainer(**kwargs)
     first = trainer.fit(100, random_seed=1)
@@ -114,32 +114,6 @@ def test_trainer_state_is_complete_and_honest(conjugate_model):
     # compile-time configuration is read-only rather than silently ignored
     with pytest.raises(AttributeError):
         trainer.n_particles = 32
-
-
-def test_learning_rate_policy(conjugate_model):
-    model, *_ = conjugate_model
-
-    trainer = Trainer(model=model, learning_rate=0.0, random_seed=0)
-    frozen = trainer.fit(50, random_seed=1)
-    # a zero learning rate leaves Adam's moments moving but the parameters untouched
-    np.testing.assert_allclose(frozen.params["theta_loc"], trainer._init_state.params["theta_loc"])
-
-    trainer.reset()
-    moved = trainer.fit(50, learning_rate=0.05, random_seed=1)
-    assert not np.allclose(moved.params["theta_loc"], frozen.params["theta_loc"])
-
-    # schedules see the trainer's global step, so a resumed fit continues down the ramp
-    # instead of starting a new one
-    scheduled = Trainer(model=model, random_seed=0)
-    opening = scheduled._resolve_learning_rates(500, None, start_step=0)
-    resumed = scheduled._resolve_learning_rates(500, None, start_step=500)
-    assert opening[0] < max(opening)  # the first call ramps up to the peak
-    assert resumed[0] == max(resumed)  # the second starts at it and anneals
-    assert resumed[-1] < resumed[0]
-
-    # and a user-supplied schedule is called with absolute step numbers
-    seen = scheduled._resolve_learning_rates(3, lambda step: float(step), start_step=500)
-    np.testing.assert_array_equal(np.asarray(seen, dtype=float), [500.0, 501.0, 502.0])
 
 
 def test_guide_initialized_at_initial_point():

@@ -11,7 +11,6 @@ from pymc import Model, modelcontext
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.progress_bar import CustomProgress, default_progress_theme
 from pymc.pytensorf import resolve_backend_compile_kwargs
-from pytensor import config as pytensor_config
 from pytensor.tensor.random.type import RandomType
 from rich.console import Console
 from rich.progress import (
@@ -32,7 +31,7 @@ from pymc_extras.inference.advi.compile import (
     compile_sampling_fn,
     compile_svi_step_fn,
 )
-from pymc_extras.inference.advi.schedules import ScalarOrSchedule, linear_onecycle_schedule
+from pymc_extras.inference.advi.optimizers import GradientTransformation, clipped_adam
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 
 
@@ -120,22 +119,18 @@ class Trainer:
     """
     Trainer for stochastic variational inference.
 
-    The trainer *is* the training state: the guide parameters and the Adam moments live
-    in shared variables inside the compiled step function, and :meth:`fit` always
+    The trainer *is* the training state: the guide parameters and the optimizer state
+    live in shared variables inside the compiled step function, and :meth:`fit` always
     continues from wherever they are. Calling ``fit(n)`` twice runs ``2 * n`` steps.
     Use :meth:`reset` to start over and :meth:`load_state` to adopt a snapshot.
 
     Configuration splits along the same line. Everything compiled into the step function
-    (``guide``, ``n_particles``, ``path_derivative_gradient``, ``clip_norm``) is fixed at
-    construction and exposed read-only. ``learning_rate`` is per-run policy: it is read
-    afresh by each :meth:`fit` call, and can be changed between calls or overridden for a
-    single one by passing it to :meth:`fit`.
+    (``guide``, ``optimizer``, ``n_particles``, ``path_derivative_gradient``) is fixed at
+    construction and exposed read-only.
 
-    There is no convergence-based early stopping. ``fit(n)`` runs ``n`` steps, because the
-    default schedule anneals over exactly those ``n`` steps: cutting a run short lands it
-    at whatever rate the schedule had reached, which for an early stop is near the peak.
-    To spend less, ask for fewer steps, which scales the schedule to match. To decide as
-    you go, fit in chunks and look at ``state.loss_history`` between them.
+    There is no convergence-based early stopping. ``fit(n)`` runs ``n`` steps. To spend
+    less, ask for fewer steps. To decide as you go, fit in chunks and look at
+    ``state.loss_history`` between them.
 
     Parameters
     ----------
@@ -143,13 +138,9 @@ class Trainer:
         The guide to fit: an :class:`AutoGuideModel`, or a factory mapping the model
         to one. By default an :func:`AutoDiagonalNormal` guide is built from the
         model (mean-field ADVI).
-    learning_rate : float or callable, optional
-        Learning rate, or a schedule mapping the trainer's global step number to one.
-        Defaults to a :func:`linear_onecycle_schedule` peaking at 0.008 over the whole
-        run. Because schedules see the global step, a follow-up ``fit`` continues down
-        the ramp rather than restarting it.
-    clip_norm : float, optional
-        Clip gradients to this global norm, by default 10. None disables clipping.
+    optimizer : GradientTransformation, optional
+        An optax-like optimizer (actual optax optimizers are compatible). By default
+        a :func:`clipped_adam` optimizer is used.
     n_particles : int, optional
         Number of guide draws per step used to estimate the ELBO gradient, by
         default 1.
@@ -175,7 +166,6 @@ class Trainer:
     ...     pm.Normal("y", mu, 1, observed=[0.5, 1.5])
     ...     trainer = Trainer()
     ...     trainer.fit(10_000)
-    ...     trainer.fit(5_000, learning_rate=1e-4)  # 5_000 more, at a fixed rate
     ...     idata = trainer.sample_posterior(1_000)
     """
 
@@ -183,8 +173,7 @@ class Trainer:
         self,
         *,
         guide: AutoGuideModel | Callable[[Model], AutoGuideModel] | None = None,
-        learning_rate: ScalarOrSchedule | None = None,
-        clip_norm: float | None = 10.0,
+        optimizer: GradientTransformation | None = None,
         n_particles: int = 1,
         path_derivative_gradient: bool = True,
         model: Model | None = None,
@@ -192,8 +181,7 @@ class Trainer:
         compile_kwargs: dict | None = None,
         random_seed=None,
     ):
-        # Per-run policy: read afresh by every fit call
-        self.learning_rate = learning_rate
+        self._optimizer = optimizer
 
         self.model = model
         self.compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
@@ -201,7 +189,6 @@ class Trainer:
 
         # Compiled into the step function on the first fit, hence read-only
         self._guide_factory = guide
-        self._clip_norm = clip_norm
         self._n_particles = n_particles
         self._path_derivative_gradient = path_derivative_gradient
 
@@ -221,9 +208,9 @@ class Trainer:
         return self._guide
 
     @property
-    def clip_norm(self) -> float | None:
-        """Global gradient norm clip. Compiled in, so it cannot be changed after a fit."""
-        return self._clip_norm
+    def optimizer(self) -> GradientTransformation | None:
+        """The optimizer being used. Compiled in, so it cannot be changed after a fit."""
+        return self._optimizer
 
     @property
     def n_particles(self) -> int:
@@ -289,12 +276,14 @@ class Trainer:
         if self._step_fn is not None:
             return
         self._resolve_guide(model)
+        if self._optimizer is None:
+            self._optimizer = clipped_adam()
         self._step_fn, self._shared_params, self._shared_optimizer_state = compile_svi_step_fn(
             model,
             self._guide,
+            self._optimizer,
             draws=self._n_particles,
             path_derivative_gradient=self._path_derivative_gradient,
-            clip_norm=self._clip_norm,
             **self.compile_kwargs,
         )
         # The shared variables still hold their initial values, so this is exactly
@@ -314,45 +303,16 @@ class Trainer:
         )
         self._sampling_draws = draws
 
-    def _resolve_learning_rates(
-        self, n: int, learning_rate: ScalarOrSchedule | None, start_step: int
-    ) -> list:
-        """Materialize the learning rate for every step of a fit call.
-
-        Schedules are functions of the trainer's global step rather than of the offset
-        within the call, so resuming carries on down the ramp instead of starting a new
-        one. The default schedule is sized to the whole run, ``start_step + n``, for the
-        same reason: a follow-up ``fit`` anneals the rest of one cycle.
-
-        Resolved up front so that no python-level schedule call (nor, for the default
-        schedule, an ``np.interp``) happens inside the step loop. The compiled function
-        uses ``trust_input=True``, so these must be 0d arrays rather than scalars.
-        """
-        if learning_rate is None:
-            learning_rate = self.learning_rate
-        if learning_rate is None:
-            learning_rate = linear_onecycle_schedule(
-                transition_steps=start_step + n, peak_value=0.008, pct_start=0.2
-            )
-        dtype = np.dtype(pytensor_config.floatX)
-        if callable(learning_rate):
-            return [
-                np.asarray(learning_rate(step), dtype=dtype)
-                for step in range(start_step, start_step + n)
-            ]
-        return [np.asarray(learning_rate, dtype=dtype)] * n
-
     def fit(
         self,
         n: int = 10_000,
         *,
-        learning_rate: ScalarOrSchedule | None = None,
         random_seed=None,
     ) -> SVIState:
         """
         Run ``n`` more optimization steps, continuing from the current state.
 
-        The guide parameters and the Adam moments live in shared variables updated in
+        The guide parameters and the optimizer state live in shared variables updated in
         place by the compiled step function, so nothing round-trips through Python per
         step and repeated calls pick up where the previous one left off. Call
         :meth:`reset` first to start over.
@@ -360,12 +320,7 @@ class Trainer:
         Parameters
         ----------
         n : int, optional
-            Number of optimization steps to take, by default 10_000. Also the horizon the
-            default learning rate schedule anneals over, so it sets how the run is paced
-            and not just how long it is.
-        learning_rate : float or callable, optional
-            Learning rate, or a schedule mapping the trainer's global step number to
-            one, overriding the trainer's for this call only.
+            Number of optimization steps to take, by default 10_000.
         random_seed : optional
             Seed for the guide draws used to estimate the gradients.
 
@@ -385,7 +340,6 @@ class Trainer:
             _reseed_function_rngs(self._step_fn, random_seed)
 
         start_step = self._step
-        learning_rates = self._resolve_learning_rates(n, learning_rate, start_step)
         step_fn = self._step_fn
         losses: list = []
 
@@ -409,7 +363,7 @@ class Trainer:
                 start_time = None
 
                 for i in range(n):
-                    loss = step_fn(learning_rates[i])
+                    loss = step_fn()
                     if start_time is None:
                         start_time = time.perf_counter()
                     losses.append(loss)
