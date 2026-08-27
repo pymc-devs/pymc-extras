@@ -4,7 +4,6 @@ import pytensor.tensor as pt
 import pytest
 
 from pytensor import function as pytensor_function
-from scipy import special
 
 from pymc_extras.inference.advi.autoguide import (
     AutoDiagonalNormal,
@@ -168,7 +167,7 @@ class TestAutoGuideModel:
 
 class TestAutoDiagonalNormalSampling:
     def test_samples_have_expected_variance(self, simple_model):
-        """Samples from guide should have std ≈ softplus(scale_init)."""
+        """Samples from guide should have std ≈ exp(scale_init)."""
         guide = AutoDiagonalNormal(simple_model)
         x_det = guide.model["x"]
 
@@ -181,7 +180,7 @@ class TestAutoDiagonalNormalSampling:
             [f(*[guide.params_init_values[p] for p in guide.params]) for _ in range(1000)]
         )
 
-        EXPECTED_STD = special.softplus(SCALE_INIT)
+        EXPECTED_STD = np.exp(SCALE_INIT)
 
         np.testing.assert_allclose(np.std(samples), EXPECTED_STD, rtol=0.1)
 
@@ -240,7 +239,7 @@ class TestAutoMultivariateNormal:
         _, logq = get_logp_logq(model, guide, path_derivative_gradient=False)
         diag = pt.arange(6)
         chol = pt.zeros((6, 6))[pt.tril_indices(6)].set(guide["L_packed"])
-        chol = chol[diag, diag].set(pt.softplus(pt.diagonal(chol)))
+        chol = chol[diag, diag].set(pt.exp(pt.diagonal(chol)))
         ref = pm.logp(pm.MvNormal.dist(mu=guide["loc"], chol=chol), guide.latent)
 
         f_logq = pytensor_function(list(guide.params), logq, on_unused_input="ignore")
@@ -279,7 +278,7 @@ class TestAutoLowRankMultivariateNormal:
         # dense MvNormal reference, with W perturbed off its zero init so the rank term is live.
         _, logq = get_logp_logq(model, guide, path_derivative_gradient=False)
         W, d_unc, loc = guide["cov_factor"], guide["cov_diag_unconstrained"], guide["loc"]
-        cov = W @ W.T + pt.diag(pt.softplus(d_unc) ** 2)
+        cov = W @ W.T + pt.diag(pt.exp(d_unc) ** 2)
         ref = pm.logp(pm.MvNormal.dist(mu=loc, cov=cov), guide.latent)
 
         values = dict(guide.params_init_values)
