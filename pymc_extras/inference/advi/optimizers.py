@@ -150,10 +150,17 @@ def scale_by_learning_rate(learning_rate: ScalarOrSchedule) -> GradientTransform
         lr = learning_rate(count) if callable(learning_rate) else learning_rate
         return {name: -lr * g for name, g in updates.items()}, {"count": count + 1}
 
-    # PyTensor path: only works with a constant learning rate (schedules are
-    # Python callables and cannot be baked into the graph).
+    # PyTensor path: a constant learning rate is baked in directly; a schedule is
+    # evaluated against a step counter shared variable, so the schedule must accept
+    # a symbolic step count (the built-in linear_onecycle_schedule does).
     if callable(learning_rate):
-        _pytensor_impl = None
+
+        def _pytensor_impl(grads, shared_params):
+            t = pytensor.shared(np.zeros((), dtype="int64"), name="lr_t")
+            lr = learning_rate(t)
+            t_new = t + 1
+            return [g * (-lr) for g in grads], {t: t_new}
+
     else:
         lr = learning_rate
 
@@ -238,13 +245,19 @@ def linear_onecycle_schedule(
     The learning rate ramps from ``peak_value / div_factor`` to ``peak_value`` over the
     first ``pct_start`` fraction of ``transition_steps``, anneals back down by
     ``pct_final``, and decays to ``peak_value / div_factor / final_div_factor`` at the end.
+
+    The returned schedule accepts either a numeric step count (returning a float) or a
+    symbolic PyTensor step count (returning a symbolic learning rate), so it works both
+    in the Python update path and baked into the compiled step function.
     """
     init_value = peak_value / div_factor
     end_value = init_value / final_div_factor
     boundaries = np.array([0.0, pct_start, pct_final, 1.0]) * transition_steps
     values = np.array([init_value, peak_value, init_value, end_value])
 
-    def schedule(count: int) -> float:
+    def schedule(count):
+        if isinstance(count, pt.TensorVariable):
+            return pt.interp(count, boundaries, values)
         return float(np.interp(count, boundaries, values))
 
     return schedule

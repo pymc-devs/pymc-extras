@@ -113,18 +113,35 @@ def test_chain_pytensor_composes():
     assert abs(step()) < 1e-3
 
 
-def test_schedule_has_no_pytensor():
-    """A learning-rate schedule cannot be baked into the graph, so pytensor is None."""
+def test_schedule_has_pytensor():
+    """A schedule is evaluated against a step counter, so it has a PyTensor impl."""
     schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.1)
     opt = scale_by_learning_rate(schedule)
-    assert opt.pytensor is None
+    assert opt.pytensor is not None
 
 
-def test_chain_with_schedule_has_no_pytensor():
-    """If any link in the chain lacks a PyTensor impl, the whole chain's pytensor is None."""
+def test_chain_with_schedule_has_pytensor():
+    """A schedule composes with other transforms in a chain."""
     schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.1)
     opt = chain(clip_by_global_norm(1.0), adam(0.1), scale_by_learning_rate(schedule))
-    assert opt.pytensor is None
+    assert opt.pytensor is not None
+
+
+def test_schedule_pytensor_follows_schedule():
+    """The compiled schedule evaluates the learning rate against the step counter."""
+    schedule = linear_onecycle_schedule(transition_steps=10, peak_value=0.1)
+    opt = scale_by_learning_rate(schedule)
+
+    x = pytensor.shared(np.array(1.0), name="x")
+    new_grads, updates = opt.pytensor([pt.constant(1.0)], [x])
+    # new_grads[0] = -lr * 1.0, so -new_grads[0] is the learning rate
+    lr = -new_grads[0]
+    updates[x] = x + new_grads[0]
+    step = pytensor.compile.function(inputs=[], outputs=lr, updates=updates)
+
+    lrs = [float(step()) for _ in range(10)]
+    expected = [schedule(i) for i in range(10)]
+    np.testing.assert_allclose(lrs, expected)
 
 
 def test_rmsprop_pytensor_minimizes_quadratic():

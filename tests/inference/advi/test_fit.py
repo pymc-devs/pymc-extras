@@ -3,7 +3,7 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
-from pymc_extras.inference.advi import Trainer, fit_advi
+from pymc_extras.inference.advi import Trainer, clipped_adam, fit_advi, linear_onecycle_schedule
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
 
 
@@ -39,6 +39,19 @@ def test_fit_advi_random_seed(conjugate_model):
 
     np.testing.assert_array_equal(draws_a, draws_b)
     assert not np.array_equal(draws_a, draws_c)
+
+
+def test_fit_with_schedule_optimizer(conjugate_model):
+    # A learning-rate schedule must be usable through the compiled Trainer path
+    model, post_mean, post_var = conjugate_model
+    schedule = linear_onecycle_schedule(transition_steps=2_000, peak_value=0.1)
+    trainer = Trainer(optimizer=clipped_adam(schedule), model=model)
+
+    trainer.fit(2_000, random_seed=1)
+    idata = trainer.sample_posterior(1_000, random_seed=2)
+
+    theta = idata["posterior"].dataset["theta"].values.ravel()
+    np.testing.assert_allclose(theta.mean(), post_mean, atol=0.1)
 
 
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
