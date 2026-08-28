@@ -3,7 +3,15 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
-from pymc_extras.inference.advi import Trainer, clipped_adam, fit_advi, linear_onecycle_schedule
+from pymc_extras.inference.advi import (
+    Trainer,
+    chain,
+    clip_by_global_norm,
+    fit_advi,
+    linear_onecycle_schedule,
+    scale_by_adam,
+    scale_by_learning_rate,
+)
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
 
 
@@ -45,7 +53,8 @@ def test_fit_with_schedule_optimizer(conjugate_model):
     # A learning-rate schedule must be usable through the compiled Trainer path
     model, post_mean, post_var = conjugate_model
     schedule = linear_onecycle_schedule(transition_steps=2_000, peak_value=0.1)
-    trainer = Trainer(optimizer=clipped_adam(schedule), model=model)
+    optimizer = chain(clip_by_global_norm(10.0), scale_by_adam(), scale_by_learning_rate(schedule))
+    trainer = Trainer(optimizer=optimizer, model=model)
 
     trainer.fit(2_000, random_seed=1)
     idata = trainer.sample_posterior(1_000, random_seed=2)

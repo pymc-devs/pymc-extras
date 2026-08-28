@@ -10,6 +10,7 @@ from pymc_extras.inference.advi.optimizers import (
     clipped_adam,
     linear_onecycle_schedule,
     rmsprop,
+    scale_by_adam,
     scale_by_learning_rate,
     scale_by_rmsprop,
     sgd,
@@ -47,9 +48,9 @@ def test_clip_by_global_norm():
     np.testing.assert_allclose(updates["x"], 0.3)
 
 
-def test_clipped_adam_with_schedule_runs():
+def test_schedule_composed_with_adam_runs():
     schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.1)
-    optimizer = clipped_adam(schedule)
+    optimizer = chain(clip_by_global_norm(10.0), scale_by_adam(), scale_by_learning_rate(schedule))
     params = {"x": np.array(5.0)}
     state = optimizer.init(params)
 
@@ -123,7 +124,7 @@ def test_schedule_has_pytensor():
 def test_chain_with_schedule_has_pytensor():
     """A schedule composes with other transforms in a chain."""
     schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.1)
-    opt = chain(clip_by_global_norm(1.0), adam(0.1), scale_by_learning_rate(schedule))
+    opt = chain(clip_by_global_norm(1.0), scale_by_adam(), scale_by_learning_rate(schedule))
     assert opt.pytensor is not None
 
 
