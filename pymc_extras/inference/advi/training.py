@@ -110,7 +110,7 @@ class SVIState:
     """A complete snapshot of a :class:`Trainer`.
 
     Everything needed to resume training exactly, so that
-    ``Trainer(...).load_state(state).fit(n)`` continues a run the same way a second
+    ``Trainer(...).fit(n, state=state)`` continues a run the same way a second
     ``fit(n)`` on the original trainer would.
     """
 
@@ -124,10 +124,11 @@ class Trainer:
     """
     Trainer for stochastic variational inference.
 
-    The trainer *is* the training state: the guide parameters and the optimizer state
-    live in shared variables inside the compiled step function, and :meth:`fit` always
-    continues from wherever they are. Calling ``fit(n)`` twice runs ``2 * n`` steps.
-    Use :meth:`reset` to start over and :meth:`load_state` to adopt a snapshot.
+    The trainer owns the training loop: the guide parameters and the optimizer state
+    live in shared variables inside the compiled step function. :meth:`fit` continues
+    from the current state, and resumes from a specific snapshot when passed a previous
+    :class:`SVIState`; the last state is kept on the trainer, where
+    :meth:`sample_posterior` picks it up.
 
     Configuration splits along the same line. Everything compiled into the step function
     (``guide``, ``optimizer``, ``n_particles``, ``path_derivative_gradient``) is fixed at
@@ -199,11 +200,11 @@ class Trainer:
         self._step_fn: TrainingFn | None = None
         self._shared_params: dict | None = None
         self._shared_optimizer_state: dict | None = None
-        self._init_state: SVIState | None = None
         self._sampling_fn: TrainingFn | None = None
         self._sampling_draws: int | None = None
         self._loss_history: list[float] = []
         self._step = 0
+        self.state: SVIState | None = None
 
     @property
     def guide(self) -> AutoGuideModel | None:
@@ -230,11 +231,8 @@ class Trainer:
         """Total number of optimization steps taken so far."""
         return self._step
 
-    @property
-    def state(self) -> SVIState:
-        """Snapshot of the current training state, read out of the shared variables."""
-        if self._step_fn is None:
-            raise RuntimeError("The trainer has not been fitted yet.")
+    def _snapshot(self) -> SVIState:
+        """Read the current training state out of the shared variables."""
         return SVIState(
             params={
                 name: shared.get_value().copy() for name, shared in self._shared_params.items()
@@ -247,10 +245,8 @@ class Trainer:
             loss_history=np.asarray(self._loss_history, dtype=float),
         )
 
-    def load_state(self, state: SVIState, *, model: Model | None = None) -> None:
-        """Adopt a snapshot, so that the next :meth:`fit` continues from it."""
-        if self._step_fn is None:
-            self._compile_step_fn(modelcontext(model))
+    def _restore(self, state: SVIState) -> None:
+        """Write a snapshot back into the shared variables, step counter, and history."""
         for name, shared in self._shared_params.items():
             shared.set_value(np.asarray(state.params[name]))
         for name, shared in self._shared_optimizer_state.items():
@@ -258,55 +254,37 @@ class Trainer:
         self._step = state.step
         self._loss_history = list(state.loss_history)
 
-    def reset(self) -> None:
-        """Restore the parameters, optimizer state, and loss history to their initial values."""
-        if self._step_fn is not None:
-            self.load_state(self._init_state)
-
-    def _resolve_guide(self, model: Model) -> None:
-        if self._guide is not None:
-            return
+    def _build_guide(self, model: Model) -> AutoGuideModel:
         # Sacrificial detached model context: a guide built naively with a plain
         # Model() inside the user's model context lands here instead of writing
         # into their model
         with Model(model=None):
             if callable(self._guide_factory):
-                self._guide = self._guide_factory(model)
-            else:
-                self._guide = AutoDiagonalNormal(model, random_seed=self.random_seed)
+                return self._guide_factory(model)
+            return AutoDiagonalNormal(model, random_seed=self.random_seed)
 
-    def _compile_step_fn(self, model: Model) -> None:
-        """Compile the step function once. Its shared variables hold all training state."""
-        if self._step_fn is not None:
-            return
-        self._resolve_guide(model)
-        if self._optimizer is None:
-            self._optimizer = clipped_adam()
-        self._step_fn, self._shared_params, self._shared_optimizer_state = compile_svi_step_fn(
+    def _compile_step_fn(
+        self, model: Model, guide: AutoGuideModel, optimizer: GradientTransformation
+    ) -> tuple[TrainingFn, dict[str, SharedVariable], dict[str, SharedVariable]]:
+        """Compile the step function, returning it and its shared variables."""
+        return compile_svi_step_fn(
             model,
-            self._guide,
-            self._optimizer,
+            guide,
+            optimizer,
             draws=self._n_particles,
             path_derivative_gradient=self._path_derivative_gradient,
             logp_scalings=self._logp_scalings_for(model),
             **self.compile_kwargs,
         )
-        # The shared variables still hold their initial values, so this is exactly
-        # what reset() restores
-        self._init_state = self.state
 
-    def _compile_sampling_fn(self, model: Model, draws: int) -> None:
-        """Compile the posterior sampling function, reusing a previous one when draws match."""
-        if self._sampling_fn is not None and self._sampling_draws == draws:
-            return
-        self._resolve_guide(model)
-        self._sampling_fn = compile_sampling_fn(
+    def _compile_sampling_fn(self, model: Model, guide: AutoGuideModel, draws: int) -> TrainingFn:
+        """Compile the posterior sampling function."""
+        return compile_sampling_fn(
             model=model,
-            guide=self._guide,
+            guide=guide,
             draws=draws,
             **self.compile_kwargs,
         )
-        self._sampling_draws = draws
 
     def _prepare_data_stream(
         self,
@@ -314,24 +292,26 @@ class Trainer:
         first_batch: dict[str, Any],
         observeds: list | None,
         total_size: int | None,
-    ) -> Model:
+    ) -> tuple[Model, dict[str, SharedVariable], dict[str, float]]:
         """Bind the model to a data stream, observing the variables named in ``observeds``.
 
         A free RV in ``observeds`` is observed *once* with :func:`pymc.observe`,
         through a shared variable initialized from the first batch, so later batches
         stream in with a ``set_value`` instead of a model transform and recompile. A
         ``pm.Data`` variable in ``observeds`` needs no transform and is streamed with
-        ``set_data`` like any other batch key. The resulting model is cached: the
-        guide, the compiled functions, and :meth:`sample_posterior` all use it.
+        ``set_data`` like any other batch key.
 
         When ``total_size`` (the dataset row count ``N``) is known, the
         log-likelihood of each variable in ``observeds`` is rescaled by
         ``N / batch_rows`` so the minibatch estimate is unbiased for the full-data
         one; variables already carrying their own ``total_size`` in the model are
         left alone.
+
+        Returns the bound model, the shared variables the stream writes into, and the
+        per-name likelihood scalings; the caller caches them on the trainer.
         """
-        if self._fit_model is not None:
-            return self._fit_model
+        stream_shareds: dict[str, SharedVariable] = {}
+        logp_scalings: dict[str, float] = {}
 
         def likelihood_scale(name: str) -> float | None:
             if total_size is None or name not in first_batch:
@@ -355,7 +335,7 @@ class Trainer:
                             # N / batch_size factor, so adding ours would scale twice
                             continue
                         if var in ancestors([model.rvs_to_values[rv]]):
-                            self._logp_scalings[rv.name] = scale
+                            logp_scalings[rv.name] = scale
                 continue
             if name not in first_batch:
                 raise ValueError(
@@ -363,11 +343,9 @@ class Trainer:
                     f"batch has no entry for it."
                 )
             value = np.asarray(first_batch[name], dtype=var.dtype)
-            to_observe[name] = self._stream_shareds[name] = pytensor.shared(
-                value, name=f"{name}_data"
-            )
+            to_observe[name] = stream_shareds[name] = pytensor.shared(value, name=f"{name}_data")
             if (scale := likelihood_scale(name)) is not None:
-                self._logp_scalings[name] = scale
+                logp_scalings[name] = scale
         if to_observe:
             model = pm.observe(model, to_observe)
 
@@ -378,7 +356,7 @@ class Trainer:
         # declares the observations via pm.Data.
         if total_size is not None:
             for name in first_batch:
-                if name in self._logp_scalings:
+                if name in logp_scalings:
                     continue  # already handled via observeds or a free RV above
                 var = model[name]
                 if not isinstance(var, SharedVariable):
@@ -389,10 +367,9 @@ class Trainer:
                     if var in ancestors([model.rvs_to_values[rv]]):
                         value = np.asarray(first_batch[name])
                         scale = total_size / (value.shape[0] if value.ndim else 1)
-                        self._logp_scalings[rv.name] = scale
+                        logp_scalings[rv.name] = scale
 
-        self._fit_model = model
-        return model
+        return model, stream_shareds, logp_scalings
 
     def _logp_scalings_for(self, model: Model) -> dict | None:
         """Resolve the cached per-name likelihood scalings against the fit model."""
@@ -414,17 +391,19 @@ class Trainer:
         n: int = 10_000,
         data: Iterable[dict[str, Any]] | None = None,
         *,
+        state: SVIState | None = None,
         model: Model | None = None,
         observeds: list | None = None,
         random_seed=None,
     ) -> SVIState:
         """
-        Run ``n`` more optimization steps, continuing from the current state.
+        Run ``n`` optimization steps.
 
         The guide parameters and the optimizer state live in shared variables updated in
         place by the compiled step function, so nothing round-trips through Python per
-        step and repeated calls pick up where the previous one left off. Call
-        :meth:`reset` first to start over.
+        step. Repeated calls continue from the current state; pass a previous
+        :class:`SVIState` to resume from a specific snapshot. The final state is stored
+        on the trainer.
 
         Parameters
         ----------
@@ -440,6 +419,9 @@ class Trainer:
             free RVs, see below. If the iterable supports ``len``, that is taken
             as the total dataset row count ``N`` (as for a torch-style dataloader
             that yields minibatches of a dataset of ``N`` rows).
+        state : SVIState, optional
+            Previous state to resume training from. If None, continues from the
+            current state.
         model : Model, optional
             The PyMC model to fit. If None, the model is taken from the context
             stack.
@@ -460,8 +442,7 @@ class Trainer:
         Returns
         -------
         SVIState
-            A snapshot of the trainer after the call, the same value as
-            :attr:`state`.
+            The final training state, also stored on the trainer.
         """
         if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
             raise ValueError(f"n must be a positive integer (the number of fit steps), got {n!r}")
@@ -478,7 +459,13 @@ class Trainer:
             first_batch = next(stream, None)
             if first_batch is None:
                 raise ValueError("the data iterator yielded no batches")
-            model = self._prepare_data_stream(model, first_batch, observeds, total_size)
+            if self._fit_model is None:
+                model, self._stream_shareds, self._logp_scalings = self._prepare_data_stream(
+                    model, first_batch, observeds, total_size
+                )
+                self._fit_model = model
+            else:
+                model = self._fit_model
             self._apply_batch(model, first_batch)
         elif observeds:
             raise ValueError("observeds requires a data iterator to stream the observations from")
@@ -487,7 +474,16 @@ class Trainer:
             # and compiled functions belong to it, not to the original model
             model = self._fit_model
 
-        self._compile_step_fn(model)
+        if self._step_fn is None:
+            if self._guide is None:
+                self._guide = self._build_guide(model)
+            if self._optimizer is None:
+                self._optimizer = clipped_adam()
+            self._step_fn, self._shared_params, self._shared_optimizer_state = (
+                self._compile_step_fn(model, self._guide, self._optimizer)
+            )
+        if state is not None:
+            self._restore(state)
 
         if random_seed is not None:
             _reseed_function_rngs(self._step_fn, random_seed)
@@ -558,6 +554,7 @@ class Trainer:
         self._loss_history.extend(np.asarray(losses, dtype=float).tolist())
         self._step += len(losses)
 
+        self.state = self._snapshot()
         return self.state
 
     def sample_posterior(
@@ -576,7 +573,8 @@ class Trainer:
         draws : int, optional
             Number of posterior samples to draw, by default 1_000.
         state : SVIState, optional
-            Snapshot to sample from. Defaults to the trainer's current state.
+            Snapshot to sample from. Defaults to the state of the last
+            :meth:`fit` call.
         random_seed : optional
             Seed for the posterior draws.
         model : Model, optional
@@ -590,11 +588,17 @@ class Trainer:
         model = modelcontext(model)
         if state is None:
             state = self.state
+        if state is None:
+            raise RuntimeError("The trainer has not been fitted yet.")
 
         # When a data stream was used, the guide and compiled functions belong to the
         # stream-observed model, whose observed RVs are excluded from the posterior.
         fit_model = self._fit_model if self._fit_model is not None else model
-        self._compile_sampling_fn(fit_model, draws)
+        if self._sampling_fn is None or self._sampling_draws != draws:
+            if self._guide is None:
+                self._guide = self._build_guide(fit_model)
+            self._sampling_fn = self._compile_sampling_fn(fit_model, self._guide, draws)
+            self._sampling_draws = draws
 
         if random_seed is not None:
             _reseed_function_rngs(self._sampling_fn, random_seed)

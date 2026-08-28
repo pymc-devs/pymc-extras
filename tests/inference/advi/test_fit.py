@@ -5,12 +5,16 @@ import pytest
 
 from pymc_extras.inference.advi import (
     Trainer,
+    adam,
     chain,
     clip_by_global_norm,
+    clipped_adam,
     fit_advi,
     linear_onecycle_schedule,
+    rmsprop,
     scale_by_adam,
     scale_by_learning_rate,
+    sgd,
 )
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
 
@@ -80,11 +84,10 @@ def test_fit_advi_random_seed_jax(conjugate_model):
     assert not np.array_equal(draws_a, draws_c)
 
 
-def test_fit_continues_and_reset_starts_over(conjugate_model):
+def test_fit_continues(conjugate_model):
     model, *_ = conjugate_model
-    kwargs = dict(random_seed=0)
 
-    trainer = Trainer(**kwargs)
+    trainer = Trainer(random_seed=0)
     with model:
         first = trainer.fit(100, random_seed=1)
         second = trainer.fit(100, random_seed=1)
@@ -96,31 +99,35 @@ def test_fit_continues_and_reset_starts_over(conjugate_model):
     np.testing.assert_array_equal(second.loss_history[:100], first.loss_history)
     assert not np.allclose(first.params["theta_loc"], second.params["theta_loc"])
 
-    # a fresh trainer resuming from the snapshot matches continuing in place, which
-    # requires the Adam moments to travel with the state
-    resumed = Trainer(**kwargs)
-    with model:
-        resumed.load_state(first)
-        resumed_state = resumed.fit(100, random_seed=1)
-    np.testing.assert_allclose(resumed_state.params["theta_loc"], second.params["theta_loc"])
-    np.testing.assert_allclose(resumed_state.loss_history, second.loss_history)
 
-    # reset returns the trainer to its initial state, so the run repeats exactly
-    trainer.reset()
-    assert trainer.step == 0
-    assert trainer.state.loss_history.size == 0
+@pytest.mark.parametrize("make_optimizer", [clipped_adam, sgd, rmsprop, adam])
+def test_snapshot_restore_is_optimizer_agnostic(conjugate_model, make_optimizer):
+    model, *_ = conjugate_model
+    optimizer = make_optimizer(0.01)
+
+    trainer = Trainer(optimizer=optimizer)
     with model:
-        repeated = trainer.fit(100, random_seed=1)
-    np.testing.assert_allclose(repeated.params["theta_loc"], first.params["theta_loc"])
-    np.testing.assert_allclose(repeated.loss_history, first.loss_history)
+        first = trainer.fit(50, random_seed=1)
+        second = trainer.fit(50, random_seed=1)
+
+    resumed = Trainer(optimizer=optimizer)
+    with model:
+        resumed_state = resumed.fit(50, state=first, random_seed=1)
+
+    for name in first.params:
+        np.testing.assert_allclose(resumed_state.params[name], second.params[name])
+    for name in second.optimizer_state:
+        np.testing.assert_allclose(
+            resumed_state.optimizer_state[name], second.optimizer_state[name]
+        )
+    np.testing.assert_allclose(resumed_state.loss_history, second.loss_history)
 
 
 def test_trainer_state_is_complete_and_honest(conjugate_model):
     model, *_ = conjugate_model
     trainer = Trainer(random_seed=0)
 
-    with pytest.raises(RuntimeError, match="not been fitted"):
-        trainer.state
+    assert trainer.state is None
 
     with model:
         state = trainer.fit(50, random_seed=1)
