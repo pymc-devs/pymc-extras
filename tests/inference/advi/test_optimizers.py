@@ -66,11 +66,13 @@ def test_linear_onecycle_schedule_shape():
         transition_steps=1000, peak_value=0.01, pct_start=0.2, div_factor=25.0
     )
 
-    np.testing.assert_allclose(schedule(0), 0.01 / 25)
-    np.testing.assert_allclose(schedule(200), 0.01)  # peak at pct_start
-    assert schedule(100) < schedule(200)  # warmup
-    assert schedule(500) < schedule(200)  # anneal
-    assert schedule(1000) < schedule(0)  # final decay below init
+    lrs = schedule(pt.constant([0, 100, 200, 500, 1000], dtype="int64")).eval()
+
+    np.testing.assert_allclose(lrs[0], 0.01 / 25)
+    np.testing.assert_allclose(lrs[2], 0.01)  # peak at pct_start
+    assert lrs[1] < lrs[2]  # warmup
+    assert lrs[3] < lrs[2]  # anneal
+    assert lrs[4] < lrs[0]  # final decay below init
 
 
 def _make_quadratic_step(optimizer, init_value=5.0):
@@ -141,7 +143,7 @@ def test_schedule_pytensor_follows_schedule():
     step = pytensor.compile.function(inputs=[], outputs=lr, updates=updates)
 
     lrs = [float(step()) for _ in range(10)]
-    expected = [schedule(i) for i in range(10)]
+    expected = schedule(pt.arange(10, dtype="int64")).eval()
     np.testing.assert_allclose(lrs, expected)
 
 

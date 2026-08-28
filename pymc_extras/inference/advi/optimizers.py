@@ -6,7 +6,7 @@ import pytensor
 from pytensor import config
 from pytensor import tensor as pt
 
-Schedule = Callable[[int], float]
+Schedule = Callable[[pt.TensorVariable], pt.TensorVariable]
 
 
 class GradientTransformation:
@@ -160,7 +160,7 @@ def scale_by_schedule(step_size_fn: Schedule) -> GradientTransformation:
 
     def update(updates, state, params=None):
         count = state["count"]
-        lr = step_size_fn(count)
+        lr = step_size_fn(pt.constant(count, dtype="int64")).eval()
         return {name: -lr * g for name, g in updates.items()}, {"count": count + 1}
 
     def _pytensor_impl(grads, shared_params):
@@ -255,18 +255,12 @@ def linear_onecycle_schedule(
     first ``pct_start`` fraction of ``transition_steps``, anneals back down by
     ``pct_final``, and decays to ``peak_value / div_factor / final_div_factor`` at the end.
 
-    The returned schedule accepts either a numeric step count (returning a float) or a
-    symbolic PyTensor step count (returning a symbolic learning rate), so it works both
-    in the Python update path and baked into the compiled step function.
+    The returned schedule maps a symbolic step count to a symbolic learning rate, so it
+    can be baked into the compiled step function.
     """
     init_value = peak_value / div_factor
     end_value = init_value / final_div_factor
     boundaries = np.array([0.0, pct_start, pct_final, 1.0]) * transition_steps
     values = np.array([init_value, peak_value, init_value, end_value])
 
-    def schedule(count):
-        if isinstance(count, pt.TensorVariable):
-            return pt.interp(count, boundaries, values)
-        return float(np.interp(count, boundaries, values))
-
-    return schedule
+    return lambda count: pt.interp(count, boundaries, values)
