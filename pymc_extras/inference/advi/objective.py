@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytensor.tensor as pt
+
 from pymc import Model
 from pytensor.graph.replace import graph_replace
 from pytensor.tensor import TensorVariable
@@ -53,11 +55,11 @@ def get_logp_logq(
     }
 
     if logp_scalings:
-        scaled = set(logp_scalings)
-        rest = [var for var in (*model.basic_RVs, *model.potentials) if var not in scaled]
-        model_logp = model.logp(vars=rest)
-        for var, scale in logp_scalings.items():
-            model_logp = model_logp + scale * model.logp(vars=[var])
+        logps = model.logp(sum=False)
+        all_vars = model.free_RVs + model.observed_RVs + model.potentials
+        scales = pt.constant([logp_scalings.get(var, 1.0) for var in all_vars])
+        summed_logps = pt.stack([pt.sum(logp) for logp in logps])
+        model_logp = pt.dot(scales, summed_logps)
     else:
         model_logp = model.logp()
 
