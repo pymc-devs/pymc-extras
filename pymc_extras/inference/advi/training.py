@@ -152,9 +152,6 @@ class Trainer:
     path_derivative_gradient : bool, optional
         Whether to use the lower-variance path-derivative ("sticking the landing")
         gradient estimator, by default True.
-    model : Model, optional
-        The PyMC model to fit. If None, the model is taken from the context stack
-        when :meth:`fit` or :meth:`sample_posterior` is called.
     backend : str, optional
         PyTensor backend to compile the training and sampling functions with
         (e.g. "numba", "jax", "c"). Mutually exclusive with ``compile_kwargs["mode"]``.
@@ -181,14 +178,12 @@ class Trainer:
         optimizer: GradientTransformation | None = None,
         n_particles: int = 1,
         path_derivative_gradient: bool = True,
-        model: Model | None = None,
         backend: str | None = None,
         compile_kwargs: dict | None = None,
         random_seed=None,
     ):
         self._optimizer = optimizer
 
-        self.model = model
         self.compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
         self.random_seed = random_seed
 
@@ -252,9 +247,10 @@ class Trainer:
             loss_history=np.asarray(self._loss_history, dtype=float),
         )
 
-    def load_state(self, state: SVIState) -> None:
+    def load_state(self, state: SVIState, *, model: Model | None = None) -> None:
         """Adopt a snapshot, so that the next :meth:`fit` continues from it."""
-        self._compile_step_fn(modelcontext(self.model))
+        if self._step_fn is None:
+            self._compile_step_fn(modelcontext(model))
         for name, shared in self._shared_params.items():
             shared.set_value(np.asarray(state.params[name]))
         for name, shared in self._shared_optimizer_state.items():
@@ -446,7 +442,7 @@ class Trainer:
             that yields minibatches of a dataset of ``N`` rows).
         model : Model, optional
             The PyMC model to fit. If None, the model is taken from the context
-            stack (or the model passed at construction).
+            stack.
         observeds : list of str or variable, optional
             Variables whose entry in the ``data`` dictionaries is an observation.
             A variable that is a ``pm.Data`` placeholder is streamed into as usual;
@@ -470,7 +466,7 @@ class Trainer:
         if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
             raise ValueError(f"n must be a positive integer (the number of fit steps), got {n!r}")
 
-        model = modelcontext(model if model is not None else self.model)
+        model = modelcontext(model)
 
         stream = None
         if data is not None:
@@ -584,15 +580,14 @@ class Trainer:
         random_seed : optional
             Seed for the posterior draws.
         model : Model, optional
-            Model context to sample within. Defaults to the active model context
-            (or the model passed at construction).
+            Model context to sample within. Defaults to the active model context.
 
         Returns
         -------
         DataTree
             Samples from the guide posterior for each latent variable.
         """
-        model = modelcontext(model if model is not None else self.model)
+        model = modelcontext(model)
         if state is None:
             state = self.state
 

@@ -54,10 +54,11 @@ def test_fit_with_schedule_optimizer(conjugate_model):
     model, post_mean, post_var = conjugate_model
     schedule = linear_onecycle_schedule(transition_steps=2_000, peak_value=0.1)
     optimizer = chain(clip_by_global_norm(10.0), scale_by_adam(), scale_by_learning_rate(schedule))
-    trainer = Trainer(optimizer=optimizer, model=model)
+    trainer = Trainer(optimizer=optimizer)
 
-    trainer.fit(2_000, random_seed=1)
-    idata = trainer.sample_posterior(1_000, random_seed=2)
+    with model:
+        trainer.fit(2_000, random_seed=1)
+        idata = trainer.sample_posterior(1_000, random_seed=2)
 
     theta = idata["posterior"].dataset["theta"].values.ravel()
     np.testing.assert_allclose(theta.mean(), post_mean, atol=0.1)
@@ -81,11 +82,12 @@ def test_fit_advi_random_seed_jax(conjugate_model):
 
 def test_fit_continues_and_reset_starts_over(conjugate_model):
     model, *_ = conjugate_model
-    kwargs = dict(model=model, random_seed=0)
+    kwargs = dict(random_seed=0)
 
     trainer = Trainer(**kwargs)
-    first = trainer.fit(100, random_seed=1)
-    second = trainer.fit(100, random_seed=1)
+    with model:
+        first = trainer.fit(100, random_seed=1)
+        second = trainer.fit(100, random_seed=1)
 
     # fit continues rather than starting over: the step count and history accumulate,
     # and the parameters keep moving
@@ -97,8 +99,9 @@ def test_fit_continues_and_reset_starts_over(conjugate_model):
     # a fresh trainer resuming from the snapshot matches continuing in place, which
     # requires the Adam moments to travel with the state
     resumed = Trainer(**kwargs)
-    resumed.load_state(first)
-    resumed_state = resumed.fit(100, random_seed=1)
+    with model:
+        resumed.load_state(first)
+        resumed_state = resumed.fit(100, random_seed=1)
     np.testing.assert_allclose(resumed_state.params["theta_loc"], second.params["theta_loc"])
     np.testing.assert_allclose(resumed_state.loss_history, second.loss_history)
 
@@ -106,19 +109,21 @@ def test_fit_continues_and_reset_starts_over(conjugate_model):
     trainer.reset()
     assert trainer.step == 0
     assert trainer.state.loss_history.size == 0
-    repeated = trainer.fit(100, random_seed=1)
+    with model:
+        repeated = trainer.fit(100, random_seed=1)
     np.testing.assert_allclose(repeated.params["theta_loc"], first.params["theta_loc"])
     np.testing.assert_allclose(repeated.loss_history, first.loss_history)
 
 
 def test_trainer_state_is_complete_and_honest(conjugate_model):
     model, *_ = conjugate_model
-    trainer = Trainer(model=model, random_seed=0)
+    trainer = Trainer(random_seed=0)
 
     with pytest.raises(RuntimeError, match="not been fitted"):
         trainer.state
 
-    state = trainer.fit(50, random_seed=1)
+    with model:
+        state = trainer.fit(50, random_seed=1)
 
     # the returned state is the trainer's state, and both read the live shared variables
     for name, value in trainer.state.params.items():
