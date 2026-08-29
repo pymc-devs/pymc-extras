@@ -88,6 +88,32 @@ class AutoGuideModel:
         """
         return self.model["latent"]
 
+    def fit_quantities(self, params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Describe the fitted approximation by its mean and its covariance parameterization.
+
+        Every guide reports ``mean_vector``; the rest is whatever that family stores, so the
+        family is identifiable from which entries are present. The mean-field guide keeps a
+        marginal standard deviation per parameter, and reports it exponentiated rather than in
+        the unconstrained space its optimizer works in.
+
+        Parameters
+        ----------
+        params : dict of str to ndarray
+            Guide parameter values, keyed as in :attr:`params_init_values`.
+
+        Returns
+        -------
+        quantities : dict of str to ndarray
+            ``mean_vector`` and this family's covariance entries, flattened in the order the
+            model's free RVs appear in.
+        """
+        locs = [params[p.name].ravel() for p in self.params if p.name.endswith("_loc")]
+        scales = [params[p.name].ravel() for p in self.params if p.name.endswith("_scale")]
+        return {
+            "mean_vector": np.concatenate(locs),
+            "standard_deviation": np.exp(np.concatenate(scales)),
+        }
+
     def stochastic_logq(self, path_derivative_gradient: bool = True) -> pt.TensorVariable:
         """Returns a graph representing the logp of the guide model, evaluated under draws from its random variables.
 
@@ -200,6 +226,15 @@ def AutoDiagonalNormal(model: Model, random_seed=None) -> AutoGuideModel:
 class AutoFullRankGuideModel(AutoGuideModel):
     """Guide model for a full-rank (multivariate normal) ADVI approximation."""
 
+    def fit_quantities(self, params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Report the mean and the lower-triangular Cholesky factor of the covariance."""
+        loc = params["loc"]
+        n_dim = loc.size
+        cholesky = np.zeros((n_dim, n_dim), dtype=loc.dtype)
+        cholesky[np.tril_indices(n_dim)] = params["L_packed"]
+        np.fill_diagonal(cholesky, np.exp(np.diagonal(cholesky)))
+        return {"mean_vector": loc, "cholesky_lower": cholesky}
+
     def stochastic_logq(self, path_derivative_gradient: bool = True) -> pt.TensorVariable:
         """Joint logq of the full-rank guide, derived by logprob inference.
 
@@ -284,6 +319,14 @@ def AutoMultivariateNormal(model: Model, random_seed=None) -> AutoGuideModel:
 @dataclass(frozen=True)
 class AutoLowRankGuideModel(AutoGuideModel):
     """Guide model for a low-rank-plus-diagonal multivariate normal ADVI approximation."""
+
+    def fit_quantities(self, params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Report the mean and the factors of ``cov = W @ W.T + diag(d ** 2)``."""
+        return {
+            "mean_vector": params["loc"],
+            "cov_factor": params["cov_factor"],
+            "cov_diag": np.exp(params["cov_diag_unconstrained"]),
+        }
 
     def stochastic_logq(self, path_derivative_gradient: bool = True) -> pt.TensorVariable:
         """Joint logq of the low-rank guide, evaluated in closed form.
