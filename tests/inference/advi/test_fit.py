@@ -14,6 +14,7 @@ from pymc_extras.inference.advi import (
     rmsprop,
     scale_by_adam,
     scale_by_learning_rate,
+    scale_by_schedule,
     sgd,
 )
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
@@ -121,6 +122,19 @@ def test_snapshot_restore_is_optimizer_agnostic(conjugate_model, make_optimizer)
             resumed_state.optimizer_state[name], second.optimizer_state[name]
         )
     np.testing.assert_allclose(resumed_state.loss_history, second.loss_history)
+
+
+def test_duplicate_optimizer_state_names_are_refused(conjugate_model):
+    model, *_ = conjugate_model
+    schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.01)
+
+    # both stages allocate a step counter named "lr_t", so keying the snapshot by name
+    # would keep one and resume the other from whatever it happened to hold
+    doubled = chain(scale_by_adam(), scale_by_schedule(schedule), scale_by_schedule(schedule))
+
+    trainer = Trainer(optimizer=doubled)
+    with model, pytest.raises(ValueError, match="more than one state variable named"):
+        trainer.fit(10, random_seed=1)
 
 
 def test_trainer_state_is_complete_and_honest(conjugate_model):
