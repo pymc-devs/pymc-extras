@@ -285,6 +285,33 @@ def test_fit_streams_observations_into_free_rv():
     assert "y" not in [rv.name for rv in model.observed_RVs]
 
 
+def test_fit_after_streaming_refuses_to_reuse_the_last_batch():
+    rng = np.random.default_rng(0)
+
+    def batches():
+        while True:
+            yield {"y": rng.normal(1.0, 1.0, size=64)}
+
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        pm.Normal("y", theta, 1, shape=(64,))
+
+    trainer = Trainer()
+    with model:
+        trainer.fit(10, batches(), observeds=["y"], random_seed=1)
+
+        # the stream shareds still hold the last batch, so a bare fit would train on it
+        with pytest.raises(ValueError, match="keep training on the last batch"):
+            trainer.fit(10)
+
+        # observeds is baked into the observed model built by the first streamed fit
+        with pytest.raises(ValueError, match="observeds is fixed by the first streamed fit"):
+            trainer.fit(10, batches(), observeds=["y"])
+
+        # streaming on without repeating observeds is the supported continuation
+        trainer.fit(10, batches())
+
+
 def test_fit_rescales_likelihood_when_stream_has_len():
     rng = np.random.default_rng(0)
     full_data = rng.normal(1.0, 1.0, size=1_000)

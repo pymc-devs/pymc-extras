@@ -465,14 +465,25 @@ class Trainer:
                 )
                 self._fit_model = model
             else:
+                if observeds:
+                    raise ValueError(
+                        "observeds is fixed by the first streamed fit, because the observed "
+                        "model and the compiled step function were built from it. Drop it to "
+                        "keep streaming into the same observed model, or use a new Trainer."
+                    )
                 model = self._fit_model
             self._apply_batch(model, first_batch)
         elif observeds:
             raise ValueError("observeds requires a data iterator to stream the observations from")
         elif self._fit_model is not None:
-            # A previous fit bound this trainer to a stream-observed model; the guide
-            # and compiled functions belong to it, not to the original model
-            model = self._fit_model
+            # The guide and compiled functions belong to the stream-observed model, whose
+            # shared variables still hold the last batch. Continuing without data would
+            # silently retrain on that batch rather than on the full dataset.
+            raise ValueError(
+                "this trainer was bound to a data stream by an earlier fit, so fitting with "
+                "no data would keep training on the last batch it saw. Pass data= to carry "
+                "on streaming, or use a new Trainer to fit the full dataset."
+            )
 
         if self._step_fn is None:
             if self._guide is None:
