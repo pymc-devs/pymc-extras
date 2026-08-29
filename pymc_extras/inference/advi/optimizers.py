@@ -6,8 +6,7 @@ import pytensor
 from pytensor import config
 from pytensor import tensor as pt
 
-Schedule = Callable[[int], float]
-ScalarOrSchedule = float | Schedule
+Schedule = Callable[[pt.TensorVariable], pt.TensorVariable]
 
 
 class GradientTransformation:
@@ -27,9 +26,8 @@ class GradientTransformation:
         of symbolic gradient variables and ``shared_params`` the corresponding
         shared parameter variables.  Returns transformed gradients and a
         dictionary of ``{shared_var: new_value}`` updates for
-        :func:`pytensor.compile`.  Transformations that depend on a schedule
-        (callable learning rate) leave this ``None`` and use the Python update
-        path instead.
+        :func:`pytensor.compile`.  ``None`` means the transformation has no
+        compiled path and can only be used through the Python update path.
     """
 
     def __init__(self, init, update, pytensor=None):
@@ -139,32 +137,50 @@ def scale_by_adam(b1: float = 0.9, b2: float = 0.999, eps: float = 1e-8) -> Grad
     return GradientTransformation(init, update, _pytensor_impl)
 
 
-def scale_by_learning_rate(learning_rate: ScalarOrSchedule) -> GradientTransformation:
-    """Scale the gradients by ``-learning_rate``, which may be a schedule of the step count."""
+def scale(step_size: float) -> GradientTransformation:
+    """Scale the gradients by ``-step_size``."""
+
+    def init(params):
+        return None
+
+    def update(updates, state, params=None):
+        return {name: -step_size * g for name, g in updates.items()}, state
+
+    def _pytensor_impl(grads, shared_params):
+        return [g * (-step_size) for g in grads], {}
+
+    return GradientTransformation(init, update, _pytensor_impl)
+
+
+def scale_by_schedule(step_size_fn: Schedule) -> GradientTransformation:
+    """Scale the gradients by ``-step_size_fn(count)``, where ``step_size_fn`` is a schedule."""
 
     def init(params):
         return {"count": 0}
 
     def update(updates, state, params=None):
         count = state["count"]
-        lr = learning_rate(count) if callable(learning_rate) else learning_rate
+        lr = step_size_fn(pt.constant(count, dtype="int64")).eval()
         return {name: -lr * g for name, g in updates.items()}, {"count": count + 1}
 
-    # PyTensor path: only works with a constant learning rate (schedules are
-    # Python callables and cannot be baked into the graph).
-    if callable(learning_rate):
-        _pytensor_impl = None
-    else:
-        lr = learning_rate
-
-        def _pytensor_impl(grads, shared_params):
-            return [g * (-lr) for g in grads], {}
+    def _pytensor_impl(grads, shared_params):
+        t = pytensor.shared(np.zeros((), dtype="int64"), name="lr_t")
+        lr = step_size_fn(t)
+        t_new = t + 1
+        return [g * (-lr) for g in grads], {t: t_new}
 
     return GradientTransformation(init, update, _pytensor_impl)
 
 
+def scale_by_learning_rate(learning_rate: float | Schedule) -> GradientTransformation:
+    """Scale the gradients by ``-learning_rate``, a constant or a schedule of the step count."""
+    if callable(learning_rate):
+        return scale_by_schedule(learning_rate)
+    return scale(learning_rate)
+
+
 def adam(
-    learning_rate: ScalarOrSchedule = 0.01,
+    learning_rate: float = 0.01,
     b1: float = 0.9,
     b2: float = 0.999,
     eps: float = 1e-8,
@@ -174,13 +190,13 @@ def adam(
 
 
 def clipped_adam(
-    learning_rate: ScalarOrSchedule = 0.01, clip_norm: float = 10.0, **adam_kwargs
+    learning_rate: float = 0.01, clip_norm: float = 10.0, **adam_kwargs
 ) -> GradientTransformation:
     """Adam with gradient clipping by global norm, as numpyro's ClippedAdam."""
     return chain(clip_by_global_norm(clip_norm), adam(learning_rate, **adam_kwargs))
 
 
-def sgd(learning_rate: ScalarOrSchedule = 0.01) -> GradientTransformation:
+def sgd(learning_rate: float = 0.01) -> GradientTransformation:
     """Stochastic gradient descent optimizer."""
     return scale_by_learning_rate(learning_rate)
 
@@ -217,7 +233,7 @@ def scale_by_rmsprop(decay: float = 0.9, eps: float = 1e-8) -> GradientTransform
 
 
 def rmsprop(
-    learning_rate: ScalarOrSchedule = 0.01,
+    learning_rate: float = 0.01,
     decay: float = 0.9,
     eps: float = 1e-8,
 ) -> GradientTransformation:
@@ -238,13 +254,13 @@ def linear_onecycle_schedule(
     The learning rate ramps from ``peak_value / div_factor`` to ``peak_value`` over the
     first ``pct_start`` fraction of ``transition_steps``, anneals back down by
     ``pct_final``, and decays to ``peak_value / div_factor / final_div_factor`` at the end.
+
+    The returned schedule maps a symbolic step count to a symbolic learning rate, so it
+    can be baked into the compiled step function.
     """
     init_value = peak_value / div_factor
     end_value = init_value / final_div_factor
     boundaries = np.array([0.0, pct_start, pct_final, 1.0]) * transition_steps
     values = np.array([init_value, peak_value, init_value, end_value])
 
-    def schedule(count: int) -> float:
-        return float(np.interp(count, boundaries, values))
-
-    return schedule
+    return lambda count: pt.interp(count, boundaries, values)

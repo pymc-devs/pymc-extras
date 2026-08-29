@@ -29,6 +29,7 @@ def compile_svi_step_fn(
     optimizer: GradientTransformation,
     draws: int = 1,
     path_derivative_gradient: bool = True,
+    logp_scalings: dict | None = None,
     **compile_kwargs,
 ) -> tuple[TrainingFn, dict[str, SharedVariable], dict[str, SharedVariable]]:
     """Compile one full SVI step, with optimizer updates applied in-graph.
@@ -57,7 +58,12 @@ def compile_svi_step_fn(
             "and cannot be compiled into the step function."
         )
 
-    logp, logq = get_logp_logq(model, guide, path_derivative_gradient=path_derivative_gradient)
+    logp, logq = get_logp_logq(
+        model,
+        guide,
+        path_derivative_gradient=path_derivative_gradient,
+        logp_scalings=logp_scalings,
+    )
     scalar_negative_elbo = advi_objective(logp, logq)
     [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
     negative_elbo = negative_elbo_draws.mean(axis=0)

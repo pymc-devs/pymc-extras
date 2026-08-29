@@ -3,7 +3,19 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
-from pymc_extras.inference.advi import Trainer, fit_advi
+from pymc_extras.inference.advi import (
+    Trainer,
+    adam,
+    chain,
+    clip_by_global_norm,
+    clipped_adam,
+    fit_advi,
+    linear_onecycle_schedule,
+    rmsprop,
+    scale_by_adam,
+    scale_by_learning_rate,
+    sgd,
+)
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
 
 
@@ -41,6 +53,21 @@ def test_fit_advi_random_seed(conjugate_model):
     assert not np.array_equal(draws_a, draws_c)
 
 
+def test_fit_with_schedule_optimizer(conjugate_model):
+    # A learning-rate schedule must be usable through the compiled Trainer path
+    model, post_mean, post_var = conjugate_model
+    schedule = linear_onecycle_schedule(transition_steps=2_000, peak_value=0.1)
+    optimizer = chain(clip_by_global_norm(10.0), scale_by_adam(), scale_by_learning_rate(schedule))
+    trainer = Trainer(optimizer=optimizer)
+
+    with model:
+        trainer.fit(2_000, random_seed=1)
+        idata = trainer.sample_posterior(1_000, random_seed=2)
+
+    theta = idata["posterior"].dataset["theta"].values.ravel()
+    np.testing.assert_allclose(theta.mean(), post_mean, atol=0.1)
+
+
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 def test_fit_advi_random_seed_jax(conjugate_model):
     # The JAX linker replaces RNG shared variables with internal copies at compile time,
@@ -57,13 +84,13 @@ def test_fit_advi_random_seed_jax(conjugate_model):
     assert not np.array_equal(draws_a, draws_c)
 
 
-def test_fit_continues_and_reset_starts_over(conjugate_model):
+def test_fit_continues(conjugate_model):
     model, *_ = conjugate_model
-    kwargs = dict(model=model, random_seed=0)
 
-    trainer = Trainer(**kwargs)
-    first = trainer.fit(100, random_seed=1)
-    second = trainer.fit(100, random_seed=1)
+    trainer = Trainer(random_seed=0)
+    with model:
+        first = trainer.fit(100, random_seed=1)
+        second = trainer.fit(100, random_seed=1)
 
     # fit continues rather than starting over: the step count and history accumulate,
     # and the parameters keep moving
@@ -72,31 +99,38 @@ def test_fit_continues_and_reset_starts_over(conjugate_model):
     np.testing.assert_array_equal(second.loss_history[:100], first.loss_history)
     assert not np.allclose(first.params["theta_loc"], second.params["theta_loc"])
 
-    # a fresh trainer resuming from the snapshot matches continuing in place, which
-    # requires the Adam moments to travel with the state
-    resumed = Trainer(**kwargs)
-    resumed.load_state(first)
-    resumed_state = resumed.fit(100, random_seed=1)
-    np.testing.assert_allclose(resumed_state.params["theta_loc"], second.params["theta_loc"])
-    np.testing.assert_allclose(resumed_state.loss_history, second.loss_history)
 
-    # reset returns the trainer to its initial state, so the run repeats exactly
-    trainer.reset()
-    assert trainer.step == 0
-    assert trainer.state.loss_history.size == 0
-    repeated = trainer.fit(100, random_seed=1)
-    np.testing.assert_allclose(repeated.params["theta_loc"], first.params["theta_loc"])
-    np.testing.assert_allclose(repeated.loss_history, first.loss_history)
+@pytest.mark.parametrize("make_optimizer", [clipped_adam, sgd, rmsprop, adam])
+def test_snapshot_restore_is_optimizer_agnostic(conjugate_model, make_optimizer):
+    model, *_ = conjugate_model
+    optimizer = make_optimizer(0.01)
+
+    trainer = Trainer(optimizer=optimizer)
+    with model:
+        first = trainer.fit(50, random_seed=1)
+        second = trainer.fit(50, random_seed=1)
+
+    resumed = Trainer(optimizer=optimizer)
+    with model:
+        resumed_state = resumed.fit(50, state=first, random_seed=1)
+
+    for name in first.params:
+        np.testing.assert_allclose(resumed_state.params[name], second.params[name])
+    for name in second.optimizer_state:
+        np.testing.assert_allclose(
+            resumed_state.optimizer_state[name], second.optimizer_state[name]
+        )
+    np.testing.assert_allclose(resumed_state.loss_history, second.loss_history)
 
 
 def test_trainer_state_is_complete_and_honest(conjugate_model):
     model, *_ = conjugate_model
-    trainer = Trainer(model=model, random_seed=0)
+    trainer = Trainer(random_seed=0)
 
-    with pytest.raises(RuntimeError, match="not been fitted"):
-        trainer.state
+    assert trainer.state is None
 
-    state = trainer.fit(50, random_seed=1)
+    with model:
+        state = trainer.fit(50, random_seed=1)
 
     # the returned state is the trainer's state, and both read the live shared variables
     for name, value in trainer.state.params.items():
@@ -165,3 +199,138 @@ def test_discrete_free_rv_raises():
 
     with pytest.raises(ValueError, match="continuous"):
         AutoDiagonalNormal(model)
+
+
+def test_fit_streams_batches_into_data():
+    rng = np.random.default_rng(0)
+
+    def batches():
+        while True:
+            yield {"batch": rng.normal(1.0, 1.0, size=64)}
+
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        batch = pm.Data("batch", np.zeros(64))
+        pm.Normal("y", theta, 1, observed=batch)
+
+    trainer = Trainer()
+    with model:
+        trainer.fit(1_000, batches(), random_seed=1)
+        idata = trainer.sample_posterior(1_000, random_seed=2)
+
+    theta_draws = idata["posterior"].dataset["theta"].values.ravel()
+    np.testing.assert_allclose(theta_draws.mean(), 1.0, atol=0.1)
+    # The last batch remains on the model
+    assert not np.array_equal(model["batch"].get_value(), np.zeros(64))
+
+
+def test_fit_streams_observations_into_free_rv():
+    rng = np.random.default_rng(0)
+
+    def batches():
+        while True:
+            yield {"y": rng.normal(1.0, 1.0, size=64)}
+
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        pm.Normal("y", theta, 1, shape=(64,))
+
+    trainer = Trainer()
+    with model:
+        trainer.fit(1_000, batches(), observeds=["y"], random_seed=1)
+        idata = trainer.sample_posterior(1_000, random_seed=2)
+
+    # y was observed, so the posterior contains only theta
+    assert set(idata["posterior"].dataset.data_vars) == {"theta"}
+    theta_draws = idata["posterior"].dataset["theta"].values.ravel()
+    np.testing.assert_allclose(theta_draws.mean(), 1.0, atol=0.1)
+    # The user's model is untouched
+    assert "y" not in [rv.name for rv in model.observed_RVs]
+
+
+def test_fit_rescales_likelihood_when_stream_has_len():
+    rng = np.random.default_rng(0)
+    full_data = rng.normal(1.0, 1.0, size=1_000)
+
+    class Loader:
+        # A torch-style dataloader: yields minibatches, len is the dataset size N
+        def __len__(self):
+            return full_data.shape[0]
+
+        def __iter__(self):
+            while True:
+                idx = rng.integers(full_data.shape[0], size=50)
+                yield {"y": full_data[idx]}
+
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 1)
+        pm.Normal("y", theta, 1, shape=(50,))
+
+    trainer = Trainer()
+    with model:
+        trainer.fit(3_000, Loader(), observeds=["y"], random_seed=1)
+        idata = trainer.sample_posterior(2_000, random_seed=2)
+    theta_draws = idata["posterior"].dataset["theta"].values.ravel()
+
+    # Reference: the same fit with the full dataset observed at once
+    with pm.Model() as full_model:
+        theta = pm.Normal("theta", 0, 1)
+        pm.Normal("y", theta, 1, observed=full_data)
+    ref = fit_advi(model=full_model, n_steps=3_000, draws=2_000, random_seed=1)
+    ref_draws = ref["posterior"].dataset["theta"].values.ravel()
+
+    post_mean = full_data.sum() / (1 + full_data.size)
+    np.testing.assert_allclose(theta_draws.mean(), post_mean, atol=0.1)
+    # With the N / batch_rows rescaling the minibatch fit matches the full-data
+    # fit, not the unscaled 50-row batch posterior (whose std would be ~0.14)
+    np.testing.assert_allclose(theta_draws.std(), ref_draws.std(), rtol=0.25)
+    assert theta_draws.std() < 0.1
+
+
+def test_fit_stops_when_stream_runs_out():
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        pm.Normal("y", theta, 1, shape=(4,))
+
+    data = ({"y": np.ones(4)} for _ in range(5))
+    trainer = Trainer()
+    with model:
+        state = trainer.fit(1_000, data, observeds=["y"], random_seed=1)
+
+    assert state.step == 5
+
+
+def test_fit_observeds_without_data_raises():
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        pm.Normal("y", theta, 1, shape=(4,))
+
+    with pytest.raises(ValueError, match="observeds requires a data iterator"):
+        with model:
+            Trainer().fit(10, observeds=["y"])
+
+
+def test_sample_posterior_with_explicit_model_after_streaming():
+    """sample_posterior uses the active model context when no model argument is given."""
+    rng = np.random.default_rng(0)
+
+    def batches():
+        while True:
+            yield {"y": rng.normal(1.0, 1.0, size=64)}
+
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        pm.Normal("y", theta, 1, shape=(64,))
+
+    trainer = Trainer()
+    with model:
+        trainer.fit(500, batches(), observeds=["y"], random_seed=1)
+
+    with model:
+        idata = trainer.sample_posterior(500, random_seed=2)
+
+    assert set(idata["posterior"].dataset.data_vars) == {"theta"}
+    theta_draws = idata["posterior"].dataset["theta"].values.ravel()
+    np.testing.assert_allclose(theta_draws.mean(), 1.0, atol=0.15)
+    # The user's model is untouched
+    assert "y" not in [rv.name for rv in model.observed_RVs]
