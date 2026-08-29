@@ -9,7 +9,10 @@ from pymc_extras.inference.advi.autoguide import (
     AutoLowRankMultivariateNormal,
     AutoMultivariateNormal,
 )
-from pymc_extras.inference.advi.idata import add_fit_to_inference_data
+from pymc_extras.inference.advi.idata import (
+    add_fit_to_inference_data,
+    add_optimizer_result_to_inference_data,
+)
 
 
 @pytest.fixture
@@ -111,3 +114,51 @@ def test_mean_field_fit_group_is_linear_in_the_parameter_count():
     assert fit["mean_vector"].shape == (n_dim,)
     assert fit["standard_deviation"].shape == (n_dim,)
     assert sum(array.size for array in fit.data_vars.values()) == 2 * n_dim
+
+
+def test_optimizer_result_group_holds_the_trace_and_the_buffers():
+    loss_history = np.array([5.0, 4.0, 3.5])
+    optimizer_state = {
+        "adam_t": np.asarray(3),
+        "adam_m_theta_loc": np.zeros(2),
+        "adam_v_theta_scale": np.ones((2, 3)),
+    }
+
+    idata = add_optimizer_result_to_inference_data(
+        DataTree(), loss_history=loss_history, step=3, optimizer_state=optimizer_state
+    )
+    group = idata["optimizer_result"].dataset
+
+    # the trace is reported as the ELBO, which is the negated loss the optimizer minimizes
+    np.testing.assert_allclose(group["elbo"].values, -loss_history)
+    assert group["elbo"].dims == ("step",)
+    assert group["step_count"].item() == 3
+
+    # every buffer keeps its own name and shape, so restoring one is a lookup
+    assert group["adam_t"].shape == ()
+    assert group["adam_m_theta_loc"].shape == (2,)
+    assert group["adam_v_theta_scale"].shape == (2, 3)
+
+
+def test_optimizer_result_group_survives_an_empty_trace():
+    idata = add_optimizer_result_to_inference_data(
+        DataTree(), loss_history=np.array([]), step=0, optimizer_state={}
+    )
+    group = idata["optimizer_result"].dataset
+
+    assert group["elbo"].shape == (0,)
+    assert group["step_count"].item() == 0
+
+
+def test_optimizer_result_group_holds_only_arrays_every_backend_can_store():
+    idata = add_optimizer_result_to_inference_data(
+        DataTree(),
+        loss_history=np.array([1.0, 2.0]),
+        step=2,
+        optimizer_state={"adam_t": np.asarray(2), "adam_m_x": np.zeros(3)},
+    )
+    group = idata["optimizer_result"].dataset
+
+    for name, array in group.data_vars.items():
+        assert array.dtype.kind in "fiu", f"{name} has non-numeric dtype {array.dtype}"
+    assert group.attrs == {}

@@ -67,3 +67,50 @@ def add_fit_to_inference_data(
     idata["fit"] = DataTree(dataset=xr.Dataset(data_vars, coords=coords))
 
     return idata
+
+
+def add_optimizer_result_to_inference_data(
+    idata: DataTree,
+    *,
+    loss_history: np.ndarray,
+    step: int,
+    optimizer_state: dict[str, np.ndarray],
+) -> DataTree:
+    """Add the optimization trace and the optimizer's own state to a DataTree.
+
+    The group holds both what a reader wants to see and what a resumed run needs: the ELBO
+    over the steps taken so far, and the optimizer's moment buffers and clocks. Each state
+    variable keeps its own name and shape, so restoring one is a lookup rather than an
+    unpacking.
+
+    Parameters
+    ----------
+    idata : DataTree
+        The tree to add the group to.
+    loss_history : ndarray
+        Negative ELBO at each step taken so far.
+    step : int
+        Total number of optimization steps taken.
+    optimizer_state : dict of str to ndarray
+        The optimizer's shared variable values, keyed by variable name.
+
+    Returns
+    -------
+    idata : DataTree
+        The provided tree, with the ``optimizer_result`` group added.
+    """
+    loss_history = np.asarray(loss_history, dtype=float)
+
+    data_vars = {
+        "elbo": xr.DataArray(-loss_history, dims=["step"]),
+        "step_count": xr.DataArray(np.asarray(step)),
+    }
+    for name, value in optimizer_state.items():
+        value = np.asarray(value)
+        dims = [f"{name}_dim_{axis}" for axis in range(value.ndim)]
+        data_vars[name] = xr.DataArray(value, dims=dims)
+
+    coords = {"step": np.arange(loss_history.size)}
+    idata["optimizer_result"] = DataTree(dataset=xr.Dataset(data_vars, coords=coords))
+
+    return idata
