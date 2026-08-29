@@ -605,12 +605,11 @@ class Trainer:
 
         params = {name: np.asarray(value) for name, value in state.params.items()}
         samples = self._sampling_fn(**params)
+        # Name the draws from the same list the sampling function was built from, so the
+        # two cannot drift apart into naming a variable's draws after its sibling.
         posterior = {
             rv.name: np.expand_dims(sample, axis=0)
-            for rv, sample in zip(
-                (rv for rv in fit_model.rvs_to_values.keys() if rv not in fit_model.observed_RVs),
-                samples,
-            )
+            for rv, sample in zip(fit_model.free_RVs, samples, strict=True)
         }
 
         model_coords, model_dims = coords_and_dims_for_inferencedata(model)

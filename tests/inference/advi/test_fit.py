@@ -137,6 +137,29 @@ def test_duplicate_optimizer_state_names_are_refused(conjugate_model):
         trainer.fit(10, random_seed=1)
 
 
+def test_posterior_draws_are_named_for_their_own_variable():
+    # distinct shapes, so draws attached to the wrong name would be the wrong shape
+    with pm.Model() as model:
+        pm.Normal("scalar")
+        pm.Normal("pair", shape=2)
+        pm.HalfNormal("positive")
+        pm.Normal("triple", shape=3)
+        pm.Normal("y", 0, 1, observed=[1.0, 0.5])
+
+    trainer = Trainer(random_seed=0)
+    with model:
+        trainer.fit(10, random_seed=1)
+        idata = trainer.sample_posterior(draws=7, random_seed=2)
+
+    posterior = idata["posterior"].dataset
+    assert set(posterior.data_vars) == {"scalar", "pair", "positive", "triple"}
+    assert posterior["scalar"].shape == (1, 7)
+    assert posterior["pair"].shape == (1, 7, 2)
+    assert posterior["triple"].shape == (1, 7, 3)
+    # the transform is applied to the variable that carries it, not to a sibling
+    assert (posterior["positive"].values > 0).all()
+
+
 def test_trainer_state_is_complete_and_honest(conjugate_model):
     model, *_ = conjugate_model
     trainer = Trainer(random_seed=0)
