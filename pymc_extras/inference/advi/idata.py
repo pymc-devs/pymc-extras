@@ -11,7 +11,7 @@ _COVARIANCE_DIMS = {
     "standard_deviation": ("rows",),
     "cholesky_lower": ("rows", "columns"),
     "cov_factor": ("rows", "factors"),
-    "cov_diag": ("rows",),
+    "diagonal_standard_deviation": ("rows",),
 }
 
 
@@ -25,8 +25,8 @@ def add_fit_to_inference_data(
 
     The guide reports the covariance in whatever form it stores, so the group holds a
     marginal standard deviation for a mean-field guide, a Cholesky factor for a full-rank
-    one, and a factor-plus-diagonal pair for a low-rank one. Which entries are present
-    therefore identifies the family.
+    one, and a factor plus a diagonal standard deviation for a low-rank one. Which entries
+    are present therefore identifies the family.
 
     Parameters
     ----------
