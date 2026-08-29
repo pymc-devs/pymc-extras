@@ -61,15 +61,19 @@ def test_full_rank_fit_group_holds_a_cholesky_factor(model):
 
 def test_low_rank_fit_group_holds_the_factor_and_diagonal(model):
     guide = AutoLowRankMultivariateNormal(model, rank=2, random_seed=0)
+    params = initial_params(guide)
 
-    fit = add_fit_to_inference_data(DataTree(), guide, initial_params(guide), model=model)[
-        "fit"
-    ].dataset
+    fit = add_fit_to_inference_data(DataTree(), guide, params, model=model)["fit"].dataset
 
-    assert set(fit.data_vars) == {"mean_vector", "cov_factor", "cov_diag"}
+    assert set(fit.data_vars) == {"mean_vector", "cov_factor", "diagonal_standard_deviation"}
     assert fit["cov_factor"].dims == ("rows", "factors")
     assert fit["cov_factor"].shape[1] == 2
-    assert (fit["cov_diag"].values > 0).all()
+    # d itself, not d ** 2: the covariance is W @ W.T + diag(d ** 2), so storing the
+    # squared term under a name that says standard deviation would silently mislead
+    np.testing.assert_allclose(
+        fit["diagonal_standard_deviation"].values,
+        np.exp(params["cov_diag_unconstrained"]),
+    )
 
 
 def test_fit_group_rows_are_labelled_in_unconstrained_space(model):
