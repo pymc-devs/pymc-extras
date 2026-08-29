@@ -132,9 +132,10 @@ def test_duplicate_optimizer_state_names_are_refused(conjugate_model):
     # would keep one and resume the other from whatever it happened to hold
     doubled = chain(scale_by_adam(), scale_by_schedule(schedule), scale_by_schedule(schedule))
 
+    # the collision is detected while compiling, before any step is taken
     trainer = Trainer(optimizer=doubled)
     with model, pytest.raises(ValueError, match="more than one state variable named"):
-        trainer.fit(10, random_seed=1)
+        trainer.fit(1)
 
 
 def test_posterior_draws_are_named_for_their_own_variable():
@@ -155,6 +156,7 @@ def test_posterior_draws_are_named_for_their_own_variable():
     assert set(posterior.data_vars) == {"scalar", "pair", "positive", "triple"}
     assert posterior["scalar"].shape == (1, 7)
     assert posterior["pair"].shape == (1, 7, 2)
+    assert posterior["positive"].shape == (1, 7)
     assert posterior["triple"].shape == (1, 7, 3)
     # the transform is applied to the variable that carries it, not to a sibling
     assert (posterior["positive"].values > 0).all()
@@ -298,7 +300,7 @@ def test_fit_after_streaming_refuses_to_reuse_the_last_batch():
 
     trainer = Trainer()
     with model:
-        trainer.fit(10, batches(), observeds=["y"], random_seed=1)
+        streamed = trainer.fit(10, batches(), observeds=["y"], random_seed=1)
 
         # the stream shareds still hold the last batch, so a bare fit would train on it
         with pytest.raises(ValueError, match="keep training on the last batch"):
@@ -308,8 +310,11 @@ def test_fit_after_streaming_refuses_to_reuse_the_last_batch():
         with pytest.raises(ValueError, match="observeds is fixed by the first streamed fit"):
             trainer.fit(10, batches(), observeds=["y"])
 
-        # streaming on without repeating observeds is the supported continuation
-        trainer.fit(10, batches())
+        # streaming on without repeating observeds continues the same run
+        continued = trainer.fit(10, batches())
+
+    assert (streamed.step, continued.step) == (10, 20)
+    assert not np.allclose(continued.params["theta_loc"], streamed.params["theta_loc"])
 
 
 def test_fit_rescales_likelihood_when_stream_has_len():
