@@ -162,6 +162,26 @@ def test_posterior_draws_are_named_for_their_own_variable():
     assert (posterior["positive"].values > 0).all()
 
 
+def test_the_optimizer_is_fixed_at_construction(conjugate_model):
+    model, *_ = conjugate_model
+    supplied = sgd(0.01)
+
+    default = Trainer(random_seed=0)
+    chosen = Trainer(optimizer=supplied, random_seed=0)
+
+    # both are resolved before any fit, so the properties describe the trainer from the start
+    assert chosen.optimizer is supplied
+    assert default.optimizer is not None
+    default_before = default.optimizer
+
+    with model:
+        default.fit(10, random_seed=1)
+        chosen.fit(10, random_seed=1)
+
+    assert chosen.optimizer is supplied
+    assert default.optimizer is default_before
+
+
 def test_trainer_state_is_complete_and_honest(conjugate_model):
     model, *_ = conjugate_model
     trainer = Trainer(random_seed=0)

@@ -183,7 +183,7 @@ class Trainer:
         compile_kwargs: dict | None = None,
         random_seed=None,
     ):
-        self._optimizer = optimizer
+        self._optimizer = optimizer if optimizer is not None else clipped_adam()
 
         self.compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
         self.random_seed = random_seed
@@ -208,12 +208,12 @@ class Trainer:
 
     @property
     def guide(self) -> AutoGuideModel | None:
-        """The guide being fit, once resolved. Compiled in, so it cannot be replaced."""
+        """The guide being fit. Resolved against the model on the first fit, then fixed."""
         return self._guide
 
     @property
-    def optimizer(self) -> GradientTransformation | None:
-        """The optimizer being used. Compiled in, so it cannot be changed after a fit."""
+    def optimizer(self) -> GradientTransformation:
+        """The optimizer driving the updates. Fixed at construction."""
         return self._optimizer
 
     @property
@@ -487,8 +487,6 @@ class Trainer:
         if self._step_fn is None:
             if self._guide is None:
                 self._guide = self._build_guide(model)
-            if self._optimizer is None:
-                self._optimizer = clipped_adam()
             self._step_fn, self._shared_params, self._shared_optimizer_state = (
                 self._compile_step_fn(model, self._guide, self._optimizer)
             )
