@@ -91,10 +91,9 @@ class AutoGuideModel:
     def fit_quantities(self, params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Describe the fitted approximation by its mean and its covariance parameterization.
 
-        Every guide reports ``mean_vector``; the rest is whatever that family stores, so the
-        family is identifiable from which entries are present. The mean-field guide keeps a
-        marginal standard deviation per parameter, and reports it exponentiated rather than in
-        the unconstrained space its optimizer works in.
+        Every guide reports ``mean_vector``, so the family is identifiable from whichever
+        covariance entries accompany it. The mean-field guide reports a marginal standard
+        deviation, exponentiated out of the unconstrained space it optimizes in.
 
         Parameters
         ----------

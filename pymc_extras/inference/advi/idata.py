@@ -7,6 +7,9 @@ from xarray import DataTree
 from pymc_extras.inference.advi.autoguide import AutoGuideModel
 from pymc_extras.inference.idata_utils import make_unpacked_variable_names
 
+# Dims labelled by the guide parameter they index, as opposed to a bare integer range.
+_PARAMETER_DIMS = ("rows", "columns")
+
 _COVARIANCE_DIMS = {
     "standard_deviation": ("rows",),
     "cholesky_lower": ("rows", "columns"),
@@ -46,22 +49,26 @@ def add_fit_to_inference_data(
         The provided tree, with the ``fit`` group added.
     """
     model = pm.modelcontext(model)
-    quantities = guide.fit_quantities(params)
+    quantities = dict(guide.fit_quantities(params))
+    mean_vector = quantities.pop("mean_vector")
 
     value_names = [model.rvs_to_values[rv].name for rv in model.free_RVs]
     rows = make_unpacked_variable_names(value_names, model)
 
     coords: dict[str, list[str] | np.ndarray] = {"rows": rows}
-    data_vars = {"mean_vector": xr.DataArray(quantities["mean_vector"], dims=["rows"])}
+    data_vars = {"mean_vector": xr.DataArray(mean_vector, dims=["rows"])}
 
     for name, values in quantities.items():
-        if name == "mean_vector":
-            continue
+        if name not in _COVARIANCE_DIMS:
+            raise ValueError(
+                f"{type(guide).__name__} reported an unknown covariance quantity {name!r}. "
+                f"Known quantities are {sorted(_COVARIANCE_DIMS)}."
+            )
         dims = _COVARIANCE_DIMS[name]
-        if "columns" in dims:
-            coords["columns"] = rows
-        if "factors" in dims:
-            coords["factors"] = np.arange(values.shape[1])
+        for axis, dim in enumerate(dims):
+            coords.setdefault(
+                dim, rows if dim in _PARAMETER_DIMS else np.arange(values.shape[axis])
+            )
         data_vars[name] = xr.DataArray(values, dims=list(dims))
 
     idata["fit"] = DataTree(dataset=xr.Dataset(data_vars, coords=coords))
@@ -79,9 +86,8 @@ def add_optimizer_result_to_inference_data(
     """Add the optimization trace and the optimizer's own state to a DataTree.
 
     The group holds both what a reader wants to see and what a resumed run needs: the ELBO
-    over the steps taken so far, and the optimizer's moment buffers and clocks. Each state
-    variable keeps its own name and shape, so restoring one is a lookup rather than an
-    unpacking.
+    over the steps taken so far, and the optimizer's moment buffers and clocks, each keeping
+    its own name and shape.
 
     Parameters
     ----------
