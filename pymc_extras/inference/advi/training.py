@@ -476,9 +476,8 @@ class Trainer:
         elif observeds:
             raise ValueError("observeds requires a data iterator to stream the observations from")
         elif self._fit_model is not None:
-            # The guide and compiled functions belong to the stream-observed model, whose
-            # shared variables still hold the last batch. Continuing without data would
-            # silently retrain on that batch rather than on the full dataset.
+            # The guide and the compiled functions were built against the stream-observed
+            # model, so the original model is no longer the one being trained.
             raise ValueError(
                 "this trainer was bound to a data stream by an earlier fit, so fitting with "
                 "no data would keep training on the last batch it saw. Pass data= to carry "
@@ -616,8 +615,8 @@ class Trainer:
 
         params = {name: np.asarray(value) for name, value in state.params.items()}
         samples = self._sampling_fn(**params)
-        # Name the draws from the same list the sampling function was built from, so the
-        # two cannot drift apart into naming a variable's draws after its sibling.
+        # compile_sampling_fn emits draws in free_RVs order, so name them from that same
+        # list rather than from a second one that only happens to agree with it.
         posterior = {
             rv.name: np.expand_dims(sample, axis=0)
             for rv, sample in zip(fit_model.free_RVs, samples, strict=True)
