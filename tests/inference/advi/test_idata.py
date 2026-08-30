@@ -90,6 +90,34 @@ def test_fit_group_rows_are_labelled_in_unconstrained_space(model):
     assert list(fit.coords["rows"].values) == ["a", "s_log__", "b[0]", "b[1]"]
 
 
+@pytest.mark.parametrize(
+    "make_guide",
+    [
+        AutoDiagonalNormal,
+        AutoMultivariateNormal,
+        lambda m, random_seed: AutoLowRankMultivariateNormal(m, rank=2, random_seed=random_seed),
+    ],
+    ids=["mean_field", "full_rank", "low_rank"],
+)
+def test_fit_group_mean_vector_element_matches_its_row_label(make_guide):
+    # the mean-field guide concatenates per-RV params in model.free_RVs order while the
+    # multivariate guides ravel in point_map_info order; the rows coord is built from
+    # free_RVs, so a divergence between the two would mislabel every element silently
+    with pm.Model() as model:
+        pm.Normal("a", initval=1.0)
+        pm.HalfNormal("s", initval=np.exp(2.0))
+        pm.Normal("b", shape=2, initval=[3.0, 4.0])
+        pm.Normal("y", 0, 1, observed=[1.0, 2.0])
+
+    guide = make_guide(model, random_seed=0)
+    fit = add_fit_to_inference_data(DataTree(), guide, initial_params(guide), model=model)[
+        "fit"
+    ].dataset
+
+    assert list(fit.coords["rows"].values) == ["a", "s_log__", "b[0]", "b[1]"]
+    np.testing.assert_allclose(fit["mean_vector"].values, [1.0, 2.0, 3.0, 4.0])
+
+
 def test_fit_group_holds_only_arrays_every_backend_can_store(model):
     for guide in (
         AutoDiagonalNormal(model, random_seed=0),
