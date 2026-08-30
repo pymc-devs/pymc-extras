@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import numpy as np
 import pytensor.tensor as pt
@@ -61,6 +62,9 @@ def get_value_shapes_and_dims(
 
 @dataclass(frozen=True)
 class AutoGuideModel:
+    # Dims of each covariance entry fit_quantities reports, keyed by its name.
+    covariance_dims: ClassVar[dict[str, tuple[str, ...]]] = {}
+
     model: Model
     params_init_values: dict[Variable, np.ndarray]
     name_to_param: dict[str, Variable] = field(init=False)
@@ -153,6 +157,8 @@ def _check_continuous_rvs(model: Model, free_rvs: list[Variable]) -> None:
 class AutoDiagonalGuideModel(AutoGuideModel):
     """Guide model for a mean-field (diagonal normal) ADVI approximation."""
 
+    covariance_dims: ClassVar[dict[str, tuple[str, ...]]] = {"standard_deviation": ("rows",)}
+
     variable_names: tuple[str, ...]
 
     def fit_quantities(self, params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -239,6 +245,8 @@ def AutoDiagonalNormal(model: Model, random_seed=None) -> AutoGuideModel:
 @dataclass(frozen=True)
 class AutoFullRankGuideModel(AutoGuideModel):
     """Guide model for a full-rank (multivariate normal) ADVI approximation."""
+
+    covariance_dims: ClassVar[dict[str, tuple[str, ...]]] = {"cholesky_lower": ("rows", "columns")}
 
     def fit_quantities(self, params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Report the mean and the lower-triangular Cholesky factor of the covariance."""
@@ -333,6 +341,11 @@ def AutoMultivariateNormal(model: Model, random_seed=None) -> AutoGuideModel:
 @dataclass(frozen=True)
 class AutoLowRankGuideModel(AutoGuideModel):
     """Guide model for a low-rank-plus-diagonal multivariate normal ADVI approximation."""
+
+    covariance_dims: ClassVar[dict[str, tuple[str, ...]]] = {
+        "cov_factor": ("rows", "factors"),
+        "diagonal_standard_deviation": ("rows",),
+    }
 
     def fit_quantities(self, params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         r"""Report the mean and the two terms of the covariance.
