@@ -92,8 +92,7 @@ class AutoGuideModel:
         """Describe the fitted approximation by its mean and its covariance parameterization.
 
         Every guide reports ``mean_vector``, so the family is identifiable from whichever
-        covariance entries accompany it. The mean-field guide reports a marginal standard
-        deviation, exponentiated out of the unconstrained space it optimizes in.
+        covariance entries accompany it. Each guide family implements this.
 
         Parameters
         ----------
@@ -106,12 +105,10 @@ class AutoGuideModel:
             ``mean_vector`` and this family's covariance entries, flattened in the order the
             model's free RVs appear in.
         """
-        locs = [params[p.name].ravel() for p in self.params if p.name.endswith("_loc")]
-        scales = [params[p.name].ravel() for p in self.params if p.name.endswith("_scale")]
-        return {
-            "mean_vector": np.concatenate(locs),
-            "standard_deviation": np.exp(np.concatenate(scales)),
-        }
+        raise NotImplementedError(
+            f"{type(self).__name__} does not report a fitted mean and covariance. Override "
+            "fit_quantities to return 'mean_vector' plus this guide's covariance entries."
+        )
 
     def stochastic_logq(self, path_derivative_gradient: bool = True) -> pt.TensorVariable:
         """Returns a graph representing the logp of the guide model, evaluated under draws from its random variables.
@@ -150,6 +147,22 @@ def _check_continuous_rvs(model: Model, free_rvs: list[Variable]) -> None:
             f"ADVI requires continuous free RVs, but {discrete_rvs} are discrete. "
             "Marginalize them out or use another inference method."
         )
+
+
+@dataclass(frozen=True)
+class AutoDiagonalGuideModel(AutoGuideModel):
+    """Guide model for a mean-field (diagonal normal) ADVI approximation."""
+
+    variable_names: tuple[str, ...]
+
+    def fit_quantities(self, params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Report the mean and the marginal standard deviation of each free RV."""
+        locs = [params[f"{name}_loc"].ravel() for name in self.variable_names]
+        scales = [params[f"{name}_scale"].ravel() for name in self.variable_names]
+        return {
+            "mean_vector": np.concatenate(locs),
+            "standard_deviation": np.exp(np.concatenate(scales)),
+        }
 
 
 def AutoDiagonalNormal(model: Model, random_seed=None) -> AutoGuideModel:
@@ -218,7 +231,9 @@ def AutoDiagonalNormal(model: Model, random_seed=None) -> AutoGuideModel:
                 dims=value_dims[rv],
             )
 
-    return AutoGuideModel(guide_model, params_init_values)
+    return AutoDiagonalGuideModel(
+        guide_model, params_init_values, tuple(rv.name for rv in free_rvs)
+    )
 
 
 @dataclass(frozen=True)
