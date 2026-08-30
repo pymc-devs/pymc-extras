@@ -1,11 +1,13 @@
 import numpy as np
 import pymc as pm
+import pytensor.tensor as pt
 import pytest
 
 from xarray import DataTree
 
 from pymc_extras.inference.advi.autoguide import (
     AutoDiagonalNormal,
+    AutoGuideModel,
     AutoLowRankMultivariateNormal,
     AutoMultivariateNormal,
 )
@@ -118,6 +120,21 @@ def test_mean_field_fit_group_is_linear_in_the_parameter_count():
     assert fit["mean_vector"].shape == (n_dim,)
     assert fit["standard_deviation"].shape == (n_dim,)
     assert sum(array.size for array in fit.data_vars.values()) == 2 * n_dim
+
+
+def test_fit_group_refuses_a_guide_that_does_not_report_its_parameterization(model):
+    # this guide names its params like the mean-field one but links the scale through
+    # softplus, so exponentiating its scale would report a plausible, wrong number
+    loc, scale = pt.scalar("a_loc"), pt.scalar("a_scale")
+    with pm.Model() as guide_model:
+        z = pm.Normal("a_z")
+        pm.Deterministic("a", loc + pt.softplus(scale) * z)
+    guide = AutoGuideModel(guide_model, {loc: np.array(0.0), scale: np.array(0.1)})
+
+    with pytest.raises(NotImplementedError, match="does not report a fitted mean"):
+        add_fit_to_inference_data(
+            DataTree(), guide, {"a_loc": np.array(0.0), "a_scale": np.array(0.1)}, model=model
+        )
 
 
 def test_optimizer_result_group_holds_the_trace_and_the_buffers():
