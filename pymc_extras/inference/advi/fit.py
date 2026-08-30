@@ -88,5 +88,6 @@ def fit_advi(
         loss_history=state.loss_history,
         step=state.step,
         optimizer_state=state.optimizer_state,
+        parameter_names=list(state.params),
     )
     return idata
