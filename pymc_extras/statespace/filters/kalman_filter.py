@@ -669,18 +669,15 @@ class SquareRootFilter(BaseFilter):
         P_chol_filtered = B[k_endog:, k_endog:]
 
         def compute_non_degenerate(P_chol_filtered, F_chol, K_F_chol, v):
-            a_filtered = a + K_F_chol @ solve_triangular(F_chol, v, lower=True)
+            scaled_residual = solve_triangular(F_chol, v, lower=True)
+            a_filtered = a + K_F_chol @ scaled_residual
 
-            inner_term = solve_triangular(
-                F_chol, solve_triangular(F_chol, v, lower=True), lower=True
-            )
-
-            loss = (v.T @ inner_term).ravel()
+            loss = pt.dot(scaled_residual, scaled_residual)
 
             # abs necessary because we're not guaranteed a positive diagonal from the schur decomposition
             logdet = 2 * pt.log(pt.abs(pt.diag(F_chol))).sum()
 
-            ll = -0.5 * (k_endog * (MVN_CONST + logdet) + loss)[0]
+            ll = -0.5 * (k_endog * MVN_CONST + logdet + loss)
 
             return [a_filtered, P_chol_filtered, ll]
 
