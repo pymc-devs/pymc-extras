@@ -14,6 +14,7 @@ from pymc_extras.inference.advi import (
     rmsprop,
     scale_by_adam,
     scale_by_learning_rate,
+    scale_by_schedule,
     sgd,
 )
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
@@ -121,6 +122,64 @@ def test_snapshot_restore_is_optimizer_agnostic(conjugate_model, make_optimizer)
             resumed_state.optimizer_state[name], second.optimizer_state[name]
         )
     np.testing.assert_allclose(resumed_state.loss_history, second.loss_history)
+
+
+def test_duplicate_optimizer_state_names_are_refused(conjugate_model):
+    model, *_ = conjugate_model
+    schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.01)
+
+    # both stages allocate a step counter named "lr_t", so keying the snapshot by name
+    # would keep one and resume the other from whatever it happened to hold
+    doubled = chain(scale_by_adam(), scale_by_schedule(schedule), scale_by_schedule(schedule))
+
+    # the collision is detected while compiling, before any step is taken
+    trainer = Trainer(optimizer=doubled)
+    with model, pytest.raises(ValueError, match="more than one state variable named"):
+        trainer.fit(1)
+
+
+def test_posterior_draws_are_named_for_their_own_variable():
+    # distinct shapes, so draws attached to the wrong name would be the wrong shape
+    with pm.Model() as model:
+        pm.Normal("scalar")
+        pm.Normal("pair", shape=2)
+        pm.HalfNormal("positive")
+        pm.Normal("triple", shape=3)
+        pm.Normal("y", 0, 1, observed=[1.0, 0.5])
+
+    trainer = Trainer(random_seed=0)
+    with model:
+        trainer.fit(10, random_seed=1)
+        idata = trainer.sample_posterior(draws=7, random_seed=2)
+
+    posterior = idata["posterior"].dataset
+    assert set(posterior.data_vars) == {"scalar", "pair", "positive", "triple"}
+    assert posterior["scalar"].shape == (1, 7)
+    assert posterior["pair"].shape == (1, 7, 2)
+    assert posterior["positive"].shape == (1, 7)
+    assert posterior["triple"].shape == (1, 7, 3)
+    # the transform is applied to the variable that carries it, not to a sibling
+    assert (posterior["positive"].values > 0).all()
+
+
+def test_the_optimizer_is_fixed_at_construction(conjugate_model):
+    model, *_ = conjugate_model
+    supplied = sgd(0.01)
+
+    default = Trainer(random_seed=0)
+    chosen = Trainer(optimizer=supplied, random_seed=0)
+
+    # both are resolved before any fit, so the properties describe the trainer from the start
+    assert chosen.optimizer is supplied
+    assert default.optimizer is not None
+    default_before = default.optimizer
+
+    with model:
+        default.fit(10, random_seed=1)
+        chosen.fit(10, random_seed=1)
+
+    assert chosen.optimizer is supplied
+    assert default.optimizer is default_before
 
 
 def test_trainer_state_is_complete_and_honest(conjugate_model):
@@ -246,6 +305,36 @@ def test_fit_streams_observations_into_free_rv():
     np.testing.assert_allclose(theta_draws.mean(), 1.0, atol=0.1)
     # The user's model is untouched
     assert "y" not in [rv.name for rv in model.observed_RVs]
+
+
+def test_fit_after_streaming_refuses_to_reuse_the_last_batch():
+    rng = np.random.default_rng(0)
+
+    def batches():
+        while True:
+            yield {"y": rng.normal(1.0, 1.0, size=64)}
+
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 10)
+        pm.Normal("y", theta, 1, shape=(64,))
+
+    trainer = Trainer()
+    with model:
+        streamed = trainer.fit(10, batches(), observeds=["y"], random_seed=1)
+
+        # the stream shareds still hold the last batch, so a bare fit would train on it
+        with pytest.raises(ValueError, match="keep training on the last batch"):
+            trainer.fit(10)
+
+        # observeds is baked into the observed model built by the first streamed fit
+        with pytest.raises(ValueError, match="observeds is fixed by the first streamed fit"):
+            trainer.fit(10, batches(), observeds=["y"])
+
+        # streaming on without repeating observeds continues the same run
+        continued = trainer.fit(10, batches())
+
+    assert (streamed.step, continued.step) == (10, 20)
+    assert not np.allclose(continued.params["theta_loc"], streamed.params["theta_loc"])
 
 
 def test_fit_rescales_likelihood_when_stream_has_len():

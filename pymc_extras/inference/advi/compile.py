@@ -1,3 +1,4 @@
+from collections import Counter
 from typing import Protocol
 
 import numpy as np
@@ -80,9 +81,19 @@ def compile_svi_step_fn(
     new_grads, updates = optimizer.pytensor(grads, shared_params)
 
     # The optimizer's own state variables are the update keys that are not the guide
-    # parameters themselves.
-    param_ids = {id(param) for param in shared_params}
-    shared_optimizer_state = {var.name: var for var in updates if id(var) not in param_ids}
+    # parameters themselves. Snapshotting and restoring them keys on the name, so a
+    # duplicate would quietly drop one buffer and resume it from whatever it held.
+    guide_params = set(shared_params)
+    state_variables = [var for var in updates if var not in guide_params]
+    name_counts = Counter(var.name for var in state_variables)
+    duplicate_names = sorted(name for name, count in name_counts.items() if count > 1)
+    if duplicate_names:
+        raise ValueError(
+            f"The optimizer has more than one state variable named {duplicate_names}, so its "
+            "state cannot be snapshotted or restored unambiguously. Give each transform in the "
+            "chain state variables with distinct names."
+        )
+    shared_optimizer_state = {var.name: var for var in state_variables}
 
     for param, grad in zip(shared_params, new_grads):
         updates[param] = param + grad

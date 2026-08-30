@@ -183,7 +183,7 @@ class Trainer:
         compile_kwargs: dict | None = None,
         random_seed=None,
     ):
-        self._optimizer = optimizer
+        self._optimizer = optimizer if optimizer is not None else clipped_adam()
 
         self.compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
         self.random_seed = random_seed
@@ -208,12 +208,12 @@ class Trainer:
 
     @property
     def guide(self) -> AutoGuideModel | None:
-        """The guide being fit, once resolved. Compiled in, so it cannot be replaced."""
+        """The guide being fit. Resolved against the model on the first fit, then fixed."""
         return self._guide
 
     @property
-    def optimizer(self) -> GradientTransformation | None:
-        """The optimizer being used. Compiled in, so it cannot be changed after a fit."""
+    def optimizer(self) -> GradientTransformation:
+        """The optimizer driving the updates. Fixed at construction."""
         return self._optimizer
 
     @property
@@ -465,20 +465,28 @@ class Trainer:
                 )
                 self._fit_model = model
             else:
+                if observeds:
+                    raise ValueError(
+                        "observeds is fixed by the first streamed fit, because the observed "
+                        "model and the compiled step function were built from it. Drop it to "
+                        "keep streaming into the same observed model, or use a new Trainer."
+                    )
                 model = self._fit_model
             self._apply_batch(model, first_batch)
         elif observeds:
             raise ValueError("observeds requires a data iterator to stream the observations from")
         elif self._fit_model is not None:
-            # A previous fit bound this trainer to a stream-observed model; the guide
-            # and compiled functions belong to it, not to the original model
-            model = self._fit_model
+            # The guide and the compiled functions were built against the stream-observed
+            # model, so the original model is no longer the one being trained.
+            raise ValueError(
+                "this trainer was bound to a data stream by an earlier fit, so fitting with "
+                "no data would keep training on the last batch it saw. Pass data= to carry "
+                "on streaming, or use a new Trainer to fit the full dataset."
+            )
 
         if self._step_fn is None:
             if self._guide is None:
                 self._guide = self._build_guide(model)
-            if self._optimizer is None:
-                self._optimizer = clipped_adam()
             self._step_fn, self._shared_params, self._shared_optimizer_state = (
                 self._compile_step_fn(model, self._guide, self._optimizer)
             )
@@ -605,12 +613,11 @@ class Trainer:
 
         params = {name: np.asarray(value) for name, value in state.params.items()}
         samples = self._sampling_fn(**params)
+        # compile_sampling_fn emits draws in free_RVs order, so name them from that same
+        # list rather than from a second one that only happens to agree with it.
         posterior = {
             rv.name: np.expand_dims(sample, axis=0)
-            for rv, sample in zip(
-                (rv for rv in fit_model.rvs_to_values.keys() if rv not in fit_model.observed_RVs),
-                samples,
-            )
+            for rv, sample in zip(fit_model.free_RVs, samples, strict=True)
         }
 
         model_coords, model_dims = coords_and_dims_for_inferencedata(model)
