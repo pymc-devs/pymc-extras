@@ -14,13 +14,6 @@ from pymc_extras.inference.idata_utils import make_unpacked_variable_names
 # Dims labelled by the guide parameter they index, as opposed to a bare integer range.
 _PARAMETER_DIMS = ("rows", "columns")
 
-_COVARIANCE_DIMS = {
-    "standard_deviation": ("rows",),
-    "cholesky_lower": ("rows", "columns"),
-    "cov_factor": ("rows", "factors"),
-    "diagonal_standard_deviation": ("rows",),
-}
-
 
 def add_fit_to_inference_data(
     idata: DataTree,
@@ -59,16 +52,18 @@ def add_fit_to_inference_data(
     value_names = [model.rvs_to_values[rv].name for rv in model.free_RVs]
     rows = make_unpacked_variable_names(value_names, model)
 
+    covariance_dims = guide.covariance_dims
+    if undeclared := sorted(set(quantities) - set(covariance_dims)):
+        raise ValueError(
+            f"{type(guide).__name__} reported covariance quantities {undeclared} that it "
+            f"declares no dims for. Its covariance_dims names {sorted(covariance_dims)}."
+        )
+
     coords: dict[str, list[str] | np.ndarray] = {"rows": rows}
     data_vars = {"mean_vector": xr.DataArray(mean_vector, dims=["rows"])}
 
     for name, values in quantities.items():
-        if name not in _COVARIANCE_DIMS:
-            raise ValueError(
-                f"{type(guide).__name__} reported an unknown covariance quantity {name!r}. "
-                f"Known quantities are {sorted(_COVARIANCE_DIMS)}."
-            )
-        dims = _COVARIANCE_DIMS[name]
+        dims = covariance_dims[name]
         for axis, dim in enumerate(dims):
             coords.setdefault(
                 dim, rows if dim in _PARAMETER_DIMS else np.arange(values.shape[axis])
