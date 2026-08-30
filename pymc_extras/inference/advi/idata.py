@@ -134,11 +134,6 @@ def add_optimizer_result_to_inference_data(
     -------
     idata : DataTree
         The provided tree, with the ``optimizer_result`` group added.
-
-    Raises
-    ------
-    ValueError
-        If a buffer kind covers only some of the guide's parameters.
     """
     loss_history = np.asarray(loss_history, dtype=float)
 
