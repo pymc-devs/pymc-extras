@@ -120,8 +120,6 @@ def _sample_conditional(
         )
 
         for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs, strict=True):
-            dummy_ll = pt.zeros_like(mu)
-
             if name == "smoothed":
                 # The simulation smoother draws the whole latent path jointly, so the
                 # states carry their cross-time posterior covariance.
@@ -157,14 +155,14 @@ def _sample_conditional(
                     f"{name}_{group}",
                     mus=mu,
                     covs=cov,
-                    logp=dummy_ll,
+                    logp=pt.zeros_like(mu),
                     dims=state_dims,
                     method=mvn_method,
                 )
 
                 obs_mu = d + (Z @ mu[..., None]).squeeze(-1)
                 obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H
-                obs_logp = dummy_ll
+                obs_logp = pt.zeros_like(obs_mu)
 
             SequenceMvNormal(
                 f"{name}_{group}_observed",
