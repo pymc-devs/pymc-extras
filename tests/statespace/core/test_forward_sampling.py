@@ -5,7 +5,7 @@ import pandas as pd
 import pymc as pm
 import pytest
 
-from numpy.testing import assert_allclose
+from numpy.testing import assert_allclose, assert_array_equal
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.utils.constants import (
@@ -38,6 +38,55 @@ def test_sampling_methods(group, kind, ss_mod, idata, rng):
         for output in ["latent", "observed"]:
             assert f"{group}_{output}" in test_idata
             assert not np.any(np.isnan(test_idata[f"{group}_{output}"].values))
+
+
+@pytest.mark.parametrize("group", ["posterior", "prior"])
+class TestUseDataTimeDim:
+    """Unconditional sampling over the time dimension the model was fit on.
+
+    A trajectory of n steps spans n + 1 timesteps, so the steps a caller passes and the length of
+    the fit time dimension are off by one from each other.
+    """
+
+    @staticmethod
+    def fit_steps(idata):
+        return len(idata.observed_data.coords[TIME_DIM]) - 1
+
+    def test_keeps_the_fit_time_index(self, ss_mod, idata, rng, group):
+        """The flag decides the labels, not the span: the fit index rather than a plain range."""
+        sample = getattr(ss_mod, f"sample_unconditional_{group}")
+        steps = self.fit_steps(idata)
+
+        from_data = sample(idata, steps=steps, use_data_time_dim=True, random_seed=rng)
+        from_range = sample(idata, steps=steps, use_data_time_dim=False, random_seed=rng)
+
+        assert_array_equal(
+            from_data[f"{group}_latent"].coords[TIME_DIM].values,
+            idata.observed_data.coords[TIME_DIM].values,
+        )
+        assert_array_equal(
+            from_range[f"{group}_latent"].coords[TIME_DIM].values, np.arange(steps + 1)
+        )
+        assert from_data[f"{group}_latent"].sizes[TIME_DIM] == steps + 1
+        assert from_range[f"{group}_latent"].sizes[TIME_DIM] == steps + 1
+
+    def test_explicit_steps_agreeing_with_data_is_accepted(self, ss_mod, idata, rng, group):
+        sample = getattr(ss_mod, f"sample_unconditional_{group}")
+        implicit = sample(idata, use_data_time_dim=True, random_seed=rng)
+        explicit = sample(
+            idata, steps=self.fit_steps(idata), use_data_time_dim=True, random_seed=rng
+        )
+
+        assert_array_equal(
+            implicit[f"{group}_latent"].coords[TIME_DIM].values,
+            explicit[f"{group}_latent"].coords[TIME_DIM].values,
+        )
+
+    def test_conflicting_steps_raises(self, ss_mod, idata, rng, group):
+        with pytest.raises(ValueError, match="does not match the time dimension in idata"):
+            getattr(ss_mod, f"sample_unconditional_{group}")(
+                idata, steps=self.fit_steps(idata) + 5, use_data_time_dim=True, random_seed=rng
+            )
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
