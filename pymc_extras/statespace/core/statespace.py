@@ -1,6 +1,7 @@
 import logging
 
 from collections.abc import Callable, Sequence
+from types import EllipsisType
 from typing import Any, Literal
 
 import numpy as np
@@ -1650,12 +1651,13 @@ class PyMCStateSpace:
         shock_cov: np.ndarray | None = None,
         shock_trajectory: np.ndarray | None = None,
         orthogonalize_shocks: bool = False,
+        shock_order: list[str | EllipsisType] | None = None,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         group: str = "posterior",
         **kwargs,
     ):
-        """
+        r"""
         Generate impulse response functions (IRF) from state space model dynamics.
 
         An impulse response function represents the dynamic response of the state space model
@@ -1698,8 +1700,17 @@ class PyMCStateSpace:
             Only one of `use_posterior_cov`, `shock_cov`, `shock_size`, or `shock_trajectory` can be specified.
 
         orthogonalize_shocks : bool, default=False
-            If True, orthogonalize the shocks using Cholesky decomposition when generating the impulse
-            response. This option is ignored if `shock_trajectory` or `shock_size` are used.
+            If True, identify structural shocks by a recursive (Cholesky) scheme and return one impulse
+            response per structural shock. See Notes. Incompatible with `shock_size` and
+            `shock_trajectory`, which each describe a single impulse.
+
+        shock_order : list of str or ellipsis, optional
+            Recursive ordering imposed by the Cholesky identification, given as shock names. Earlier
+            shocks are the ones allowed to move later shocks contemporaneously. A single ``...``
+            entry stands for every shock not named elsewhere, kept in the model's own order, so
+            ``["realinv", ...]`` orders investment first and leaves the rest alone. Without an
+            ``...``, every shock must be named. Only valid when `orthogonalize_shocks` is True.
+            Defaults to the model's own shock order.
 
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
@@ -1718,13 +1729,30 @@ class PyMCStateSpace:
         Returns
         -------
         DataTree
-            A DataTree object containing impulse response function in a variable named "irf".
+            A DataTree object containing impulse response function in a variable named "irf", with dims
+            ``(time, state)``, or ``(structural_shock, time, state)`` when `orthogonalize_shocks` is True.
 
         Notes
         -----
         For models with time-varying transition matrices, the IRF is computed starting at phase 0 of the
         time-varying cycle. This means the response represents the effect of a shock occurring at the first
         modeled state, T(0).
+
+        Reduced-form shocks are correlated whenever the shock covariance :math:`Q` has off-diagonal
+        entries, so shocking one of them in isolation describes an event the model itself considers
+        unlikely. Setting ``orthogonalize_shocks=True`` instead factors :math:`Q = B B^\top` with
+        :math:`B` lower triangular, which imposes a recursive contemporaneous ordering: the first
+        shock in `shock_order` moves every variable within the period, the second moves all but the
+        first, and so on. Column :math:`j` of :math:`B` is the impact of a one-standard-deviation
+        innovation to structural shock :math:`j`, and the returned IRF carries a
+        ``structural_shock`` axis holding one response per shock.
+
+        The ordering is an identifying assumption, not a detail: permuting `shock_order` yields
+        different impulse responses from the same posterior. A diagonal :math:`Q` is the exception,
+        where the factorization only rescales each shock to unit standard deviation.
+
+        An orthogonalized IRF is deterministic given the parameters, so its posterior spread reflects
+        parameter uncertainty alone. The default draws a random impulse per posterior draw instead.
         """
         return irf.impulse_response_function(
             self,
@@ -1735,6 +1763,7 @@ class PyMCStateSpace:
             shock_cov=shock_cov,
             shock_trajectory=shock_trajectory,
             orthogonalize_shocks=orthogonalize_shocks,
+            shock_order=shock_order,
             random_seed=random_seed,
             mvn_method=mvn_method,
             group=group,
