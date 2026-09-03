@@ -1053,7 +1053,12 @@ class Prior:
         """
         import preliz as pz
 
-        return getattr(pz, self.distribution)(**self.parameters)
+        params = {
+            key: value.preliz if isinstance(value, Prior) else value
+            for key, value in self.parameters.items()
+        }
+
+        return getattr(pz, self.distribution)(**params)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the prior to dictionary format.
