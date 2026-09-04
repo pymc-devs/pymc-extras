@@ -279,7 +279,7 @@ class BaseFilter(ABC):
 
     def handle_missing_values(
         self, y, Z, H, d
-    ) -> tuple[TensorVariable, TensorVariable, TensorVariable, TensorVariable, float]:
+    ) -> tuple[TensorVariable, TensorVariable, TensorVariable, TensorVariable, TensorVariable]:
         """
         Handle missing values in the observation data ``y``.
 
@@ -290,8 +290,8 @@ class BaseFilter(ABC):
         :math:`v = y - (Z a + d)` is exactly zero there, so missing observations contribute nothing to the
         state update.
 
-        Return a binary flag tensor ``all_nan_flag`` indicating whether every component of the observation
-        is missing. This flag is used for numerical adjustments in the update method.
+        Return the boolean mask of missing entries as well, so the update step can score only the
+        observed components.
 
         Parameters
         ----------
@@ -321,8 +321,8 @@ class BaseFilter(ABC):
             this masking, missing rows of the innovation become :math:`-d`, injecting a fake observation
             into the state update and inflating the log-likelihood by :math:`d^2 / \\text{jitter}`.
 
-        all_nan_flag : float
-            1 if every component of the observation is missing.
+        nan_mask : TensorVariable
+            Boolean vector that is True at the missing components of the observation.
 
         References
         ----------
@@ -330,7 +330,6 @@ class BaseFilter(ABC):
                2nd ed, Oxford University Press, 2012.
         """
         nan_mask = pt.or_(pt.isnan(y), pt.eq(y, self.missing_fill_value))
-        all_nan_flag = pt.all(nan_mask).astype(pytensor.config.floatX)
         W = pt.diag(pt.bitwise_not(nan_mask).astype(pytensor.config.floatX))
 
         Z_masked = W.dot(Z)
@@ -338,7 +337,7 @@ class BaseFilter(ABC):
         d_masked = W.dot(d)
         y_masked = pt.set_subtensor(y[nan_mask], 0.0)
 
-        return y_masked, Z_masked, H_masked, d_masked, all_nan_flag
+        return y_masked, Z_masked, H_masked, d_masked, nan_mask
 
     @staticmethod
     def predict(a, P, c, T, R, Q) -> tuple[TensorVariable, TensorVariable]:
@@ -392,7 +391,7 @@ class BaseFilter(ABC):
 
     @staticmethod
     def update(
-        a, P, y, d, Z, H, all_nan_flag
+        a, P, y, d, Z, H, nan_mask
     ) -> tuple[TensorVariable, TensorVariable, TensorVariable, TensorVariable, TensorVariable]:
         """
         Perform the update step of the Kalman filter.
@@ -425,8 +424,8 @@ class BaseFilter(ABC):
             The matrix Z.
         H : TensorVariable
             The matrix H.
-        all_nan_flag : TensorVariable
-            A binary flag tensor indicating whether there are any missing values in the observation data.
+        nan_mask : TensorVariable
+            Boolean vector that is True at the missing components of the observation data.
 
         Returns
         -------
@@ -508,12 +507,10 @@ class BaseFilter(ABC):
                2nd ed, Oxford University Press, 2012.
         """
         y, a, P, c, d, T, Z, R, H, Q = self.unpack_args(args)
-        y_masked, Z_masked, H_masked, d_masked, all_nan_flag = self.handle_missing_values(
-            y, Z, H, d
-        )
+        y_masked, Z_masked, H_masked, d_masked, nan_mask = self.handle_missing_values(y, Z, H, d)
 
         a_filtered, P_filtered, obs_mu, obs_cov, ll = self.update(
-            y=y_masked, a=a, d=d_masked, P=P, Z=Z_masked, H=H_masked, all_nan_flag=all_nan_flag
+            y=y_masked, a=a, d=d_masked, P=P, Z=Z_masked, H=H_masked, nan_mask=nan_mask
         )
 
         P_filtered = stabilize(P_filtered, self.cov_jitter)
@@ -529,7 +526,7 @@ class StandardFilter(BaseFilter):
     Basic Kalman Filter
     """
 
-    def update(self, a, P, y, d, Z, H, all_nan_flag):
+    def update(self, a, P, y, d, Z, H, nan_mask):
         """
         Compute one-step forecasts for observed states conditioned on information up to, but not including, the current
         timestep, `y_hat`, along with the forcast covariance matrix, `F`. Marginalize over observed states to obtain
@@ -559,8 +556,8 @@ class StandardFilter(BaseFilter):
         H : TensorVariable
             Observation noise covariance matrix
 
-        all_nan_flag : TensorVariable
-            A flag indicating whether all elements in the data `y` are NaNs.
+        nan_mask : TensorVariable
+            Boolean vector that is True at the missing components of ``y``.
 
         Returns
         -------
@@ -580,7 +577,12 @@ class StandardFilter(BaseFilter):
         PZT = P.dot(Z.mT)
         F = Z.dot(PZT) + stabilize(H, self.cov_jitter)
 
-        F_chol = pt.linalg.cholesky(F, lower=True)
+        # A masked row of F holds only the stabilizing jitter, which log |F| would count as
+        # log(jitter). Put a one there instead; the gain and the innovation are zero on that row.
+        observed = pt.bitwise_not(nan_mask).astype(F.dtype)
+        F_scored = F * pt.outer(observed, observed) + pt.diag(1 - observed)
+
+        F_chol = pt.linalg.cholesky(F_scored, lower=True)
 
         K = pt.linalg.cho_solve((F_chol, True), PZT.mT).mT
         I_KZ = pt.eye(dim_of(a, 0)) - K.dot(Z)
@@ -593,11 +595,9 @@ class StandardFilter(BaseFilter):
 
         F_logdet = 2 * pt.log(pt.diag(F_chol)).sum()
 
-        ll = pt.switch(
-            all_nan_flag,
-            0.0,
-            -0.5 * (MVN_CONST + F_logdet + inner_term).ravel()[0],
-        )
+        # A fully missing observation scores zero: the count, the innovation and the
+        # log-determinant all vanish with it.
+        ll = -0.5 * (observed.sum() * MVN_CONST + F_logdet + inner_term).ravel()[0]
 
         return a_filtered, P_filtered, y_hat, F, ll
 
@@ -633,7 +633,7 @@ class SquareRootFilter(BaseFilter):
 
         return a_hat, P_chol_hat
 
-    def update(self, a, P, y, d, Z, H, all_nan_flag):
+    def update(self, a, P, y, d, Z, H, nan_mask):
         """
         Compute posterior estimates of the hidden state distributions conditioned on the observed data, up to and
         including the present timestep. Also compute the log-likelihood of the data given the one-step forecasts.
@@ -691,7 +691,7 @@ class SquareRootFilter(BaseFilter):
             """
             return [a, P_chol, pt.zeros(())]
 
-        degenerate = pt.eq(all_nan_flag, 1.0)
+        degenerate = pt.all(nan_mask)
         F_chol = pytensor.ifelse(degenerate, pt.eye(*F_chol.shape), F_chol)
         [a_filtered, P_chol_filtered, ll] = pytensor.ifelse(
             degenerate,
@@ -782,10 +782,7 @@ class UnivariateFilter(BaseFilter):
     def kalman_step(self, *args):
         y, a, P, c, d, T, Z, R, H, Q = self.unpack_args(args)
 
-        nan_mask = pt.or_(pt.isnan(y), pt.eq(y, self.missing_fill_value))
-        y_masked, Z_masked, H_masked, d_masked, all_nan_flag = self.handle_missing_values(
-            y, Z, H, d
-        )
+        y_masked, Z_masked, H_masked, d_masked, nan_mask = self.handle_missing_values(y, Z, H, d)
 
         result = pytensor.scan(
             self._univariate_inner_filter_step,
@@ -806,11 +803,7 @@ class UnivariateFilter(BaseFilter):
         P_filtered = stabilize(0.5 * (P_filtered + P_filtered.mT), self.cov_jitter)
         a_hat, P_hat = self.predict(a=a_filtered, P=P_filtered, c=c, T=T, R=R, Q=Q)
 
-        ll = pt.switch(
-            all_nan_flag,
-            0.0,
-            -0.5 * ((pt.neq(ll_inner, 0).sum()) * MVN_CONST + ll_inner.sum()),
-        )
+        ll = -0.5 * (pt.bitwise_not(nan_mask).sum() * MVN_CONST + ll_inner.sum())
 
         return a_filtered, a_hat, obs_mu, P_filtered, P_hat, obs_cov, ll
 
@@ -906,7 +899,7 @@ class ConvergentFilter(StandardFilter):
 
     def _kalman_step(self, y, a, P, c, d, T, Z, R, H, Q):
         a_filt, P_filt, y_hat, F, ll = self.update(
-            a=a, P=P, y=y, d=d, Z=Z, H=H, all_nan_flag=pt.constant(0.0)
+            a=a, P=P, y=y, d=d, Z=Z, H=H, nan_mask=pt.zeros((dim_of(Z, -2),), dtype=bool)
         )
         P_filt = stabilize(P_filt, self.cov_jitter)
         a_hat, P_hat = self.predict(a=a_filt, P=P_filt, c=c, T=T, R=R, Q=Q)
@@ -966,6 +959,8 @@ class ConvergentFilter(StandardFilter):
         k = pt.minimum(a_filt_tr.shape[0], n - 1)
         a_star, P_star = a_hat_tr[k - 1], P_hat_tr[k - 1]
 
+        k_endog = dim_of(Z, -2)
+
         # Tail constants from P*, hoisted so the tail scan body carries no Cholesky or solve.
         F_star = Z @ P_star @ Z.mT + stabilize(H, self.cov_jitter)
         F_chol_star = pt.linalg.cholesky(F_star, lower=True)
@@ -983,7 +978,7 @@ class ConvergentFilter(StandardFilter):
             y_hat = d + Z @ a_prev
             v = y - y_hat
             solved = solve_triangular(F_chol_star, v, lower=True)
-            ll = -0.5 * (MVN_CONST + logdet_F_star + (solved * solved).sum())
+            ll = -0.5 * (k_endog * MVN_CONST + logdet_F_star + (solved * solved).sum())
             a_filt = a_prev + K_star @ v
             return a_filt, T @ a_filt + c, y_hat, ll
 
