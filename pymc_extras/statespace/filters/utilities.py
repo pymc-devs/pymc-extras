@@ -1,12 +1,9 @@
-from collections.abc import Iterable
-
 import pytensor.tensor as pt
 
-from pymc_extras.statespace.utils.constants import (
-    JITTER_DEFAULT,
-    LONG_NAME_TO_SHORT,
-    MATRIX_NAMES,
-)
+from pytensor.graph.basic import Variable
+
+from pymc_extras.statespace.core.assumptions import is_time_varying
+from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MATRIX_NAMES
 
 # The filter's scan takes x0 and P0 as outputs_info rather than inputs, so they are not
 # among the matrices split into sequences and non-sequences.
@@ -34,56 +31,78 @@ def dim_of(tensor, axis: int):
     return static_length if static_length is not None else tensor.shape[axis]
 
 
-def scan_sequence_names(time_varying_names: Iterable[str]) -> list[str]:
+def split_by_time_axis(
+    matrices: dict[str, Variable],
+) -> tuple[list[Variable], list[Variable], list[str], list[str]]:
     """
-    Return the names of the matrices the Kalman filter passes to ``scan`` as sequences.
+    Split matrices into ``scan`` sequences and non-sequences by asking each for its time axis.
 
     Parameters
     ----------
-    time_varying_names : iterable of str
-        Long names of the matrices the model declared time-varying, as given by
-        :attr:`PytensorRepresentation.time_varying_names`.
+    matrices : dict mapping str to TensorVariable
+        Matrices to split, keyed by short name.
 
     Returns
     -------
+    sequences : list of TensorVariable
+        Matrices carrying a time axis, in the order ``matrices`` gives them.
+    non_sequences : list of TensorVariable
+        The rest, in the same order.
     seq_names : list of str
-        Short matrix names, ordered as ``scan`` receives them.
+        Names matching ``sequences``.
+    non_seq_names : list of str
+        Names matching ``non_sequences``.
     """
-    time_varying_short = {LONG_NAME_TO_SHORT[name] for name in time_varying_names}
-    return [name for name in PARAM_NAMES if name in time_varying_short]
+    varying = is_time_varying(*matrices.values())
+    seq_names = [name for name, flag in zip(matrices, varying, strict=True) if flag]
+    non_seq_names = [name for name, flag in zip(matrices, varying, strict=True) if not flag]
+
+    return (
+        [matrices[name] for name in seq_names],
+        [matrices[name] for name in non_seq_names],
+        seq_names,
+        non_seq_names,
+    )
 
 
-def split_vars_into_seq_and_nonseq(params, param_names, time_varying_names: Iterable[str]):
-    """Split filter inputs into scan sequences and non-sequences.
+def unpack_scan_step(
+    args: tuple, seq_names: list[str], non_seq_names: list[str], order: tuple[str, ...]
+) -> tuple[tuple, tuple]:
+    """
+    Split one ``scan`` step's arguments into its recurrent states and its matrices.
+
+    ``scan`` passes sequences first, then ``outputs_info``, then non-sequences, so where a given
+    matrix lands depends on how many of them carry a time axis.
 
     Parameters
     ----------
-    params : sequence of TensorVariable
-        Filter input matrices in the order given by ``param_names``.
-    param_names : sequence of str
-        Long names of the matrices in ``params``.
-    time_varying_names : iterable of str
-        Names of matrices the model declared as time-varying. Anything in this set is
-        treated as a scan sequence; everything else is a non-sequence.
+    args : tuple
+        The step function's arguments, less any leading sequences the caller took for itself.
+    seq_names : list of str
+        Names of the matrices passed as sequences, in the order ``scan`` receives them.
+    non_seq_names : list of str
+        Names of the matrices passed as non-sequences, in the order ``scan`` receives them.
+    order : tuple of str
+        Names of the matrices to return, in the order the caller wants them.
 
     Returns
     -------
-    sequences, non_sequences, seq_names, non_seq_names : four lists
-        The split inputs and their names.
+    recurrent : tuple
+        The ``outputs_info`` values, which sit between the sequences and the non-sequences.
+    matrices : tuple
+        The matrices named by ``order``.
     """
-    time_varying_names = frozenset(time_varying_names)
-    sequences, non_sequences = [], []
-    seq_names, non_seq_names = [], []
+    n_seq, n_non_seq = len(seq_names), len(non_seq_names)
+    n_recurrent = len(args) - n_seq - n_non_seq
 
-    for param, name in zip(params, param_names):
-        if name in time_varying_names:
-            sequences.append(param)
-            seq_names.append(name)
-        else:
-            non_sequences.append(param)
-            non_seq_names.append(name)
+    seqs = args[:n_seq]
+    recurrent = args[n_seq : n_seq + n_recurrent]
+    non_seqs = args[n_seq + n_recurrent :]
 
-    return sequences, non_sequences, seq_names, non_seq_names
+    matrices = dict(zip(seq_names, seqs, strict=True)) | dict(
+        zip(non_seq_names, non_seqs, strict=True)
+    )
+    return recurrent, tuple(matrices[name] for name in order)
 
 
 def stabilize(cov, jitter=JITTER_DEFAULT):

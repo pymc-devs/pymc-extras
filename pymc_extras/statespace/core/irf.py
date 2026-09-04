@@ -11,6 +11,7 @@ import pytensor.tensor as pt
 from pymc.util import RandomState
 
 from pymc_extras.statespace.core import dummy_graph
+from pymc_extras.statespace.core.assumptions import is_time_varying
 from pymc_extras.statespace.core.fit_recovery import (
     coords_from_idata,
     dims_from_idata,
@@ -233,7 +234,7 @@ def impulse_response_function(
             shock_trajectory = pt.as_tensor_variable(shock_trajectory)[..., None]
 
         x0 = pt.zeros((ss_mod.k_states, n_impulse))
-        time_varying_T = "transition" in ss_mod.ssm.time_varying_names
+        [time_varying_T] = is_time_varying(T)
 
         def irf_step(*args):
             if time_varying_T:
