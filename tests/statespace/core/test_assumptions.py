@@ -7,6 +7,10 @@ from pytensor.graph.replace import graph_replace
 from pymc_extras.statespace.core.assumptions import declare_time_varying, is_time_varying
 
 Z = declare_time_varying(pt.tensor("Z", shape=(100, 2, 3)))
+# Square, so it can go through the Blockwise linalg ops the models and the filter use.
+T = declare_time_varying(pt.tensor("T", shape=(100, 3, 3)))
+# Declared on a core axis rather than a batch one, which a Blockwise may reshape away.
+T_core = declare_time_varying(pt.tensor("T_core", shape=(3, 3)))
 
 
 @pytest.mark.parametrize(
@@ -29,6 +33,15 @@ Z = declare_time_varying(pt.tensor("Z", shape=(100, 2, 3)))
         (Z.sum(axis=0), False),
         (pt.zeros((100, 2, 3)) + Z.sum(), False),
         (pt.tensor("W", shape=(100, 2, 3)), False),
+        (pt.linalg.block_diag(T, pt.tensor("S", shape=(2, 2))), True),
+        (pt.linalg.block_diag(pt.tensor("S", shape=(2, 2)), T), True),
+        (pt.linalg.cholesky(T), True),
+        (pt.linalg.solve(T, T, b_ndim=2), True),
+        (pt.linalg.block_diag(T_core, pt.tensor("S", shape=(2, 2))), False),
+        (
+            pt.linalg.block_diag(pt.tensor("S", shape=(2, 2)), pt.tensor("S2", shape=(3, 3))),
+            False,
+        ),
     ],
     ids=[
         "declared",
@@ -48,6 +61,12 @@ Z = declare_time_varying(pt.tensor("Z", shape=(100, 2, 3)))
         "reduce_time",
         "static_from_a_reduction",
         "undeclared",
+        "block_diag_time_varying_first",
+        "block_diag_time_varying_second",
+        "blockwise_cholesky",
+        "blockwise_solve",
+        "block_diag_declared_on_a_core_axis",
+        "block_diag_of_static_matrices",
     ],
 )
 def test_declaration_survives_exactly_the_ops_that_keep_the_time_axis(expression, expected):

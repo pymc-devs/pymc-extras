@@ -9,6 +9,7 @@ from pytensor.assumptions import (
 from pytensor.graph.basic import Variable
 from pytensor.graph.fg import FunctionGraph
 from pytensor.tensor.basic import Join
+from pytensor.tensor.blockwise import Blockwise
 from pytensor.tensor.elemwise import Elemwise
 from pytensor.tensor.rewriting.assumptions import _KEY_BY_NAME
 from pytensor.tensor.subtensor import (
@@ -62,6 +63,24 @@ def _join_keeps_time_axis(key, op, feature, fgraph, node, input_states):
     if any(state is FactState.TRUE for state in input_states):
         return [FactState.TRUE]
     return [FactState.UNKNOWN]
+
+
+@register_assumption(TIME_VARYING, Blockwise)
+def _blockwise_keeps_a_batched_time_axis(key, op, feature, fgraph, node, input_states):
+    """A ``Blockwise`` broadcasts its batch dims onto every output, so a time axis to the left of
+    an input's core dims survives the call.
+
+    ``Component.__add__`` builds the combined transition, selection and state covariance with
+    ``pt.linalg.block_diag``, and the filter takes a Cholesky of the covariances, so without this
+    the declaration is lost exactly where components are combined. A declaration sitting on a core
+    axis instead says nothing about the result, since the core op is free to reshape it.
+    """
+    n_outputs = len(op.outputs_sig)
+    batched_time = any(
+        state is FactState.TRUE and variable.type.ndim > len(core_dims)
+        for state, core_dims, variable in zip(input_states, op.inputs_sig, node.inputs, strict=True)
+    )
+    return [FactState.TRUE if batched_time else FactState.UNKNOWN] * n_outputs
 
 
 def declare_time_varying(tensor: Variable) -> Variable:
