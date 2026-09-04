@@ -367,7 +367,7 @@ class Trainer:
         # declares the observations via pm.Data.
         if total_size is not None:
             for name in first_batch:
-                var = model[name] if name in model.named_vars else None
+                var = model[name]
                 if not isinstance(var, SharedVariable):
                     continue
                 for rv in model.observed_RVs:

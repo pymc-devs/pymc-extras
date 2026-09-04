@@ -490,3 +490,26 @@ def test_fit_scales_each_batch_by_its_own_rows():
     np.testing.assert_allclose(scale.eval(), 3_000 / 37)
     model.set_data("y", np.zeros(100))
     np.testing.assert_allclose(scale.eval(), 30.0)
+
+
+def test_fit_scales_a_pm_data_variable_named_in_observeds():
+    rng = np.random.default_rng(0)
+    y = rng.normal(1.5, 1.0, 3_000)
+
+    class Loader:
+        total_size = 3_000
+
+        def __iter__(self):
+            while True:
+                for i in range(0, 3_000, 100):
+                    yield {"y": y[i : i + 100]}
+
+    with pm.Model() as model:
+        mu = pm.Normal("mu", 0, 5)
+        data = pm.Data("y", y[:100])
+        pm.Normal("y_obs", mu, 1.0, observed=data)
+
+    trainer = Trainer()
+    trainer.fit(5, data=Loader(), model=model, observeds=["y"], random_seed=1)
+    [scale] = trainer._logp_scalings.values()
+    np.testing.assert_allclose(scale.eval(), 30.0)
