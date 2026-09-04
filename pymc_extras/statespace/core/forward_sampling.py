@@ -120,8 +120,6 @@ def _sample_conditional(
         )
 
         for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs, strict=True):
-            dummy_ll = pt.zeros_like(mu)
-
             if name == "smoothed":
                 # The simulation smoother draws the whole latent path jointly, so the
                 # states carry their cross-time posterior covariance.
@@ -157,14 +155,14 @@ def _sample_conditional(
                     f"{name}_{group}",
                     mus=mu,
                     covs=cov,
-                    logp=dummy_ll,
+                    logp=pt.zeros_like(mu),
                     dims=state_dims,
                     method=mvn_method,
                 )
 
                 obs_mu = d + (Z @ mu[..., None]).squeeze(-1)
                 obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H
-                obs_logp = dummy_ll
+                obs_logp = pt.zeros_like(obs_mu)
 
             SequenceMvNormal(
                 f"{name}_{group}_observed",
@@ -267,16 +265,18 @@ def _sample_unconditional(
     fit_dims = dims_from_idata(ss_mod, idata, group)
     temp_coords = fit_coords.copy()
 
-    if not use_data_time_dim and steps is not None:
-        temp_coords.update({TIME_DIM: np.arange(1 + steps, dtype="int")})
-        steps = len(temp_coords[TIME_DIM]) - 1
-    elif steps is not None:
-        n_dimsteps = len(temp_coords[TIME_DIM])
-        if n_dimsteps != steps:
+    if use_data_time_dim:
+        # A trajectory of n steps spans n + 1 timesteps, the initial state plus one per step.
+        data_steps = len(temp_coords[TIME_DIM]) - 1
+        if steps is not None and steps != data_steps:
             raise ValueError(
-                f"Length of time dimension does not match specified number of steps, expected"
-                f" {n_dimsteps} steps, or steps=None."
+                f"steps={steps} does not match the time dimension in idata, which spans "
+                f"{data_steps} steps. Pass steps={data_steps}, or steps=None to take it from "
+                "the data."
             )
+        steps = data_steps
+    elif steps is not None:
+        temp_coords[TIME_DIM] = np.arange(1 + steps, dtype="int")
     else:
         steps = len(temp_coords[TIME_DIM]) - 1
 

@@ -8,7 +8,7 @@ import pytensor.tensor as pt
 import pytest
 import statsmodels.api as sm
 
-from numpy.testing import assert_allclose, assert_array_less
+from numpy.testing import assert_allclose, assert_array_equal, assert_array_less
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.testing import mock_sample_setup_and_teardown
 
@@ -195,32 +195,230 @@ def test_all_prior_covariances_are_PSD(filter_output, varma_mod, idata, rng):
     assert_array_less(0, w, err_msg=f"Smallest eigenvalue: {min(w.ravel())}")
 
 
-parameters = [
-    {"n_steps": 10, "shock_size": None},
-    {"n_steps": 10, "shock_size": 1.0},
-    {"n_steps": 10, "shock_size": np.array([1.0, 0.0, 0.0])},
-    {
-        "n_steps": 10,
-        "shock_cov": np.array([[1.38, 0.58, -1.84], [0.58, 0.99, -0.82], [-1.84, -0.82, 2.51]]),
-    },
-    {
-        "shock_trajectory": np.r_[
-            np.zeros((3, 3), dtype=floatX),
-            np.array([[1.0, 0.0, 0.0]]).astype(floatX),
-            np.zeros((6, 3), dtype=floatX),
-        ]
-    },
-]
-
-ids = ["from-posterior-cov", "scalar_shock_size", "array_shock_size", "user-cov", "trajectory"]
-
-
-@pytest.mark.parametrize("parameters", parameters, ids=ids)
 @pytest.mark.skipif(floatX == "float32", reason="Impulse covariance not PSD if float32")
-def test_impulse_response(parameters, varma_mod, idata, rng):
-    irf = varma_mod.impulse_response_function(idata, random_seed=rng, group="prior", **parameters)
+@pytest.mark.parametrize(
+    "shock_kwargs",
+    [
+        {},
+        {"shock_cov": np.array([[1.38, 0.58, -1.84], [0.58, 0.99, -0.82], [-1.84, -0.82, 2.51]])},
+    ],
+    ids=["from-posterior-cov", "user-cov"],
+)
+def test_impulse_response_from_covariance(varma_mod, idata, rng, shock_kwargs):
+    """A covariance draws the impulse at random, so only states the shock cannot reach are known."""
+    irf = varma_mod.impulse_response_function(
+        idata, n_steps=10, group="prior", random_seed=rng, **shock_kwargs
+    )
 
-    assert np.isfinite(irf.irf.values).all()
+    # The selection matrix routes shocks to a subset of states; the rest can only move via the
+    # intercept in the impact period, whatever impulse was drawn.
+    R = varma_mod.ssm["selection"].eval()
+    c = varma_mod.ssm["state_intercept"].eval()
+    unreachable = ~R.any(axis=1)
+
+    assert unreachable.any(), "Fixture no longer has states outside the shock's reach"
+
+    impact = irf.irf.isel(chain=0, time=0).values[:, unreachable]
+    assert_allclose(impact, np.broadcast_to(c[unreachable], impact.shape), atol=1e-12)
+
+
+@pytest.mark.skipif(floatX == "float32", reason="Impulse covariance not PSD if float32")
+def test_impulse_response_of_fixed_shock(varma_mod, idata, rng):
+    """A fixed shock_size makes the impulse deterministic, so the impact period is known exactly."""
+    shock_size = np.array([1.0, 0.0, 0.0], dtype=floatX)
+    irf = varma_mod.impulse_response_function(
+        idata, n_steps=5, shock_size=shock_size, group="prior", random_seed=rng
+    )
+
+    R = varma_mod.ssm["selection"].eval()
+    impact = irf.irf.isel(chain=0, time=0).values
+    assert_allclose(impact, np.broadcast_to(R @ shock_size, impact.shape), atol=1e-8)
+
+    # The system is linear in the impulse, so doubling the shock doubles the whole path.
+    doubled = varma_mod.impulse_response_function(
+        idata, n_steps=5, shock_size=shock_size * 2, group="prior", random_seed=rng
+    )
+    assert_allclose(doubled.irf.values, 2 * irf.irf.values, rtol=1e-8)
+
+
+@pytest.mark.skipif(floatX == "float32", reason="Impulse covariance not PSD if float32")
+def test_impulse_response_respects_shock_trajectory_timing(varma_mod, idata, rng):
+    """Nothing may move before the trajectory's first non-zero entry."""
+    quiet_steps = 3
+    shock_trajectory = np.zeros((8, varma_mod.k_posdef), dtype=floatX)
+    shock_trajectory[quiet_steps, 0] = 1.0
+
+    irf = varma_mod.impulse_response_function(
+        idata, shock_trajectory=shock_trajectory, group="prior", random_seed=rng
+    )
+
+    # irf[t] is the state after shock t is applied, so the impulse lands on its own index.
+    before = irf.irf.isel(time=slice(None, quiet_steps)).values
+    assert_allclose(before, 0.0, atol=1e-12)
+
+    R = varma_mod.ssm["selection"].eval()
+    impact = irf.irf.isel(chain=0, time=quiet_steps).values
+    expected = np.broadcast_to(R @ shock_trajectory[quiet_steps], impact.shape)
+    assert_allclose(impact, expected, atol=1e-8)
+
+
+@pytest.mark.skipif(floatX == "float32", reason="Cholesky factor not accurate enough in float32")
+class TestOrthogonalizedImpulseResponse:
+    """Recursive (Cholesky) identification of the reduced-form VAR shocks.
+
+    VARMAX has a full state_cov, so the factorization has content and the ordering matters. The
+    identifying assumption lives entirely in the impact period, so that is what these tests pin
+    down; later periods follow from the transition matrix, which the tests above already cover.
+    """
+
+    @staticmethod
+    def impact(irf, states=None):
+        """Impact-period response, as (draw, state, structural_shock)."""
+        response = irf.irf.isel(chain=0, time=0)
+        if states is not None:
+            response = response.sel(state=states)
+        return response.transpose("draw", "state", "structural_shock").values
+
+    def test_impact_is_cholesky_factor(self, varma_mod, idata, rng):
+        irf = varma_mod.impulse_response_function(
+            idata, n_steps=8, orthogonalize_shocks=True, group="prior", random_seed=rng
+        )
+
+        assert irf.irf.dims == ("chain", "draw", "structural_shock", "time", "state")
+        assert list(irf.irf.coords["structural_shock"].values) == list(varma_mod.coords["shock"])
+
+        Q = idata.prior["state_cov"].values[0]
+        R = varma_mod.ssm["selection"].eval()
+        expected = np.stack([R @ np.linalg.cholesky(Q_draw) for Q_draw in Q])
+
+        assert_allclose(self.impact(irf), expected, atol=1e-8)
+
+    def test_is_deterministic_given_parameters(self, varma_mod, idata, rng):
+        """No random node in the graph, so the seed must not move the answer at all."""
+        kwargs = dict(n_steps=5, orthogonalize_shocks=True, group="prior")
+        first = varma_mod.impulse_response_function(idata, random_seed=rng, **kwargs)
+        second = varma_mod.impulse_response_function(idata, random_seed=12345, **kwargs)
+
+        assert_array_equal(first.irf.values, second.irf.values)
+
+    def test_shock_order_changes_identification(self, varma_mod, idata, rng):
+        reversed_order = list(varma_mod.coords["shock"])[::-1]
+        irf = varma_mod.impulse_response_function(
+            idata, n_steps=5, orthogonalize_shocks=True, group="prior", random_seed=rng
+        )
+        reordered = varma_mod.impulse_response_function(
+            idata,
+            n_steps=5,
+            orthogonalize_shocks=True,
+            shock_order=reversed_order,
+            group="prior",
+            random_seed=rng,
+        )
+
+        assert list(reordered.irf.coords["structural_shock"].values) == reversed_order
+        assert not np.allclose(irf.irf.values, reordered.irf.values)
+
+        # Whatever the ordering, the impact matrix must still reproduce the shock covariance --
+        # this is what catches a botched un-permutation, which a shape check would sail past.
+        Q = idata.prior["state_cov"].values[0]
+        B = self.impact(reordered, states=list(varma_mod.coords["observed_state"]))
+        assert_allclose(B @ B.transpose(0, 2, 1), Q, atol=1e-8)
+
+    @pytest.mark.parametrize(
+        "shock_order, expected",
+        [
+            ([...], ["realgdp", "realcons", "realinv"]),
+            (["realinv", ...], ["realinv", "realgdp", "realcons"]),
+            ([..., "realgdp"], ["realcons", "realinv", "realgdp"]),
+            (["realinv", ..., "realgdp"], ["realinv", "realcons", "realgdp"]),
+        ],
+        ids=["all", "leading-name", "trailing-name", "both-sides"],
+    )
+    def test_ellipsis_fills_unnamed_shocks(self, varma_mod, idata, rng, shock_order, expected):
+        """`...` takes whatever is left, in the order the fit dims give it."""
+        irf = varma_mod.impulse_response_function(
+            idata,
+            n_steps=3,
+            orthogonalize_shocks=True,
+            shock_order=shock_order,
+            group="prior",
+            random_seed=rng,
+        )
+
+        assert list(irf.irf.coords["structural_shock"].values) == expected
+
+        explicit = varma_mod.impulse_response_function(
+            idata,
+            n_steps=3,
+            orthogonalize_shocks=True,
+            shock_order=expected,
+            group="prior",
+            random_seed=rng,
+        )
+        assert_array_equal(irf.irf.values, explicit.irf.values)
+
+    def test_diagonal_covariance_is_order_invariant(self, varma_mod, idata, rng):
+        """With independent shocks the factorization is a rescaling, so ordering does nothing."""
+        shock_cov = np.diag(np.array([1.0, 4.0, 9.0], dtype=floatX))
+        kwargs = dict(
+            n_steps=3,
+            shock_cov=shock_cov,
+            orthogonalize_shocks=True,
+            group="prior",
+            random_seed=rng,
+        )
+        irf = varma_mod.impulse_response_function(idata, **kwargs)
+        reordered = varma_mod.impulse_response_function(
+            idata, shock_order=list(varma_mod.coords["shock"])[::-1], **kwargs
+        )
+
+        flipped = reordered.irf.isel(structural_shock=slice(None, None, -1))
+        assert_allclose(irf.irf.values, flipped.values, atol=1e-8)
+
+    @pytest.mark.parametrize(
+        "kwargs, error_msg",
+        [
+            ({"orthogonalize_shocks": True, "shock_size": 1.0}, "cannot be combined"),
+            (
+                {"orthogonalize_shocks": True, "shock_trajectory": np.zeros((3, 3))},
+                "cannot be combined",
+            ),
+            ({"shock_order": ["realgdp", "realcons", "realinv"]}, "only meaningful"),
+            (
+                {"orthogonalize_shocks": True, "shock_order": ["realgdp", "realcons"]},
+                "must name every shock",
+            ),
+            (
+                {"orthogonalize_shocks": True, "shock_order": ["realgdp", "realcons", "nope"]},
+                "does not have",
+            ),
+            (
+                {"orthogonalize_shocks": True, "shock_order": ["realgdp", "realgdp", ...]},
+                "more than once",
+            ),
+            (
+                {"orthogonalize_shocks": True, "shock_order": [..., "realgdp", ...]},
+                "at most one",
+            ),
+            (
+                {"orthogonalize_shocks": True, "use_posterior_cov": False},
+                "needs a shock covariance matrix",
+            ),
+        ],
+        ids=[
+            "with-shock-size",
+            "with-trajectory",
+            "order-without-flag",
+            "short-order",
+            "bad-name",
+            "duplicate-name",
+            "two-ellipsis",
+            "no-covariance",
+        ],
+    )
+    def test_invalid_arguments(self, varma_mod, idata, kwargs, error_msg):
+        with pytest.raises(ValueError, match=error_msg):
+            varma_mod.impulse_response_function(idata, n_steps=3, group="prior", **kwargs)
 
 
 def test_forecast(varma_mod, idata, rng):

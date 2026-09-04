@@ -346,7 +346,9 @@ def _build_forecast_index(
             if start < 0:
                 start = time_index[start]
             if end is not None:
-                forecast_index = pd.RangeIndex(start, end, step=1, dtype="int")
+                # RangeIndex excludes its stop where date_range includes its end, so add one
+                # to give `end` the same meaning on both index types.
+                forecast_index = pd.RangeIndex(start, end + 1, step=1, dtype="int")
             if periods is not None:
                 forecast_index = pd.RangeIndex(start, start + periods + 1, step=1, dtype="int")
 
@@ -557,11 +559,12 @@ def forecast(
 
     time_index = ss_mod._get_fit_time_index(idata)
 
-    if start is None and verbose:
-        _log.warning(
-            "No start date provided. Using the last date in the data index. To silence this warning, "
-            "explicitly pass a start date or set verbose = False"
-        )
+    if start is None:
+        if verbose:
+            _log.warning(
+                "No start date provided. Using the last date in the data index. To silence this "
+                "warning, explicitly pass a start date or set verbose = False"
+            )
         start = time_index[-1]
 
     if ss_mod._needs_exog_data and not isinstance(scenario, dict):
