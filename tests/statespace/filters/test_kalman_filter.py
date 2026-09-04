@@ -246,34 +246,22 @@ def test_output_with_multiple_observed(filter_name, rng):
         )
 
 
-def test_square_root_filter_multivariate_log_likelihood():
-    rng = np.random.default_rng(0)
-    k_states, k_endog, n = 3, 2, 20
+def test_square_root_filter_multivariate_log_likelihood(rng):
+    p, m, r, n = 2, 3, 3, 20
+    inputs = make_test_inputs(p, m, r, n, rng)
 
-    T = np.eye(k_states, dtype=floatX) * 0.9
-    R = np.eye(k_states, dtype=floatX)
-    Q = np.eye(k_states, dtype=floatX) * 0.5
-    Z = rng.normal(size=(k_endog, k_states)).astype(floatX)
-    H = np.eye(k_endog, dtype=floatX) * 0.3
-    a0 = np.zeros(k_states, dtype=floatX)
-    P0 = np.eye(k_states, dtype=floatX)
-    c = np.zeros(k_states, dtype=floatX)
-    d = np.zeros(k_endog, dtype=floatX)
-    data = rng.normal(size=(n, k_endog)).astype(floatX)
+    univariate_outputs = get_filter_function("UnivariateFilter")(*inputs)
 
-    args = [data, a0, np.linalg.cholesky(P0), c, d, T, Z, R, H, Q]
-    outputs = SquareRootFilter().build_graph(*[pt.as_tensor(x) for x in args])
-    y_hat, F, loglike = pytensor.function([], [outputs[2], outputs[5], outputs[-1]])()
+    square_root_inputs = list(inputs)
+    square_root_inputs[2] = np.linalg.cholesky(square_root_inputs[2])
+    square_root_outputs = get_filter_function("CholeskyFilter")(*square_root_inputs)
 
-    residual = data - y_hat
-    solved_residual = np.linalg.solve(F, residual[..., None])[..., 0]
-    sign, logdet = np.linalg.slogdet(F)
-    expected_loglike = -0.5 * (
-        k_endog * np.log(2 * np.pi) + logdet + np.einsum("ni,ni->n", residual, solved_residual)
+    assert_allclose(
+        square_root_outputs[-1],
+        univariate_outputs[-1],
+        atol=ATOL,
+        rtol=RTOL,
     )
-
-    assert np.all(sign > 0)
-    assert_allclose(loglike, expected_loglike, atol=ATOL, rtol=RTOL)
 
 
 @pytest.mark.parametrize("filter_name", filter_names)
