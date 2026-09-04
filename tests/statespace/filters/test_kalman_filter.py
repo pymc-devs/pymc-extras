@@ -246,6 +246,24 @@ def test_output_with_multiple_observed(filter_name, rng):
         )
 
 
+def test_square_root_filter_multivariate_log_likelihood(rng):
+    p, m, r, n = 2, 3, 3, 20
+    inputs = make_test_inputs(p, m, r, n, rng)
+
+    univariate_outputs = get_filter_function("UnivariateFilter")(*inputs)
+
+    square_root_inputs = list(inputs)
+    square_root_inputs[2] = np.linalg.cholesky(square_root_inputs[2])
+    square_root_outputs = get_filter_function("CholeskyFilter")(*square_root_inputs)
+
+    assert_allclose(
+        square_root_outputs[-1],
+        univariate_outputs[-1],
+        atol=ATOL,
+        rtol=RTOL,
+    )
+
+
 @pytest.mark.parametrize("filter_name", filter_names)
 @pytest.mark.parametrize("p", [1, 5], ids=["univariate (p=1)", "multivariate (p=5)"])
 def test_missing_data(filter_name, p, rng):
