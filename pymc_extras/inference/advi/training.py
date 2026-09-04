@@ -120,6 +120,22 @@ class SVIState:
     loss_history: np.ndarray
 
 
+def _resolve_total_size(data, declared: int | None) -> int | None:
+    """Resolve the dataset row count N for a data stream.
+
+    ``len(data)`` is not consulted: for an iterable of batches it is the number of
+    batches, not of rows (see the DataLoader, whose ``__len__`` follows torch).
+    """
+    advertised = getattr(data, "total_size", None)
+    if declared is not None and advertised is not None and declared != advertised:
+        raise ValueError(
+            f"total_size={declared} was passed to fit, but the data stream advertises "
+            f"total_size={advertised}. One of them is wrong; drop the argument to use "
+            f"the stream's value."
+        )
+    return declared if declared is not None else advertised
+
+
 class Trainer:
     """
     Trainer for stochastic variational inference.
@@ -196,7 +212,7 @@ class Trainer:
         self._guide: AutoGuideModel | None = guide if isinstance(guide, AutoGuideModel) else None
         self._fit_model: Model | None = None
         self._stream_shareds: dict[str, SharedVariable] = {}
-        self._logp_scalings: dict[str, float] = {}
+        self._logp_scalings: dict[str, Any] = {}
         self._step_fn: TrainingFn | None = None
         self._shared_params: dict | None = None
         self._shared_optimizer_state: dict | None = None
@@ -292,7 +308,7 @@ class Trainer:
         first_batch: dict[str, Any],
         observeds: list | None,
         total_size: int | None,
-    ) -> tuple[Model, dict[str, SharedVariable], dict[str, float]]:
+    ) -> tuple[Model, dict[str, SharedVariable], dict[str, Any]]:
         """Bind the model to a data stream, observing the variables named in ``observeds``.
 
         A free RV in ``observeds`` is observed *once* with :func:`pymc.observe`,
@@ -305,19 +321,14 @@ class Trainer:
         log-likelihood of each variable in ``observeds`` is rescaled by
         ``N / batch_rows`` so the minibatch estimate is unbiased for the full-data
         one; variables already carrying their own ``total_size`` in the model are
-        left alone.
+        left alone. The scale is built from the observation's own shape, so it
+        follows the rows each batch actually carries.
 
         Returns the bound model, the shared variables the stream writes into, and the
         per-name likelihood scalings; the caller caches them on the trainer.
         """
         stream_shareds: dict[str, SharedVariable] = {}
-        logp_scalings: dict[str, float] = {}
-
-        def likelihood_scale(name: str) -> float | None:
-            if total_size is None or name not in first_batch:
-                return None
-            value = np.asarray(first_batch[name])
-            return total_size / (value.shape[0] if value.ndim else 1)
+        to_scale: set[str] = set()
 
         to_observe = {}
         for var in observeds or []:
@@ -326,7 +337,7 @@ class Trainer:
             if isinstance(var, SharedVariable):
                 # A pm.Data placeholder: rescale the observed RVs it is the
                 # observation of
-                if (scale := likelihood_scale(name)) is not None:
+                if total_size is not None and name in first_batch:
                     for rv in model.observed_RVs:
                         if isinstance(rv.owner.op, MinibatchRandomVariable):
                             # The model already rescales this likelihood: a total_size
@@ -335,7 +346,7 @@ class Trainer:
                             # N / batch_size factor, so adding ours would scale twice
                             continue
                         if var in ancestors([model.rvs_to_values[rv]]):
-                            logp_scalings[rv.name] = scale
+                            to_scale.add(rv.name)
                 continue
             if name not in first_batch:
                 raise ValueError(
@@ -344,8 +355,8 @@ class Trainer:
                 )
             value = np.asarray(first_batch[name], dtype=var.dtype)
             to_observe[name] = stream_shareds[name] = pytensor.shared(value, name=f"{name}_data")
-            if (scale := likelihood_scale(name)) is not None:
-                logp_scalings[name] = scale
+            if total_size is not None:
+                to_scale.add(name)
         if to_observe:
             model = pm.observe(model, to_observe)
 
@@ -356,18 +367,22 @@ class Trainer:
         # declares the observations via pm.Data.
         if total_size is not None:
             for name in first_batch:
-                if name in logp_scalings:
-                    continue  # already handled via observeds or a free RV above
-                var = model[name]
+                var = model[name] if name in model.named_vars else None
                 if not isinstance(var, SharedVariable):
                     continue
                 for rv in model.observed_RVs:
+                    if rv.name in to_scale:
+                        continue  # already handled via observeds or a free RV above
                     if isinstance(rv.owner.op, MinibatchRandomVariable):
                         continue
                     if var in ancestors([model.rvs_to_values[rv]]):
-                        value = np.asarray(first_batch[name])
-                        scale = total_size / (value.shape[0] if value.ndim else 1)
-                        logp_scalings[rv.name] = scale
+                        to_scale.add(rv.name)
+
+        # Build the scale from the observation's own shape, so a ragged batch is
+        # weighted by the rows it actually carries rather than by the first batch's.
+        logp_scalings = {
+            name: total_size / model.rvs_to_values[model[name]].shape[0] for name in to_scale
+        }
 
         return model, stream_shareds, logp_scalings
 
@@ -394,6 +409,7 @@ class Trainer:
         state: SVIState | None = None,
         model: Model | None = None,
         observeds: list | None = None,
+        total_size: int | None = None,
         random_seed=None,
     ) -> SVIState:
         """
@@ -416,26 +432,31 @@ class Trainer:
             ``set_data`` before the gradient update, so the model trains on one
             batch at a time. The batch axis is assumed to be the first (leftmost)
             axis of each array. Names listed in ``observeds`` may instead refer to
-            free RVs, see below. If the iterable supports ``len``, that is taken
-            as the total dataset row count ``N`` (as for a torch-style dataloader
-            that yields minibatches of a dataset of ``N`` rows).
+            free RVs, see below. If the iterable carries a ``total_size``
+            attribute, that is the dataset row count ``N``; ``len(data)`` is not
+            used for it, since for an iterable of batches ``len`` is the number of
+            batches.
         state : SVIState, optional
             Previous state to resume training from. If None, continues from the
             current state.
         model : Model, optional
             The PyMC model to fit. If None, the model is taken from the context
             stack.
+        total_size : int, optional
+            The dataset row count ``N``. Overrides a ``total_size`` attribute on
+            ``data``, and raises if the two disagree.
         observeds : list of str or variable, optional
             Variables whose entry in the ``data`` dictionaries is an observation.
             A variable that is a ``pm.Data`` placeholder is streamed into as usual;
             one that is instead a random variable is first converted to an observed
             RV with :func:`pymc.observe` (once, before compilation; the values then
             stream through a shared variable). Requires ``data``. When ``N`` is
-            known from ``len(data)``, each observation's log-likelihood is rescaled
-            by ``N / batch_rows``, making the minibatch ELBO an unbiased estimate
-            of the full-data one; without it batches are treated as the full
-            dataset and the posterior will be too wide. Variables that already
-            carry a ``total_size`` in the model are left alone.
+            known, each observation's log-likelihood is rescaled by
+            ``N / batch_rows``, making the minibatch ELBO an unbiased estimate of
+            the full-data one; without it batches are treated as the full dataset
+            and the posterior will be too wide. The row count is read from the
+            batch each step, so batches need not all be the same size. Variables
+            that already carry a ``total_size`` in the model are left alone.
         random_seed : optional
             Seed for the guide draws used to estimate the gradients.
 
@@ -451,10 +472,7 @@ class Trainer:
 
         stream = None
         if data is not None:
-            try:
-                total_size = len(data)
-            except TypeError:
-                total_size = None
+            total_size = _resolve_total_size(data, total_size)
             stream = iter(data)
             first_batch = next(stream, None)
             if first_batch is None:
