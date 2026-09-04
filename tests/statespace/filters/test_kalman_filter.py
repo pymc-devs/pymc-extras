@@ -29,6 +29,7 @@ from tests.statespace.test_utilities import (
     initialize_filter,
     make_test_inputs,
     nile_test_test_helper,
+    statsmodels_loglike_obs,
 )
 
 floatX = pytensor.config.floatX
@@ -314,6 +315,75 @@ def test_missing_value_with_nondiagonal_obs_cov(filter_name, rng):
             rtol=RTOL,
             err_msg=f"{name} depends on H entries at masked positions",
         )
+
+
+LOGLIKE_TEST_K_ENDOG = 3
+
+
+def loglike_test_matrices(obs_cov: str):
+    """
+    Build the model filtered by :func:`test_loglike_matches_statsmodels`. A dense ``Z`` makes every
+    series load on every state, so a masked row of ``F`` carries cross-covariances that the update
+    has to clear -- the identity default of :func:`make_test_inputs` would hide a regression there.
+    """
+    p = m = r = LOGLIKE_TEST_K_ENDOG
+    _, a0, P0, c, d, T, _, R, _, Q = make_test_inputs(p, m, r, 1, rng=None)
+
+    Z = np.eye(p, m, dtype=floatX) + 0.3
+    H = np.eye(p, dtype=floatX) + (0.4 if obs_cov == "dense" else 0.0)
+
+    return [a0, P0, c, d, T, Z, R, H, Q]
+
+
+@cache
+def get_loglike_function(filter_name: str, obs_cov: str) -> Callable:
+    """Compile the per-timestep log-likelihood alone, which ``get_filter_function`` does not expose."""
+    filter_cls = {
+        "StandardFilter": StandardFilter,
+        "CholeskyFilter": SquareRootFilter,
+        "UnivariateFilter": UnivariateFilter,
+    }[filter_name]
+
+    a0, P0, c, d, T, Z, R, H, Q = loglike_test_matrices(obs_cov)
+    if filter_cls is SquareRootFilter:
+        P0 = np.linalg.cholesky(P0)
+
+    data = pt.tensor(name="data", dtype=floatX, shape=(None, LOGLIKE_TEST_K_ENDOG))
+    matrices = [pt.as_tensor_variable(x) for x in [a0, P0, c, d, T, Z, R, H, Q]]
+    ll_obs = filter_cls().build_graph(data, *matrices)[-1]
+
+    return pytensor.function([data], ll_obs)
+
+
+@pytest.mark.parametrize(
+    ("filter_name", "obs_cov"),
+    [
+        ("StandardFilter", "dense"),
+        ("UnivariateFilter", "diagonal"),
+        pytest.param(
+            "CholeskyFilter",
+            "dense",
+            marks=pytest.mark.xfail(
+                reason="SquareRootFilter scales log |F| by k_endog as well, see issue #744"
+            ),
+        ),
+    ],
+)
+def test_loglike_matches_statsmodels(filter_name, obs_cov, rng):
+    """
+    Each timestep scores the observed components of ``y_t``, so the per-timestep log-likelihood must
+    match statsmodels -- normalizing constant included -- however much of the observation is missing.
+    """
+    n = 20
+    data = rng.normal(size=(n, LOGLIKE_TEST_K_ENDOG)).astype(floatX)
+    data[3, 0] = np.nan
+    data[7, [0, 2]] = np.nan
+    data[11, :] = np.nan
+
+    ll_obs = get_loglike_function(filter_name, obs_cov)(data)
+    expected = statsmodels_loglike_obs(data, *loglike_test_matrices(obs_cov))
+
+    assert_allclose(ll_obs, expected, atol=ATOL, rtol=RTOL)
 
 
 @pytest.mark.parametrize("filter_name", filter_names)
