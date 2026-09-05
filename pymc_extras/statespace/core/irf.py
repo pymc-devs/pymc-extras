@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger("pymc.experimental.statespace")
 
+DEFAULT_IRF_STEPS = 40
+
 
 def _shock_permutation(
     shock_names: list[str], shock_order: list[str | EllipsisType] | None
@@ -122,7 +124,7 @@ def _orthogonal_impulse_matrix(Q: pt.TensorVariable, perm: np.ndarray) -> pt.Ten
 def impulse_response_function(
     ss_mod: "PyMCStateSpace",
     idata,
-    n_steps: int = 40,
+    n_steps: int | None = None,
     use_posterior_cov: bool = True,
     shock_size: float | np.ndarray | None = None,
     shock_cov: np.ndarray | None = None,
@@ -159,21 +161,23 @@ def impulse_response_function(
 
     if shock_trajectory is not None:
         # Validate the shock trajectory
-        n, k = shock_trajectory.shape
-        steps = n
+        trajectory_steps, k = shock_trajectory.shape
 
         if k != ss_mod.k_posdef:
             raise ValueError(
                 "If shock_trajectory is provided, there must be a trajectory provided for each shock. "
                 f"Model has {ss_mod.k_posdef} shocks, but shock_trajectory has only {k} columns"
             )
-        if steps is not None and steps != n:
+        if n_steps is not None and n_steps != trajectory_steps:
             _log.warning(
-                "Both steps and shock_trajectory were provided but do not agree. Length of "
-                "shock_trajectory will take priority, and steps will be ignored."
+                "Both n_steps and shock_trajectory were provided but do not agree. Length of "
+                "shock_trajectory will take priority, and n_steps will be ignored."
             )
-        n_steps = n  # Overwrite steps with the length of the shock trajectory
+        n_steps = trajectory_steps
         shock_trajectory = pt.as_tensor_variable(shock_trajectory)
+
+    elif n_steps is None:
+        n_steps = DEFAULT_IRF_STEPS
 
     fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
     fit_dims = dims_from_idata(ss_mod, idata, group)

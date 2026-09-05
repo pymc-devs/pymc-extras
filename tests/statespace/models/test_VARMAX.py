@@ -13,6 +13,7 @@ from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.testing import mock_sample_setup_and_teardown
 
 from pymc_extras.statespace import BayesianVARMAX
+from pymc_extras.statespace.core.irf import DEFAULT_IRF_STEPS
 from pymc_extras.statespace.utils.constants import SHORT_NAME_TO_LONG
 from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
     rng,
@@ -419,6 +420,56 @@ class TestOrthogonalizedImpulseResponse:
     def test_invalid_arguments(self, varma_mod, idata, kwargs, error_msg):
         with pytest.raises(ValueError, match=error_msg):
             varma_mod.impulse_response_function(idata, n_steps=3, group="prior", **kwargs)
+
+
+# A single unit shock to the first variable at t=3, quiet before and after.
+SHOCK_TRAJECTORY = np.r_[
+    np.zeros((3, 3), dtype=floatX),
+    np.array([[1.0, 0.0, 0.0]]).astype(floatX),
+    np.zeros((6, 3), dtype=floatX),
+]
+
+
+@pytest.mark.skipif(floatX == "float32", reason="Impulse covariance not PSD if float32")
+class TestImpulseResponseHorizon:
+    """The trajectory sets the horizon; n_steps is only a default when there is no trajectory."""
+
+    trajectory_length = SHOCK_TRAJECTORY.shape[0]
+
+    def test_trajectory_length_overrides_n_steps(self, varma_mod, idata, rng, caplog):
+        irf = varma_mod.impulse_response_function(
+            idata, n_steps=40, shock_trajectory=SHOCK_TRAJECTORY, group="prior", random_seed=rng
+        )
+
+        assert len(irf.irf.coords["time"]) == self.trajectory_length
+        assert any("do not agree" in message for message in caplog.messages)
+
+    def test_matching_n_steps_is_quiet(self, varma_mod, idata, rng, caplog):
+        irf = varma_mod.impulse_response_function(
+            idata,
+            n_steps=self.trajectory_length,
+            shock_trajectory=SHOCK_TRAJECTORY,
+            group="prior",
+            random_seed=rng,
+        )
+
+        assert len(irf.irf.coords["time"]) == self.trajectory_length
+        assert not any("do not agree" in message for message in caplog.messages)
+
+    def test_omitted_n_steps_is_quiet(self, varma_mod, idata, rng, caplog):
+        irf = varma_mod.impulse_response_function(
+            idata, shock_trajectory=SHOCK_TRAJECTORY, group="prior", random_seed=rng
+        )
+
+        # The trajectory wins over the default, which is longer than it is.
+        assert len(irf.irf.coords["time"]) == self.trajectory_length
+        assert not any("do not agree" in message for message in caplog.messages)
+
+    def test_default_applies_without_a_trajectory(self, varma_mod, idata, rng):
+        """Omitting n_steps entirely is the only way the module default is reached."""
+        irf = varma_mod.impulse_response_function(idata, group="prior", random_seed=rng)
+
+        assert len(irf.irf.coords["time"]) == DEFAULT_IRF_STEPS
 
 
 def test_forecast(varma_mod, idata, rng):
