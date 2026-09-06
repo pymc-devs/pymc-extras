@@ -119,6 +119,15 @@ def _sample_conditional(
             else (None, None)
         )
 
+        # Explicitly broadcast time-invariant observation matrices to avoid a PyTensor
+        # shape contraction triggered by the local_add_of_sparse_write graph rewrite.
+        # See: https://github.com/pymc-devs/pymc-extras/issues/736
+        steps = len(fit_coords[TIME_DIM]) if TIME_DIM in fit_coords else 1
+        if d.ndim == 1:
+            d = pt.broadcast_to(d, (steps, *tuple(d.type.shape)))
+        if H.ndim == 2:
+            H = pt.broadcast_to(H, (steps, *tuple(H.type.shape)))
+
         for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs, strict=True):
             if name == "smoothed":
                 # The simulation smoother draws the whole latent path jointly, so the

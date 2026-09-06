@@ -501,3 +501,58 @@ def test_post_estimation_leaves_template_matrices_alone(
 
     assert all(x is y for x, y in zip(before, after, strict=True))
     assert not set(pymc_mod.basic_RVs).intersection(ancestors(after))
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+def test_sample_conditional_with_whole_matrix_assignment(rng):
+    """Regression test for #736.
+
+    When time-invariant `H` (obs_cov) or `d` (obs_intercept) are assigned as
+    whole matrices (ndim 2 and 1 respectively), PyTensor's
+    ``local_add_of_sparse_write`` rewrite would collapse the time dimension,
+    causing an ``AssertionError`` from ``SpecifyShape`` during compilation.
+    """
+
+    class WholeMassMatrixModel(PyMCStateSpace):
+        """Minimal model that assigns H and d as whole matrices."""
+
+        def __init__(self):
+            super().__init__(k_states=1, k_endog=1, k_posdef=1)
+
+        def make_symbolic_graph(self) -> None:
+            sigma = self.make_and_register_variable("sigma", ())
+            # Whole-matrix assignments -- triggers the #736 bug without the fix
+            self.ssm["obs_cov"] = (sigma**2 * np.ones((1, 1))).astype(floatX)
+            self.ssm["design", 0, 0] = 1.0
+            self.ssm["transition", 0, 0] = 1.0
+            self.ssm["selection", 0, 0] = 1.0
+            self.ssm["state_cov", 0, 0] = 1.0
+
+        @property
+        def param_names(self) -> list[str]:
+            return ["sigma"]
+
+        @property
+        def state_names(self) -> list[str]:
+            return ["level"]
+
+        @property
+        def observed_states(self) -> list[str]:
+            return ["level"]
+
+        @property
+        def shock_names(self) -> list[str]:
+            return ["level"]
+
+    ss_mod = WholeMassMatrixModel()
+    y = np.random.default_rng(0).normal(size=(20, 1)).astype(floatX)
+
+    with pm.Model(coords=ss_mod.coords) as mod:
+        pm.HalfNormal("sigma", sigma=1)
+        ss_mod.build_statespace_graph(y)
+        prior = pm.sample_prior_predictive(draws=5, random_seed=rng)
+
+    # Both of these should not raise AssertionError: SpecifyShape
+    result_prior = ss_mod.sample_conditional_prior(prior)
+    assert "filtered_prior" in result_prior
+    assert not np.any(np.isnan(result_prior["filtered_prior"].values))
