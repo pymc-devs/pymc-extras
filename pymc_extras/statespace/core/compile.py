@@ -5,7 +5,6 @@ import pytensor.tensor as pt
 
 from pymc_extras.statespace.core import PyMCStateSpace
 from pymc_extras.statespace.filters.distributions import LinearGaussianStateSpace
-from pymc_extras.statespace.utils.constants import LONG_NAME_TO_SHORT
 
 
 def compile_statespace(
@@ -16,13 +15,9 @@ def compile_statespace(
 
     x0, _, c, d, T, Z, R, H, Q = statespace_model._unpack_statespace_with_placeholders()
 
-    sequence_names = [LONG_NAME_TO_SHORT[name] for name in statespace_model.ssm.time_varying_names]
-
     P0 = pt.zeros((x0.shape[0], x0.shape[0]))
 
-    outputs = LinearGaussianStateSpace.dist(
-        x0, P0, c, d, T, Z, R, H, Q, steps=steps, sequence_names=sequence_names
-    )
+    outputs = LinearGaussianStateSpace.dist(x0, P0, c, d, T, Z, R, H, Q, steps=steps)
 
     inputs = list(pytensor.graph.traversal.explicit_graph_inputs(outputs))
 

@@ -10,6 +10,13 @@ from pymc.pytensorf import intX, normalize_rng_param
 from pytensor.graph.basic import Node
 from pytensor.tensor.random import multivariate_normal
 
+from pymc_extras.statespace.core.assumptions import declare_time_varying, is_time_varying
+from pymc_extras.statespace.filters.utilities import (
+    PARAM_NAMES,
+    split_by_time_axis,
+    unpack_scan_step,
+)
+
 floatX = pytensor.config.floatX
 COV_ZERO_TOL = 0
 
@@ -68,6 +75,40 @@ def make_signature(sequence_names):
     )
 
 
+def _matrix_dummies(matrices, varying):
+    """
+    Build fresh input variables for an ``OpFromGraph`` over the statespace matrices.
+
+    A dummy carries none of its source's assumptions, so the ones standing in for a
+    time-varying matrix are declared again for use inside the op.
+
+    Parameters
+    ----------
+    matrices : sequence of TensorVariable
+        The matrices, in ``PARAM_NAMES`` order.
+    varying : list of bool
+        Whether each matrix carries a time axis.
+
+    Returns
+    -------
+    dummies : list of TensorVariable
+        Named inputs for the op.
+    declared : list of TensorVariable
+        The same inputs, declared time-varying wherever their source was, for the inner graph.
+    """
+    dummies = []
+    for name, matrix in zip(PARAM_NAMES, matrices, strict=True):
+        dummy = matrix.type()
+        dummy.name = name
+        dummies.append(dummy)
+
+    declared = [
+        declare_time_varying(dummy) if flag else dummy
+        for dummy, flag in zip(dummies, varying, strict=True)
+    ]
+    return dummies, declared
+
+
 def _forward_simulate_latent_and_obs(
     a0,
     P0,
@@ -81,7 +122,6 @@ def _forward_simulate_latent_and_obs(
     *,
     steps,
     rng,
-    sequence_names=(),
     method="svd",
     append_x0=True,
 ):
@@ -101,15 +141,12 @@ def _forward_simulate_latent_and_obs(
     ----------
     a0, P0, c, d, T, Z, R, H, Q : TensorVariable
         State-space matrices in the canonical order. Either core-shape (static) or
-        time-varying ``(time, *core)``; declare time-varying entries via
-        ``sequence_names``.
+        time-varying ``(time, *core)``; declare the latter with
+        :func:`~pymc_extras.statespace.core.assumptions.declare_time_varying`.
     steps : TensorVariable or int
         Number of forward simulation steps.
     rng : RandomGenerator
         Pytensor RNG to thread through the scan.
-    sequence_names : iterable of str, optional
-        Short names ("c", "d", "T", "Z", "R", "H", "Q") of matrices that are
-        time-varying. Default empty (everything static).
     method : str, optional
         Multivariate-normal sampling method passed to ``pm.MvNormal.dist``.
         Default ``"svd"``.
@@ -126,34 +163,14 @@ def _forward_simulate_latent_and_obs(
     next_rng : Variable
         RNG state after sampling.
     """
-    sequence_names = tuple(sequence_names)
-
-    canonical = ["c", "d", "T", "Z", "R", "H", "Q"]
-    all_inputs = [c, d, T, Z, R, H, Q]
-
-    sequences = []
-    non_sequences = []
-    seq_positions = []
-    non_seq_positions = []
-    for i, (x, name) in enumerate(zip(all_inputs, canonical, strict=True)):
-        if name in sequence_names:
-            sequences.append(x)
-            seq_positions.append(i)
-        else:
-            non_sequences.append(x)
-            non_seq_positions.append(i)
-
-    n_seq = len(sequences)
+    sequences, non_sequences, seq_names, non_seq_names = split_by_time_axis(
+        dict(zip(PARAM_NAMES, [c, d, T, Z, R, H, Q], strict=True))
+    )
 
     def step_fn(*args):
-        seqs, (rng, a, *non_seqs) = args[:n_seq], args[n_seq:]
-
-        ordered = [None] * len(canonical)
-        for src_idx, dst_idx in enumerate(seq_positions):
-            ordered[dst_idx] = seqs[src_idx]
-        for src_idx, dst_idx in enumerate(non_seq_positions):
-            ordered[dst_idx] = non_seqs[src_idx]
-        c, d, T, Z, R, H, Q = ordered
+        (rng, a), (c, d, T, Z, R, H, Q) = unpack_scan_step(
+            args, seq_names, non_seq_names, PARAM_NAMES
+        )
 
         middle_rng, y_innovation = pm.MvNormal.dist(
             mu=0, cov=H, rng=rng, method=method, return_next_rng=True
@@ -218,7 +235,6 @@ class _LinearGaussianStateSpace(Continuous):
         H,
         Q,
         steps=None,
-        sequence_names=None,
         append_x0=True,
         method="svd",
         **kwargs,
@@ -246,7 +262,6 @@ class _LinearGaussianStateSpace(Continuous):
             H,
             Q,
             steps=steps,
-            sequence_names=sequence_names,
             append_x0=append_x0,
             method=method,
             **kwargs,
@@ -265,7 +280,6 @@ class _LinearGaussianStateSpace(Continuous):
         H,
         Q,
         steps=None,
-        sequence_names=None,
         append_x0=True,
         method="svd",
         **kwargs,
@@ -281,7 +295,6 @@ class _LinearGaussianStateSpace(Continuous):
 
         return super().dist(
             [a0, P0, c, d, T, Z, R, H, Q, steps],
-            sequence_names=sequence_names,
             append_x0=append_x0,
             method=method,
             **kwargs,
@@ -302,38 +315,23 @@ class _LinearGaussianStateSpace(Continuous):
         steps,
         size=None,
         rng=None,
-        sequence_names=None,
         append_x0=True,
         method="svd",
     ):
-        if sequence_names is None:
-            sequence_names = []
+        varying = is_time_varying(c, d, T, Z, R, H, Q)
+        sequence_names = [name for name, flag in zip(PARAM_NAMES, varying, strict=True) if flag]
 
-        a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = (x.type() for x in (a0, P0, c, d, T, Z, R, H, Q))
-
-        c_.name = "c"
-        d_.name = "d"
-        T_.name = "T"
-        Z_.name = "Z"
-        R_.name = "R"
-        H_.name = "H"
-        Q_.name = "Q"
+        a0_, P0_ = a0.type(), P0.type()
+        dummies, declared = _matrix_dummies((c, d, T, Z, R, H, Q), varying)
 
         rng = normalize_rng_param(rng)
 
         alpha, y, ss_rng = _forward_simulate_latent_and_obs(
             a0_,
             P0_,
-            c_,
-            d_,
-            T_,
-            Z_,
-            R_,
-            H_,
-            Q_,
+            *declared,
             steps=steps,
             rng=rng,
-            sequence_names=sequence_names,
             method=method,
             append_x0=append_x0,
         )
@@ -341,7 +339,7 @@ class _LinearGaussianStateSpace(Continuous):
         statespace_ = pt.specify_shape(statespace_, (steps + int(append_x0), None))
 
         linear_gaussian_ss_op = LinearGaussianStateSpaceRV(
-            inputs=[a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_, steps, rng],
+            inputs=[a0_, P0_, *dummies, steps, rng],
             outputs=[ss_rng, statespace_],
             extended_signature=make_signature(sequence_names),
         )
@@ -371,7 +369,6 @@ class LinearGaussianStateSpace(Continuous):
         *,
         steps,
         k_endog=None,
-        sequence_names=None,
         append_x0=True,
         method="svd",
         **kwargs,
@@ -400,7 +397,6 @@ class LinearGaussianStateSpace(Continuous):
             H,
             Q,
             steps=steps,
-            sequence_names=sequence_names,
             append_x0=append_x0,
             method=method,
             **kwargs,
@@ -540,9 +536,6 @@ class SimulationSmoother(Continuous):
         graph. A Python-side graph builder, not a random-variable input.
     kalman_smoother : KalmanSmoother
         Smoother object exposing ``build_graph``, used the same way as ``kalman_filter``.
-    sequence_names : iterable of str, optional
-        Short names of time-varying matrices, mirroring
-        ``LinearGaussianStateSpace``'s ``sequence_names`` argument.
     method : str, optional
         Multivariate-normal sampling method. Default ``"svd"``.
 
@@ -571,7 +564,6 @@ class SimulationSmoother(Continuous):
         *,
         kalman_filter,
         kalman_smoother,
-        sequence_names=(),
         method="svd",
         **kwargs,
     ):
@@ -579,7 +571,6 @@ class SimulationSmoother(Continuous):
             [a_smooth, x0, P0, c, d, T, Z, R, H, Q],
             kalman_filter=kalman_filter,
             kalman_smoother=kalman_smoother,
-            sequence_names=tuple(sequence_names),
             method=method,
             **kwargs,
         )
@@ -600,24 +591,16 @@ class SimulationSmoother(Continuous):
         *,
         kalman_filter,
         kalman_smoother,
-        sequence_names=(),
         method="svd",
         size=None,
         rng=None,
     ):
-        sequence_names = tuple(sequence_names)
-        a_smooth_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = (
-            x.type() for x in (a_smooth, x0, P0, c, d, T, Z, R, H, Q)
-        )
+        varying = is_time_varying(c, d, T, Z, R, H, Q)
+        sequence_names = [name for name, flag in zip(PARAM_NAMES, varying, strict=True) if flag]
 
+        a_smooth_, x0_, P0_ = (x.type() for x in (a_smooth, x0, P0))
         a_smooth_.name = "a_smooth"
-        c_.name = "c"
-        d_.name = "d"
-        T_.name = "T"
-        Z_.name = "Z"
-        R_.name = "R"
-        H_.name = "H"
-        Q_.name = "Q"
+        dummies, (c_, d_, T_, Z_, R_, H_, Q_) = _matrix_dummies((c, d, T, Z, R, H, Q), varying)
 
         rng = normalize_rng_param(rng)
 
@@ -644,7 +627,6 @@ class SimulationSmoother(Continuous):
             Q_,
             steps=steps - 1,
             rng=rng,
-            sequence_names=sequence_names,
             method=method,
             append_x0=True,
         )
@@ -682,7 +664,7 @@ class SimulationSmoother(Continuous):
         # time, so shape inference reaches through them. The JAX backend needs the
         # resulting static ``n_steps`` to dispatch its scan.
         op = SimulationSmootherRV(
-            inputs=[a_smooth_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_, rng],
+            inputs=[a_smooth_, x0_, P0_, *dummies, rng],
             outputs=[mid_rng, alpha_sample],
             extended_signature=_simulation_smoother_signature(sequence_names),
             inline=True,

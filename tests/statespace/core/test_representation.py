@@ -6,6 +6,7 @@ import pytensor.tensor as pt
 
 from numpy.testing import assert_allclose
 
+from pymc_extras.statespace.core.assumptions import is_time_varying
 from pymc_extras.statespace.core.representation import PytensorRepresentation
 from tests.statespace.shared_fixtures import TEST_SEED
 from tests.statespace.test_utilities import fast_eval, make_test_inputs
@@ -133,6 +134,28 @@ class BasicFunctionality(unittest.TestCase):
 
         self.assertEqual(x0.name, "x0")
         self.assertEqual(ssm["initial_state"].name, "initial_state")
+
+    def test_declaring_a_core_rank_matrix_time_varying_raises(self):
+        """There is no leading axis to iterate over, so the declaration cannot mean anything."""
+        ssm = PytensorRepresentation(k_endog=2, k_states=3, k_posdef=1)
+
+        with self.assertRaises(ValueError) as e:
+            ssm.declare_time_varying("design")
+
+        self.assertIn("(time, 2, 3)", str(e.exception))
+
+    def test_replacing_a_matrix_of_equal_rank_keeps_the_declaration(self):
+        """A same-rank replacement describes the same axes, so the time axis carries over."""
+        ssm = PytensorRepresentation(k_endog=1, k_states=1, k_posdef=1)
+        ssm["state_cov"] = pt.tensor("Q", shape=(None, 1, 1))
+        ssm.declare_time_varying("state_cov")
+
+        ssm["state_cov"] = pt.tensor("Q_new", shape=(None, 1, 1))
+        self.assertEqual(is_time_varying(ssm["state_cov"]), [True])
+
+        # Dropping back to the core rank redefines the axes, so the declaration does not survive.
+        ssm["state_cov"] = pt.matrix("Q_static", shape=(1, 1))
+        self.assertEqual(is_time_varying(ssm["state_cov"]), [False])
 
     def test_invalid_key_name_raises(self):
         ssm = PytensorRepresentation(k_endog=3, k_states=5, k_posdef=1)
