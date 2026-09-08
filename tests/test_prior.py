@@ -599,6 +599,24 @@ def test_create_likelihood_variable() -> None:
     assert "data_sigma" in model
 
 
+def test_create_likelihood_variable_keeps_data_parameter() -> None:
+    """A pm.Data parameter has to stay wired, so pm.set_data reaches the likelihood."""
+    with pm.Model(coords={"T": range(3)}) as model:
+        sigma = pm.Data("sigma", 2.0)
+        Prior("Normal", sigma=sigma, dims="T").create_likelihood_variable(
+            "y", mu=np.zeros(3), observed=np.ones(3)
+        )
+
+    logp = model.compile_fn(model.logp(vars=[model["y"]], sum=True))
+    point = model.initial_point()
+
+    before = logp(point)
+    with model:
+        pm.set_data({"sigma": 50.0})
+
+    assert logp(point) != before
+
+
 def test_create_likelihood_variable_already_has_mu() -> None:
     distribution = Prior("Normal", mu=Prior("Normal"), sigma=Prior("HalfNormal"))
 
@@ -1188,6 +1206,24 @@ class TestCensored:
 
         point = {}
         np.testing.assert_allclose(logp(point), expected_logp(point))
+
+    def test_censored_likelihood_keeps_data_parameter(self) -> None:
+        """A pm.Data parameter has to stay wired, so pm.set_data reaches the likelihood."""
+        with pm.Model(coords={"T": range(3)}) as model:
+            sigma = pm.Data("sigma", 2.0)
+            normal = Prior("Normal", sigma=sigma, dims="T")
+            Censored(normal, lower=0).create_likelihood_variable(
+                "y", mu=np.zeros(3), observed=np.ones(3)
+            )
+
+        logp = model.compile_fn(model.logp(vars=[model["y"]], sum=True))
+        point = model.initial_point()
+
+        before = logp(point)
+        with model:
+            pm.set_data({"sigma": 50.0})
+
+        assert logp(point) != before
 
     def test_censored_with_tensor_variable(self) -> None:
         normal = Prior("Normal", dims="channel")
