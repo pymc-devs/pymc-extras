@@ -592,3 +592,24 @@ def test_post_estimation_leaves_template_matrices_alone(
 
     assert all(x is y for x, y in zip(before, after, strict=True))
     assert not set(pymc_mod.basic_RVs).intersection(ancestors(after))
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_irf_deterministic_point_estimate(ss_mod, idata):
+    point_idata = idata.isel(chain=[0], draw=[0])
+    irf1 = ss_mod.impulse_response_function(point_idata, n_steps=5)
+    irf2 = ss_mod.impulse_response_function(point_idata, n_steps=5)
+
+    np.testing.assert_allclose(irf1.irf.values, irf2.irf.values)
+
+    raw_idata = idata.isel(chain=0, draw=0)
+    irf_raw = ss_mod.impulse_response_function(raw_idata, n_steps=5)
+    np.testing.assert_allclose(irf_raw.irf.values, irf1.irf.values)
+
+    irf_rand1 = ss_mod.impulse_response_function(
+        point_idata, n_steps=5, deterministic=False, random_seed=1
+    )
+    irf_rand2 = ss_mod.impulse_response_function(
+        point_idata, n_steps=5, deterministic=False, random_seed=2
+    )
+    assert not np.allclose(irf_rand1.irf.values, irf_rand2.irf.values)

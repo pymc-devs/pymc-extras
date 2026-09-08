@@ -722,3 +722,22 @@ def test_forecast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
 
     assert forecasts.forecast_latent.shape[2] == n_periods
     assert forecasts.forecast_observed.shape[2] == n_periods
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_forecast_deterministic_point_estimate(ss_mod, idata):
+    point_idata = idata.isel(chain=[0], draw=[0])
+    fc1 = ss_mod.forecast(point_idata, periods=5)
+    fc2 = ss_mod.forecast(point_idata, periods=5)
+
+    assert "forecast_latent_covariances" in fc1
+    assert "forecast_observed_covariances" in fc1
+    np.testing.assert_allclose(fc1.forecast_observed.values, fc2.forecast_observed.values)
+
+    raw_idata = idata.isel(chain=0, draw=0)
+    fc_raw = ss_mod.forecast(raw_idata, periods=5)
+    np.testing.assert_allclose(fc_raw.forecast_observed.values, fc1.forecast_observed.values)
+
+    fc_rand1 = ss_mod.forecast(point_idata, periods=5, deterministic=False, random_seed=1)
+    fc_rand2 = ss_mod.forecast(point_idata, periods=5, deterministic=False, random_seed=2)
+    assert not np.allclose(fc_rand1.forecast_observed.values, fc_rand2.forecast_observed.values)

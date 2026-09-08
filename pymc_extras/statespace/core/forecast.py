@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import pandas as pd
 import pymc as pm
+import pytensor
 import pytensor.tensor as pt
 
 from pymc.model.transform.optimization import freeze_dims_and_data
@@ -27,9 +28,14 @@ from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     FILTER_OUTPUT_TYPES,
     MATRIX_NAMES,
+    OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
     SHORT_NAME_TO_LONG,
     TIME_DIM,
+)
+from pymc_extras.statespace.utils.data_tools import (
+    ensure_chain_and_draw,
+    is_single_parameterization,
 )
 
 if TYPE_CHECKING:
@@ -425,6 +431,7 @@ def _build_forecast_model(
     scenario,
     filter_output,
     mvn_method,
+    deterministic: bool = False,
 ):
     filter_time_dim = TIME_DIM
     fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
@@ -440,6 +447,10 @@ def _build_forecast_model(
 
     temp_coords["data_time"] = time_index
     temp_coords[TIME_DIM] = forecast_index
+    if ALL_STATE_DIM in temp_coords and ALL_STATE_AUX_DIM not in temp_coords:
+        temp_coords[ALL_STATE_AUX_DIM] = temp_coords[ALL_STATE_DIM]
+    if OBS_STATE_DIM in temp_coords and OBS_STATE_AUX_DIM not in temp_coords:
+        temp_coords[OBS_STATE_AUX_DIM] = temp_coords[OBS_STATE_DIM]
 
     mu_dims, cov_dims = None, None
     if all([dim in fit_coords for dim in [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]]):
@@ -520,18 +531,91 @@ def _build_forecast_model(
             for m, name in zip(forecast_matrices, forecast_names)
         ]
 
-        _ = LinearGaussianStateSpace(
-            "forecast",
-            x0,
-            P0,
-            *forecast_matrices,
-            steps=len(forecast_index),
-            dims=trajectory_dims,
-            sequence_names=scan_sequence_names(ss_mod.ssm.time_varying_names),
-            k_endog=ss_mod.k_endog,
-            append_x0=False,
-            method=mvn_method,
-        )
+        if deterministic:
+            sequence_names = tuple(scan_sequence_names(ss_mod.ssm.time_varying_names))
+            canonical = ["c", "d", "T", "Z", "R", "H", "Q"]
+            all_inputs = list(forecast_matrices)
+
+            sequences = []
+            non_sequences = []
+            seq_positions = []
+            non_seq_positions = []
+            for i, (x, name) in enumerate(zip(all_inputs, canonical, strict=True)):
+                if name in sequence_names:
+                    sequences.append(x)
+                    seq_positions.append(i)
+                else:
+                    non_sequences.append(x)
+                    non_seq_positions.append(i)
+
+            n_seq = len(sequences)
+
+            def step_fn(*args):
+                seqs, (a, P, *non_seqs) = args[:n_seq], args[n_seq:]
+
+                ordered = [None] * len(canonical)
+                for src_idx, dst_idx in enumerate(seq_positions):
+                    ordered[dst_idx] = seqs[src_idx]
+                for src_idx, dst_idx in enumerate(non_seq_positions):
+                    ordered[dst_idx] = non_seqs[src_idx]
+                c, d, T, Z, R, H, Q = ordered
+
+                y = d + Z @ a
+                F = Z @ P @ pt.swapaxes(Z, -2, -1) + H
+
+                a_next = c + T @ a
+                P_next = T @ P @ pt.swapaxes(T, -2, -1) + R @ Q @ pt.swapaxes(R, -2, -1)
+
+                return a_next, P_next, y, F
+
+            (alpha_seq, P_seq, y_seq, F_seq) = pytensor.scan(
+                step_fn,
+                outputs_info=[x0, P0, None, None],
+                sequences=sequences or None,
+                non_sequences=non_sequences,
+                n_steps=len(forecast_index) + 1,
+                strict=True,
+                return_updates=False,
+            )
+
+            alpha_tape = alpha_seq.owner.inputs[0]
+            P_tape = P_seq.owner.inputs[0]
+
+            latent_states = alpha_tape[1:-1]
+            latent_covs = P_tape[1:-1]
+            obs_states = y_seq[1:]
+            obs_covs = F_seq[1:]
+
+            latent_dims = [TIME_DIM, ALL_STATE_DIM] if trajectory_dims is not None else None
+            obs_dims = [TIME_DIM, OBS_STATE_DIM] if trajectory_dims is not None else None
+            cov_dims = (
+                [TIME_DIM, ALL_STATE_DIM, ALL_STATE_AUX_DIM]
+                if ALL_STATE_AUX_DIM in temp_coords
+                else None
+            )
+            obs_cov_dims = (
+                [TIME_DIM, OBS_STATE_DIM, OBS_STATE_AUX_DIM]
+                if OBS_STATE_AUX_DIM in temp_coords
+                else None
+            )
+
+            pm.Deterministic("forecast_latent", latent_states, dims=latent_dims)
+            pm.Deterministic("forecast_observed", obs_states, dims=obs_dims)
+            pm.Deterministic("forecast_latent_covariances", latent_covs, dims=cov_dims)
+            pm.Deterministic("forecast_observed_covariances", obs_covs, dims=obs_cov_dims)
+        else:
+            _ = LinearGaussianStateSpace(
+                "forecast",
+                x0,
+                P0,
+                *forecast_matrices,
+                steps=len(forecast_index),
+                dims=trajectory_dims,
+                sequence_names=scan_sequence_names(ss_mod.ssm.time_varying_names),
+                k_endog=ss_mod.k_endog,
+                append_x0=False,
+                method=mvn_method,
+            )
 
     return forecast_model
 
@@ -549,6 +633,7 @@ def forecast(
     verbose: bool = True,
     mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
     group: str = "posterior",
+    deterministic: bool | None = None,
     **kwargs,
 ) -> DataTree:
     _validate_filter_arg(filter_output)
@@ -599,6 +684,11 @@ def forecast(
     )
     scenario = ss_mod._finalize_scenario_initialization(scenario, forecast_index, scenario_coords)
 
+    group_idata = idata[group]
+    if deterministic is None:
+        deterministic = is_single_parameterization(group_idata)
+    group_idata = ensure_chain_and_draw(group_idata)
+
     forecast_model = ss_mod._build_forecast_model(
         idata=idata,
         group=group,
@@ -608,6 +698,7 @@ def forecast(
         scenario=scenario,
         filter_output=filter_output,
         mvn_method=mvn_method,
+        deterministic=deterministic,
     )
 
     with forecast_model:
@@ -623,10 +714,14 @@ def forecast(
     }
     frozen_model = freeze_dims_and_data(forecast_model)
 
+    var_names = ["forecast_latent", "forecast_observed"]
+    if deterministic:
+        var_names.extend(["forecast_latent_covariances", "forecast_observed_covariances"])
+
     with frozen_model:
         idata_forecast = pm.sample_posterior_predictive(
-            idata[group],
-            var_names=["forecast_latent", "forecast_observed"],
+            group_idata,
+            var_names=var_names,
             random_seed=random_seed,
             compile_kwargs=compile_kwargs,
             **kwargs,

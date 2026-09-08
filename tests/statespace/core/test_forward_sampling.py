@@ -306,3 +306,26 @@ def test_sample_statespace_matrices_rejects_unknown_names(ss_mod, idata):
         ss_mod.sample_statespace_matrices(
             idata, matrix_names=["transition", "bogus"], group="prior"
         )
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_sample_conditional_deterministic_point_estimate(ss_mod, idata):
+    point_idata = idata.isel(chain=[0], draw=[0])
+    cp1 = ss_mod.sample_conditional_posterior(point_idata)
+    cp2 = ss_mod.sample_conditional_posterior(point_idata)
+
+    np.testing.assert_allclose(
+        cp1.smoothed_posterior_observed.values, cp2.smoothed_posterior_observed.values
+    )
+
+    raw_idata = idata.isel(chain=0, draw=0)
+    cp_raw = ss_mod.sample_conditional_posterior(raw_idata)
+    np.testing.assert_allclose(
+        cp_raw.smoothed_posterior_observed.values, cp1.smoothed_posterior_observed.values
+    )
+
+    cp_rand1 = ss_mod.sample_conditional_posterior(point_idata, deterministic=False, random_seed=1)
+    cp_rand2 = ss_mod.sample_conditional_posterior(point_idata, deterministic=False, random_seed=2)
+    assert not np.allclose(
+        cp_rand1.smoothed_posterior_observed.values, cp_rand2.smoothed_posterior_observed.values
+    )
