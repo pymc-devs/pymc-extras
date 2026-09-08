@@ -674,10 +674,12 @@ class SquareRootFilter(BaseFilter):
 
             loss = pt.dot(scaled_residual, scaled_residual)
 
+            # Missing dimensions carry only jitter, exclude them from the likelihood.
+            observed = pt.bitwise_not(nan_mask).astype(F_chol.dtype)
             # abs necessary because we're not guaranteed a positive diagonal from the schur decomposition
-            logdet = 2 * pt.log(pt.abs(pt.diag(F_chol))).sum()
+            logdet = 2 * (pt.log(pt.abs(pt.diag(F_chol))) * observed).sum()
 
-            ll = -0.5 * (k_endog * MVN_CONST + logdet + loss)
+            ll = -0.5 * (observed.sum() * MVN_CONST + logdet + loss)
 
             return [a_filtered, P_chol_filtered, ll]
 
