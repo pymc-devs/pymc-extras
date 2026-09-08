@@ -147,6 +147,24 @@ def get_sm_state_from_output_name(res, name):
         return getattr(sm_states, name[:-1]).reshape(-1, m, m)
 
 
+def statsmodels_loglike_obs(data, a0, P0, c, d, T, Z, R, H, Q):
+    """
+    Filter ``data`` through statsmodels with the given matrices and return its per-timestep
+    log-likelihood, for use as a reference. Missing entries of ``data`` are marked with ``NaN``.
+    """
+    mod = sm.tsa.statespace.MLEModel(data, k_states=T.shape[0], k_posdef=Q.shape[0])
+    mod.ssm["obs_intercept"] = np.expand_dims(d, -1)
+    mod.ssm["design"] = Z
+    mod.ssm["obs_cov"] = H
+    mod.ssm["state_intercept"] = np.expand_dims(c, -1)
+    mod.ssm["transition"] = T
+    mod.ssm["selection"] = R
+    mod.ssm["state_cov"] = Q
+    mod.ssm.initialize_known(a0, P0)
+
+    return mod.ssm.filter().llf_obs
+
+
 def nile_test_test_helper(rng, n_missing=0):
     a0 = np.zeros(2, dtype=floatX)
     P0 = np.eye(2, dtype=floatX) * 1e6
