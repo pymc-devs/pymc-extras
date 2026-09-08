@@ -1249,6 +1249,7 @@ class PyMCStateSpace:
         idata: DataTree,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        deterministic: bool | None = None,
         **kwargs,
     ) -> DataTree:
         """
@@ -1285,7 +1286,12 @@ class PyMCStateSpace:
         """
 
         return forward_sampling.sample_conditional_prior(
-            self, idata=idata, random_seed=random_seed, mvn_method=mvn_method, **kwargs
+            self,
+            idata=idata,
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            deterministic=deterministic,
+            **kwargs,
         )
 
     def sample_conditional_posterior(
@@ -1293,6 +1299,7 @@ class PyMCStateSpace:
         idata: DataTree,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        deterministic: bool | None = None,
         **kwargs,
     ):
         """
@@ -1328,7 +1335,12 @@ class PyMCStateSpace:
         """
 
         return forward_sampling.sample_conditional_posterior(
-            self, idata=idata, random_seed=random_seed, mvn_method=mvn_method, **kwargs
+            self,
+            idata=idata,
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            deterministic=deterministic,
+            **kwargs,
         )
 
     def sample_unconditional_prior(
@@ -1603,10 +1615,28 @@ class PyMCStateSpace:
         )
 
     def _build_forecast_model(
-        self, idata, group, time_index, t0, forecast_index, scenario, filter_output, mvn_method
+        self,
+        idata,
+        group,
+        time_index,
+        t0,
+        forecast_index,
+        scenario,
+        filter_output,
+        mvn_method,
+        deterministic=False,
     ):
         return forecast._build_forecast_model(
-            self, idata, group, time_index, t0, forecast_index, scenario, filter_output, mvn_method
+            self,
+            idata,
+            group,
+            time_index,
+            t0,
+            forecast_index,
+            scenario,
+            filter_output,
+            mvn_method,
+            deterministic=deterministic,
         )
 
     def forecast(
@@ -1622,6 +1652,7 @@ class PyMCStateSpace:
         verbose: bool = True,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         group: str = "posterior",
+        deterministic: bool | None = None,
         **kwargs,
     ) -> DataTree:
         """
@@ -1720,6 +1751,7 @@ class PyMCStateSpace:
             verbose=verbose,
             mvn_method=mvn_method,
             group=group,
+            deterministic=deterministic,
             **kwargs,
         )
 
@@ -1736,6 +1768,7 @@ class PyMCStateSpace:
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
         group: str = "posterior",
+        deterministic: bool | None = None,
         **kwargs,
     ):
         r"""
@@ -1858,5 +1891,6 @@ class PyMCStateSpace:
             random_seed=random_seed,
             mvn_method=mvn_method,
             group=group,
+            deterministic=deterministic,
             **kwargs,
         )
