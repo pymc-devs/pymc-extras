@@ -2,6 +2,7 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
+from pymc.model import modelcontext
 from pytensor.compile.mode import Mode
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 
@@ -13,6 +14,7 @@ from pymc_extras.statespace.core.properties import (
     State,
 )
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
+from pymc_extras.statespace.filters.distributions import StationaryVAR
 from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
@@ -24,6 +26,7 @@ from pymc_extras.statespace.utils.constants import (
     MISSING_FILL,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
+    OBSERVED_LIKELIHOOD_NAME,
     SHOCK_AUX_DIM,
     SHOCK_DIM,
     TIME_DIM,
@@ -391,6 +394,66 @@ class BayesianVARMAX(PyMCStateSpace):
 
     def add_default_priors(self):
         raise NotImplementedError
+
+    def make_likelihood(self, data, matrices, dims, missing):
+        """
+        Register a :class:`~pymc_extras.statespace.filters.distributions.StationaryVAR`.
+
+        The closed form covers an autoregression with no moving average terms and no measurement
+        error, initialized at its stationary distribution. Anything else is filtered,
+        including data with missing values, which only the filter marginalizes.
+        """
+        if self.q > 0 or self.p == 0 or self.measurement_error:
+            return super().make_likelihood(data, matrices, dims, missing)
+        if not self.stationary_initialization:
+            return super().make_likelihood(data, matrices, dims, missing)
+        if missing.any():
+            return super().make_likelihood(data, matrices, dims, missing)
+
+        k_endog = self.k_endog
+        *_, transition, _, _, _, state_cov = matrices
+        exog, exog_coefficients = self._exogenous_regression()
+
+        return StationaryVAR(
+            OBSERVED_LIKELIHOOD_NAME,
+            transition[:k_endog, : k_endog * self.p],
+            state_cov,
+            exog=exog,
+            exog_coefficients=exog_coefficients,
+            steps=data.shape[0],
+            observed=data,
+            dims=dims,
+        )
+
+    def _exogenous_regression(self):
+        """
+        Return exogenous data and coefficients whose product is the observation intercept.
+
+        Per-series regressors are laid end to end, against a block coefficient matrix whose
+        off-blocks are structurally zero.
+        """
+        if self.exog_state_names is None:
+            return None, None
+
+        pymc_model = modelcontext(None)
+
+        if isinstance(self.exog_state_names, list):
+            return pymc_model["exogenous_data"], pymc_model["beta_exog"]
+
+        widths = [len(self.exog_state_names.get(name, ())) for name in self.endog_names]
+        coefficients = pt.zeros((self.k_endog, sum(widths)), dtype=floatX)
+        data, offset = [], 0
+
+        for row, (name, width) in enumerate(zip(self.endog_names, widths)):
+            if width == 0:
+                continue
+            data.append(pymc_model[f"{name}_exogenous_data"])
+            coefficients = pt.set_subtensor(
+                coefficients[row, offset : offset + width], pymc_model[f"beta_{name}"]
+            )
+            offset += width
+
+        return pt.concatenate(data, axis=1), coefficients
 
     def make_symbolic_graph(self) -> None:
         # Initialize the matrices
