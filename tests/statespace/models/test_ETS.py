@@ -5,12 +5,17 @@ import pytensor.tensor as pt
 import pytest
 import statsmodels.api as sm
 
-from numpy.testing import assert_allclose
+from numpy.testing import assert_allclose, assert_array_less
+from pymc.logprob.utils import ParameterValueError
 from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
 
 from pymc_extras.statespace.filters import StandardFilter
+from pymc_extras.statespace.filters.distributions import (
+    InnovationsStateSpace,
+    _innovations_moments,
+)
 from pymc_extras.statespace.models.ETS import BayesianETS
 from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES
 from tests.statespace.shared_fixtures import rng
@@ -492,3 +497,85 @@ def test_ets_workflow(mock_sample):
     irf = ss_mod.impulse_response_function(idata, n_steps=10, random_seed=42)
     assert "irf" in irf
     assert np.isfinite(irf.irf.values).all()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"order": ("A", "N", "N"), "endog_names": ["y"]},
+        {"order": ("A", "A", "N"), "endog_names": ["y"]},
+        {"order": ("A", "Ad", "A"), "seasonal_periods": 4, "endog_names": ["y"]},
+        {"order": ("A", "N", "N"), "endog_names": ["a", "b"]},
+    ],
+    ids=["ANN", "AAN", "AAdA_seasonal", "ANN_multivariate"],
+)
+def test_ETS_recursion_matches_the_kalman_filter(kwargs, rng):
+    """
+    The recursion carries no covariance, so agreeing with the filter is the whole claim.
+
+    A single source of error leaves the state determined by the data, which is what lets the
+    density come from the one-step-ahead errors alone.
+    """
+    defaults = {"alpha": 0.4, "beta": 0.2, "gamma": 0.1, "phi": 0.9, "sigma_state": 2.0}
+    mod = BayesianETS(verbose=False, stationary_initialization=True, **kwargs)
+    params = {
+        name: np.full(info["shape"], defaults.get(name, 0.5))
+        for name, info in mod.param_info.items()
+    }
+    data = rng.normal(size=(60, mod.k_endog)).astype(floatX)
+
+    x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(mod, params)
+    recursion = pm.logp(
+        InnovationsStateSpace.dist(x0, T, Z, R, Q, data), pt.as_tensor_variable(data)
+    ).eval()
+    *_, loglike = StandardFilter(cov_jitter=0.0).build_graph(
+        pt.specify_shape(pt.as_tensor_variable(data), data.shape),
+        *[pt.as_tensor_variable(matrix) for matrix in (x0, P0, c, d, T, Z, R, H, Q)],
+    )
+
+    assert_allclose(recursion, loglike.sum().eval(), atol=1e-8)
+
+
+def test_ETS_recursion_draws_come_from_the_predictive_moments(rng):
+    """The sampling path uses the same means the density does, and a constant covariance."""
+    n_draws, n_timesteps = 4000, 12
+    mod = BayesianETS(
+        order=("A", "N", "N"), endog_names=["y"], stationary_initialization=True, verbose=False
+    )
+    params = {"initial_level": np.array(1.0), "alpha": np.array(0.4), "sigma_state": np.array(2.0)}
+    data = rng.normal(size=(n_timesteps, 1)).astype(floatX)
+
+    x0, _, _, _, T, Z, R, _, Q = unpack_symbolic_matrices_with_params(mod, params)
+    draws = pm.draw(InnovationsStateSpace.dist(x0, T, Z, R, Q, data), draws=n_draws, random_seed=13)
+    means = _innovations_moments(
+        *(pt.as_tensor_variable(m) for m in (x0, T, Z, R)), pt.as_tensor_variable(data)
+    ).eval()
+
+    assert draws.shape == (n_draws, n_timesteps, 1)
+    assert_array_less(np.abs(draws.mean(0) - means), 5 * np.sqrt(Q[0, 0] / n_draws))
+    assert_allclose(draws.var(0), Q[0, 0], rtol=0.15)
+
+
+def test_innovations_state_space_rejects_an_unrecoverable_innovation(rng):
+    """
+    ``design @ selection`` must be the identity, or the error is not the innovation.
+
+    Every batteries-included model that reaches this distribution satisfies it, so the guard
+    exists for the ones that do not: without it the density is finite, smooth, and wrong.
+    """
+    x0 = np.zeros(2, dtype=floatX)
+    transition = np.array([[0.0, 0.0], [0.0, 1.0]], dtype=floatX)
+    design = np.array([[1.0, 1.0]], dtype=floatX)
+    state_cov = np.array([[2.0]], dtype=floatX)
+    data = rng.normal(size=(30, 1)).astype(floatX)
+
+    selection = np.array([[0.6], [0.4]], dtype=floatX)
+    assert np.allclose(design @ selection, np.eye(1))
+    dist = InnovationsStateSpace.dist(x0, transition, design, selection, state_cov, data)
+    assert np.isfinite(pm.logp(dist, pt.as_tensor_variable(data)).eval())
+
+    selection = np.array([[0.6], [0.1]], dtype=floatX)
+    dist = InnovationsStateSpace.dist(x0, transition, design, selection, state_cov, data)
+
+    with pytest.raises(ParameterValueError, match="design @ selection"):
+        pm.logp(dist, pt.as_tensor_variable(data)).eval()
