@@ -5,6 +5,8 @@ import pytensor.tensor as pt
 import pytest
 
 from numpy.testing import assert_allclose
+from pytensor.tensor.linalg import solve_discrete_lyapunov
+from scipy.linalg import solve_discrete_lyapunov as sp_solve_discrete_lyapunov
 from scipy.stats import multivariate_normal
 
 from pymc_extras.statespace import structural
@@ -12,6 +14,7 @@ from pymc_extras.statespace.filters.distributions import (
     LinearGaussianStateSpace,
     SequenceMvNormal,
     SimulationSmoother,
+    StationaryVAR,
     _forward_simulate_latent_and_obs,
     _LinearGaussianStateSpace,
 )
@@ -611,3 +614,160 @@ def test_simulation_smoother_against_statsmodels(rng):
     cov_sm = np.cov(sm_samples.reshape(n_draws, -1).T)
     assert_allclose(cov_ours, cov_sm, atol=0.05)
     assert_allclose(ours.mean(0), sm_samples.mean(0), atol=0.1)
+
+
+def _var_parameters(rng, k_endog, order, k_exog):
+    """Draw a stationary ``A``, a ``B``, and a positive-definite ``Q``.
+
+    ``A`` is shrunk by a fixed factor rather than by ``target / spectral_radius``: scaling ``A``
+    by ``c`` does not scale the companion eigenvalues by ``c`` once ``order > 1``, so the
+    proportional step converges to the target from above without ever crossing it.
+    """
+    A = rng.normal(scale=0.4, size=(k_endog, k_endog * order))
+    companion = np.zeros((k_endog * order, k_endog * order))
+    if order > 1:
+        companion[k_endog:, : k_endog * (order - 1)] = np.eye(k_endog * (order - 1))
+
+    while True:
+        companion[:k_endog] = A
+        if np.abs(np.linalg.eigvals(companion)).max() < 0.9:
+            break
+        A *= 0.9
+
+    factor = rng.normal(size=(k_endog, k_endog))
+    Q = factor @ factor.T + k_endog * np.eye(k_endog)
+
+    return A.astype(floatX), rng.normal(size=(k_endog, k_exog)).astype(floatX), Q.astype(floatX)
+
+
+def _var_logp_pair(k_endog, order, k_exog, n_timesteps=80):
+    """The distribution's log-density and a Kalman filter over the same model.
+
+    The reference is assembled from concatenations rather than from the distribution's own
+    companion-form helper: a shared constructor would let both sides be wrong together.
+    """
+    rng = np.random.default_rng(sum(map(ord, f"statvar{k_endog}{order}{k_exog}")))
+    A_true, B_true, Q_true = _var_parameters(rng, k_endog, order, k_exog)
+    exog = rng.normal(size=(n_timesteps, k_exog)).astype(floatX)
+
+    endog = np.zeros((n_timesteps, k_endog))
+    noise = rng.multivariate_normal(np.zeros(k_endog), Q_true, size=n_timesteps)
+    for t in range(n_timesteps):
+        lags = [endog[t - lag] if t >= lag else np.zeros(k_endog) for lag in range(1, order + 1)]
+        endog[t] = A_true @ np.concatenate(lags) + B_true @ exog[t] + noise[t]
+    endog = endog.astype(floatX)
+
+    A = pt.tensor("A", dtype=floatX, shape=(k_endog, k_endog * order))
+    B = pt.tensor("B", dtype=floatX, shape=(k_endog, k_exog))
+    Q = pt.tensor("Q", dtype=floatX, shape=(k_endog, k_endog))
+    k_states = k_endog * order
+
+    fast = pm.logp(
+        StationaryVAR.dist(A, Q, exog=pt.as_tensor_variable(exog), exog_coefficients=B),
+        pt.as_tensor_variable(endog),
+    )
+
+    if order > 1:
+        shift = pt.concatenate(
+            [pt.eye(k_states - k_endog), pt.zeros((k_states - k_endog, k_endog))], axis=1
+        )
+        T_mat = pt.concatenate([A, shift], axis=0)
+    else:
+        T_mat = A
+    Z_mat = pt.concatenate([pt.eye(k_endog), pt.zeros((k_endog, k_states - k_endog))], axis=1)
+    R_mat = pt.concatenate([pt.eye(k_endog), pt.zeros((k_states - k_endog, k_endog))], axis=0)
+
+    *_, ll = StandardFilter(time_varying_names=["obs_intercept"], cov_jitter=0.0).build_graph(
+        pt.specify_shape(pt.as_tensor_variable(endog), (n_timesteps, k_endog)),
+        pt.zeros((k_states,)),
+        solve_discrete_lyapunov(T_mat, pt.linalg.matrix_dot(R_mat, Q, R_mat.T), method="bilinear"),
+        pt.zeros((k_states,)),
+        pt.as_tensor_variable(exog) @ B.T,
+        T_mat,
+        Z_mat,
+        R_mat,
+        pt.zeros((k_endog, k_endog)),
+        Q,
+    )
+
+    return fast, ll.sum(), [A, B, Q]
+
+
+@pytest.mark.parametrize(
+    "k_endog, order, k_exog",
+    [(1, 1, 0), (1, 3, 2), (2, 2, 0), (3, 2, 2)],
+    ids=["k1_p1_m0", "k1_p3_m2", "k2_p2_m0", "k3_p2_m2"],
+)
+def test_stationary_var_matches_kalman_filter(k_endog, order, k_exog):
+    rng = np.random.default_rng(sum(map(ord, f"draws{k_endog}{order}{k_exog}")))
+    fast, kalman, inputs = _var_logp_pair(k_endog, order, k_exog)
+    fn = pytensor.function(
+        inputs,
+        [fast, kalman, *pt.grad(fast, inputs), *pt.grad(kalman, inputs)],
+        on_unused_input="ignore",
+    )
+
+    for _ in range(3):
+        found_logp, expected_logp, dA, dB, dQ, edA, edB, edQ = fn(
+            *_var_parameters(rng, k_endog, order, k_exog)
+        )
+        assert_allclose(found_logp, expected_logp, atol=ATOL, rtol=RTOL)
+        assert_allclose(dA, edA, atol=ATOL, rtol=RTOL)
+        assert_allclose(dB, edB, atol=ATOL, rtol=RTOL)
+        # Only the symmetric part of a gradient wrt a symmetric matrix is meaningful.
+        assert_allclose(dQ + dQ.T, edQ + edQ.T, atol=ATOL, rtol=RTOL)
+
+
+def test_stationary_var_signature():
+    A = pt.tensor("A", dtype=floatX, shape=(2, 6))
+    Q = pt.tensor("Q", dtype=floatX, shape=(2, 2))
+
+    dist = StationaryVAR.dist(A, Q, steps=100)
+
+    assert dist.type.shape == (100, 2)
+    assert dist.owner.op.extended_signature == "(k,l),(k,m),(k,k),(t,m),[rng]->[rng],(t,k)"
+    assert dist.owner.op.ndim_supp == 2
+
+
+def test_stationary_var_draws_have_the_stationary_covariance():
+    rng = np.random.default_rng(90210)
+    A, _, Q = _var_parameters(rng, 2, 2, 0)
+    draw = pm.draw(StationaryVAR.dist(A, Q, steps=40000), random_seed=17)
+
+    companion = np.zeros((4, 4))
+    companion[:2] = A
+    companion[2:, :2] = np.eye(2)
+    noise = np.zeros((4, 4))
+    noise[:2, :2] = Q
+
+    expected = sp_solve_discrete_lyapunov(companion, noise)[:2, :2]
+    assert_allclose(np.cov(draw, rowvar=False), expected, rtol=0.05, atol=0.3)
+
+
+def test_stationary_var_logp_follows_the_observed_data():
+    rng = np.random.default_rng(511)
+    A, _, Q = _var_parameters(rng, 2, 2, 0)
+
+    with pm.Model() as model:
+        pm.Data("data", rng.normal(size=(30, 2)).astype(floatX))
+        StationaryVAR("obs", A, Q, steps=30, observed=model["data"])
+        before = model.compile_logp()({})
+        pm.set_data({"data": rng.normal(size=(30, 2)).astype(floatX)})
+
+        assert not np.isclose(before, model.compile_logp()({}))
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"exog": np.zeros((10, 2))}, "both or neither"),
+        ({"steps": None}, "needs steps"),
+        ({"steps": 10}, "known statically"),
+    ],
+    ids=["exog_without_coefficients", "no_steps", "unshaped_coefficients"],
+)
+def test_stationary_var_rejects_inconsistent_arguments(kwargs, message):
+    A = pt.matrix("A") if message.startswith("known") else np.eye(2)
+
+    with pytest.raises(ValueError, match=message):
+        StationaryVAR.dist(A, np.eye(2), **kwargs)

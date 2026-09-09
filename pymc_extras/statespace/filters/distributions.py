@@ -8,6 +8,7 @@ from pymc.distributions.shape_utils import get_support_shape_1d
 from pymc.logprob.abstract import _logprob
 from pymc.pytensorf import intX, normalize_rng_param
 from pytensor.graph.basic import Node
+from pytensor.tensor.linalg import solve_discrete_lyapunov
 from pytensor.tensor.random import multivariate_normal
 
 floatX = pytensor.config.floatX
@@ -697,3 +698,259 @@ def simulation_smoother_logp(op, values, *inputs, **kwargs):
     # never scored. Return a zero matching the output's shape so PyMC's logp
     # introspection succeeds.
     return pt.zeros_like(values[0])
+
+
+def _lag_matrix(series, *, lags, order, n_rows):
+    """
+    Stack ``series`` at each of ``lags``, one block of columns per lag.
+
+    Row ``i`` holds the lags of timestep ``order + i``, so blocks taken from different series
+    line up even when they run over different lags.
+    """
+    index = pt.sub.outer(order + pt.arange(n_rows), pt.as_tensor_variable(list(lags)))
+
+    return series[index].reshape((n_rows, -1))
+
+
+def _effective_coefficients(coefficients, exog_coefficients, *, order, k_endog):
+    r"""
+    Assemble :math:`C = [A_1 \ldots A_p, B, -A_1 B \ldots -A_p B]`.
+
+    The residual against the stacked regressors is ``y_t - C @ W_t``, which lets the exogenous
+    case reuse the pure autoregressive trace expression unchanged. With no regressors the
+    trailing blocks are zero-width and :math:`C` reduces to :math:`A`.
+    """
+    by_lag = coefficients.reshape((k_endog, order, k_endog)) @ exog_coefficients
+
+    return pt.concatenate([coefficients, exog_coefficients, -by_lag.reshape((k_endog, -1))], axis=1)
+
+
+def _stationary_cholesky(coefficients, state_cov, *, order, k_endog):
+    """Lower Cholesky factor of the stationary covariance of ``[y_1, ..., y_order]``."""
+    k_states = k_endog * order
+
+    transition = pt.concatenate(
+        [coefficients, pt.pad(pt.eye(k_states - k_endog), [(0, 0), (0, k_endog)])], axis=0
+    )
+    noise = pt.pad(state_cov, [(0, k_states - k_endog)] * 2)
+    covariance = solve_discrete_lyapunov(transition, noise, method="bilinear")
+
+    # The solve gives the covariance of ``[y_t, ..., y_{t-order+1}]``, whose blocks run backwards
+    # in time; the forward stack needs them the other way round.
+    blocked = covariance.reshape((order, k_endog, order, k_endog))
+    forward = pt.flip(blocked, axis=(0, 2)).reshape((k_states, k_states))
+
+    return pt.linalg.cholesky(forward)
+
+
+def _initial_logp(cholesky_factor, residuals, *, order, k_endog):
+    """Log-density of the first ``order`` observations under the stationary distribution."""
+    stacked = residuals.reshape((order * k_endog,))
+    whitened = pt.linalg.solve_triangular(cholesky_factor, stacked, lower=True, b_ndim=1)
+
+    return (
+        -0.5 * order * k_endog * pt.log(2 * pt.pi)
+        - pt.log(pt.diag(cholesky_factor)).sum()
+        - 0.5 * (whitened**2).sum()
+    )
+
+
+def _conditional_logp(
+    effective, state_cov, *, endog_gram, cross_gram, regressor_gram, n_rows, k_endog
+):
+    """Log-density of the observations after the first ``order``, from cross-products alone."""
+    residual_gram = (
+        endog_gram
+        - effective @ cross_gram
+        - cross_gram.T @ effective.T
+        + pt.linalg.matrix_dot(effective, regressor_gram, effective.T)
+    )
+
+    cov_cholesky = pt.linalg.cholesky(state_cov)
+    whitened_gram = pt.linalg.cho_solve((cov_cholesky, True), residual_gram, b_ndim=2)
+
+    return (
+        -0.5 * n_rows * k_endog * pt.log(2 * pt.pi)
+        - n_rows * pt.log(pt.diag(cov_cholesky)).sum()
+        - 0.5 * pt.trace(whitened_gram)
+    )
+
+
+def _var_order(coefficients):
+    """Recover the lag order from the coefficient matrix, which must be statically shaped."""
+    k_endog, width = coefficients.type.shape
+    if k_endog is None or width is None:
+        raise ValueError(
+            "StationaryVAR needs the shape of its coefficient matrix to be known statically, "
+            f"but found {coefficients.type.shape}. Give the variable an explicit shape."
+        )
+    if width % k_endog:
+        raise ValueError(
+            f"StationaryVAR coefficients of shape {coefficients.type.shape} are not a whole "
+            f"number of {k_endog}-column lag blocks."
+        )
+
+    return width // k_endog, k_endog
+
+
+class StationaryVARRV(SymbolicRandomVariable):
+    default_output = 1
+    _print_name = ("StationaryVAR", "\\operatorname{StationaryVAR}")
+    extended_signature = "(k,l),(k,m),(k,k),(t,m),[rng]->[rng],(t,k)"
+
+    def update(self, node: Node):
+        return {node.inputs[-1]: node.outputs[0]}
+
+
+class StationaryVAR(Continuous):
+    r"""
+    A stationary vector autoregression observed without measurement error.
+
+    The joint density factors exactly as
+
+    .. math::
+        p(y_1 \ldots y_T) = p(y_1 \ldots y_p) \prod_{t > p} p(y_t \mid y_{t-1} \ldots y_{t-p})
+
+    The leading factor is the stationary distribution of the companion state. The product has a
+    banded precision matrix, so it collapses onto cross-products of the data against its own
+    lags, whose size depends on the lag structure and not on the number of timesteps.
+
+    Exogenous regressors enter the observation equation, so :math:`\tilde{y}_t = y_t - B x_t`
+    follows the pure autoregression and the density is exactly :math:`\tilde{y}`'s. The
+    banding, and so the density, requires observations free of measurement error, moving
+    average terms, and missing values.
+
+    Parameters
+    ----------
+    coefficients : tensor_like
+        ``A``, of shape ``(k_endog, k_endog * order)``, blocks running lag 1 through ``order``.
+        Its shape must be known statically, since the lag order is read from it.
+    state_cov : tensor_like
+        ``Q``, the innovation covariance, of shape ``(k_endog, k_endog)``.
+    exog : tensor_like, optional
+        Exogenous regressors, of shape ``(steps, k_exog)``.
+    exog_coefficients : tensor_like, optional
+        ``B``, of shape ``(k_endog, k_exog)``. Required when ``exog`` is given.
+    steps : int, optional
+        Number of timesteps to draw. Taken from ``exog`` when that is given.
+    """
+
+    rv_type = StationaryVARRV
+
+    @classmethod
+    def dist(
+        cls, coefficients, state_cov, exog=None, exog_coefficients=None, *, steps=None, **kwargs
+    ):
+        coefficients = pt.as_tensor_variable(coefficients)
+        state_cov = pt.as_tensor_variable(state_cov)
+
+        if (exog is None) != (exog_coefficients is None):
+            raise ValueError(
+                "StationaryVAR needs either both or neither of exog and exog_coefficients, "
+                f"but exog is {'absent' if exog is None else 'present'} and exog_coefficients "
+                f"is {'absent' if exog_coefficients is None else 'present'}."
+            )
+
+        _, k_endog = _var_order(coefficients)
+
+        if exog is None:
+            if steps is None:
+                raise ValueError("StationaryVAR needs steps when no exogenous data is given.")
+            exog = pt.zeros((steps, 0), dtype=coefficients.dtype)
+            exog_coefficients = pt.zeros((k_endog, 0), dtype=coefficients.dtype)
+        else:
+            exog = pt.as_tensor_variable(exog)
+            exog_coefficients = pt.as_tensor_variable(exog_coefficients)
+
+        return super().dist([coefficients, exog_coefficients, state_cov, exog], **kwargs)
+
+    @classmethod
+    def rv_op(cls, coefficients, exog_coefficients, state_cov, exog, size=None, rng=None):
+        rng = normalize_rng_param(rng)
+        order, k_endog = _var_order(coefficients)
+
+        coefficients_, exog_coefficients_ = coefficients.type(), exog_coefficients.type()
+        state_cov_, exog_ = state_cov.type(), exog.type()
+        rng_ = rng.type()
+
+        steps_ = exog_.shape[0]
+        next_rng, standard = pt.random.normal(
+            size=(steps_, k_endog), rng=rng_, return_next_rng=True
+        )
+
+        # One draw of standard normals up front leaves the recursion deterministic, so no rng
+        # has to be threaded through the scan.
+        factor = _stationary_cholesky(coefficients_, state_cov_, order=order, k_endog=k_endog)
+        initial = (factor @ standard[:order].reshape((order * k_endog,))).reshape((order, k_endog))
+        innovations = standard[order:] @ pt.linalg.cholesky(state_cov_).T
+
+        def step(innovation, stack):
+            drawn = coefficients_ @ stack + innovation
+
+            return pt.concatenate([drawn, stack[:-k_endog]])
+
+        # The carried state is the lag stack, most recent block first. A multi-tap history would
+        # not do: ``taps=[-1]`` leaves the state an axis larger than it is at every other order.
+        recursed = pytensor.scan(
+            fn=step,
+            sequences=[innovations],
+            outputs_info=[initial[::-1].reshape((order * k_endog,))],
+            strict=True,
+            non_sequences=[],
+            return_updates=False,
+        )
+
+        latent = pt.concatenate([initial, recursed[:, :k_endog]], axis=0)
+        sequence = latent + exog_ @ exog_coefficients_.T
+
+        op = StationaryVARRV(
+            inputs=[coefficients_, exog_coefficients_, state_cov_, exog_, rng_],
+            outputs=[next_rng, sequence],
+            ndim_supp=2,
+        )
+
+        return op(coefficients, exog_coefficients, state_cov, exog, rng)
+
+
+@_logprob.register(StationaryVARRV)
+def stationary_var_logp(
+    op, values, coefficients, exog_coefficients, state_cov, exog, rng, **kwargs
+):
+    """Exact log-density of a stationary VAR, condensed onto cross-products of the value."""
+    (value,) = values
+    order, k_endog = _var_order(coefficients)
+
+    n_rows = value.shape[0] - order
+    regressors = pt.concatenate(
+        [
+            _lag_matrix(value, lags=range(1, order + 1), order=order, n_rows=n_rows),
+            _lag_matrix(exog, lags=range(0, order + 1), order=order, n_rows=n_rows),
+        ],
+        axis=1,
+    )
+    response = value[order:]
+
+    factor = _stationary_cholesky(coefficients, state_cov, order=order, k_endog=k_endog)
+    residuals = value[:order] - exog[:order] @ exog_coefficients.T
+    initial = _initial_logp(factor, residuals, order=order, k_endog=k_endog)
+
+    effective = _effective_coefficients(
+        coefficients, exog_coefficients, order=order, k_endog=k_endog
+    )
+    conditional = _conditional_logp(
+        effective,
+        state_cov,
+        endog_gram=response.T @ response,
+        cross_gram=regressors.T @ response,
+        regressor_gram=regressors.T @ regressors,
+        n_rows=n_rows,
+        k_endog=k_endog,
+    )
+
+    return check_parameters(
+        initial + conditional,
+        pt.eq(value.shape[0], exog.shape[0]),
+        pt.gt(value.shape[0], order),
+        msg="Observed data and exogenous data must span the same number of timesteps, and the "
+        "series must be longer than the lag order",
+    )
