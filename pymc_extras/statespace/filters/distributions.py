@@ -712,6 +712,22 @@ def _lag_matrix(series, *, lags, order, n_rows):
     return series[index].reshape((n_rows, -1))
 
 
+def _stacked_regressors(series, exog, *, order, n_rows):
+    """Lag matrix ``W``, holding the regressors for every timestep from ``order`` onward.
+
+    The density and the predictive moments both contract against this, so they read it from one
+    place. Built differently in each, they would describe different models and nothing would say
+    so.
+    """
+    return pt.concatenate(
+        [
+            _lag_matrix(series, lags=range(1, order + 1), order=order, n_rows=n_rows),
+            _lag_matrix(exog, lags=range(0, order + 1), order=order, n_rows=n_rows),
+        ],
+        axis=1,
+    )
+
+
 def _effective_coefficients(coefficients, exog_coefficients, *, order, k_endog):
     r"""
     Assemble :math:`C = [A_1 \ldots A_p, B, -A_1 B \ldots -A_p B]`.
@@ -780,6 +796,47 @@ def _conditional_logp(
     )
 
 
+def _predictive_moments(coefficients, exog_coefficients, state_cov, exog, endog, *, order, k_endog):
+    """
+    One-step-ahead predictive moments, conditional on ``endog``.
+
+    These equal a Kalman filter's predicted observed states and covariances for the same model.
+
+    Returns
+    -------
+    means : TensorVariable
+        Of shape ``(T, k_endog)``.
+    covariances : TensorVariable
+        Of shape ``(T, k_endog, k_endog)``.
+    """
+    n_rows = endog.shape[0] - order
+    regressors = _stacked_regressors(endog, exog, order=order, n_rows=n_rows)
+    effective = _effective_coefficients(
+        coefficients, exog_coefficients, order=order, k_endog=k_endog
+    )
+
+    factor = _stationary_cholesky(coefficients, state_cov, order=order, k_endog=k_endog)
+    residuals = endog[:order] - exog[:order] @ exog_coefficients.T
+    whitened = pt.linalg.solve_triangular(
+        factor, residuals.reshape((order * k_endog,)), lower=True, b_ndim=1
+    )
+    blocked = factor.reshape((order, k_endog, order, k_endog))
+    diagonal = pt.diagonal(blocked, axis1=0, axis2=2).transpose(2, 0, 1)
+
+    means = pt.concatenate(
+        [
+            endog[:order] - (diagonal @ whitened.reshape((order, k_endog, 1))).squeeze(-1),
+            regressors @ effective.T,
+        ],
+        axis=0,
+    )
+    covariances = pt.concatenate(
+        [diagonal @ diagonal.mT, pt.broadcast_to(state_cov, (n_rows, k_endog, k_endog))], axis=0
+    )
+
+    return means, covariances
+
+
 def _var_order(coefficients):
     """Recover the lag order from the coefficient matrix, which must be statically shaped."""
     k_endog, width = coefficients.type.shape
@@ -800,7 +857,7 @@ def _var_order(coefficients):
 class StationaryVARRV(SymbolicRandomVariable):
     default_output = 1
     _print_name = ("StationaryVAR", "\\operatorname{StationaryVAR}")
-    extended_signature = "(k,l),(k,m),(k,k),(t,m),[rng]->[rng],(t,k)"
+    extended_signature = "(k,l),(k,m),(k,k),(t,m),(t,k),[rng]->[rng],(t,k)"
 
     def update(self, node: Node):
         return {node.inputs[-1]: node.outputs[0]}
@@ -843,10 +900,19 @@ class StationaryVAR(Continuous):
 
     @classmethod
     def dist(
-        cls, coefficients, state_cov, exog=None, exog_coefficients=None, *, steps=None, **kwargs
+        cls,
+        coefficients,
+        state_cov,
+        endog,
+        exog=None,
+        exog_coefficients=None,
+        *,
+        method="svd",
+        **kwargs,
     ):
         coefficients = pt.as_tensor_variable(coefficients)
         state_cov = pt.as_tensor_variable(state_cov)
+        endog = pt.as_tensor_variable(endog)
 
         if (exog is None) != (exog_coefficients is None):
             raise ValueError(
@@ -858,80 +924,67 @@ class StationaryVAR(Continuous):
         _, k_endog = _var_order(coefficients)
 
         if exog is None:
-            if steps is None:
-                raise ValueError("StationaryVAR needs steps when no exogenous data is given.")
-            exog = pt.zeros((steps, 0), dtype=coefficients.dtype)
+            exog = pt.zeros((endog.shape[0], 0), dtype=coefficients.dtype)
             exog_coefficients = pt.zeros((k_endog, 0), dtype=coefficients.dtype)
         else:
             exog = pt.as_tensor_variable(exog)
             exog_coefficients = pt.as_tensor_variable(exog_coefficients)
 
-        return super().dist([coefficients, exog_coefficients, state_cov, exog], **kwargs)
+        return super().dist(
+            [coefficients, exog_coefficients, state_cov, exog, endog], method=method, **kwargs
+        )
 
     @classmethod
-    def rv_op(cls, coefficients, exog_coefficients, state_cov, exog, size=None, rng=None):
+    def rv_op(
+        cls,
+        coefficients,
+        exog_coefficients,
+        state_cov,
+        exog,
+        endog,
+        method="svd",
+        size=None,
+        rng=None,
+    ):
         rng = normalize_rng_param(rng)
         order, k_endog = _var_order(coefficients)
 
         coefficients_, exog_coefficients_ = coefficients.type(), exog_coefficients.type()
-        state_cov_, exog_ = state_cov.type(), exog.type()
+        state_cov_, exog_, endog_ = state_cov.type(), exog.type(), endog.type()
         rng_ = rng.type()
 
-        steps_ = exog_.shape[0]
-        next_rng, standard = pt.random.normal(
-            size=(steps_, k_endog), rng=rng_, return_next_rng=True
+        means, covariances = _predictive_moments(
+            coefficients_,
+            exog_coefficients_,
+            state_cov_,
+            exog_,
+            endog_,
+            order=order,
+            k_endog=k_endog,
         )
-
-        # One draw of standard normals up front leaves the recursion deterministic, so no rng
-        # has to be threaded through the scan.
-        factor = _stationary_cholesky(coefficients_, state_cov_, order=order, k_endog=k_endog)
-        initial = (factor @ standard[:order].reshape((order * k_endog,))).reshape((order, k_endog))
-        innovations = standard[order:] @ pt.linalg.cholesky(state_cov_).T
-
-        def step(innovation, stack):
-            drawn = coefficients_ @ stack + innovation
-
-            return pt.concatenate([drawn, stack[:-k_endog]])
-
-        # The carried state is the lag stack, most recent block first. A multi-tap history would
-        # not do: ``taps=[-1]`` leaves the state an axis larger than it is at every other order.
-        recursed = pytensor.scan(
-            fn=step,
-            sequences=[innovations],
-            outputs_info=[initial[::-1].reshape((order * k_endog,))],
-            strict=True,
-            non_sequences=[],
-            return_updates=False,
+        next_rng, draws = multivariate_normal(
+            mean=means, cov=covariances, rng=rng_, method=method, return_next_rng=True
         )
-
-        latent = pt.concatenate([initial, recursed[:, :k_endog]], axis=0)
-        sequence = latent + exog_ @ exog_coefficients_.T
 
         op = StationaryVARRV(
-            inputs=[coefficients_, exog_coefficients_, state_cov_, exog_, rng_],
-            outputs=[next_rng, sequence],
+            inputs=[coefficients_, exog_coefficients_, state_cov_, exog_, endog_, rng_],
+            outputs=[next_rng, draws],
             ndim_supp=2,
         )
 
-        return op(coefficients, exog_coefficients, state_cov, exog, rng)
+        return op(coefficients, exog_coefficients, state_cov, exog, endog, rng)
 
 
 @_logprob.register(StationaryVARRV)
 def stationary_var_logp(
-    op, values, coefficients, exog_coefficients, state_cov, exog, rng, **kwargs
+    op, values, coefficients, exog_coefficients, state_cov, exog, endog, rng, **kwargs
 ):
     """Exact log-density of a stationary VAR, condensed onto cross-products of the value."""
     (value,) = values
     order, k_endog = _var_order(coefficients)
 
     n_rows = value.shape[0] - order
-    regressors = pt.concatenate(
-        [
-            _lag_matrix(value, lags=range(1, order + 1), order=order, n_rows=n_rows),
-            _lag_matrix(exog, lags=range(0, order + 1), order=order, n_rows=n_rows),
-        ],
-        axis=1,
-    )
+    regressors = _stacked_regressors(value, exog, order=order, n_rows=n_rows)
     response = value[order:]
 
     factor = _stationary_cholesky(coefficients, state_cov, order=order, k_endog=k_endog)

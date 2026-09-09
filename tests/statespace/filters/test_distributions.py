@@ -4,7 +4,7 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 
-from numpy.testing import assert_allclose
+from numpy.testing import assert_allclose, assert_array_less
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 from scipy.linalg import solve_discrete_lyapunov as sp_solve_discrete_lyapunov
 from scipy.stats import multivariate_normal
@@ -17,6 +17,7 @@ from pymc_extras.statespace.filters.distributions import (
     StationaryVAR,
     _forward_simulate_latent_and_obs,
     _LinearGaussianStateSpace,
+    _predictive_moments,
 )
 from pymc_extras.statespace.filters.kalman_filter import StandardFilter
 from pymc_extras.statespace.filters.kalman_smoother import KalmanSmoother
@@ -640,6 +641,35 @@ def _var_parameters(rng, k_endog, order, k_exog):
     return A.astype(floatX), rng.normal(size=(k_endog, k_exog)).astype(floatX), Q.astype(floatX)
 
 
+def _reference_filter(coefficients, state_cov, endog, exog, exog_coefficients):
+    """A Kalman filter over the companion form, built independently of the distribution."""
+    n_timesteps, k_endog = endog.shape
+    k_states = coefficients.type.shape[1]
+
+    transition = pt.concatenate(
+        [coefficients, pt.pad(pt.eye(k_states - k_endog), [(0, 0), (0, k_endog)])], axis=0
+    )
+    design = pt.concatenate([pt.eye(k_endog), pt.zeros((k_endog, k_states - k_endog))], axis=1)
+    selection = pt.concatenate([pt.eye(k_endog), pt.zeros((k_states - k_endog, k_endog))], axis=0)
+
+    return StandardFilter(time_varying_names=["obs_intercept"], cov_jitter=0.0).build_graph(
+        pt.specify_shape(pt.as_tensor_variable(endog), (n_timesteps, k_endog)),
+        pt.zeros((k_states,)),
+        solve_discrete_lyapunov(
+            transition,
+            pt.linalg.matrix_dot(selection, state_cov, selection.T),
+            method="bilinear",
+        ),
+        pt.zeros((k_states,)),
+        pt.as_tensor_variable(exog) @ exog_coefficients.T,
+        transition,
+        design,
+        selection,
+        pt.zeros((k_endog, k_endog)),
+        state_cov,
+    )
+
+
 def _var_logp_pair(k_endog, order, k_exog, n_timesteps=80):
     """The distribution's log-density and a Kalman filter over the same model.
 
@@ -663,32 +693,17 @@ def _var_logp_pair(k_endog, order, k_exog, n_timesteps=80):
     k_states = k_endog * order
 
     fast = pm.logp(
-        StationaryVAR.dist(A, Q, exog=pt.as_tensor_variable(exog), exog_coefficients=B),
+        StationaryVAR.dist(
+            A,
+            Q,
+            pt.as_tensor_variable(endog),
+            exog=pt.as_tensor_variable(exog),
+            exog_coefficients=B,
+        ),
         pt.as_tensor_variable(endog),
     )
 
-    if order > 1:
-        shift = pt.concatenate(
-            [pt.eye(k_states - k_endog), pt.zeros((k_states - k_endog, k_endog))], axis=1
-        )
-        T_mat = pt.concatenate([A, shift], axis=0)
-    else:
-        T_mat = A
-    Z_mat = pt.concatenate([pt.eye(k_endog), pt.zeros((k_endog, k_states - k_endog))], axis=1)
-    R_mat = pt.concatenate([pt.eye(k_endog), pt.zeros((k_states - k_endog, k_endog))], axis=0)
-
-    *_, ll = StandardFilter(time_varying_names=["obs_intercept"], cov_jitter=0.0).build_graph(
-        pt.specify_shape(pt.as_tensor_variable(endog), (n_timesteps, k_endog)),
-        pt.zeros((k_states,)),
-        solve_discrete_lyapunov(T_mat, pt.linalg.matrix_dot(R_mat, Q, R_mat.T), method="bilinear"),
-        pt.zeros((k_states,)),
-        pt.as_tensor_variable(exog) @ B.T,
-        T_mat,
-        Z_mat,
-        R_mat,
-        pt.zeros((k_endog, k_endog)),
-        Q,
-    )
+    *_, ll = _reference_filter(A, Q, endog, exog, B)
 
     return fast, ll.sum(), [A, B, Q]
 
@@ -721,27 +736,87 @@ def test_stationary_var_matches_kalman_filter(k_endog, order, k_exog):
 def test_stationary_var_signature():
     A = pt.tensor("A", dtype=floatX, shape=(2, 6))
     Q = pt.tensor("Q", dtype=floatX, shape=(2, 2))
+    endog = pt.tensor("endog", dtype=floatX, shape=(100, 2))
 
-    dist = StationaryVAR.dist(A, Q, steps=100)
+    dist = StationaryVAR.dist(A, Q, endog)
 
     assert dist.type.shape == (100, 2)
-    assert dist.owner.op.extended_signature == "(k,l),(k,m),(k,k),(t,m),[rng]->[rng],(t,k)"
+    assert dist.owner.op.extended_signature == "(k,l),(k,m),(k,k),(t,m),(t,k),[rng]->[rng],(t,k)"
     assert dist.owner.op.ndim_supp == 2
 
 
-def test_stationary_var_draws_have_the_stationary_covariance():
-    rng = np.random.default_rng(90210)
-    A, _, Q = _var_parameters(rng, 2, 2, 0)
-    draw = pm.draw(StationaryVAR.dist(A, Q, steps=40000), random_seed=17)
+def test_stationary_var_predictive_moments_match_the_filter(rng):
+    """
+    Draws come from the one-step-ahead predictive distributions, which are the filter's.
 
-    companion = np.zeros((4, 4))
-    companion[:2] = A
-    companion[2:, :2] = np.eye(2)
-    noise = np.zeros((4, 4))
-    noise[:2, :2] = Q
+    The first ``order`` rows are the ones worth checking. Their moments come from the Cholesky
+    factor of the stationary covariance rather than from the regression.
+    """
+    k_endog, order, n_timesteps = 2, 2, 40
+    coefficients, _, state_cov = _var_parameters(rng, k_endog, order, 0)
+    endog = rng.normal(size=(n_timesteps, k_endog)).astype(floatX)
 
-    expected = sp_solve_discrete_lyapunov(companion, noise)[:2, :2]
-    assert_allclose(np.cov(draw, rowvar=False), expected, rtol=0.05, atol=0.3)
+    means, covariances = _predictive_moments(
+        pt.as_tensor_variable(coefficients),
+        pt.zeros((k_endog, 0)),
+        pt.as_tensor_variable(state_cov),
+        pt.zeros((n_timesteps, 0)),
+        pt.as_tensor_variable(endog),
+        order=order,
+        k_endog=k_endog,
+    )
+    _, _, filter_means, _, _, filter_covariances, _ = _reference_filter(
+        pt.as_tensor_variable(coefficients),
+        pt.as_tensor_variable(state_cov),
+        endog,
+        np.zeros((n_timesteps, 0), dtype=floatX),
+        pt.zeros((k_endog, 0)),
+    )
+
+    found_means, found_covariances, expected_means, expected_covariances = pytensor.function(
+        [], [means, covariances, filter_means, filter_covariances]
+    )()
+
+    assert_allclose(found_means, expected_means, atol=ATOL, rtol=RTOL)
+    assert_allclose(found_covariances, expected_covariances, atol=ATOL, rtol=RTOL)
+
+
+def test_stationary_var_draws_come_from_the_predictive_moments(rng):
+    """
+    The sampling path uses the same moments the density does.
+
+    ``_predictive_moments`` can be right while ``rv_op`` wires it up wrong, and a test that calls
+    the helper directly would not notice.
+    """
+    k_endog, order, n_timesteps, n_draws = 2, 2, 12, 4000
+    coefficients, _, state_cov = _var_parameters(rng, k_endog, order, 0)
+    endog = rng.normal(size=(n_timesteps, k_endog)).astype(floatX)
+
+    draws = pm.draw(
+        StationaryVAR.dist(coefficients, state_cov, endog), draws=n_draws, random_seed=13
+    )
+    means, covariances = (
+        x.eval()
+        for x in _predictive_moments(
+            pt.as_tensor_variable(coefficients),
+            pt.zeros((k_endog, 0)),
+            pt.as_tensor_variable(state_cov),
+            pt.zeros((n_timesteps, 0)),
+            pt.as_tensor_variable(endog),
+            order=order,
+            k_endog=k_endog,
+        )
+    )
+
+    assert draws.shape == (n_draws, n_timesteps, k_endog)
+
+    standard_error = np.sqrt(np.diagonal(covariances, axis1=1, axis2=2) / n_draws)
+    assert_array_less(np.abs(draws.mean(0) - means), 5 * standard_error)
+
+    # Per timestep, not pooled. The first ``order`` rows are the only ones whose covariance
+    # differs from the innovation covariance, so pooling hides an error confined to them.
+    empirical = np.stack([np.cov(draws[:, t], rowvar=False) for t in range(n_timesteps)])
+    assert_allclose(empirical, covariances, atol=0.1 * np.abs(covariances).max())
 
 
 def test_stationary_var_logp_follows_the_observed_data():
@@ -750,7 +825,7 @@ def test_stationary_var_logp_follows_the_observed_data():
 
     with pm.Model() as model:
         pm.Data("data", rng.normal(size=(30, 2)).astype(floatX))
-        StationaryVAR("obs", A, Q, steps=30, observed=model["data"])
+        StationaryVAR("obs", A, Q, model["data"], observed=model["data"])
         before = model.compile_logp()({})
         pm.set_data({"data": rng.normal(size=(30, 2)).astype(floatX)})
 
@@ -758,16 +833,13 @@ def test_stationary_var_logp_follows_the_observed_data():
 
 
 @pytest.mark.parametrize(
-    "kwargs, message",
+    "coefficients, kwargs, message",
     [
-        ({"exog": np.zeros((10, 2))}, "both or neither"),
-        ({"steps": None}, "needs steps"),
-        ({"steps": 10}, "known statically"),
+        (np.eye(2), {"exog": np.zeros((10, 2))}, "both or neither"),
+        (pt.matrix("A"), {}, "known statically"),
     ],
-    ids=["exog_without_coefficients", "no_steps", "unshaped_coefficients"],
+    ids=["exog_without_coefficients", "unshaped_coefficients"],
 )
-def test_stationary_var_rejects_inconsistent_arguments(kwargs, message):
-    A = pt.matrix("A") if message.startswith("known") else np.eye(2)
-
+def test_stationary_var_rejects_inconsistent_arguments(coefficients, kwargs, message):
     with pytest.raises(ValueError, match=message):
-        StationaryVAR.dist(A, np.eye(2), **kwargs)
+        StationaryVAR.dist(coefficients, np.eye(2), np.zeros((10, 2)), **kwargs)

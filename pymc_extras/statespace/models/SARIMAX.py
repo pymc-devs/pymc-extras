@@ -527,9 +527,9 @@ class BayesianSARIMAX(PyMCStateSpace):
             OBSERVED_LIKELIHOOD_NAME,
             transition[:, 0][None, :],
             state_cov,
+            data,
             exog=exog,
             exog_coefficients=exog_coefficients,
-            steps=data.shape[0],
             observed=data,
             dims=dims,
         )

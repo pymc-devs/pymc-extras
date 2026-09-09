@@ -418,9 +418,9 @@ class BayesianVARMAX(PyMCStateSpace):
             OBSERVED_LIKELIHOOD_NAME,
             transition[:k_endog, : k_endog * self.p],
             state_cov,
+            data,
             exog=exog,
             exog_coefficients=exog_coefficients,
-            steps=data.shape[0],
             observed=data,
             dims=dims,
         )
