@@ -360,13 +360,7 @@ def get_loglike_function(filter_name: str, obs_cov: str) -> Callable:
     [
         ("StandardFilter", "dense"),
         ("UnivariateFilter", "diagonal"),
-        pytest.param(
-            "CholeskyFilter",
-            "dense",
-            marks=pytest.mark.xfail(
-                reason="SquareRootFilter scales log |F| by k_endog as well, see issue #744"
-            ),
-        ),
+        ("CholeskyFilter", "dense"),
     ],
 )
 def test_loglike_matches_statsmodels(filter_name, obs_cov, rng):
