@@ -598,3 +598,18 @@ def test_missing_data_falls_back_to_the_filter(rng):
         mod, {"ar_params": [0.5, -0.2], "sigma_state": 1.3}, data
     )
     assert_allclose(built, kalman, atol=1e-8)
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Provided data contains missing values:pymc.exceptions.ImputationWarning"
+)
+def test_rebuilding_with_missing_data_raises(rng):
+    """Re-entry repoints the graph without rebuilding, so it cannot change which likelihood runs."""
+    mod = BayesianSARIMAX(order=(2, 0, 0), verbose=False)
+    gappy = rng.normal(size=(60, 1)).astype(floatX)
+    gappy[20:23] = np.nan
+
+    pymc_model = build_model_with_flat_priors(mod, rng.normal(size=(60, 1)).astype(floatX))
+
+    with pymc_model, pytest.raises(ValueError, match="cannot marginalize"):
+        mod.build_statespace_graph(gappy)

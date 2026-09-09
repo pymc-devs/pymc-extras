@@ -1000,7 +1000,7 @@ class PyMCStateSpace:
         )
 
         if _has_statespace_graph(pm_mod):
-            self._reenter_statespace_graph(filled_values, index)
+            self._reenter_statespace_graph(filled_values, index, missing)
             return
 
         for name in (OBSERVED_DATA_NAME, OBSERVED_LIKELIHOOD_NAME):
@@ -1074,7 +1074,7 @@ class PyMCStateSpace:
         )
 
     def _reenter_statespace_graph(
-        self, filled_values: np.ndarray, index: pd.Index | np.ndarray
+        self, filled_values: np.ndarray, index: pd.Index | np.ndarray, missing: np.ndarray
     ) -> None:
         """
         Point an already-built model at new data.
@@ -1088,14 +1088,44 @@ class PyMCStateSpace:
             New data, with missing values already filled.
         index : pandas Index or numpy array
             Time index of the new data.
+        missing : numpy array
+            Boolean mask over the new data, true where an observation is missing.
         """
         # Raises unless the model holds this template's parameters, so a template whose
         # specification has changed cannot silently inherit the graph another one built.
         self._insert_random_variables()
 
         self._verify_exogenous_data_spans(len(filled_values))
+        self._verify_likelihood_accepts_missing(missing)
 
         update_data_in_active_model(filled_values, index)
+
+    def _verify_likelihood_accepts_missing(self, missing: np.ndarray) -> None:
+        """
+        Raise if the built likelihood cannot represent missing values the new data holds.
+
+        Re-entry repoints an existing graph at new data rather than rebuilding it, so a model
+        whose likelihood was chosen against complete data keeps that likelihood however the data
+        changes. Only the Kalman filter marginalizes missing observations; anything else would
+        score the fill sentinel as if it were real.
+
+        Parameters
+        ----------
+        missing : numpy array
+            Boolean mask over the new data, true where an observation is missing.
+        """
+        if not missing.any():
+            return
+
+        likelihood = modelcontext(None)[OBSERVED_LIKELIHOOD_NAME]
+        if isinstance(likelihood.owner.op, KalmanFilterRV):
+            return
+
+        raise ValueError(
+            "The new observed data has missing values, but this model was built against complete "
+            "data and uses a likelihood that cannot marginalize them. Build the model into a "
+            "fresh pm.Model to have the likelihood chosen against the new data."
+        )
 
     def _verify_exogenous_data_spans(self, n_timesteps: int) -> None:
         """
