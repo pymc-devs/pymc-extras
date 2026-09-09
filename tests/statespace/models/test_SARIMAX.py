@@ -545,9 +545,9 @@ def test_sarimax_workflow(mock_sample):
         "interpretable",
     ],
 )
-def test_likelihood_dispatch(kwargs, expected_op, rng):
+def test_likelihood_dispatch(kwargs, expected_op):
     mod = BayesianSARIMAX(verbose=False, **kwargs)
-    pymc_model = build_model_with_flat_priors(mod, rng.normal(size=(40, 1)).astype(floatX))
+    pymc_model = build_model_with_flat_priors(mod, np.zeros((40, 1), dtype=floatX))
 
     assert isinstance(pymc_model["obs"].owner.op, expected_op)
 
@@ -572,8 +572,9 @@ def test_closed_form_likelihood_matches_the_kalman_filter(kwargs, params, rng):
     mod = BayesianSARIMAX(verbose=False, **kwargs)
     data = rng.normal(size=(60, 1)).astype(floatX)
 
-    built, kalman = compare_likelihood_to_filter(mod, params, data)
+    pymc_model, built, kalman = compare_likelihood_to_filter(mod, params, data)
 
+    assert isinstance(pymc_model["obs"].owner.op, StationaryVARRV)
     assert_allclose(built, kalman, atol=1e-8)
 
 
@@ -591,12 +592,11 @@ def test_missing_data_falls_back_to_the_filter(rng):
     data = rng.normal(size=(60, 1)).astype(floatX)
     data[20:23] = np.nan
 
-    pymc_model = build_model_with_flat_priors(mod, data)
-    assert isinstance(pymc_model["obs"].owner.op, KalmanFilterRV)
-
-    built, kalman = compare_likelihood_to_filter(
+    pymc_model, built, kalman = compare_likelihood_to_filter(
         mod, {"ar_params": [0.5, -0.2], "sigma_state": 1.3}, data
     )
+
+    assert isinstance(pymc_model["obs"].owner.op, KalmanFilterRV)
     assert_allclose(built, kalman, atol=1e-8)
 
 

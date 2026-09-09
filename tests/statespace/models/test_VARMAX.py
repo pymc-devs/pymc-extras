@@ -787,6 +787,22 @@ class TestVARMAXWithExogenous:
     "kwargs, expected_op",
     [
         ({"order": (2, 0), "stationary_initialization": True}, StationaryVARRV),
+        (
+            {
+                "order": (2, 0),
+                "stationary_initialization": True,
+                "exog_state_names": ["x1", "x2"],
+            },
+            StationaryVARRV,
+        ),
+        (
+            {
+                "order": (2, 0),
+                "stationary_initialization": True,
+                "exog_state_names": {"a": ["x1", "x2"], "b": ["x3"]},
+            },
+            StationaryVARRV,
+        ),
         ({"order": (2, 1), "stationary_initialization": True}, KalmanFilterRV),
         (
             {"order": (2, 0), "stationary_initialization": True, "measurement_error": True},
@@ -795,11 +811,25 @@ class TestVARMAXWithExogenous:
         ({"order": (2, 0)}, KalmanFilterRV),
         ({"order": (0, 1), "stationary_initialization": True}, KalmanFilterRV),
     ],
-    ids=["ar", "ma", "measurement_error", "no_stationary_init", "no_ar"],
+    ids=[
+        "ar",
+        "ar_shared_exog",
+        "ar_per_series_exog",
+        "ma",
+        "measurement_error",
+        "no_stationary_init",
+        "no_ar",
+    ],
 )
 def test_likelihood_dispatch(kwargs, expected_op, rng):
     mod = BayesianVARMAX(endog_names=["a", "b"], verbose=False, **kwargs)
-    pymc_model = build_model_with_flat_priors(mod, rng.normal(size=(40, 2)).astype(floatX))
+    data_dict = {
+        name: rng.normal(size=(40, mod.data_info[name]["shape"][-1])).astype(floatX)
+        for name in mod.data_names
+    }
+    pymc_model = build_model_with_flat_priors(
+        mod, np.zeros((40, 2), dtype=floatX), data_dict or None
+    )
 
     assert isinstance(pymc_model["obs"].owner.op, expected_op)
 
@@ -832,6 +862,7 @@ def test_closed_form_likelihood_matches_the_kalman_filter(exog_state_names, rng)
         if name.startswith("beta"):
             params[name] = rng.normal(size=mod.param_info[name]["shape"])
 
-    built, kalman = compare_likelihood_to_filter(mod, params, data, data_dict or None)
+    pymc_model, built, kalman = compare_likelihood_to_filter(mod, params, data, data_dict or None)
 
+    assert isinstance(pymc_model["obs"].owner.op, StationaryVARRV)
     assert_allclose(built, kalman, atol=1e-8)

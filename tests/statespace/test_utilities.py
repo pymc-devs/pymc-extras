@@ -289,7 +289,11 @@ def build_model_with_flat_priors(mod, data, data_dict=None):
 
 
 def compare_likelihood_to_filter(mod, param_dict, data, data_dict=None):
-    """Return the log-density a model builds and its Kalman filter's, at the same values."""
+    """Return the built model, the log-density it builds, and its filter's, at the same values.
+
+    The model comes back so a caller can assert which likelihood was dispatched. Without that the
+    comparison passes vacuously whenever the model falls back, because both sides are the filter.
+    """
     pymc_model = build_model_with_flat_priors(mod, data, data_dict)
     point = {name: np.asarray(param_dict[name], dtype=floatX) for name in mod.param_info}
     built = pymc_model.compile_logp()(point)
@@ -304,7 +308,7 @@ def compare_likelihood_to_filter(mod, param_dict, data, data_dict=None):
         *[pt.as_tensor_variable(m) for m in (x0, P0, c, d, T, Z, R, H, Q)],
     )
 
-    return built, ll.sum().eval()
+    return pymc_model, built, ll.sum().eval()
 
 
 def simulate_from_numpy_model(mod, rng, param_dict, data_dict=None, steps=100):
