@@ -1,6 +1,7 @@
 import numpy as np
 import pymc as pm
 import pytensor
+import pytensor.tensor as pt
 import pytest
 import statsmodels.api as sm
 
@@ -9,10 +10,16 @@ from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
 
+from pymc_extras.statespace.filters import StandardFilter
 from pymc_extras.statespace.models.ETS import BayesianETS
 from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES
 from tests.statespace.shared_fixtures import rng
-from tests.statespace.test_utilities import load_nile_test_data
+from tests.statespace.test_utilities import (
+    load_nile_test_data,
+    unpack_symbolic_matrices_with_params,
+)
+
+floatX = pytensor.config.floatX
 
 mock_sample = pytest.fixture(scope="function")(mock_sample_setup_and_teardown)
 
@@ -393,15 +400,10 @@ def test_ETS_stationary_initialization():
         endog_names=["y"],
         seasonal_periods=4,
         stationary_initialization=True,
-        initialization_dampening=0.66,
     )
 
     matrices = mod._unpack_statespace_with_placeholders()
     inputs = list(explicit_graph_inputs(matrices))
-    input_names = [x.name for x in inputs]
-
-    # Make sure the stationary_dampening dummy variables was completely rewritten away
-    assert "stationary_dampening" not in input_names
 
     # P0 should have been removed from param names
     assert "P0" not in mod.param_names
@@ -411,20 +413,44 @@ def test_ETS_stationary_initialization():
     test_values = f(**{x.name: np.full(x.type.shape, 0.5) for x in inputs})
     outputs = {name: val for name, val in zip(LONG_MATRIX_NAMES, test_values)}
 
-    # Make sure that the transition matrix has ones in the expected positions, not the model dampening factor
+    # The transition matrix carries ones where the model is undampened
     assert outputs["transition"][1, 1] == 1.0
     assert outputs["transition"][2, 2] == 0.5  # phi = 0.5 -- trend is dampened anyway
     assert outputs["transition"][3, -1] == 1.0
 
-    # P0 should be equal to the solution to the Lyapunov equation using the dampening factors in the transition matrix
-    T_stationary = outputs["transition"].copy()
-    T_stationary[1, 1] = mod.initialization_dampening
-    T_stationary[3, -1] = mod.initialization_dampening
-
     R, Q = outputs["selection"], outputs["state_cov"]
-    P0_expected = linalg.solve_discrete_lyapunov(T_stationary, R @ Q @ R.T)
 
-    assert_allclose(outputs["initial_state_cov"], P0_expected, rtol=1e-8, atol=1e-8)
+    assert_allclose(outputs["initial_state_cov"], R @ Q @ R.T, rtol=1e-8, atol=1e-8)
+
+
+def test_ETS_stationary_initialization_holds_the_filter_steady(rng):
+    """
+    A single source of error leaves the state known, so the filter never moves off ``R Q R'``.
+
+    This is what the initialization is for: without it the predicted covariance runs a transient
+    before settling, and the density over the first few observations is not the model's.
+    """
+    mod = BayesianETS(
+        order=("A", "N", "N"), endog_names=["y"], stationary_initialization=True, verbose=False
+    )
+    params = {
+        "initial_level": np.array(1.0),
+        "alpha": np.array(0.4),
+        "sigma_state": np.array(2.0),
+    }
+    matrices = unpack_symbolic_matrices_with_params(mod, params)
+    data = rng.normal(size=(50, 1)).astype(floatX)
+
+    _, _, _, filtered_covariances, predicted_covariances, _, _ = [
+        output.eval()
+        for output in StandardFilter(cov_jitter=0.0).build_graph(
+            pt.specify_shape(pt.as_tensor_variable(data), (50, 1)),
+            *[pt.as_tensor_variable(matrix) for matrix in matrices],
+        )
+    ]
+
+    assert_allclose(predicted_covariances[1:], predicted_covariances[:-1], atol=1e-12)
+    assert_allclose(filtered_covariances, 0.0, atol=1e-12)
 
 
 def test_ets_workflow(mock_sample):
@@ -435,7 +461,6 @@ def test_ets_workflow(mock_sample):
         endog_names=["height"],
         stationary_initialization=True,
         measurement_error=True,
-        initialization_dampening=0.8,
     )
 
     with pm.Model(coords=ss_mod.coords) as m:
@@ -452,7 +477,8 @@ def test_ets_workflow(mock_sample):
 
         idata = pm.sample()
 
-    post = ss_mod.sample_conditional_posterior(idata, mvn_method="cholesky")
+    # Not "cholesky": a single source of error makes P0 singular, so it has no Cholesky factor.
+    post = ss_mod.sample_conditional_posterior(idata, mvn_method="eigh")
     assert "filtered_posterior" in post
     assert "smoothed_posterior" in post
     assert "predicted_posterior" in post

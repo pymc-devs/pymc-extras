@@ -4,8 +4,6 @@ import numpy as np
 import pytensor.tensor as pt
 
 from pytensor.compile.mode import Mode
-from pytensor.graph.replace import graph_replace
-from pytensor.tensor.linalg import solve_discrete_lyapunov
 
 from pymc_extras.statespace.core.properties import (
     Coord,
@@ -176,25 +174,18 @@ class BayesianETS(PyMCStateSpace):
         has a single source of stochastic variation. If True, these innovations are allowed to be correlated.
         Ignored if ``k_endog == 1``
     stationary_initialization: bool, default False
-        If True, the Kalman Filter's initial covariance matrix will be set to an approximate steady-state value.
-        The approximation is formed by adding a small dampening factor to each state. Specifically, the level state
-        for a ('A', 'N', 'N') model is written:
+        If True, the Kalman Filter's initial covariance matrix is set to :math:`R Q R^T`, and no prior
+        on ``P0`` is required.
 
-        .. math::
-            \ell_t = \ell_{t-1} + \alpha * e_t
+        An additive exponential smoothing model has a single source of error, so its state is exactly
+        determined by the observations. The filtered covariance is therefore zero at every step, and the
+        predicted covariance never moves off :math:`R Q R^T`. Starting there makes the filter stationary
+        from the first observation rather than after a transient.
 
-        That this system is not stationary can be understood in ARIMA terms: the level is a random walk; that is,
-        :math:`rho = 1`. This can be remedied by pretending that we instead have a dampened system:
+        :math:`R Q R^T` has the rank of the innovation, not of the state, so it is singular. Sampling
+        methods that factor it must tolerate that: pass ``mvn_method="svd"`` or ``"eigh"`` to the
+        conditional sampling methods, not ``"cholesky"``.
 
-        .. math::
-            \ell_t = \rho \ell_{t-1} + \alpha * e_t
-
-        With :math:`\rho \approx 1`, the system is stationary, and we can solve for the steady-state covariance
-        matrix. This is then used as the initial covariance matrix for the Kalman Filter. This is a heuristic
-        method that helps avoid setting a prior on the initial covariance matrix.
-    initialization_dampening: float, default 0.8
-        Dampening factor to add to non-stationary model components. This is only used for initialization, it does
-        *not* add dampening to the model. Ignored if `stationary_initialization` is `False`.
     filter_type: str, default "standard"
         The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
         and "cholesky". See the docs for kalman filters for more details.
@@ -234,7 +225,6 @@ class BayesianETS(PyMCStateSpace):
         use_transformed_parameterization: bool = False,
         dense_innovation_covariance: bool = False,
         stationary_initialization: bool = False,
-        initialization_dampening: float = 0.8,
         filter_type: str = "standard",
         smoother_type: str = "disturbance",
         joint_smoothed_draws: bool = True,
@@ -269,14 +259,6 @@ class BayesianETS(PyMCStateSpace):
         self.seasonal_periods = seasonal_periods
         self.use_transformed_parameterization = use_transformed_parameterization
         self.stationary_initialization = stationary_initialization
-
-        if not (0.0 < initialization_dampening < 1.0):
-            raise ValueError(
-                "Dampening term used for initialization must be between 0 and 1 (preferably close to"
-                "1.0)"
-            )
-
-        self.initialization_dampening = initialization_dampening
 
         if self.seasonal and self.seasonal_periods is None:
             raise ValueError("If seasonal is True, seasonal_periods must be provided.")
@@ -497,18 +479,12 @@ class BayesianETS(PyMCStateSpace):
 
         return tuple(coords)
 
-    def _stationary_initialization(self, T_stationary):
-        # Solve for matrix quadratic for P0
+    def _stationary_initialization(self):
+        r"""Steady-state covariance of the one-step-ahead prediction, :math:`R Q R^T`."""
         R = self.ssm["selection"]
         Q = self.ssm["state_cov"]
 
-        # ETS models are not stationary, but we can proceed *as if* the model were stationary by introducing large
-        # dampening factors on all components. We then set the initial covariance to the steady-state of that system,
-        # which we hope is similar enough to give a good initialization for the non-stationary system.
-
-        P0 = solve_discrete_lyapunov(T_stationary, pt.linalg.matrix_dot(R, Q, R.T))
-
-        return P0
+        return pt.linalg.matrix_dot(R, Q, R.T)
 
     def make_symbolic_graph(self) -> None:
         k_states_each = self.k_states // self.k_endog
@@ -533,10 +509,6 @@ class BayesianETS(PyMCStateSpace):
             "alpha", shape=() if self.k_endog == 1 else (self.k_endog,), dtype=floatX
         )
 
-        # This is a dummy value for initialization. When we do a stationary initialization, it will be set to a value
-        # close to 1. Otherwise, it will be 1. We do not want this value to exist outside of this method.
-        stationary_dampening = pt.scalar("dampen_dummy")
-
         if self.k_endog == 1:
             # The R[0, 0] entry needs to be adjusted for a shift in the time indices. Consider the (A, N, N) model:
             # y_t = l_{t-1} + e_t
@@ -553,7 +525,7 @@ class BayesianETS(PyMCStateSpace):
             R_list = [pt.set_subtensor(R[0, :], (1 - alpha[i])) for i, R in enumerate(R_list)]
 
         # Shock and level component always exists, the base case is e_t = e_t and l_t = l_{t-1}
-        T_base = pt.set_subtensor(pt.zeros((2, 2))[1, 1], stationary_dampening)
+        T_base = pt.set_subtensor(pt.zeros((2, 2))[1, 1], 1.0)
 
         if self.trend:
             initial_trend = self.make_and_register_variable(
@@ -583,7 +555,7 @@ class BayesianETS(PyMCStateSpace):
             # l_t = l_{t-1} + b_{t-1}
             # b_t = b_{t-1}
             T_base = pt.as_tensor_variable(([0.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]))
-            T_base = pt.set_subtensor(T_base[[1, 2], [1, 2]], stationary_dampening)
+            T_base = pt.set_subtensor(T_base[[1, 2], [1, 2]], 1.0)
 
         if self.damped_trend:
             phi = self.make_and_register_variable(
@@ -648,10 +620,7 @@ class BayesianETS(PyMCStateSpace):
             # The seasonal component is always going to look like a TimeFrequency structural component, see that
             # docstring for more details
             T_seasonals = [pt.eye(self.seasonal_periods, k=-1) for _ in range(self.k_endog)]
-            T_seasonals = [
-                pt.set_subtensor(T_seasonal[0, -1], stationary_dampening)
-                for T_seasonal in T_seasonals
-            ]
+            T_seasonals = [pt.set_subtensor(T_seasonal[0, -1], 1.0) for T_seasonal in T_seasonals]
 
             # Organize the components so it goes T1, T_seasonal_1, T2, T_seasonal_2, etc.
             T_components = [
@@ -664,10 +633,7 @@ class BayesianETS(PyMCStateSpace):
         self.ssm["initial_state"] = x0
         self.ssm["selection"] = R
 
-        T = pt.linalg.block_diag(*T_components)
-
-        # Remove the stationary_dampening dummies before saving the transition matrix
-        self.ssm["transition"] = graph_replace(T, {stationary_dampening: 1.0})
+        self.ssm["transition"] = pt.linalg.block_diag(*T_components)
 
         Zs = [np.zeros((self.k_endog, self.k_states // self.k_endog)) for _ in range(self.k_endog)]
         for i, Z in enumerate(Zs):
@@ -700,9 +666,7 @@ class BayesianETS(PyMCStateSpace):
             self.ssm["obs_cov"] = pt.diag(pt.atleast_1d(sigma_obs**2))
 
         if self.stationary_initialization:
-            T_stationary = graph_replace(T, {stationary_dampening: self.initialization_dampening})
-            P0 = self._stationary_initialization(T_stationary)
-
+            P0 = self._stationary_initialization()
         else:
             P0 = self.make_and_register_variable(
                 "P0", shape=(self.k_states, self.k_states), dtype=floatX
