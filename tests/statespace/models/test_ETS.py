@@ -7,6 +7,9 @@ import statsmodels.api as sm
 
 from numpy.testing import assert_allclose, assert_array_less
 from pymc.logprob.utils import ParameterValueError
+from pymc.sampling.mcmc import assign_step_methods
+from pymc.step_methods import STEP_METHODS
+from pymc.step_methods.hmc import NUTS
 from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
@@ -14,6 +17,8 @@ from scipy import linalg
 from pymc_extras.statespace.filters import StandardFilter
 from pymc_extras.statespace.filters.distributions import (
     InnovationsStateSpace,
+    InnovationsStateSpaceRV,
+    KalmanFilterRV,
     _innovations_moments,
 )
 from pymc_extras.statespace.models.ETS import BayesianETS
@@ -500,6 +505,33 @@ def test_ets_workflow(mock_sample):
 
 
 @pytest.mark.parametrize(
+    "kwargs, n_missing, expected_op",
+    [
+        ({"stationary_initialization": True}, 0, InnovationsStateSpaceRV),
+        ({"stationary_initialization": True, "measurement_error": True}, 0, KalmanFilterRV),
+        ({}, 0, KalmanFilterRV),
+        ({"stationary_initialization": True}, 3, KalmanFilterRV),
+    ],
+    ids=["eligible", "measurement_error", "free_P0", "missing_data"],
+)
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+@pytest.mark.filterwarnings(
+    "ignore:Provided data contains missing values:pymc.exceptions.ImputationWarning"
+)
+def test_ETS_likelihood_dispatch(kwargs, n_missing, expected_op):
+    mod = BayesianETS(order=("A", "N", "N"), endog_names=["y"], verbose=False, **kwargs)
+    data = np.zeros((30, 1), dtype=floatX)
+    data[5 : 5 + n_missing] = np.nan
+
+    with pm.Model(coords=mod.coords) as pymc_model:
+        for name, info in mod.param_info.items():
+            pm.Flat(name, shape=info["shape"])
+        mod.build_statespace_graph(data)
+
+    assert isinstance(pymc_model["obs"].owner.op, expected_op)
+
+
+@pytest.mark.parametrize(
     "kwargs",
     [
         {"order": ("A", "N", "N"), "endog_names": ["y"]},
@@ -554,6 +586,39 @@ def test_ETS_recursion_draws_come_from_the_predictive_moments(rng):
     assert draws.shape == (n_draws, n_timesteps, 1)
     assert_array_less(np.abs(draws.mean(0) - means), 5 * np.sqrt(Q[0, 0] / n_draws))
     assert_allclose(draws.var(0), Q[0, 0], rtol=0.15)
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+def test_ETS_recursion_logp_is_differentiable(rng):
+    """
+    Every parameter keeps a gradient once the model substitutes value variables.
+
+    Taking the gradient of the distribution alone is not enough: the recursion's scan closes over
+    the state space matrices, and if it captures them implicitly the model graph pulls a
+    ``ValuedRV`` into the scan's inner graph. PyMC then falls back to Slice and Metropolis
+    without raising, which is a silent and very slow failure.
+    """
+    mod = BayesianETS(
+        order=("A", "Ad", "A"),
+        endog_names=["y"],
+        seasonal_periods=4,
+        stationary_initialization=True,
+        verbose=False,
+    )
+    with pm.Model(coords=mod.coords) as pymc_model:
+        pm.Normal("initial_level")
+        pm.Normal("initial_trend")
+        pm.ZeroSumNormal("initial_seasonal", sigma=1, dims=["seasonal_lag"])
+        for name in ("alpha", "beta", "gamma", "phi"):
+            pm.Beta(name, alpha=1, beta=1)
+        pm.Exponential("sigma_state", lam=1)
+        mod.build_statespace_graph(rng.normal(size=(40, 1)).astype(floatX))
+
+    assert isinstance(pymc_model["obs"].owner.op, InnovationsStateSpaceRV)
+
+    _, selected_steps = assign_step_methods(pymc_model, None, methods=STEP_METHODS)
+
+    assert set(selected_steps) == {NUTS}
 
 
 def test_innovations_state_space_rejects_an_unrecoverable_innovation(rng):

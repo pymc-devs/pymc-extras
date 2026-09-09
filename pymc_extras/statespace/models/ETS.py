@@ -12,6 +12,7 @@ from pymc_extras.statespace.core.properties import (
     State,
 )
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
+from pymc_extras.statespace.filters.distributions import InnovationsStateSpace
 from pymc_extras.statespace.models.utilities import validate_names
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
@@ -21,6 +22,7 @@ from pymc_extras.statespace.utils.constants import (
     MISSING_FILL,
     OBS_STATE_AUX_DIM,
     OBS_STATE_DIM,
+    OBSERVED_LIKELIHOOD_NAME,
 )
 
 
@@ -485,6 +487,30 @@ class BayesianETS(PyMCStateSpace):
         Q = self.ssm["state_cov"]
 
         return pt.linalg.matrix_dot(R, Q, R.T)
+
+    def make_likelihood(self, data, matrices, dims, missing):
+        """
+        Register an :class:`~pymc_extras.statespace.filters.distributions.InnovationsStateSpace`.
+
+        The recursion covers an additive model with no measurement error, initialized at its
+        steady-state covariance, over complete data. Anything else is filtered.
+        """
+        if self.measurement_error or not self.stationary_initialization or missing.any():
+            return super().make_likelihood(data, matrices, dims, missing)
+
+        x0, _, _, _, transition, design, selection, _, state_cov = matrices
+
+        return InnovationsStateSpace(
+            OBSERVED_LIKELIHOOD_NAME,
+            x0,
+            transition,
+            design,
+            selection,
+            state_cov,
+            data,
+            observed=data,
+            dims=dims,
+        )
 
     def make_symbolic_graph(self) -> None:
         k_states_each = self.k_states // self.k_endog
