@@ -3,6 +3,7 @@ from collections.abc import Sequence
 import numpy as np
 import pytensor.tensor as pt
 
+from pymc.model import modelcontext
 from pytensor.compile.mode import Mode
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 
@@ -14,6 +15,7 @@ from pymc_extras.statespace.core.properties import (
     State,
 )
 from pymc_extras.statespace.core.statespace import PyMCStateSpace, floatX
+from pymc_extras.statespace.filters.distributions import StationaryVAR
 from pymc_extras.statespace.models.utilities import (
     make_harvey_state_names,
     make_SARIMA_transition_matrix,
@@ -27,6 +29,7 @@ from pymc_extras.statespace.utils.constants import (
     JITTER_DEFAULT,
     MA_PARAM_DIM,
     MISSING_FILL,
+    OBSERVED_LIKELIHOOD_NAME,
     SARIMAX_STATE_STRUCTURES,
     SEASONAL_AR_PARAM_DIM,
     SEASONAL_MA_PARAM_DIM,
@@ -495,6 +498,41 @@ class BayesianSARIMAX(PyMCStateSpace):
         P0 = solve_discrete_lyapunov(T, pt.linalg.matrix_dot(R, Q, R.T), method="bilinear")
 
         return x0, P0
+
+    def make_likelihood(self, data, matrices, dims, missing):
+        """
+        Register a :class:`~pymc_extras.statespace.filters.distributions.StationaryVAR`.
+
+        The closed form covers a pure autoregression, seasonal or not, with no measurement error
+        and a stationary initialization -- which also rules out differencing, since the two
+        cannot be combined. Anything else is filtered,
+        including data with missing values, which only the filter marginalizes.
+        """
+        if self.q > 0 or self.Q > 0 or self.p + self.P == 0 or self.measurement_error:
+            return super().make_likelihood(data, matrices, dims, missing)
+        if not self.stationary_initialization or self.state_structure != "fast":
+            return super().make_likelihood(data, matrices, dims, missing)
+        if missing.any():
+            return super().make_likelihood(data, matrices, dims, missing)
+
+        pymc_model = modelcontext(None)
+        *_, transition, _, _, _, state_cov = matrices
+
+        exog = pymc_model["exogenous_data"] if self.k_exog > 0 else None
+        exog_coefficients = pymc_model["beta_exog"][None, :] if self.k_exog > 0 else None
+
+        # For a pure autoregression the Harvey representation carries the expanded multiplicative
+        # AR polynomial in the first column of the transition.
+        return StationaryVAR(
+            OBSERVED_LIKELIHOOD_NAME,
+            transition[:, 0][None, :],
+            state_cov,
+            exog=exog,
+            exog_coefficients=exog_coefficients,
+            steps=data.shape[0],
+            observed=data,
+            dims=dims,
+        )
 
     def make_symbolic_graph(self) -> None:
         p, d, q = self.p, self.d, self.q
