@@ -717,9 +717,13 @@ def _effective_coefficients(coefficients, exog_coefficients, *, order, k_endog):
     Assemble :math:`C = [A_1 \ldots A_p, B, -A_1 B \ldots -A_p B]`.
 
     The residual against the stacked regressors is ``y_t - C @ W_t``, which lets the exogenous
-    case reuse the pure autoregressive trace expression unchanged. With no regressors the
-    trailing blocks are zero-width and :math:`C` reduces to :math:`A`.
+    case reuse the pure autoregressive trace expression unchanged. With no regressors :math:`C`
+    reduces to :math:`A`, and is returned as such: the zero-width blocks are equivalent, but
+    their gradient trips a PyTensor reshape rewrite that then logs a traceback per compile.
     """
+    if exog_coefficients.type.shape[-1] == 0:
+        return coefficients
+
     by_lag = coefficients.reshape((k_endog, order, k_endog)) @ exog_coefficients
 
     return pt.concatenate([coefficients, exog_coefficients, -by_lag.reshape((k_endog, -1))], axis=1)
