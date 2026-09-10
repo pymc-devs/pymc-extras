@@ -1278,14 +1278,13 @@ class PyMCStateSpace:
 
         # The last output is the pointwise log-likelihood, which the likelihood term owns; every
         # other output carries its canonical name, so key them by it rather than by position.
-        *filter_outputs, _ = kalman_filter.build_graph(
-            pt.as_tensor_variable(data), x0, P0, c, d, T, Z, R, H, Q
-        )
+        data = pt.as_tensor_variable(data)
+        *filter_outputs, _ = kalman_filter.build_graph(data, x0, P0, c, d, T, Z, R, H, Q)
         outputs = {output.name: output for output in filter_outputs}
 
         if not set(SMOOTHER_OUTPUT_NAMES).isdisjoint(names):
             smoothed_states, smoothed_covariances = kalman_smoother.build_graph(
-                T, R, Q, outputs["filtered_states"], outputs["filtered_covariances"]
+                data, (x0, P0, c, d, T, Z, R, H, Q), filter_outputs
             )
             outputs[smoothed_states.name] = smoothed_states
             outputs[smoothed_covariances.name] = smoothed_covariances
