@@ -431,9 +431,9 @@ def test_build_graph_does_not_mutate_the_filters(ss_mod):
     matrices = ss_mod._insert_constant_timestep(
         list(ss_mod._unpack_statespace_with_placeholders()), n_timesteps
     )
-    _, _, _, _, T, _, R, _, Q = matrices
-    outputs = kalman_filter.build_graph(pt.zeros((n_timesteps, ss_mod.k_endog)), *matrices)
-    kalman_smoother.build_graph(T, R, Q, outputs[0], outputs[3])
+    data = pt.zeros((n_timesteps, ss_mod.k_endog))
+    outputs = kalman_filter.build_graph(data, *matrices)
+    kalman_smoother.build_graph(data, matrices, outputs)
 
     assert kalman_filter.__dict__ == filter_state
     assert kalman_smoother.__dict__ == smoother_state

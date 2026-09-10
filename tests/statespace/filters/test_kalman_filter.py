@@ -9,7 +9,7 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_less
 
 from pymc_extras.statespace.filters import (
-    KalmanSmoother,
+    RTSSmoother,
     SquareRootFilter,
     StandardFilter,
     UnivariateFilter,
@@ -126,7 +126,7 @@ def test_output_shapes_when_some_states_are_deterministic(filter_name, rng):
 @pytest.fixture
 def f_standard_nd():
     time_varying_names = ("transition", "design", "selection", "obs_cov", "state_cov")
-    ksmoother = KalmanSmoother(time_varying_names=time_varying_names)
+    ksmoother = RTSSmoother(time_varying_names=time_varying_names)
     data = pt.tensor(name="data", dtype=floatX, shape=(None, None))
     a0 = pt.vector(name="a0", dtype=floatX)
     P0 = pt.matrix(name="P0", dtype=floatX)
@@ -148,9 +148,11 @@ def f_standard_nd():
         predicted_covs,
         observed_covs,
         ll_obs,
-    ) = StandardFilter(time_varying_names=time_varying_names).build_graph(*inputs)
+    ) = filter_outputs = StandardFilter(time_varying_names=time_varying_names).build_graph(*inputs)
 
-    smoothed_states, smoothed_covs = ksmoother.build_graph(T, R, Q, filtered_states, filtered_covs)
+    smoothed_states, smoothed_covs = ksmoother.build_graph(
+        data, (a0, P0, c, d, T, Z, R, H, Q), filter_outputs
+    )
 
     outputs = [
         filtered_states,

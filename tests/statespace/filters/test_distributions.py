@@ -20,7 +20,7 @@ from pymc_extras.statespace.filters.distributions import (
     _predictive_moments,
 )
 from pymc_extras.statespace.filters.kalman_filter import StandardFilter
-from pymc_extras.statespace.filters.kalman_smoother import KalmanSmoother
+from pymc_extras.statespace.filters.kalman_smoother import RTSSmoother
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
     OBS_STATE_DIM,
@@ -403,7 +403,9 @@ def _build_simulation_smoother_func(params, seed):
     y = pt.as_tensor_variable(np.asarray(params["y"], dtype=floatX))
 
     filt = StandardFilter().build_graph(y, a0, P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat)
-    a_smooth, _ = KalmanSmoother().build_graph(T_mat, R_mat, Q_mat, filt[0], filt[3])
+    a_smooth, _ = RTSSmoother().build_graph(
+        y, (a0, P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat), filt
+    )
 
     rng_var = pytensor.shared(np.random.default_rng(seed), name="rng")
     sample = SimulationSmoother.dist(
@@ -418,7 +420,7 @@ def _build_simulation_smoother_func(params, seed):
         H_mat,
         Q_mat,
         kalman_filter=StandardFilter(),
-        kalman_smoother=KalmanSmoother(),
+        kalman_smoother=RTSSmoother(),
         rng=rng_var,
     )
     return pm.compile([], [a_smooth, sample], on_unused_input="ignore")
@@ -440,7 +442,7 @@ def test_simulation_smoother_signature(small_lgssm):
         pt.as_tensor_variable(params["H"]),
         pt.as_tensor_variable(params["Q"]),
         kalman_filter=StandardFilter(),
-        kalman_smoother=KalmanSmoother(),
+        kalman_smoother=RTSSmoother(),
     )
     assert sample.type.shape == (params["n_steps"], 2)
     assert sample.owner.op.ndim_supp == 2
@@ -463,7 +465,7 @@ def test_simulation_smoother_signature(small_lgssm):
         pt.as_tensor_variable(params["H"]),
         pt.as_tensor_variable(params["Q"]),
         kalman_filter=StandardFilter(time_varying_names=["obs_intercept"]),
-        kalman_smoother=KalmanSmoother(),
+        kalman_smoother=RTSSmoother(),
         sequence_names=("d",),
     )
     assert (
@@ -543,8 +545,20 @@ def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
         tensors["H"],
         tensors["Q"],
     )
-    a_smooth, _ = KalmanSmoother().build_graph(
-        tensors["T"], tensors["R"], tensors["Q"], filt[0], filt[3]
+    a_smooth, _ = RTSSmoother().build_graph(
+        y,
+        (
+            tensors["a0"],
+            tensors["P0"],
+            tensors["c"],
+            d,
+            tensors["T"],
+            tensors["Z"],
+            tensors["R"],
+            tensors["H"],
+            tensors["Q"],
+        ),
+        filt,
     )
 
     sample = SimulationSmoother.dist(
@@ -559,7 +573,7 @@ def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
         tensors["H"],
         tensors["Q"],
         kalman_filter=StandardFilter(time_varying_names=["obs_intercept"]),
-        kalman_smoother=KalmanSmoother(),
+        kalman_smoother=RTSSmoother(),
         sequence_names=("d",),
         rng=pytensor.shared(np.random.default_rng(7), name="rng"),
     )

@@ -40,7 +40,7 @@ from pymc_extras.statespace.core.properties import (
 from pymc_extras.statespace.core.representation import PytensorRepresentation
 from pymc_extras.statespace.filters import (
     ConvergentFilter,
-    KalmanSmoother,
+    RTSSmoother,
     SquareRootFilter,
     StandardFilter,
     UnivariateFilter,
@@ -1167,7 +1167,7 @@ class PyMCStateSpace:
             f"passing new {TIME_DIM!r} coords, before rebuilding."
         )
 
-    def make_filters(self) -> tuple[BaseFilter, KalmanSmoother]:
+    def make_filters(self) -> tuple[BaseFilter, RTSSmoother]:
         """
         Return a Kalman filter and smoother configured for this model.
 
@@ -1175,7 +1175,7 @@ class PyMCStateSpace:
         -------
         kalman_filter : BaseFilter
             Filter of the type this model was constructed with.
-        kalman_smoother : KalmanSmoother
+        kalman_smoother : RTSSmoother
             Smoother carrying the same time-varying names and jitter.
         """
         kalman_filter = FILTER_FACTORY[self.filter_type](
@@ -1183,7 +1183,7 @@ class PyMCStateSpace:
             cov_jitter=self.cov_jitter,
             missing_fill_value=self.missing_fill_value,
         )
-        kalman_smoother = KalmanSmoother(
+        kalman_smoother = RTSSmoother(
             time_varying_names=self.ssm.time_varying_names, cov_jitter=self.cov_jitter
         )
         return kalman_filter, kalman_smoother

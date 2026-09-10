@@ -21,7 +21,7 @@ from pytensor.graph.traversal import explicit_graph_inputs
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.filters import StandardFilter
-from pymc_extras.statespace.filters.kalman_smoother import KalmanSmoother
+from pymc_extras.statespace.filters.kalman_smoother import RTSSmoother
 from pymc_extras.statespace.utils.constants import (
     MATRIX_NAMES,
     SHORT_NAME_TO_LONG,
@@ -49,7 +49,7 @@ def load_nile_test_data():
 
 
 def initialize_filter(kfilter, p=None, m=None, r=None, n=None):
-    ksmoother = KalmanSmoother()
+    ksmoother = RTSSmoother()
     data = pt.tensor(name="data", dtype=floatX, shape=(n, p))
     a0 = pt.tensor(name="x0", dtype=floatX, shape=(m,))
     P0 = pt.tensor(name="P0", dtype=floatX, shape=(m, m))
@@ -71,9 +71,11 @@ def initialize_filter(kfilter, p=None, m=None, r=None, n=None):
         predicted_covs,
         observed_covs,
         ll_obs,
-    ) = kfilter.build_graph(*inputs)
+    ) = filter_outputs = kfilter.build_graph(*inputs)
 
-    smoothed_states, smoothed_covs = ksmoother.build_graph(T, R, Q, filtered_states, filtered_covs)
+    smoothed_states, smoothed_covs = ksmoother.build_graph(
+        data, (a0, P0, c, d, T, Z, R, H, Q), filter_outputs
+    )
 
     outputs = [
         filtered_states,

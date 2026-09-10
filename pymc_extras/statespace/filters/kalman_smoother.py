@@ -13,10 +13,13 @@ from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, LONG_NAME_TO_
 SMOOTHER_PARAM_NAMES = ("T", "R", "Q")
 
 
-class KalmanSmoother:
+class RTSSmoother:
     """
-    Kalman Smoother
+    Rauch-Tung-Striebel fixed-interval smoother.
 
+    Runs the backward recursion on the smoothing gain
+    :math:`G_t = P_{t|t} T^T P_{t+1|t}^{-1}`, which requires a ``k_states`` square inverse at every
+    step.
     """
 
     def __init__(
@@ -85,14 +88,29 @@ class KalmanSmoother:
 
         return a, P, a_smooth, P_smooth, T, R, Q
 
-    def build_graph(
-        self,
-        T,
-        R,
-        Q,
-        filtered_states,
-        filtered_covariances,
-    ):
+    def build_graph(self, data, matrices, filter_outputs):
+        """
+        Build the backward smoothing recursion.
+
+        Parameters
+        ----------
+        data : TensorVariable
+            Observed series, shape ``(T, k_endog)``. Unused by this smoother.
+        matrices : sequence of TensorVariable
+            The nine state-space matrices, in the order ``x0, P0, c, d, T, Z, R, H, Q``.
+        filter_outputs : sequence of TensorVariable
+            Output of :meth:`BaseFilter.build_graph`, whose first six entries are the filtered,
+            predicted and observed means followed by their covariances.
+
+        Returns
+        -------
+        smoothed_states : TensorVariable
+            Smoothed state means, shape ``(T, k_states)``.
+        smoothed_covariances : TensorVariable
+            Smoothed state covariances, shape ``(T, k_states, k_states)``.
+        """
+        *_, T, _, R, _, Q = matrices
+        filtered_states, filtered_covariances = filter_outputs[0], filter_outputs[3]
         k = filtered_states.type.shape[1]
 
         a_last = pt.specify_shape(filtered_states[-1], (k,))
