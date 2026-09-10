@@ -48,6 +48,7 @@ from pymc_extras.statespace.filters import (
 from pymc_extras.statespace.filters.distributions import (
     KalmanFilterRV,
     SequenceMvNormal,
+    StationaryVARRV,
 )
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter
 from pymc_extras.statespace.utils.constants import (
@@ -93,6 +94,11 @@ def _validate_property(props, property_name, expected_type):
         )
 
 
+# Every op a statespace model registers as its observation likelihood. A variable named ``obs``
+# is only ours if one of these produced it, so a user's own variable is never mistaken for it.
+LIKELIHOOD_OPS = (KalmanFilterRV, StationaryVARRV)
+
+
 def _has_statespace_graph(model: Model) -> bool:
     """
     Return whether a state space build has already put an observation likelihood into ``model``.
@@ -113,7 +119,7 @@ def _has_statespace_graph(model: Model) -> bool:
     likelihood = model.named_vars.get(OBSERVED_LIKELIHOOD_NAME, None)
     if likelihood is None or likelihood.owner is None:
         return False
-    return isinstance(likelihood.owner.op, KalmanFilterRV)
+    return isinstance(likelihood.owner.op, LIKELIHOOD_OPS)
 
 
 class PyMCStateSpace:
@@ -566,7 +572,7 @@ class PyMCStateSpace:
         observed = [
             variable
             for variable in pymc_model.observed_RVs
-            if isinstance(variable.owner.op, KalmanFilterRV)
+            if isinstance(variable.owner.op, LIKELIHOOD_OPS)
         ]
         if not observed:
             raise ValueError(
@@ -987,7 +993,7 @@ class PyMCStateSpace:
         pm_mod = modelcontext(None)
 
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
-        filled_values, index, _ = prepare_data_for_pymc(
+        filled_values, index, missing = prepare_data_for_pymc(
             data,
             n_obs=self.ssm.k_endog,
             obs_coords=obs_coords,
@@ -995,7 +1001,7 @@ class PyMCStateSpace:
         )
 
         if _has_statespace_graph(pm_mod):
-            self._reenter_statespace_graph(filled_values, index)
+            self._reenter_statespace_graph(filled_values, index, missing)
             return
 
         for name in (OBSERVED_DATA_NAME, OBSERVED_LIKELIHOOD_NAME):
@@ -1014,29 +1020,62 @@ class PyMCStateSpace:
         # Order is important here: only call _insert_data_shape_into_n_timesteps after data has been registered.
         matrices = self._insert_data_shape_into_n_timesteps(matrices, data_variable)
 
+        obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_states"]
+        obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
+
+        self.make_likelihood(data_variable, matrices, obs_dims, missing)
+        self._register_additional_statespace_variables()
+
+    def make_likelihood(
+        self,
+        data: pt.TensorVariable,
+        matrices: list[pt.TensorVariable],
+        dims: tuple[str, ...] | None,
+        missing: np.ndarray,
+    ) -> pt.TensorVariable:
+        """
+        Register the observation likelihood into the active model and return it.
+
+        The default runs this model's Kalman filter over ``data``. A subclass whose observation
+        density has a closed form overrides this to register that instead, deferring to
+        ``super()`` for the configurations its closed form does not cover.
+
+        Parameters
+        ----------
+        data : TensorVariable
+            Observed data, already registered in the active model.
+        matrices : list of TensorVariable
+            The state space matrices, with the model's variables and data substituted in.
+        dims : tuple of str, optional
+            Dims for the likelihood, or None when the model declares no matching coords.
+        missing : numpy array
+            Boolean mask over ``data``, true where an observation was missing. The Kalman filter
+            marginalizes those; a closed form generally cannot, so this is part of what decides
+            whether one applies.
+
+        Returns
+        -------
+        likelihood : TensorVariable
+            The registered observed variable.
+        """
         kalman_filter, _ = self.make_filters()
-        filter_outputs = kalman_filter.build_graph(pt.as_tensor_variable(data_variable), *matrices)
+        filter_outputs = kalman_filter.build_graph(pt.as_tensor_variable(data), *matrices)
 
         logp = filter_outputs.pop(-1)
         *_, observed_states = filter_outputs[:3]
         *_, observed_covariances = filter_outputs[3:]
 
-        obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_states"]
-        obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
-
-        SequenceMvNormal(
+        return SequenceMvNormal(
             OBSERVED_LIKELIHOOD_NAME,
             mus=observed_states,
             covs=observed_covariances,
             logp=logp,
-            observed=data_variable,
-            dims=obs_dims,
+            observed=data,
+            dims=dims,
         )
 
-        self._register_additional_statespace_variables()
-
     def _reenter_statespace_graph(
-        self, filled_values: np.ndarray, index: pd.Index | np.ndarray
+        self, filled_values: np.ndarray, index: pd.Index | np.ndarray, missing: np.ndarray
     ) -> None:
         """
         Point an already-built model at new data.
@@ -1050,14 +1089,44 @@ class PyMCStateSpace:
             New data, with missing values already filled.
         index : pandas Index or numpy array
             Time index of the new data.
+        missing : numpy array
+            Boolean mask over the new data, true where an observation is missing.
         """
         # Raises unless the model holds this template's parameters, so a template whose
         # specification has changed cannot silently inherit the graph another one built.
         self._insert_random_variables()
 
         self._verify_exogenous_data_spans(len(filled_values))
+        self._verify_likelihood_accepts_missing(missing)
 
         update_data_in_active_model(filled_values, index)
+
+    def _verify_likelihood_accepts_missing(self, missing: np.ndarray) -> None:
+        """
+        Raise if the built likelihood cannot represent missing values the new data holds.
+
+        Re-entry repoints an existing graph at new data rather than rebuilding it, so a model
+        whose likelihood was chosen against complete data keeps that likelihood however the data
+        changes. Only the Kalman filter marginalizes missing observations; anything else would
+        score the fill sentinel as if it were real.
+
+        Parameters
+        ----------
+        missing : numpy array
+            Boolean mask over the new data, true where an observation is missing.
+        """
+        if not missing.any():
+            return
+
+        likelihood = modelcontext(None)[OBSERVED_LIKELIHOOD_NAME]
+        if isinstance(likelihood.owner.op, KalmanFilterRV):
+            return
+
+        raise ValueError(
+            "The new observed data has missing values, but this model was built against complete "
+            "data and uses a likelihood that cannot marginalize them. Build the model into a "
+            "fresh pm.Model to have the likelihood chosen against the new data."
+        )
 
     def _verify_exogenous_data_spans(self, n_timesteps: int) -> None:
         """

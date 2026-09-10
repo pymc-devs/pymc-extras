@@ -13,6 +13,7 @@ from pytensor.scan.op import Scan
 
 from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
+from pymc_extras.statespace.filters.distributions import KalmanFilterRV
 from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
 from pymc_extras.statespace.utils.constants import (
@@ -592,3 +593,14 @@ def test_post_estimation_leaves_template_matrices_alone(
 
     assert all(x is y for x, y in zip(before, after, strict=True))
     assert not set(pymc_mod.basic_RVs).intersection(ancestors(after))
+
+
+def test_a_plain_model_is_filtered():
+    mod = make_statespace_mod(k_endog=1, k_states=2, k_posdef=1, filter_type="standard")
+
+    with pm.Model() as pymc_model:
+        pm.Flat("x0", shape=(2,))
+        pm.Flat("P0", shape=(2, 2))
+        mod.build_statespace_graph(np.zeros((10, 1)))
+
+    assert isinstance(pymc_model["obs"].owner.op, KalmanFilterRV)

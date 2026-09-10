@@ -13,6 +13,7 @@ from pymc.testing import mock_sample_setup_and_teardown
 
 from pymc_extras.statespace import BayesianSARIMAX
 from pymc_extras.statespace.core.fit_recovery import exog_from_idata
+from pymc_extras.statespace.filters.distributions import KalmanFilterRV, StationaryVARRV
 from pymc_extras.statespace.models.utilities import (
     make_harvey_state_names,
     make_SARIMA_transition_matrix,
@@ -25,6 +26,8 @@ from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
     rng,
 )
 from tests.statespace.test_utilities import (
+    build_model_with_flat_priors,
+    compare_likelihood_to_filter,
     load_nile_test_data,
     make_stationary_params,
     simulate_from_numpy_model,
@@ -517,3 +520,96 @@ def test_sarimax_workflow(mock_sample):
     irf = ss_mod.impulse_response_function(idata, n_steps=10, random_seed=42)
     assert "irf" in irf
     assert np.isfinite(irf.irf.values).all()
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected_op",
+    [
+        ({"order": (2, 0, 0)}, StationaryVARRV),
+        ({"order": (1, 0, 0), "seasonal_order": (1, 0, 0, 4)}, StationaryVARRV),
+        ({"order": (2, 0, 1)}, KalmanFilterRV),
+        ({"order": (2, 0, 0), "seasonal_order": (0, 0, 1, 4)}, KalmanFilterRV),
+        ({"order": (2, 0, 0), "measurement_error": True}, KalmanFilterRV),
+        ({"order": (2, 0, 0), "stationary_initialization": False}, KalmanFilterRV),
+        ({"order": (0, 0, 0)}, KalmanFilterRV),
+        ({"order": (2, 0, 0), "state_structure": "interpretable"}, KalmanFilterRV),
+    ],
+    ids=[
+        "ar",
+        "seasonal_ar",
+        "ma",
+        "seasonal_ma",
+        "measurement_error",
+        "no_stationary_init",
+        "no_ar",
+        "interpretable",
+    ],
+)
+def test_likelihood_dispatch(kwargs, expected_op):
+    mod = BayesianSARIMAX(verbose=False, **kwargs)
+    pymc_model = build_model_with_flat_priors(mod, np.zeros((40, 1), dtype=floatX))
+
+    assert isinstance(pymc_model["obs"].owner.op, expected_op)
+
+
+@pytest.mark.parametrize(
+    "kwargs, params",
+    [
+        ({"order": (2, 0, 0)}, {"ar_params": [0.5, -0.2], "sigma_state": 1.3}),
+        (
+            {"order": (1, 0, 0), "seasonal_order": (1, 0, 0, 4)},
+            {"ar_params": [0.4], "seasonal_ar_params": [0.5], "sigma_state": 0.8},
+        ),
+    ],
+    ids=["ar2", "seasonal"],
+)
+def test_closed_form_likelihood_matches_the_kalman_filter(kwargs, params, rng):
+    """
+    The filter takes the stationary covariance of the Harvey state, whose entries are partial
+    sums rather than lags, while the closed form takes it of the lag stack. Agreeing here is
+    what says those describe the same distribution over the observations.
+    """
+    mod = BayesianSARIMAX(verbose=False, **kwargs)
+    data = rng.normal(size=(60, 1)).astype(floatX)
+
+    pymc_model, built, kalman = compare_likelihood_to_filter(mod, params, data)
+
+    assert isinstance(pymc_model["obs"].owner.op, StationaryVARRV)
+    assert_allclose(built, kalman, atol=1e-8)
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Provided data contains missing values:pymc.exceptions.ImputationWarning"
+)
+def test_missing_data_falls_back_to_the_filter(rng):
+    """
+    Only the filter marginalizes missing observations.
+
+    The closed form would score the fill sentinel as if it were an observation, which is finite,
+    smooth, and wrong by seven orders of magnitude.
+    """
+    mod = BayesianSARIMAX(order=(2, 0, 0), verbose=False)
+    data = rng.normal(size=(60, 1)).astype(floatX)
+    data[20:23] = np.nan
+
+    pymc_model, built, kalman = compare_likelihood_to_filter(
+        mod, {"ar_params": [0.5, -0.2], "sigma_state": 1.3}, data
+    )
+
+    assert isinstance(pymc_model["obs"].owner.op, KalmanFilterRV)
+    assert_allclose(built, kalman, atol=1e-8)
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Provided data contains missing values:pymc.exceptions.ImputationWarning"
+)
+def test_rebuilding_with_missing_data_raises(rng):
+    """Re-entry repoints the graph without rebuilding, so it cannot change which likelihood runs."""
+    mod = BayesianSARIMAX(order=(2, 0, 0), verbose=False)
+    gappy = rng.normal(size=(60, 1)).astype(floatX)
+    gappy[20:23] = np.nan
+
+    pymc_model = build_model_with_flat_priors(mod, rng.normal(size=(60, 1)).astype(floatX))
+
+    with pymc_model, pytest.raises(ValueError, match="cannot marginalize"):
+        mod.build_statespace_graph(gappy)

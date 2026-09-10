@@ -14,9 +14,14 @@ from pymc.testing import mock_sample_setup_and_teardown
 
 from pymc_extras.statespace import BayesianVARMAX
 from pymc_extras.statespace.core.irf import DEFAULT_IRF_STEPS
+from pymc_extras.statespace.filters.distributions import KalmanFilterRV, StationaryVARRV
 from pymc_extras.statespace.utils.constants import SHORT_NAME_TO_LONG
 from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
     rng,
+)
+from tests.statespace.test_utilities import (
+    build_model_with_flat_priors,
+    compare_likelihood_to_filter,
 )
 
 mock_sample = pytest.fixture(scope="function")(mock_sample_setup_and_teardown)
@@ -776,3 +781,88 @@ class TestVARMAXWithExogenous:
 
         assert np.isfinite(forecast.forecast_latent.values).all()
         assert np.isfinite(forecast.forecast_observed.values).all()
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected_op",
+    [
+        ({"order": (2, 0), "stationary_initialization": True}, StationaryVARRV),
+        (
+            {
+                "order": (2, 0),
+                "stationary_initialization": True,
+                "exog_state_names": ["x1", "x2"],
+            },
+            StationaryVARRV,
+        ),
+        (
+            {
+                "order": (2, 0),
+                "stationary_initialization": True,
+                "exog_state_names": {"a": ["x1", "x2"], "b": ["x3"]},
+            },
+            StationaryVARRV,
+        ),
+        ({"order": (2, 1), "stationary_initialization": True}, KalmanFilterRV),
+        (
+            {"order": (2, 0), "stationary_initialization": True, "measurement_error": True},
+            KalmanFilterRV,
+        ),
+        ({"order": (2, 0)}, KalmanFilterRV),
+        ({"order": (0, 1), "stationary_initialization": True}, KalmanFilterRV),
+    ],
+    ids=[
+        "ar",
+        "ar_shared_exog",
+        "ar_per_series_exog",
+        "ma",
+        "measurement_error",
+        "no_stationary_init",
+        "no_ar",
+    ],
+)
+def test_likelihood_dispatch(kwargs, expected_op, rng):
+    mod = BayesianVARMAX(endog_names=["a", "b"], verbose=False, **kwargs)
+    data_dict = {
+        name: rng.normal(size=(40, mod.data_info[name]["shape"][-1])).astype(floatX)
+        for name in mod.data_names
+    }
+    pymc_model = build_model_with_flat_priors(
+        mod, np.zeros((40, 2), dtype=floatX), data_dict or None
+    )
+
+    assert isinstance(pymc_model["obs"].owner.op, expected_op)
+
+
+@pytest.mark.parametrize(
+    "exog_state_names",
+    [None, ["x1", "x2"], {"a": ["x1", "x2"], "b": ["x3"]}, {"a": ["x1"]}],
+    ids=["no_exog", "shared", "per_series", "one_series_only"],
+)
+def test_closed_form_likelihood_matches_the_kalman_filter(exog_state_names, rng):
+    """
+    The dict form joins per-series regressions into the observation intercept; the closed form
+    writes the same thing as one product against a block coefficient matrix.
+    """
+    mod = BayesianVARMAX(
+        order=(2, 0),
+        endog_names=["a", "b"],
+        exog_state_names=exog_state_names,
+        stationary_initialization=True,
+        verbose=False,
+    )
+    data = rng.normal(size=(60, 2)).astype(floatX)
+
+    params = {"ar_params": rng.normal(size=(2, 2, 2)) * 0.2, "state_cov": np.eye(2)}
+    data_dict = {
+        name: rng.normal(size=(60, mod.data_info[name]["shape"][-1])).astype(floatX)
+        for name in mod.data_names
+    }
+    for name in mod.param_names:
+        if name.startswith("beta"):
+            params[name] = rng.normal(size=mod.param_info[name]["shape"])
+
+    pymc_model, built, kalman = compare_likelihood_to_filter(mod, params, data, data_dict or None)
+
+    assert isinstance(pymc_model["obs"].owner.op, StationaryVARRV)
+    assert_allclose(built, kalman, atol=1e-8)

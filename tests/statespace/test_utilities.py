@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import statsmodels.api as sm
@@ -19,6 +20,7 @@ from pytensor.graph.replace import graph_replace
 from pytensor.graph.traversal import explicit_graph_inputs
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
+from pymc_extras.statespace.filters import StandardFilter
 from pymc_extras.statespace.filters.kalman_smoother import KalmanSmoother
 from pymc_extras.statespace.utils.constants import (
     MATRIX_NAMES,
@@ -272,6 +274,41 @@ def unpack_symbolic_matrices_with_params(
     x0, P0, c, d, T, Z, R, H, Q = f_matrices(**param_dict, **data_dict)
 
     return x0, P0, c, d, T, Z, R, H, Q
+
+
+def build_model_with_flat_priors(mod, data, data_dict=None):
+    """Build ``mod`` into a model whose parameters are flat, so its logp is the likelihood."""
+    with pm.Model() as pymc_model:
+        for name, value in (data_dict or {}).items():
+            pm.Data(name, value)
+        for name, info in mod.param_info.items():
+            pm.Flat(name, shape=info["shape"])
+        mod.build_statespace_graph(data)
+
+    return pymc_model
+
+
+def compare_likelihood_to_filter(mod, param_dict, data, data_dict=None):
+    """Return the built model, the log-density it builds, and its filter's, at the same values.
+
+    The model comes back so a caller can assert which likelihood was dispatched. Without that the
+    comparison passes vacuously whenever the model falls back, because both sides are the filter.
+    """
+    pymc_model = build_model_with_flat_priors(mod, data, data_dict)
+    point = {name: np.asarray(param_dict[name], dtype=floatX) for name in mod.param_info}
+    built = pymc_model.compile_logp()(point)
+
+    x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(
+        mod, param_dict, steps=len(data), data_dict=data_dict
+    )
+    *_, ll = StandardFilter(
+        time_varying_names=mod.ssm.time_varying_names, cov_jitter=0.0
+    ).build_graph(
+        pt.specify_shape(pt.as_tensor_variable(data), data.shape),
+        *[pt.as_tensor_variable(m) for m in (x0, P0, c, d, T, Z, R, H, Q)],
+    )
+
+    return pymc_model, built, ll.sum().eval()
 
 
 def simulate_from_numpy_model(mod, rng, param_dict, data_dict=None, steps=100):
