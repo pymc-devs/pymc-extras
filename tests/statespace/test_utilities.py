@@ -399,7 +399,9 @@ def make_stationary_params(data, p, d, q, P, D, Q, S):
     return param_dict
 
 
-def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False, data_info=None):
+def make_statespace_mod(
+    k_endog, k_states, k_posdef, filter_type, verbose=False, data_info=None, **kwargs
+):
     class StateSpace(PyMCStateSpace):
         def make_symbolic_graph(self):
             pass
@@ -418,6 +420,7 @@ def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False,
         k_posdef=k_posdef,
         filter_type=filter_type,
         verbose=verbose,
+        **kwargs,
     )
     ss._needs_exog_data = data_info is not None
 

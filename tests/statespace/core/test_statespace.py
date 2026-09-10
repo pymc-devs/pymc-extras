@@ -12,7 +12,8 @@ from pytensor.graph.traversal import ancestors
 from pytensor.scan.op import Scan
 
 from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
-from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
+from pymc_extras.statespace.core.statespace import FILTER_FACTORY, SMOOTHER_FACTORY, PyMCStateSpace
+from pymc_extras.statespace.filters import DisturbanceSmoother, RTSSmoother
 from pymc_extras.statespace.filters.distributions import KalmanFilterRV
 from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
@@ -37,6 +38,28 @@ def test_invalid_filter_name_raises():
     msg = "The following are valid filter types: " + ", ".join(list(FILTER_FACTORY.keys()))
     with pytest.raises(NotImplementedError, match=msg):
         mod = make_statespace_mod(k_endog=1, k_states=5, k_posdef=1, filter_type="invalid_filter")
+
+
+def test_invalid_smoother_name_raises():
+    msg = "The following are valid smoother types: " + ", ".join(list(SMOOTHER_FACTORY.keys()))
+    with pytest.raises(NotImplementedError, match=msg):
+        make_statespace_mod(
+            k_endog=1, k_states=5, k_posdef=1, filter_type="standard", smoother_type="invalid"
+        )
+
+
+@pytest.mark.parametrize(
+    "smoother_type, expected",
+    [("disturbance", DisturbanceSmoother), ("rts", RTSSmoother)],
+    ids=["disturbance", "rts"],
+)
+def test_make_filters_returns_the_requested_smoother(smoother_type, expected):
+    mod = make_statespace_mod(
+        k_endog=1, k_states=5, k_posdef=1, filter_type="standard", smoother_type=smoother_type
+    )
+    _, smoother = mod.make_filters()
+
+    assert isinstance(smoother, expected)
 
 
 def test_unpack_matrices(rng):

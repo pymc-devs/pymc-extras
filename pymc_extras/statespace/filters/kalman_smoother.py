@@ -27,7 +27,8 @@ class RTSSmoother:
 
     Runs the backward recursion on the smoothing gain
     :math:`G_t = P_{t|t} T^T P_{t+1|t}^{-1}`, which requires a ``k_states`` square inverse at every
-    step.
+    step. :class:`DisturbanceSmoother` computes the same quantities without that inverse and is the
+    default; this class is kept for cross-checking against it.
     """
 
     def __init__(

@@ -539,7 +539,7 @@ class SimulationSmoother(Continuous):
     kalman_filter : BaseFilter
         Filter object exposing ``build_graph``, called once while building the sampling
         graph. A Python-side graph builder, not a random-variable input.
-    kalman_smoother : RTSSmoother
+    kalman_smoother : DisturbanceSmoother
         Smoother object exposing ``build_graph``, used the same way as ``kalman_filter``.
     sequence_names : iterable of str, optional
         Short names of time-varying matrices, mirroring
