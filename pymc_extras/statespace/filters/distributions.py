@@ -495,11 +495,11 @@ def sequence_mvnormal_logp(op, values, mus, covs, logp, rng, **kwargs):
 def _simulation_smoother_signature(sequence_names):
     """Extended gufunc signature for :class:`SimulationSmootherRV`.
 
-    Adds a leading ``a_smooth`` input to the state-space core shapes and outputs the
+    Adds a leading ``data`` input to the state-space core shapes and outputs the
     sampled latent trajectory.
     """
     return _build_signature(
-        {"a_smooth": (TIME, STATES), **STATESPACE_CORE_SHAPES},
+        {"data": (TIME, OBS), **STATESPACE_CORE_SHAPES},
         sequence_names,
         output_shape=(TIME, STATES),
     )
@@ -522,18 +522,21 @@ class SimulationSmoother(Continuous):
 
     1. Forward-simulate :math:`(\alpha^+, y^+)` from the prior at the current
        parameters.
-    2. Filter and smooth :math:`y^+` to obtain :math:`\hat\alpha^+`.
-    3. Return :math:`\alpha^{\text{sample}} = \alpha^+ - \hat\alpha^+ + \hat\alpha`,
-       where :math:`\hat\alpha` is the smoothed mean of the real data.
+    2. Filter and smooth :math:`y - y^+` to obtain :math:`\hat\alpha^{\Delta}`.
+    3. Return :math:`\alpha^{\text{sample}} = \alpha^+ + \hat\alpha^{\Delta}`.
 
-    Draws have marginal mean ``a_smooth`` and the full joint posterior covariance,
+    Step 2 runs one smoother pass rather than two. The filter and smoother are affine in the
+    data, so :math:`\hat\alpha(y) - \hat\alpha(y^+)` equals a single pass over the difference
+    with the state and observation intercepts set to zero.
+
+    Draws have marginal mean :math:`\hat\alpha(y)` and the full joint posterior covariance,
     including cross-time correlations. Sampling each step's marginal independently with
     :class:`SequenceMvNormal` reproduces the former but not the latter.
 
     Parameters
     ----------
-    a_smooth : TensorVariable
-        Real-data smoothed state mean, shape ``(T, k_states)``.
+    data : TensorVariable
+        Observed series, shape ``(T, k_endog)``.
     x0, P0, c, d, T, Z, R, H, Q : TensorVariable
         State-space matrices defining the model.
     kalman_filter : BaseFilter
@@ -559,7 +562,7 @@ class SimulationSmoother(Continuous):
     @classmethod
     def dist(
         cls,
-        a_smooth,
+        data,
         x0,
         P0,
         c,
@@ -577,7 +580,7 @@ class SimulationSmoother(Continuous):
         **kwargs,
     ):
         return super().dist(
-            [a_smooth, x0, P0, c, d, T, Z, R, H, Q],
+            [data, x0, P0, c, d, T, Z, R, H, Q],
             kalman_filter=kalman_filter,
             kalman_smoother=kalman_smoother,
             sequence_names=tuple(sequence_names),
@@ -588,7 +591,7 @@ class SimulationSmoother(Continuous):
     @classmethod
     def rv_op(
         cls,
-        a_smooth,
+        data,
         x0,
         P0,
         c,
@@ -607,11 +610,11 @@ class SimulationSmoother(Continuous):
         rng=None,
     ):
         sequence_names = tuple(sequence_names)
-        a_smooth_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = (
-            x.type() for x in (a_smooth, x0, P0, c, d, T, Z, R, H, Q)
+        data_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = (
+            x.type() for x in (data, x0, P0, c, d, T, Z, R, H, Q)
         )
 
-        a_smooth_.name = "a_smooth"
+        data_.name = "data"
         c_.name = "c"
         d_.name = "d"
         T_.name = "T"
@@ -625,8 +628,8 @@ class SimulationSmoother(Continuous):
         # Prefer the static type-shape so the inner scan sequence length is a
         # Python int (JAX requires static lengths for ``lax.scan``); fall back to
         # the symbolic shape only if the model didn't pin it.
-        T_static = a_smooth_.type.shape[0]
-        steps = T_static if T_static is not None else a_smooth_.shape[0]
+        T_static = data_.type.shape[0]
+        steps = T_static if T_static is not None else data_.shape[0]
 
         # 1. Forward sim of (alpha_plus, y_plus). The Kalman filter uses the
         # Durbin-Koopman convention where (a0, P0) is the prediction for alpha_1
@@ -654,32 +657,35 @@ class SimulationSmoother(Continuous):
             y_plus = pt.specify_shape(y_plus, (T_static, *y_plus.type.shape[1:]))
             alpha_plus = pt.specify_shape(alpha_plus, (T_static, *alpha_plus.type.shape[1:]))
 
-        # 2. Filter + smooth y_plus under the same theta.
-        plus_matrices = (x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_)
-        filter_outputs = kalman_filter.build_graph(y_plus, *plus_matrices)
+        # 2. Filter + smooth the difference under the same theta. The filter and smoother are
+        # affine in the data, so smooth(y) - smooth(y_plus) is one pass over y - y_plus with the
+        # intercepts zeroed, rather than one pass over each.
+        zero_state, zero_obs = pt.zeros_like(x0_), pt.zeros_like(d_)
+        delta = data_ - y_plus
+        delta_matrices = (zero_state, P0_, zero_state, zero_obs, T_, Z_, R_, H_, Q_)
+        filter_outputs = kalman_filter.build_graph(delta, *delta_matrices)
 
-        a_smooth_plus, _ = kalman_smoother.build_graph(y_plus, plus_matrices, filter_outputs)
+        a_smooth_delta, _ = kalman_smoother.build_graph(delta, delta_matrices, filter_outputs)
 
         if T_static is not None:
-            a_smooth_plus = pt.specify_shape(
-                a_smooth_plus, (T_static, *a_smooth_plus.type.shape[1:])
+            a_smooth_delta = pt.specify_shape(
+                a_smooth_delta, (T_static, *a_smooth_delta.type.shape[1:])
             )
 
-        # 3. DK identity. The c-term and d-term cancel because alpha_plus and
-        # a_smooth_plus are produced under the same parameters.
-        alpha_sample = alpha_plus - a_smooth_plus + a_smooth_
+        # 3. DK identity, with the two smoother passes folded into the one above.
+        alpha_sample = alpha_plus + a_smooth_delta
 
         # ``inline=True`` splices the inner scans into the parent fgraph at compile
         # time, so shape inference reaches through them. The JAX backend needs the
         # resulting static ``n_steps`` to dispatch its scan.
         op = SimulationSmootherRV(
-            inputs=[a_smooth_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_, rng],
+            inputs=[data_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_, rng],
             outputs=[mid_rng, alpha_sample],
             extended_signature=_simulation_smoother_signature(sequence_names),
             inline=True,
         )
 
-        return op(a_smooth, x0, P0, c, d, T, Z, R, H, Q, rng)
+        return op(data, x0, P0, c, d, T, Z, R, H, Q, rng)
 
 
 @_logprob.register(SimulationSmootherRV)

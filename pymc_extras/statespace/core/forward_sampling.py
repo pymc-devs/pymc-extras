@@ -30,6 +30,7 @@ from pymc_extras.statespace.utils.constants import (
     MATRIX_DIMS,
     MATRIX_NAMES,
     OBS_STATE_DIM,
+    OBSERVED_DATA_NAME,
     SHORT_NAME_TO_LONG,
     TIME_DIM,
 )
@@ -126,7 +127,7 @@ def _sample_conditional(
                 kalman_filter, kalman_smoother = ss_mod.make_filters()
                 latent_states = SimulationSmoother(
                     f"{name}_{group}",
-                    a_smooth=mu,
+                    data=forward_model[OBSERVED_DATA_NAME],
                     x0=x0,
                     P0=P0,
                     c=c,

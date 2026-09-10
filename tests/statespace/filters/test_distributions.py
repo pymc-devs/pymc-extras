@@ -409,7 +409,7 @@ def _build_simulation_smoother_func(params, seed):
 
     rng_var = pytensor.shared(np.random.default_rng(seed), name="rng")
     sample = SimulationSmoother.dist(
-        a_smooth,
+        y,
         a0,
         P0,
         c,
@@ -429,9 +429,9 @@ def _build_simulation_smoother_func(params, seed):
 def test_simulation_smoother_signature(small_lgssm):
     """Construction sanity: extended_signature and shape match the spec."""
     params = small_lgssm
-    a_smooth = pt.zeros((params["n_steps"], 2))
+    data = pt.zeros((params["n_steps"], 1))
     sample = SimulationSmoother.dist(
-        a_smooth,
+        data,
         pt.as_tensor_variable(params["a0"]),
         pt.as_tensor_variable(params["P0"]),
         pt.as_tensor_variable(params["c"]),
@@ -448,13 +448,13 @@ def test_simulation_smoother_signature(small_lgssm):
     assert sample.owner.op.ndim_supp == 2
     assert (
         sample.owner.op.extended_signature
-        == "(t,s),(s),(s,s),(s),(p),(s,s),(p,s),(s,r),(p,p),(r,r),[rng]->[rng],(t,s)"
+        == "(t,p),(s),(s,s),(s),(p),(s,s),(p,s),(s,r),(p,p),(r,r),[rng]->[rng],(t,s)"
     )
 
     # Time-varying case: the declared matrix gains a leading time axis.
     d_time_varying = pt.tensor("d", shape=(None, None))
     sample = SimulationSmoother.dist(
-        a_smooth,
+        data,
         pt.as_tensor_variable(params["a0"]),
         pt.as_tensor_variable(params["P0"]),
         pt.as_tensor_variable(params["c"]),
@@ -470,7 +470,7 @@ def test_simulation_smoother_signature(small_lgssm):
     )
     assert (
         sample.owner.op.extended_signature
-        == "(t,s),(s),(s,s),(s),(t,p),(s,s),(p,s),(s,r),(p,p),(r,r),[rng]->[rng],(t,s)"
+        == "(t,p),(s),(s,s),(s),(t,p),(s,s),(p,s),(s,r),(p,p),(r,r),[rng]->[rng],(t,s)"
     )
 
 
@@ -562,7 +562,7 @@ def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
     )
 
     sample = SimulationSmoother.dist(
-        a_smooth,
+        y,
         tensors["a0"],
         tensors["P0"],
         tensors["c"],
