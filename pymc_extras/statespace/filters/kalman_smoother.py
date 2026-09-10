@@ -134,7 +134,7 @@ class KalmanSmoother:
 
         P_smooth_next = P + quad_form_sym(smoother_gain, P_smooth - P_hat)
         P_smooth_next = stabilize(P_smooth_next, self.cov_jitter)
-        P_smooth_next = pt.specify_shape(stabilize(P_smooth_next), P_smooth.type.shape)
+        P_smooth_next = pt.specify_shape(P_smooth_next, P_smooth.type.shape)
 
         return a_smooth_next, P_smooth_next
 
