@@ -58,45 +58,6 @@ class RTSSmoother:
             name for name in SMOOTHER_PARAM_NAMES if name not in time_varying_short
         ]
 
-    def unpack_args(self, args):
-        """
-        The order of inputs to the inner scan function is not known, since some, all, or none of the input matrices
-        can be time varying. The order arguments are fed to the inner function is sequences, outputs_info,
-        non-sequences. This function works out which matrices are where, and returns a standardized order expected
-        by the kalman_step function.
-
-        The standard order is: a, P, a_smooth, P_smooth, T, R, Q
-        """
-        # If there are no sequence parameters (all params are static),
-        # no changes are needed, params will be in order.
-        args = list(args)
-        n_seq = len(self.seq_names)
-        if n_seq == 0:
-            return args
-
-        # The first two args are always a and P
-        a = args.pop(0)
-        P = args.pop(0)
-
-        # There are always two outputs_info wedged between the seqs and non_seqs
-        seqs, (a_smooth, P_smooth), non_seqs = (
-            args[:n_seq],
-            args[n_seq : n_seq + 2],
-            args[n_seq + 2 :],
-        )
-        return_ordered = []
-        for name in SMOOTHER_PARAM_NAMES:
-            if name in self.seq_names:
-                idx = self.seq_names.index(name)
-                return_ordered.append(seqs[idx])
-            else:
-                idx = self.non_seq_names.index(name)
-                return_ordered.append(non_seqs[idx])
-
-        T, R, Q = return_ordered
-
-        return a, P, a_smooth, P_smooth, T, R, Q
-
     def build_graph(self, data, matrices, filter_outputs):
         """
         Build the backward smoothing recursion.
@@ -129,8 +90,14 @@ class RTSSmoother:
         sequences = [params[name] for name in self.seq_names]
         non_sequences = [params[name] for name in self.non_seq_names]
 
+        # After the filtered moments, scan passes the time-varying matrices, then the carried
+        # smoothed moments, then the static matrices.
+        def step(a, P, *args):
+            names = [*self.seq_names, "a_smooth", "P_smooth", *self.non_seq_names]
+            return self.smoother_step(a, P, **dict(zip(names, args, strict=True)))
+
         smoothed_states, smoothed_covariances = pytensor.scan(
-            self.smoother_step,
+            step,
             sequences=[filtered_states[:-1], filtered_covariances[:-1], *sequences],
             outputs_info=[a_last, P_last],
             non_sequences=non_sequences,
@@ -151,8 +118,7 @@ class RTSSmoother:
 
         return smoothed_states, smoothed_covariances
 
-    def smoother_step(self, *args):
-        a, P, a_smooth, P_smooth, T, R, Q = self.unpack_args(args)
+    def smoother_step(self, a, P, a_smooth, P_smooth, T, R, Q):
         a_hat, P_hat = self.predict(a, P, T, R, Q)
 
         # Use pinv, otherwise P_hat is singular when there is missing data
@@ -209,28 +175,7 @@ class DisturbanceSmoother:
             name for name in DISTURBANCE_PARAM_NAMES if name not in time_varying_short
         ]
 
-    def unpack_args(self, args):
-        """Restore the standard order ``y, a, P, r, N, d, T, Z, H`` from scan's argument order."""
-        args = list(args)
-        n_seq = len(self.seq_names)
-        y, a, P = args.pop(0), args.pop(0), args.pop(0)
-
-        if n_seq == 0:
-            r, N, *matrices = args
-        else:
-            seqs, (r, N), non_seqs = args[:n_seq], args[n_seq : n_seq + 2], args[n_seq + 2 :]
-            matrices = []
-            for name in DISTURBANCE_PARAM_NAMES:
-                if name in self.seq_names:
-                    matrices.append(seqs[self.seq_names.index(name)])
-                else:
-                    matrices.append(non_seqs[self.non_seq_names.index(name)])
-
-        d, T, Z, H = matrices
-        return y, a, P, r, N, d, T, Z, H
-
-    def smoother_step(self, *args):
-        y, a, P, r, N, d, T, Z, H = self.unpack_args(args)
+    def smoother_step(self, y, a, P, r, N, d, T, Z, H):
         y, Z, H, d, nan_mask = mask_missing_values(y, Z, H, d, self.missing_fill_value)
 
         # A masked row of F is all zeros. A one on its diagonal keeps the factorization defined,
@@ -281,8 +226,14 @@ class DisturbanceSmoother:
         sequences = [params[name] for name in self.seq_names]
         non_sequences = [params[name] for name in self.non_seq_names]
 
+        # After the data and predicted moments, scan passes the time-varying matrices, then the
+        # carried r and N, then the static matrices.
+        def step(y, a, P, *args):
+            names = [*self.seq_names, "r", "N", *self.non_seq_names]
+            return self.smoother_step(y, a, P, **dict(zip(names, args, strict=True)))
+
         _, _, smoothed_states, smoothed_covariances = pytensor.scan(
-            self.smoother_step,
+            step,
             sequences=[data, predicted_states, predicted_covariances, *sequences],
             outputs_info=[pt.zeros(k_states), pt.zeros((k_states, k_states)), None, None],
             non_sequences=non_sequences,
