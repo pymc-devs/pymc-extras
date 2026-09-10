@@ -611,6 +611,11 @@ class SquareRootFilter(BaseFilter):
 
     """
 
+    def check_params(self, data, a0, P0, c, d, T, Z, R, H, Q):
+        """Factor ``P0``, because this filter's recursion carries factors rather than covariances."""
+        P0_chol = pt.linalg.cholesky(stabilize(P0, self.cov_jitter), lower=True)
+        return data, a0, P0_chol, c, d, T, Z, R, H, Q
+
     def predict(self, a, P, c, T, R, Q):
         """
         Compute one-step forecasts for the hidden states conditioned on information up to, but not including, the current

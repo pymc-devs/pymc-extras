@@ -345,8 +345,6 @@ def get_loglike_function(filter_name: str, obs_cov: str) -> Callable:
     }[filter_name]
 
     a0, P0, c, d, T, Z, R, H, Q = loglike_test_matrices(obs_cov)
-    if filter_cls is SquareRootFilter:
-        P0 = np.linalg.cholesky(P0)
 
     data = pt.tensor(name="data", dtype=floatX, shape=(None, LOGLIKE_TEST_K_ENDOG))
     matrices = [pt.as_tensor_variable(x) for x in [a0, P0, c, d, T, Z, R, H, Q]]
@@ -380,6 +378,24 @@ def test_loglike_matches_statsmodels(filter_name, obs_cov, rng):
     assert_allclose(ll_obs, expected, atol=ATOL, rtol=RTOL)
 
 
+def test_square_root_filter_takes_a_covariance_for_P0(rng):
+    """
+    Every filter takes ``P0`` as a covariance; the square-root filter factors it itself.
+
+    The shared inputs use ``P0 = I``, where a factor and a covariance coincide, so only a
+    non-identity ``P0`` separates the two.
+    """
+    p, m, r, n = 1, 3, 1, 20
+    data, a0, _, c, d, T, Z, R, H, Q = make_test_inputs(p, m, r, n, rng)
+    P0 = np.diag([2.0, 3.0, 4.0]).astype(floatX)
+
+    standard = get_filter_function("StandardFilter")(data, a0, P0, c, d, T, Z, R, H, Q)
+    square_root = get_filter_function("CholeskyFilter")(data, a0, P0, c, d, T, Z, R, H, Q)
+
+    for name, expected, actual in zip(output_names, standard, square_root, strict=True):
+        assert_allclose(actual, expected, atol=ATOL, rtol=RTOL, err_msg=name)
+
+
 @pytest.mark.parametrize("filter_name", filter_names)
 @pytest.mark.parametrize("output_idx", [(0, 2), (3, 5)], ids=["smoothed_states", "smoothed_covs"])
 def test_last_smoother_is_last_filtered(filter_name, output_idx, rng):
@@ -398,8 +414,6 @@ def test_last_smoother_is_last_filtered(filter_name, output_idx, rng):
 @pytest.mark.skipif(floatX == "float32", reason="Tests are too sensitive for float32")
 def test_filters_match_statsmodel_output(filter_name, n_missing, rng):
     fit_sm_mod, [data, a0, P0, c, d, T, Z, R, H, Q] = nile_test_test_helper(rng, n_missing)
-    if filter_name == "CholeskyFilter":
-        P0 = np.linalg.cholesky(P0)
     inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
     outputs = get_filter_function(filter_name)(*inputs)
 
@@ -445,8 +459,6 @@ def test_all_covariance_matrices_are_PSD(filter_name, n_missing, obs_noise, rng)
         pytest.skip("Univariate filter not stable at half precision without measurement error")
 
     fit_sm_mod, [data, a0, P0, c, d, T, Z, R, H, Q] = nile_test_test_helper(rng, n_missing)
-    if filter_name == "CholeskyFilter":
-        P0 = np.linalg.cholesky(P0)
 
     H *= int(obs_noise)
     inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
