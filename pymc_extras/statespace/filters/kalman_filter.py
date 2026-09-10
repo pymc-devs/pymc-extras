@@ -17,6 +17,7 @@ from pytensor.tensor.linalg import solve_triangular
 from pymc_extras.statespace.filters.utilities import (
     PARAM_NAMES,
     dim_of,
+    mask_missing_values,
     quad_form_sym,
     scan_sequence_names,
     stabilize,
@@ -329,15 +330,7 @@ class BaseFilter(ABC):
         .. [1] Durbin, J., and S. J. Koopman. Time Series Analysis by State Space Methods.
                2nd ed, Oxford University Press, 2012.
         """
-        nan_mask = pt.or_(pt.isnan(y), pt.eq(y, self.missing_fill_value))
-        W = pt.diag(pt.bitwise_not(nan_mask).astype(pytensor.config.floatX))
-
-        Z_masked = W.dot(Z)
-        H_masked = W.dot(H).dot(W.mT)
-        d_masked = W.dot(d)
-        y_masked = pt.set_subtensor(y[nan_mask], 0.0)
-
-        return y_masked, Z_masked, H_masked, d_masked, nan_mask
+        return mask_missing_values(y, Z, H, d, self.missing_fill_value)
 
     @staticmethod
     def predict(a, P, c, T, R, Q) -> tuple[TensorVariable, TensorVariable]:
