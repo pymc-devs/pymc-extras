@@ -121,7 +121,7 @@ def _sample_conditional(
         )
 
         for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs, strict=True):
-            if name == "smoothed":
+            if name == "smoothed" and ss_mod.joint_smoothed_draws:
                 # The simulation smoother draws the whole latent path jointly, so the
                 # states carry their cross-time posterior covariance.
                 kalman_filter, kalman_smoother = ss_mod.make_filters()
