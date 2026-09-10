@@ -8,10 +8,14 @@ from pymc_extras.statespace.filters.kalman_filter import (
     StandardFilter,
     UnivariateFilter,
 )
-from pymc_extras.statespace.filters.kalman_smoother import RTSSmoother
+from pymc_extras.statespace.filters.kalman_smoother import (
+    DisturbanceSmoother,
+    RTSSmoother,
+)
 
 __all__ = [
     "ConvergentFilter",
+    "DisturbanceSmoother",
     "LinearGaussianStateSpace",
     "RTSSmoother",
     "SimulationSmoother",
