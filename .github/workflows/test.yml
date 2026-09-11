@@ -113,8 +113,11 @@ jobs:
       - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39  # v3.2.1
         with:
           environment-file: conda-envs/environment-test.yml
+          # gxx 16.2.0 on conda-forge win-64 cannot link (ld cannot find dllcrt2.o);
+          # see conda-forge/ctng-compilers-feedstock#229 and m2w64-sysroot-feedstock#23.
           create-args: >-
             python=${{matrix.python-version}}
+            gxx_win-64=16.1
           environment-name: pymc-extras-test
           init-shell: cmd.exe
           cache-environment: true
