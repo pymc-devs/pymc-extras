@@ -5,6 +5,7 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
+from pytensor.assumptions import assume
 from pytensor.compile.builders import SymbolicOp
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.gradient import disconnected_grad
@@ -208,9 +209,31 @@ class BaseFilter(ABC):
             return_updates=False,
         )
 
-        return self._postprocess_scan_results(
+        outputs = self._postprocess_scan_results(
             results, a0, P0, n=data.type.shape[0], k_states=k_states, k_endog=k_endog
         )
+        return self._declare_covariance_structure(outputs)
+
+    def _declare_covariance_structure(self, outputs) -> list[TensorVariable]:
+        """
+        Declare the covariance outputs symmetric, and positive definite where the recursion stabilizes them.
+
+        The predicted sequence begins with ``P0``, which a stationary initialization can leave
+        singular, so it is declared symmetric only.
+        """
+        states, (filtered, predicted, observed), loglike = outputs[:3], outputs[3:6], outputs[6]
+        positive_definite = True if self.cov_jitter > 0 else None
+
+        covariances = [
+            assume(filtered, symmetric=True, positive_definite=positive_definite),
+            assume(predicted, symmetric=True),
+            assume(observed, symmetric=True, positive_definite=positive_definite),
+        ]
+        # assume returns a fresh variable, and the outputs are looked up by name downstream.
+        for declared, original in zip(covariances, (filtered, predicted, observed), strict=True):
+            declared.name = original.name
+
+        return [*states, *covariances, loglike]
 
     def _postprocess_scan_results(
         self, results, a0, P0, n, k_states, k_endog
@@ -719,10 +742,10 @@ class SquareRootFilter(BaseFilter):
         ) = results
 
         def square_sequence(L, k, name):
-            X = pt.einsum("...ij,...kj->...ik", L, L.copy())
-            X = pt.specify_shape(X, (n, k, k))
-            X.name = name
-            return X
+            L = assume(L, lower_triangular=True)
+            covariance = pt.specify_shape(L @ L.mT, (n, k, k))
+            covariance.name = name
+            return covariance
 
         filtered_covariances = square_sequence(
             filtered_covariances_cholesky, k=k_states, name=FILTER_OUTPUT_NAMES[2]
@@ -1164,7 +1187,7 @@ class ConvergentFilter(StandardFilter):
         op = ConvergentKalmanOp(filt=self)
         a_filt, a_hat, y_hat, P_filt, P_hat, F, ll, _k = op(data, a0, P0, c, d, T, Z, R, H, Q)
         n = data.type.shape[0]
-        return self._postprocess_scan_results(
+        outputs = self._postprocess_scan_results(
             (a_filt, a_hat, y_hat, P_filt, P_hat, F, ll[..., None]),
             a0,
             P0,
@@ -1172,6 +1195,7 @@ class ConvergentFilter(StandardFilter):
             k_states=k_states,
             k_endog=k_endog,
         )
+        return self._declare_covariance_structure(outputs)
 
 
 class ConvergentKalmanOp(SymbolicOp):

@@ -3,6 +3,8 @@ from collections.abc import Iterable
 import pytensor
 import pytensor.tensor as pt
 
+from pytensor.assumptions import assume
+
 from pymc_extras.statespace.filters.utilities import (
     mask_missing_values,
     quad_form_sym,
@@ -113,6 +115,7 @@ class RTSSmoother:
             [smoothed_covariances[::-1], pt.expand_dims(P_last, axis=(0,))], axis=0
         )
 
+        smoothed_covariances = assume(smoothed_covariances, symmetric=True)
         smoothed_states.name = "smoothed_states"
         smoothed_covariances.name = "smoothed_covariances"
 
@@ -246,6 +249,7 @@ class DisturbanceSmoother:
         smoothed_states = smoothed_states[::-1]
         smoothed_covariances = smoothed_covariances[::-1]
 
+        smoothed_covariances = assume(smoothed_covariances, symmetric=True)
         smoothed_states.name = "smoothed_states"
         smoothed_covariances.name = "smoothed_covariances"
 
