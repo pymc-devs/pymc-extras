@@ -153,7 +153,8 @@ class BayesianSARIMAX(PyMCStateSpace):
         (1- \phi_1 B - \cdots - \phi_p B^p) (1-B)^d \eta_{t} &= (1 + \theta_1 B + \cdots + \theta_q B^q) \varepsilon_t
         \end{align}
 
-    Where the design matrix `X` can include a constant, trends, or exogenous regressors.
+    Where the design matrix :math:`X` holds exogenous regressors. Deterministic terms are specified through ``trend``
+    and enter the ARMA equation of the differenced series instead, so a constant is a drift under differencing.
 
     ARIMA models can be represented in statespace form, as described in [1]. For more details, see chapters 3.4, 3.6,
     and 8.4.
