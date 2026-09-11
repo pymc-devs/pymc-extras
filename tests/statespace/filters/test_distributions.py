@@ -655,8 +655,16 @@ def _var_parameters(rng, k_endog, order, k_exog):
     return A.astype(floatX), rng.normal(size=(k_endog, k_exog)).astype(floatX), Q.astype(floatX)
 
 
-def _reference_filter(coefficients, state_cov, endog, exog, exog_coefficients):
-    """A Kalman filter over the companion form, built independently of the distribution."""
+def _reference_filter(
+    coefficients, state_cov, endog, exog, exog_coefficients, exog_in_observation=False
+):
+    """A Kalman filter over the companion form, built independently of the distribution.
+
+    In the state equation the regressors enter as an intercept shifted back by one step, since
+    the filter applies the intercept of step ``t`` to the transition into ``t + 1``, and the
+    initial state is the fixed point of the dynamics under the first intercept. In the observation
+    equation they are the observation intercept as given.
+    """
     n_timesteps, k_endog = endog.shape
     k_states = coefficients.type.shape[1]
 
@@ -666,16 +674,29 @@ def _reference_filter(coefficients, state_cov, endog, exog, exog_coefficients):
     design = pt.concatenate([pt.eye(k_endog), pt.zeros((k_endog, k_states - k_endog))], axis=1)
     selection = pt.concatenate([pt.eye(k_endog), pt.zeros((k_states - k_endog, k_endog))], axis=0)
 
-    return StandardFilter(time_varying_names=["obs_intercept"], cov_jitter=0.0).build_graph(
+    exog_effect = pt.as_tensor_variable(exog) @ exog_coefficients.T
+    if exog_in_observation:
+        x0 = pt.zeros((k_states,))
+        state_intercept = pt.zeros((k_states,))
+        obs_intercept = exog_effect
+        time_varying_names = ["obs_intercept"]
+    else:
+        shifted = pt.concatenate([exog_effect[1:], exog_effect[-1:]], axis=0)
+        state_intercept = pt.pad(shifted, [(0, 0), (0, k_states - k_endog)])
+        x0 = pt.linalg.solve(pt.eye(k_states) - transition, state_intercept[0], b_ndim=1)
+        obs_intercept = pt.zeros((k_endog,))
+        time_varying_names = ["state_intercept"]
+
+    return StandardFilter(time_varying_names=time_varying_names, cov_jitter=0.0).build_graph(
         pt.specify_shape(pt.as_tensor_variable(endog), (n_timesteps, k_endog)),
-        pt.zeros((k_states,)),
+        x0,
         solve_discrete_lyapunov(
             transition,
             pt.linalg.matrix_dot(selection, state_cov, selection.T),
             method="bilinear",
         ),
-        pt.zeros((k_states,)),
-        pt.as_tensor_variable(exog) @ exog_coefficients.T,
+        state_intercept,
+        obs_intercept,
         transition,
         design,
         selection,
@@ -684,7 +705,7 @@ def _reference_filter(coefficients, state_cov, endog, exog, exog_coefficients):
     )
 
 
-def _var_logp_pair(k_endog, order, k_exog, n_timesteps=80):
+def _var_logp_pair(k_endog, order, k_exog, n_timesteps=80, exog_in_observation=False):
     """The distribution's log-density and a Kalman filter over the same model.
 
     The reference is assembled from concatenations rather than from the distribution's own
@@ -713,26 +734,34 @@ def _var_logp_pair(k_endog, order, k_exog, n_timesteps=80):
             pt.as_tensor_variable(endog),
             exog=pt.as_tensor_variable(exog),
             exog_coefficients=B,
+            exog_in_observation=exog_in_observation,
         ),
         pt.as_tensor_variable(endog),
     )
 
-    *_, ll = _reference_filter(A, Q, endog, exog, B)
+    *_, ll = _reference_filter(A, Q, endog, exog, B, exog_in_observation=exog_in_observation)
 
     return fast, ll.sum(), [A, B, Q]
 
 
 @pytest.mark.parametrize(
-    "k_endog, order, k_exog",
-    [(1, 1, 0), (1, 3, 2), (2, 2, 0), (3, 2, 2)],
-    ids=["k1_p1_m0", "k1_p3_m2", "k2_p2_m0", "k3_p2_m2"],
+    "k_endog, order, k_exog, exog_in_observation",
+    [(1, 1, 0, False), (1, 3, 2, False), (2, 2, 0, False), (3, 2, 2, False), (3, 2, 2, True)],
+    ids=["k1_p1_m0", "k1_p3_m2", "k2_p2_m0", "k3_p2_m2", "k3_p2_m2_observation"],
 )
-def test_stationary_var_matches_kalman_filter(k_endog, order, k_exog):
+def test_stationary_var_matches_kalman_filter(k_endog, order, k_exog, exog_in_observation):
     rng = np.random.default_rng(sum(map(ord, f"draws{k_endog}{order}{k_exog}")))
-    fast, kalman, inputs = _var_logp_pair(k_endog, order, k_exog)
+    fast, kalman, inputs = _var_logp_pair(
+        k_endog, order, k_exog, exog_in_observation=exog_in_observation
+    )
     fn = pytensor.function(
         inputs,
-        [fast, kalman, *pt.grad(fast, inputs), *pt.grad(kalman, inputs)],
+        [
+            fast,
+            kalman,
+            *pt.grad(fast, inputs, disconnected_inputs="ignore"),
+            *pt.grad(kalman, inputs, disconnected_inputs="ignore"),
+        ],
         on_unused_input="ignore",
     )
 

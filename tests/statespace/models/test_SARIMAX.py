@@ -561,22 +561,50 @@ def test_likelihood_dispatch(kwargs, expected_op):
             {"order": (1, 0, 0), "seasonal_order": (1, 0, 0, 4)},
             {"ar_params": [0.4], "seasonal_ar_params": [0.5], "sigma_state": 0.8},
         ),
+        (
+            {"order": (2, 0, 0), "exog_state_names": ["x1", "x2"]},
+            {"ar_params": [0.5, -0.2], "sigma_state": 1.3, "beta_exog": [0.7, -1.1]},
+        ),
     ],
-    ids=["ar2", "seasonal"],
+    ids=["ar2", "seasonal", "exog"],
 )
 def test_closed_form_likelihood_matches_the_kalman_filter(kwargs, params, rng):
     """
     The filter takes the stationary covariance of the Harvey state, whose entries are partial
     sums rather than lags, while the closed form takes it of the lag stack. Agreeing here is
-    what says those describe the same distribution over the observations.
+    what says those describe the same distribution over the observations. Regressors shift the
+    level of the observations, so the closed form must be told they sit in that equation.
     """
     mod = BayesianSARIMAX(verbose=False, **kwargs)
     data = rng.normal(size=(60, 1)).astype(floatX)
+    data_dict = (
+        {"exogenous_data": rng.normal(size=(60, mod.k_exog)).astype(floatX)} if mod.k_exog else None
+    )
 
-    pymc_model, built, kalman = compare_likelihood_to_filter(mod, params, data)
+    pymc_model, built, kalman = compare_likelihood_to_filter(mod, params, data, data_dict)
 
     assert isinstance(pymc_model["obs"].owner.op, StationaryVARRV)
     assert_allclose(built, kalman, atol=1e-8)
+
+
+def test_exogenous_likelihood_matches_statsmodels(rng):
+    """
+    Regressors shift the level of the observations, as statsmodels places them, so the two
+    likelihoods agree at the same parameter values.
+    """
+    data = rng.normal(size=(60, 1)).astype(floatX)
+    exog = rng.normal(size=(60, 2)).astype(floatX)
+    sm_sarimax = sm.tsa.SARIMAX(data, exog=exog, order=(2, 0, 0), trend="n")
+
+    params = {"ar_params": [0.5, -0.2], "sigma_state": 1.3, "beta_exog": [0.7, -1.1]}
+    sm_params = np.r_[params["beta_exog"], params["ar_params"], params["sigma_state"] ** 2]
+    assert len(sm_params) == sm_sarimax.k_params
+
+    mod = BayesianSARIMAX(order=(2, 0, 0), exog_state_names=["x1", "x2"], verbose=False)
+    pymc_model, built, _ = compare_likelihood_to_filter(mod, params, data, {"exogenous_data": exog})
+
+    assert isinstance(pymc_model["obs"].owner.op, StationaryVARRV)
+    assert_allclose(built, sm_sarimax.loglike(sm_params), rtol=1e-6)
 
 
 @pytest.mark.filterwarnings(

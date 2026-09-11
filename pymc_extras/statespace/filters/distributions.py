@@ -702,37 +702,74 @@ def _lag_matrix(series, *, lags, order, n_rows):
     return series[index].reshape((n_rows, -1))
 
 
-def _stacked_regressors(series, exog, *, order, n_rows):
-    """Lag matrix ``W``, holding the regressors for every timestep from ``order`` onward.
+def _stacked_regressors(series, exog, *, order, n_rows, exog_in_observation):
+    """Design matrix ``W``, holding the regressors for every timestep from ``order`` onward.
 
     The density and the predictive moments both contract against this, so they read it from one
     place. Built differently in each, they would describe different models and nothing would say
     so.
     """
-    return pt.concatenate(
-        [
-            _lag_matrix(series, lags=range(1, order + 1), order=order, n_rows=n_rows),
-            _lag_matrix(exog, lags=range(0, order + 1), order=order, n_rows=n_rows),
-        ],
-        axis=1,
-    )
+    lagged = _lag_matrix(series, lags=range(1, order + 1), order=order, n_rows=n_rows)
+
+    if exog_in_observation:
+        exog_block = _lag_matrix(exog, lags=range(0, order + 1), order=order, n_rows=n_rows)
+    else:
+        exog_block = exog[order:]
+
+    return pt.concatenate([lagged, exog_block], axis=1)
 
 
-def _effective_coefficients(coefficients, exog_coefficients, *, order, k_endog):
+def _effective_coefficients(
+    coefficients, exog_coefficients, *, order, k_endog, exog_in_observation
+):
     r"""
-    Assemble :math:`C = [A_1 \ldots A_p, B, -A_1 B \ldots -A_p B]`.
+    Assemble the coefficients against the stacked regressors.
 
-    The residual against the stacked regressors is ``y_t - C @ W_t``, which lets the exogenous
-    case reuse the pure autoregressive trace expression unchanged. With no regressors :math:`C`
-    reduces to :math:`A`, and is returned as such: the zero-width blocks are equivalent, but
-    their gradient trips a PyTensor reshape rewrite that then logs a traceback per compile.
+    With the regressors in the state equation this is :math:`C = [A_1 \ldots A_p, B]`. With them
+    in the observation equation, :math:`\tilde{y}_t = y_t - B x_t` follows the autoregression, so
+    :math:`C = [A_1 \ldots A_p, B, -A_1 B \ldots -A_p B]` against the regressors and their lags.
+
+    With no regressors :math:`C` is :math:`A` and is returned as such: the zero-width blocks are
+    equivalent, but their gradient trips a PyTensor reshape rewrite that then logs a traceback
+    per compile.
     """
     if exog_coefficients.type.shape[-1] == 0:
         return coefficients
 
+    if not exog_in_observation:
+        return pt.concatenate([coefficients, exog_coefficients], axis=1)
+
     by_lag = coefficients.reshape((k_endog, order, k_endog)) @ exog_coefficients
 
     return pt.concatenate([coefficients, exog_coefficients, -by_lag.reshape((k_endog, -1))], axis=1)
+
+
+def _initial_mean(coefficients, exog_coefficients, exog, *, order, k_endog, exog_in_observation):
+    r"""
+    Mean of the first ``order`` observations, of shape ``(order, k_endog)``.
+
+    In the observation equation the regressors shift each row by :math:`B x_t`. In the state
+    equation the initial state is the fixed point of the dynamics under the first intercept the
+    filter applies, :math:`\mu = (I - \sum_l A_l)^{-1} B x_1`, which is where a stationary
+    initialization puts it. Later rows follow the recursion from there with their own
+    regressors, so the mean path depends on ``exog[1:order]`` and not on ``exog[0]``.
+    """
+    if exog_coefficients.type.shape[-1] == 0:
+        return pt.zeros((order, k_endog), dtype=coefficients.dtype)
+
+    if exog_in_observation:
+        return exog[:order] @ exog_coefficients.T
+
+    by_lag = coefficients.reshape((k_endog, order, k_endog))
+    intercepts = exog[1 : order + 1] @ exog_coefficients.T
+    initial = pt.linalg.solve(pt.eye(k_endog) - by_lag.sum(axis=1), intercepts[0], b_ndim=1)
+
+    history = [initial] * order
+    for t in range(1, order):
+        lagged = sum(by_lag[:, lag - 1] @ history[-lag] for lag in range(1, order + 1))
+        history.append(lagged + intercepts[t - 1])
+
+    return pt.stack(history[-order:])
 
 
 def _stationary_cholesky(coefficients, state_cov, *, order, k_endog):
@@ -786,7 +823,17 @@ def _conditional_logp(
     )
 
 
-def _predictive_moments(coefficients, exog_coefficients, state_cov, exog, endog, *, order, k_endog):
+def _predictive_moments(
+    coefficients,
+    exog_coefficients,
+    state_cov,
+    exog,
+    endog,
+    *,
+    order,
+    k_endog,
+    exog_in_observation=False,
+):
     """
     One-step-ahead predictive moments, conditional on ``endog``.
 
@@ -800,13 +847,26 @@ def _predictive_moments(coefficients, exog_coefficients, state_cov, exog, endog,
         Of shape ``(T, k_endog, k_endog)``.
     """
     n_rows = endog.shape[0] - order
-    regressors = _stacked_regressors(endog, exog, order=order, n_rows=n_rows)
+    regressors = _stacked_regressors(
+        endog, exog, order=order, n_rows=n_rows, exog_in_observation=exog_in_observation
+    )
     effective = _effective_coefficients(
-        coefficients, exog_coefficients, order=order, k_endog=k_endog
+        coefficients,
+        exog_coefficients,
+        order=order,
+        k_endog=k_endog,
+        exog_in_observation=exog_in_observation,
     )
 
     factor = _stationary_cholesky(coefficients, state_cov, order=order, k_endog=k_endog)
-    residuals = endog[:order] - exog[:order] @ exog_coefficients.T
+    residuals = endog[:order] - _initial_mean(
+        coefficients,
+        exog_coefficients,
+        exog,
+        order=order,
+        k_endog=k_endog,
+        exog_in_observation=exog_in_observation,
+    )
     whitened = pt.linalg.solve_triangular(
         factor, residuals.reshape((order * k_endog,)), lower=True, b_ndim=1
     )
@@ -849,6 +909,10 @@ class StationaryVARRV(SymbolicRandomVariable):
     _print_name = ("StationaryVAR", "\\operatorname{StationaryVAR}")
     extended_signature = "(k,l),(k,m),(k,k),(t,m),(t,k),[rng]->[rng],(t,k)"
 
+    def __init__(self, *args, exog_in_observation=False, **kwargs):
+        self.exog_in_observation = exog_in_observation
+        super().__init__(*args, **kwargs)
+
     def update(self, node: Node):
         return {node.inputs[-1]: node.outputs[0]}
 
@@ -866,10 +930,10 @@ class StationaryVAR(Continuous):
     banded precision matrix, so it collapses onto cross-products of the data against its own
     lags, whose size depends on the lag structure and not on the number of timesteps.
 
-    Exogenous regressors enter the observation equation, so :math:`\tilde{y}_t = y_t - B x_t`
-    follows the pure autoregression and the density is exactly :math:`\tilde{y}`'s. The
-    banding, and so the density, requires observations free of measurement error, moving
-    average terms, and missing values.
+    Exogenous regressors enter the autoregression itself, :math:`y_t = \sum_l A_l y_{t-l} + B x_t
+    + \varepsilon_t`, so :math:`B` is an impact coefficient and the regressors join the lags in
+    the cross-products. The banding, and so the density, requires observations free of
+    measurement error, moving average terms, and missing values.
 
     Parameters
     ----------
@@ -882,6 +946,9 @@ class StationaryVAR(Continuous):
         Exogenous regressors, of shape ``(steps, k_exog)``.
     exog_coefficients : tensor_like, optional
         ``B``, of shape ``(k_endog, k_exog)``. Required when ``exog`` is given.
+    exog_in_observation : bool, default False
+        Whether the regressors shift the level of the observations rather than entering the
+        autoregression.
     steps : int, optional
         Number of timesteps to draw. Taken from ``exog`` when that is given.
     """
@@ -897,6 +964,7 @@ class StationaryVAR(Continuous):
         exog=None,
         exog_coefficients=None,
         *,
+        exog_in_observation=False,
         method="svd",
         **kwargs,
     ):
@@ -921,7 +989,10 @@ class StationaryVAR(Continuous):
             exog_coefficients = pt.as_tensor_variable(exog_coefficients)
 
         return super().dist(
-            [coefficients, exog_coefficients, state_cov, exog, endog], method=method, **kwargs
+            [coefficients, exog_coefficients, state_cov, exog, endog],
+            exog_in_observation=exog_in_observation,
+            method=method,
+            **kwargs,
         )
 
     @classmethod
@@ -932,6 +1003,7 @@ class StationaryVAR(Continuous):
         state_cov,
         exog,
         endog,
+        exog_in_observation=False,
         method="svd",
         size=None,
         rng=None,
@@ -951,6 +1023,7 @@ class StationaryVAR(Continuous):
             endog_,
             order=order,
             k_endog=k_endog,
+            exog_in_observation=exog_in_observation,
         )
         next_rng, draws = multivariate_normal(
             mean=means, cov=covariances, rng=rng_, method=method, return_next_rng=True
@@ -960,6 +1033,7 @@ class StationaryVAR(Continuous):
             inputs=[coefficients_, exog_coefficients_, state_cov_, exog_, endog_, rng_],
             outputs=[next_rng, draws],
             ndim_supp=2,
+            exog_in_observation=exog_in_observation,
         )
 
         return op(coefficients, exog_coefficients, state_cov, exog, endog, rng)
@@ -972,17 +1046,31 @@ def stationary_var_logp(
     """Exact log-density of a stationary VAR, condensed onto cross-products of the value."""
     (value,) = values
     order, k_endog = _var_order(coefficients)
+    exog_in_observation = op.exog_in_observation
 
     n_rows = value.shape[0] - order
-    regressors = _stacked_regressors(value, exog, order=order, n_rows=n_rows)
+    regressors = _stacked_regressors(
+        value, exog, order=order, n_rows=n_rows, exog_in_observation=exog_in_observation
+    )
     response = value[order:]
 
     factor = _stationary_cholesky(coefficients, state_cov, order=order, k_endog=k_endog)
-    residuals = value[:order] - exog[:order] @ exog_coefficients.T
+    residuals = value[:order] - _initial_mean(
+        coefficients,
+        exog_coefficients,
+        exog,
+        order=order,
+        k_endog=k_endog,
+        exog_in_observation=exog_in_observation,
+    )
     initial = _initial_logp(factor, residuals, order=order, k_endog=k_endog)
 
     effective = _effective_coefficients(
-        coefficients, exog_coefficients, order=order, k_endog=k_endog
+        coefficients,
+        exog_coefficients,
+        order=order,
+        k_endog=k_endog,
+        exog_in_observation=exog_in_observation,
     )
     conditional = _conditional_logp(
         effective,
