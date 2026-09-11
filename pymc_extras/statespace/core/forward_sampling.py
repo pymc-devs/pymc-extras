@@ -30,6 +30,7 @@ from pymc_extras.statespace.utils.constants import (
     MATRIX_DIMS,
     MATRIX_NAMES,
     OBS_STATE_DIM,
+    OBSERVED_DATA_NAME,
     SHORT_NAME_TO_LONG,
     TIME_DIM,
 )
@@ -120,13 +121,13 @@ def _sample_conditional(
         )
 
         for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs, strict=True):
-            if name == "smoothed":
+            if name == "smoothed" and ss_mod.joint_smoothed_draws:
                 # The simulation smoother draws the whole latent path jointly, so the
                 # states carry their cross-time posterior covariance.
                 kalman_filter, kalman_smoother = ss_mod.make_filters()
                 latent_states = SimulationSmoother(
                     f"{name}_{group}",
-                    a_smooth=mu,
+                    data=forward_model[OBSERVED_DATA_NAME],
                     x0=x0,
                     P0=P0,
                     c=c,

@@ -154,6 +154,12 @@ class PyMCStateSpace:
         The type of Kalman smoother to use. Valid options are "disturbance" and "rts". Both return the same
         smoothed moments; "rts" inverts a ``k_states`` matrix at every step and is retained for cross-checking.
         Default is "disturbance".
+    joint_smoothed_draws : bool, optional
+        If True, ``sample_conditional_prior`` and ``sample_conditional_posterior`` draw the smoothed states as a
+        single trajectory from the simulation smoother, carrying their cross-time posterior covariance. If False,
+        each timestep is drawn from its own marginal, reproducing the smoothed means and per-step covariances but
+        not the correlation between timesteps. Marginal draws are also slower, because each timestep's covariance
+        must be factored; set this to False to compare against the marginals, not to save time. Default is True.
 
     verbose : bool, optional
         If True, displays information about the initialized model. Defaults to True.
@@ -301,6 +307,7 @@ class PyMCStateSpace:
         k_posdef: int,
         filter_type: str = "standard",
         smoother_type: str = "disturbance",
+        joint_smoothed_draws: bool = True,
         verbose: bool = True,
         measurement_error: bool = False,
         mode: str | None = None,
@@ -343,6 +350,7 @@ class PyMCStateSpace:
 
         self.filter_type = filter_type.lower()
         self.smoother_type = smoother_type.lower()
+        self.joint_smoothed_draws = joint_smoothed_draws
         self.make_symbolic_graph()
 
         self.requirement_table = None

@@ -3,11 +3,13 @@ import re
 import numpy as np
 import pandas as pd
 import pymc as pm
+import pytensor.tensor as pt
 import pytest
 
 from numpy.testing import assert_allclose, assert_array_equal
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
+from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     LONG_MATRIX_NAMES,
@@ -39,6 +41,44 @@ def test_sampling_methods(group, kind, ss_mod, idata, rng):
         for output in ["latent", "observed"]:
             assert f"{group}_{output}" in test_idata
             assert not np.any(np.isnan(test_idata[f"{group}_{output}"].values))
+
+
+@pytest.mark.parametrize(
+    "build_kwargs", [dict(joint_smoothed_draws=False)], ids=["marginal_smoothed_draws"]
+)
+def test_conditional_posterior_options_share_the_default_moments(
+    build_kwargs, mock_pymc_sample, rng
+):
+    """
+    Each option changes how draws are produced, never their marginal distribution.
+    """
+    n_obs, n_draws = 30, 150
+    data = pd.DataFrame(
+        rng.normal(size=(n_obs, 1)),
+        index=pd.date_range("2000-01-01", periods=n_obs, freq="MS"),
+        columns=["y"],
+    )
+
+    def smoothed_draws(**kwargs):
+        mod = (
+            st.LevelTrend(name="trend", order=2, innovations_order=1)
+            + st.MeasurementError(name="obs")
+        ).build(verbose=False, **kwargs)
+        with pm.Model(coords=mod.coords):
+            pm.Normal("initial_trend", dims=["state_trend"])
+            pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+            pm.Exponential("sigma_obs", 1)
+            pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
+            mod.build_statespace_graph(data)
+            idata = pm.sample(draws=n_draws, chains=1, random_seed=0)
+
+        return mod.sample_conditional_posterior(idata, random_seed=1)["smoothed_posterior"].values
+
+    default, option = smoothed_draws(), smoothed_draws(**build_kwargs)
+
+    assert np.isfinite(option).all()
+    assert_allclose(option.mean(), default.mean(), atol=0.05 * default.std())
+    assert_allclose(option.std(), default.std(), rtol=0.05)
 
 
 @pytest.mark.parametrize("group", ["posterior", "prior"])
