@@ -184,7 +184,7 @@ def add_data_to_inference_data(
         idata["posterior"] = pm.compute_deterministics(
             posterior_ds.expand_dims(expand_dims),
             model=model,
-            merge_dataset=True,
+            extend_dataset=True,
             progressbar=progressbar,
             compile_kwargs=compile_kwargs,
         )
