@@ -464,6 +464,7 @@ class BayesianVARMAX(PyMCStateSpace):
             data,
             exog=exog,
             exog_coefficients=exog_coefficients,
+            exog_in_observation=True,
             observed=data,
             dims=dims,
         )
