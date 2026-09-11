@@ -539,7 +539,7 @@ class SimulationSmoother(Continuous):
     kalman_filter : BaseFilter
         Filter object exposing ``build_graph``, called once while building the sampling
         graph. A Python-side graph builder, not a random-variable input.
-    kalman_smoother : KalmanSmoother
+    kalman_smoother : DisturbanceSmoother
         Smoother object exposing ``build_graph``, used the same way as ``kalman_filter``.
     sequence_names : iterable of str, optional
         Short names of time-varying matrices, mirroring
@@ -655,20 +655,10 @@ class SimulationSmoother(Continuous):
             alpha_plus = pt.specify_shape(alpha_plus, (T_static, *alpha_plus.type.shape[1:]))
 
         # 2. Filter + smooth y_plus under the same theta.
-        a_filt_plus, _, _, P_filt_plus, *_ = kalman_filter.build_graph(
-            y_plus,
-            x0_,
-            P0_,
-            c_,
-            d_,
-            T_,
-            Z_,
-            R_,
-            H_,
-            Q_,
-        )
+        plus_matrices = (x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_)
+        filter_outputs = kalman_filter.build_graph(y_plus, *plus_matrices)
 
-        a_smooth_plus, _ = kalman_smoother.build_graph(T_, R_, Q_, a_filt_plus, P_filt_plus)
+        a_smooth_plus, _ = kalman_smoother.build_graph(y_plus, plus_matrices, filter_outputs)
 
         if T_static is not None:
             a_smooth_plus = pt.specify_shape(

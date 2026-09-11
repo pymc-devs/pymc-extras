@@ -9,7 +9,8 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_less
 
 from pymc_extras.statespace.filters import (
-    KalmanSmoother,
+    DisturbanceSmoother,
+    RTSSmoother,
     SquareRootFilter,
     StandardFilter,
     UnivariateFilter,
@@ -126,7 +127,7 @@ def test_output_shapes_when_some_states_are_deterministic(filter_name, rng):
 @pytest.fixture
 def f_standard_nd():
     time_varying_names = ("transition", "design", "selection", "obs_cov", "state_cov")
-    ksmoother = KalmanSmoother(time_varying_names=time_varying_names)
+    ksmoother = RTSSmoother(time_varying_names=time_varying_names)
     data = pt.tensor(name="data", dtype=floatX, shape=(None, None))
     a0 = pt.vector(name="a0", dtype=floatX)
     P0 = pt.matrix(name="P0", dtype=floatX)
@@ -148,9 +149,11 @@ def f_standard_nd():
         predicted_covs,
         observed_covs,
         ll_obs,
-    ) = StandardFilter(time_varying_names=time_varying_names).build_graph(*inputs)
+    ) = filter_outputs = StandardFilter(time_varying_names=time_varying_names).build_graph(*inputs)
 
-    smoothed_states, smoothed_covs = ksmoother.build_graph(T, R, Q, filtered_states, filtered_covs)
+    smoothed_states, smoothed_covs = ksmoother.build_graph(
+        data, (a0, P0, c, d, T, Z, R, H, Q), filter_outputs
+    )
 
     outputs = [
         filtered_states,
@@ -394,6 +397,39 @@ def test_square_root_filter_takes_a_covariance_for_P0(rng):
 
     for name, expected, actual in zip(output_names, standard, square_root, strict=True):
         assert_allclose(actual, expected, atol=ATOL, rtol=RTOL, err_msg=name)
+
+
+@pytest.mark.parametrize("stochastic_states", [4, 1], ids=["full_rank_P", "singular_P"])
+@pytest.mark.parametrize("n_missing", [0, 5], ids=["complete", "missing"])
+def test_disturbance_smoother_matches_rts(stochastic_states, n_missing, rng):
+    """
+    The disturbance smoother never inverts ``P``, so it must agree with the RTS form even where
+    ``P`` is singular. A diagonal transition keeps process noise out of the noiseless states, so
+    ``P`` stays rank-deficient at every step rather than filling in.
+    """
+    m, p, n = 4, 1, 30
+    T = np.diag(np.linspace(0.5, 0.9, m)).astype(floatX)
+    R = np.eye(m, dtype=floatX)[:, :stochastic_states]
+    Q = np.eye(stochastic_states, dtype=floatX) * 0.3
+    Z = (rng.normal(size=(p, m)) * 0.5).astype(floatX)
+    H = np.eye(p, dtype=floatX) * 0.4
+    a0, c, d = np.zeros(m, dtype=floatX), np.zeros(m, dtype=floatX), np.zeros(p, dtype=floatX)
+    P0 = (R @ Q @ R.T).astype(floatX)
+
+    y = rng.normal(size=(n, p)).astype(floatX)
+    y[rng.choice(n, n_missing, replace=False), 0] = np.nan
+    matrices = [pt.as_tensor_variable(x) for x in (a0, P0, c, d, T, Z, R, H, Q)]
+    data = pt.specify_shape(pt.as_tensor_variable(y), y.shape)
+
+    filter_outputs = StandardFilter(cov_jitter=0.0).build_graph(data, *matrices)
+    rts_states, rts_covs = RTSSmoother(cov_jitter=0.0).build_graph(data, matrices, filter_outputs)
+    dk_states, dk_covs = DisturbanceSmoother(cov_jitter=0.0).build_graph(
+        data, matrices, filter_outputs
+    )
+
+    assert np.linalg.matrix_rank(filter_outputs[4][-1].eval()) == stochastic_states
+    assert_allclose(dk_states.eval(), rts_states.eval(), atol=1e-6)
+    assert_allclose(dk_covs.eval(), rts_covs.eval(), atol=1e-6)
 
 
 @pytest.mark.parametrize("filter_name", filter_names)

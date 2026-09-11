@@ -40,7 +40,8 @@ from pymc_extras.statespace.core.properties import (
 from pymc_extras.statespace.core.representation import PytensorRepresentation
 from pymc_extras.statespace.filters import (
     ConvergentFilter,
-    KalmanSmoother,
+    DisturbanceSmoother,
+    RTSSmoother,
     SquareRootFilter,
     StandardFilter,
     UnivariateFilter,
@@ -75,6 +76,11 @@ FILTER_FACTORY = {
     "univariate": UnivariateFilter,
     "cholesky": SquareRootFilter,
     "convergent": ConvergentFilter,
+}
+
+SMOOTHER_FACTORY = {
+    "disturbance": DisturbanceSmoother,
+    "rts": RTSSmoother,
 }
 
 
@@ -143,6 +149,11 @@ class PyMCStateSpace:
     filter_type : str, optional
         The type of Kalman filter to use. Valid options are "standard", "univariate", "single", "cholesky", and
         "steady_state". For more information, see the docs for each filter. Default is "standard".
+
+    smoother_type : str, optional
+        The type of Kalman smoother to use. Valid options are "disturbance" and "rts". Both return the same
+        smoothed moments; "rts" inverts a ``k_states`` matrix at every step and is retained for cross-checking.
+        Default is "disturbance".
 
     verbose : bool, optional
         If True, displays information about the initialized model. Defaults to True.
@@ -289,6 +300,7 @@ class PyMCStateSpace:
         k_states: int,
         k_posdef: int,
         filter_type: str = "standard",
+        smoother_type: str = "disturbance",
         verbose: bool = True,
         measurement_error: bool = False,
         mode: str | None = None,
@@ -323,7 +335,14 @@ class PyMCStateSpace:
         if filter_type == "single" and self.k_endog > 1:
             raise ValueError('Cannot use filter_type = "single" with multiple observed time series')
 
+        if smoother_type.lower() not in SMOOTHER_FACTORY.keys():
+            raise NotImplementedError(
+                "The following are valid smoother types: "
+                + ", ".join(list(SMOOTHER_FACTORY.keys()))
+            )
+
         self.filter_type = filter_type.lower()
+        self.smoother_type = smoother_type.lower()
         self.make_symbolic_graph()
 
         self.requirement_table = None
@@ -1167,7 +1186,7 @@ class PyMCStateSpace:
             f"passing new {TIME_DIM!r} coords, before rebuilding."
         )
 
-    def make_filters(self) -> tuple[BaseFilter, KalmanSmoother]:
+    def make_filters(self) -> tuple[BaseFilter, DisturbanceSmoother | RTSSmoother]:
         """
         Return a Kalman filter and smoother configured for this model.
 
@@ -1175,7 +1194,7 @@ class PyMCStateSpace:
         -------
         kalman_filter : BaseFilter
             Filter of the type this model was constructed with.
-        kalman_smoother : KalmanSmoother
+        kalman_smoother : DisturbanceSmoother or RTSSmoother
             Smoother carrying the same time-varying names and jitter.
         """
         kalman_filter = FILTER_FACTORY[self.filter_type](
@@ -1183,9 +1202,14 @@ class PyMCStateSpace:
             cov_jitter=self.cov_jitter,
             missing_fill_value=self.missing_fill_value,
         )
-        kalman_smoother = KalmanSmoother(
+        smoother_class = SMOOTHER_FACTORY[self.smoother_type]
+        smoother_kwargs = dict(
             time_varying_names=self.ssm.time_varying_names, cov_jitter=self.cov_jitter
         )
+        if smoother_class is DisturbanceSmoother:
+            smoother_kwargs["missing_fill_value"] = self.missing_fill_value
+
+        kalman_smoother = smoother_class(**smoother_kwargs)
         return kalman_filter, kalman_smoother
 
     def make_filter_outputs(
@@ -1254,14 +1278,13 @@ class PyMCStateSpace:
 
         # The last output is the pointwise log-likelihood, which the likelihood term owns; every
         # other output carries its canonical name, so key them by it rather than by position.
-        *filter_outputs, _ = kalman_filter.build_graph(
-            pt.as_tensor_variable(data), x0, P0, c, d, T, Z, R, H, Q
-        )
+        data = pt.as_tensor_variable(data)
+        *filter_outputs, _ = kalman_filter.build_graph(data, x0, P0, c, d, T, Z, R, H, Q)
         outputs = {output.name: output for output in filter_outputs}
 
         if not set(SMOOTHER_OUTPUT_NAMES).isdisjoint(names):
             smoothed_states, smoothed_covariances = kalman_smoother.build_graph(
-                T, R, Q, outputs["filtered_states"], outputs["filtered_covariances"]
+                data, (x0, P0, c, d, T, Z, R, H, Q), filter_outputs
             )
             outputs[smoothed_states.name] = smoothed_states
             outputs[smoothed_covariances.name] = smoothed_covariances

@@ -517,7 +517,7 @@ def sample_filter_outputs(
         filter_outputs = kalman_filter.build_graph(data, x0, P0, c, d, T, Z, R, H, Q)
 
         smoother_outputs = kalman_smoother.build_graph(
-            T, R, Q, filter_outputs[0], filter_outputs[3]
+            data, (x0, P0, c, d, T, Z, R, H, Q), filter_outputs
         )
 
         filter_outputs = filter_outputs[:-1] + list(smoother_outputs)

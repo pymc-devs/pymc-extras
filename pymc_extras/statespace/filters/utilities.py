@@ -1,5 +1,6 @@
 from collections.abc import Iterable
 
+import pytensor
 import pytensor.tensor as pt
 
 from pymc_extras.statespace.utils.constants import (
@@ -95,3 +96,48 @@ def stabilize(cov, jitter=JITTER_DEFAULT):
 def quad_form_sym(A, B):
     out = A @ B @ A.mT
     return 0.5 * (out + out.mT)
+
+
+def mask_missing_values(y, Z, H, d, missing_fill_value):
+    """
+    Zero the observation rows that are missing, so they contribute nothing downstream.
+
+    With ``y``, ``Z @ a`` and ``d`` all zero on a missing row, the innovation
+    :math:`v = y - (Z a + d)` is exactly zero there.
+
+    Parameters
+    ----------
+    y : TensorVariable
+        Observation at a single timestep.
+    Z : TensorVariable
+        Design matrix.
+    H : TensorVariable
+        Observation noise covariance.
+    d : TensorVariable
+        Observation intercept.
+    missing_fill_value : float
+        Sentinel marking a missing observation, alongside ``nan``.
+
+    Returns
+    -------
+    y_masked : TensorVariable
+        Observation with missing entries replaced by zero.
+    Z_masked : TensorVariable
+        Design matrix with missing rows zeroed.
+    H_masked : TensorVariable
+        Observation noise covariance with missing rows and columns zeroed, so it stays symmetric.
+    d_masked : TensorVariable
+        Observation intercept with missing entries zeroed.
+    nan_mask : TensorVariable
+        Boolean vector, True where the observation is missing.
+    """
+    nan_mask = pt.or_(pt.isnan(y), pt.eq(y, missing_fill_value))
+    W = pt.diag(pt.bitwise_not(nan_mask).astype(pytensor.config.floatX))
+
+    return (
+        pt.set_subtensor(y[nan_mask], 0.0),
+        W.dot(Z),
+        W.dot(H).dot(W.mT),
+        W.dot(d),
+        nan_mask,
+    )

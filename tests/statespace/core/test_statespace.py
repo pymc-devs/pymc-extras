@@ -12,7 +12,8 @@ from pytensor.graph.traversal import ancestors
 from pytensor.scan.op import Scan
 
 from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
-from pymc_extras.statespace.core.statespace import FILTER_FACTORY, PyMCStateSpace
+from pymc_extras.statespace.core.statespace import FILTER_FACTORY, SMOOTHER_FACTORY, PyMCStateSpace
+from pymc_extras.statespace.filters import DisturbanceSmoother, RTSSmoother
 from pymc_extras.statespace.filters.distributions import KalmanFilterRV
 from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
@@ -37,6 +38,28 @@ def test_invalid_filter_name_raises():
     msg = "The following are valid filter types: " + ", ".join(list(FILTER_FACTORY.keys()))
     with pytest.raises(NotImplementedError, match=msg):
         mod = make_statespace_mod(k_endog=1, k_states=5, k_posdef=1, filter_type="invalid_filter")
+
+
+def test_invalid_smoother_name_raises():
+    msg = "The following are valid smoother types: " + ", ".join(list(SMOOTHER_FACTORY.keys()))
+    with pytest.raises(NotImplementedError, match=msg):
+        make_statespace_mod(
+            k_endog=1, k_states=5, k_posdef=1, filter_type="standard", smoother_type="invalid"
+        )
+
+
+@pytest.mark.parametrize(
+    "smoother_type, expected",
+    [("disturbance", DisturbanceSmoother), ("rts", RTSSmoother)],
+    ids=["disturbance", "rts"],
+)
+def test_make_filters_returns_the_requested_smoother(smoother_type, expected):
+    mod = make_statespace_mod(
+        k_endog=1, k_states=5, k_posdef=1, filter_type="standard", smoother_type=smoother_type
+    )
+    _, smoother = mod.make_filters()
+
+    assert isinstance(smoother, expected)
 
 
 def test_unpack_matrices(rng):
@@ -431,9 +454,9 @@ def test_build_graph_does_not_mutate_the_filters(ss_mod):
     matrices = ss_mod._insert_constant_timestep(
         list(ss_mod._unpack_statespace_with_placeholders()), n_timesteps
     )
-    _, _, _, _, T, _, R, _, Q = matrices
-    outputs = kalman_filter.build_graph(pt.zeros((n_timesteps, ss_mod.k_endog)), *matrices)
-    kalman_smoother.build_graph(T, R, Q, outputs[0], outputs[3])
+    data = pt.zeros((n_timesteps, ss_mod.k_endog))
+    outputs = kalman_filter.build_graph(data, *matrices)
+    kalman_smoother.build_graph(data, matrices, outputs)
 
     assert kalman_filter.__dict__ == filter_state
     assert kalman_smoother.__dict__ == smoother_state
