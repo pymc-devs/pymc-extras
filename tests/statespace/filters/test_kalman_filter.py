@@ -603,6 +603,37 @@ def assert_results_match(out_std, out_conv, names, err_prefix=""):
         assert_allclose(conv, std, atol=ATOL, rtol=RTOL, err_msg=f"{err_prefix}{name} mismatch")
 
 
+N_FORWARD_OUTPUTS = len(output_names)
+
+
+@cache
+def get_convergent_test_function(filter_name: str) -> Callable:
+    """
+    Compile a filter with unknown shapes once, returning every forward output followed by the loss
+    and its gradients, so each ConvergentFilter comparison reuses the same compiled graph.
+    """
+    match filter_name:
+        case "StandardFilter":
+            kfilter = StandardFilter()
+        case "ConvergentFilter":
+            kfilter = ConvergentFilter()
+        case "ConvergentFilter(tol=0)":
+            kfilter = ConvergentFilter(tol=0.0)
+        case _:
+            raise ValueError(f"Unknown filter name: {filter_name}")
+
+    inputs, outputs = initialize_filter(kfilter)
+    loss = outputs[-1].sum()
+    grads = pt.grad(loss, inputs[1:])
+
+    return pytensor.function(inputs, [*outputs, loss, *grads], on_unused_input="ignore")
+
+
+def _forward_and_gradients(filter_name, vals):
+    results = get_convergent_test_function(filter_name)(*vals)
+    return results[:N_FORWARD_OUTPUTS], results[N_FORWARD_OUTPUTS:]
+
+
 @pytest.mark.parametrize(
     "m,p,n_shocks,n",
     [(5, 2, 5, 100), (10, 3, 10, 200)],
@@ -611,15 +642,8 @@ def assert_results_match(out_std, out_conv, names, err_prefix=""):
 def test_convergent_filter_forward_matches_standard(m, p, n_shocks, n, rng):
     """ConvergentFilter forward outputs should match StandardFilter to numerical precision."""
     vals = _make_stationary_system(m, p, n_shocks, n, rng)
-
-    def build(filter_cls):
-        inputs, outputs = initialize_filter(filter_cls(), p=p, m=m, r=n_shocks, n=n)
-        return pytensor.function(inputs, outputs, on_unused_input="ignore")
-
-    fn_std = build(StandardFilter)
-    fn_conv = build(ConvergentFilter)
-    out_std = fn_std(*vals)
-    out_conv = fn_conv(*vals)
+    out_std, _ = _forward_and_gradients("StandardFilter", vals)
+    out_conv, _ = _forward_and_gradients("ConvergentFilter", vals)
 
     # The tail path only runs once the Riccati recursion converges. Without this the comparison
     # could pass vacuously, with ConvergentFilter having degenerated into StandardFilter.
@@ -638,21 +662,10 @@ def test_convergent_filter_gradient_matches_standard(m, p, n_shocks, n, rng):
     """ConvergentFilter's analytic gradients should match StandardFilter's autodiff gradients for
     every model parameter."""
     vals = _make_stationary_system(m, p, n_shocks, n, rng)
+    _, grads_std = _forward_and_gradients("StandardFilter", vals)
+    _, grads_conv = _forward_and_gradients("ConvergentFilter", vals)
 
-    def build(filter_cls):
-        inputs, outputs = initialize_filter(filter_cls(), p=p, m=m, r=n_shocks, n=n)
-        data_, a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = inputs
-        ll_obs = outputs[-1]
-        loss = ll_obs.sum()
-        grads = pt.grad(loss, [a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_])
-        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
-
-    fn_std = build(StandardFilter)
-    fn_conv = build(ConvergentFilter)
-    out_std = fn_std(*vals)
-    out_conv = fn_conv(*vals)
-
-    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="ConvergentFilter ")
+    assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="ConvergentFilter ")
 
 
 def test_convergent_filter_rejects_time_varying_params():
@@ -697,11 +710,8 @@ def test_convergent_filter_asserts_nan_symbolic_data(rng):
     # Inject NaN at runtime
     vals[0][5, 0] = np.nan
 
-    inputs, outputs = initialize_filter(ConvergentFilter(), p=p, m=m, r=n_shocks, n=n)
-    fn = pytensor.function(inputs, outputs, on_unused_input="ignore")
-
     with pytest.raises(AssertionError, match="missing data"):
-        fn(*vals)
+        get_convergent_test_function("ConvergentFilter")(*vals)
 
 
 def test_convergent_filter_rejects_missing_fill_sentinel(rng):
@@ -731,15 +741,9 @@ def test_convergent_filter_singular_H_gradient_matches_standard(rng):
     vals[8][0, :] = 0.0
     vals[8][:, 0] = 0.0
 
-    def build(kfilter):
-        inputs, outputs = initialize_filter(kfilter, p=p, m=m, r=n_shocks, n=n)
-        loss = outputs[-1].sum()
-        grads = pt.grad(loss, inputs[1:])
-        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
-
-    out_std = build(StandardFilter())(*vals)
-    out_conv = build(ConvergentFilter())(*vals)
-    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="singular H: ")
+    _, grads_std = _forward_and_gradients("StandardFilter", vals)
+    _, grads_conv = _forward_and_gradients("ConvergentFilter", vals)
+    assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="singular H: ")
 
 
 def _make_local_level_system(n, rng):
@@ -770,14 +774,8 @@ def test_convergent_filter_local_level_matches_standard(rng):
     n = 250
     vals = _make_local_level_system(n, rng)
 
-    def build(filter_cls):
-        inputs, outputs = initialize_filter(filter_cls(), p=1, m=1, r=1, n=n)
-        ll_obs = outputs[-1]
-        grads = pt.grad(ll_obs.sum(), inputs[1:])
-        return pytensor.function(inputs, [*outputs, *grads], on_unused_input="ignore")
-
-    out_std = build(StandardFilter)(*vals)
-    out_conv = build(ConvergentFilter)(*vals)
+    out_std = get_convergent_test_function("StandardFilter")(*vals)
+    out_conv = get_convergent_test_function("ConvergentFilter")(*vals)
     for std, conv in zip(out_std, out_conv, strict=True):
         assert_allclose(np.asarray(conv), np.asarray(std), atol=ATOL, rtol=RTOL)
 
@@ -789,15 +787,9 @@ def test_convergent_filter_k_equals_n_gradient_matches_standard(rng):
     m, p, n_shocks, n = 4, 2, 4, 40
     vals = _make_stationary_system(m, p, n_shocks, n, rng)
 
-    def build(kfilter):
-        inputs, outputs = initialize_filter(kfilter, p=p, m=m, r=n_shocks, n=n)
-        loss = outputs[-1].sum()
-        grads = pt.grad(loss, inputs[1:])
-        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
-
-    out_std = build(StandardFilter())(*vals)
-    out_conv = build(ConvergentFilter(tol=0.0))(*vals)
-    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="tol=0: ")
+    _, grads_std = _forward_and_gradients("StandardFilter", vals)
+    _, grads_conv = _forward_and_gradients("ConvergentFilter(tol=0)", vals)
+    assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="tol=0: ")
 
 
 def test_convergent_filter_builds_and_runs_at_float32(rng):
