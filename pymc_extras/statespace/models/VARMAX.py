@@ -30,6 +30,14 @@ from pymc_extras.statespace.utils.constants import (
     SHOCK_AUX_DIM,
     SHOCK_DIM,
     TIME_DIM,
+    TREND_DIM,
+)
+from pymc_extras.statespace.utils.trend import (
+    TrendSpec,
+    constant_as_regressor,
+    parse_trend,
+    trend_design,
+    trend_names,
 )
 
 floatX = pytensor.config.floatX
@@ -109,6 +117,8 @@ class BayesianVARMAX(PyMCStateSpace):
         order: tuple[int, int],
         endog_names: list[str] | None = None,
         exog_state_names: list[str] | dict[str, list[str]] | None = None,
+        trend: TrendSpec = None,
+        trend_offset: int = 1,
         stationary_initialization: bool = False,
         filter_type: str = "standard",
         measurement_error: bool = False,
@@ -134,6 +144,15 @@ class BayesianVARMAX(PyMCStateSpace):
             variables. If a dict, keys should be the names of the endogenous variables, and values should be lists of the
             exogenous variable names for that endogenous variable. Endogenous variables not included in the dict will
             be assumed to have no exogenous variables. If None, no exogenous variables will be included.
+
+        trend : {None, "n", "c", "ct", "ctt"} or sequence of int, optional
+            Deterministic polynomial trend :math:`A(t)` added to the VAR equation, as in statsmodels. ``"c"`` is a
+            constant, ``"ct"`` adds a linear term, ``"ctt"`` a quadratic. A sequence of ints gives presence flags per
+            power, so ``[1, 1, 0, 1]`` includes :math:`1, t, t^3`. Each endogenous series gets its own coefficients,
+            registered as ``trend_params``. Default None, no trend.
+
+        trend_offset : int, default 1
+            Value of :math:`t` at the first observation, so the linear term runs ``1, 2, ..., n``.
 
         stationary_initialization: bool, default False
             If true, the initial state and initial state covariance will not be assigned priors. Instead, their steady
@@ -201,6 +220,8 @@ class BayesianVARMAX(PyMCStateSpace):
 
         self.endog_names = list(endog_names)
         self.exog_state_names = exog_state_names
+        self.trend_powers = parse_trend(trend)
+        self.trend_offset = trend_offset
 
         self.k_exog = k_exog
         self.p, self.q = order
@@ -228,6 +249,7 @@ class BayesianVARMAX(PyMCStateSpace):
         self.param_counts = {
             "x0": k_states * (1 - self.stationary_initialization),
             "P0": k_states**2 * (1 - self.stationary_initialization),
+            "trend": k_endog * len(self.trend_powers),
             "AR": k_endog**2 * self.p,
             "MA": k_endog**2 * self.q,
             "state_cov": k_posdef**2,
@@ -256,6 +278,16 @@ class BayesianVARMAX(PyMCStateSpace):
                     shape=(k_states, k_states),
                     dims=(ALL_STATE_DIM, ALL_STATE_AUX_DIM),
                     constraints="Positive Semi-definite",
+                )
+            )
+
+        if self.trend_powers:
+            parameters.append(
+                Parameter(
+                    name="trend_params",
+                    shape=(k_endog, len(self.trend_powers)),
+                    dims=(OBS_STATE_DIM, TREND_DIM),
+                    constraints=None,
                 )
             )
 
@@ -372,6 +404,9 @@ class BayesianVARMAX(PyMCStateSpace):
     def set_coords(self) -> Coord | tuple[Coord, ...] | None:
         coords = list(self.default_coords())
 
+        if self.trend_powers:
+            coords.append(Coord(dimension=TREND_DIM, labels=trend_names(self.trend_powers)))
+
         # AR/MA param coords
         if self.p > 0:
             coords.append(Coord(dimension=AR_PARAM_DIM, labels=tuple(range(1, self.p + 1))))
@@ -400,23 +435,29 @@ class BayesianVARMAX(PyMCStateSpace):
         Register a :class:`~pymc_extras.statespace.filters.distributions.StationaryVAR`.
 
         The closed form covers an autoregression with no moving average terms and no measurement
-        error, initialized at its stationary distribution. Anything else is filtered,
-        including data with missing values, which only the filter marginalizes.
+        error, initialized at its stationary distribution, with at most a constant trend. Anything
+        else is filtered, including data with missing values, which only the filter marginalizes.
         """
         if self.q > 0 or self.p == 0 or self.measurement_error:
             return super().make_likelihood(data, matrices, dims, missing)
-        if not self.stationary_initialization:
+        if not self.stationary_initialization or self.trend_powers not in ((), (0,)):
             return super().make_likelihood(data, matrices, dims, missing)
         if missing.any():
             return super().make_likelihood(data, matrices, dims, missing)
 
         k_endog = self.k_endog
         *_, transition, _, _, _, state_cov = matrices
+        coefficients = transition[:k_endog, : k_endog * self.p]
         exog, exog_coefficients = self._exogenous_regression()
+
+        if self.trend_powers == (0,):
+            exog, exog_coefficients = constant_as_regressor(
+                self._constant_mean(coefficients), exog, exog_coefficients, data.shape[0]
+            )
 
         return StationaryVAR(
             OBSERVED_LIKELIHOOD_NAME,
-            transition[:k_endog, : k_endog * self.p],
+            coefficients,
             state_cov,
             data,
             exog=exog,
@@ -424,6 +465,13 @@ class BayesianVARMAX(PyMCStateSpace):
             observed=data,
             dims=dims,
         )
+
+    def _constant_mean(self, coefficients):
+        r"""The level :math:`(I - \sum_l A_l)^{-1} c` a constant intercept :math:`c` implies."""
+        constant = modelcontext(None)["trend_params"][:, 0]
+        lag_sum = coefficients.reshape((self.k_endog, self.p, self.k_endog)).sum(axis=1)
+
+        return pt.linalg.solve(pt.eye(self.k_endog) - lag_sum, constant, b_ndim=1)
 
     def _exogenous_regression(self):
         """
@@ -454,6 +502,27 @@ class BayesianVARMAX(PyMCStateSpace):
             offset += width
 
         return pt.concatenate(data, axis=1), coefficients
+
+    def _register_trend(self):
+        r"""
+        Write the polynomial trend into the first ``k_endog`` rows of the state intercept.
+
+        The filter applies the intercept of step ``t`` to the transition into ``t + 1``, so the
+        design starts one period past ``trend_offset`` for the term to reach ``y_t`` at
+        :math:`A(t + \text{offset})`. A constant keeps the intercept static.
+        """
+        trend_params = self.make_and_register_variable(
+            "trend_params", shape=(self.k_endog, len(self.trend_powers)), dtype=floatX
+        )
+        padding = self.k_states - self.k_endog
+
+        if self.trend_powers == (0,):
+            self.ssm["state_intercept"] = pt.pad(trend_params[:, 0], [(0, padding)])
+            return
+
+        design = trend_design(self.trend_powers, self.n_timesteps, self.trend_offset + 1)
+        self.ssm["state_intercept"] = pt.pad(design @ trend_params.T, [(0, 0), (0, padding)])
+        self.ssm.declare_time_varying("state_intercept")
 
     def make_symbolic_graph(self) -> None:
         # Initialize the matrices
@@ -591,12 +660,17 @@ class BayesianVARMAX(PyMCStateSpace):
             self.ssm["obs_intercept"] = obs_intercept
             self.ssm.declare_time_varying("obs_intercept")
 
+        if self.trend_powers:
+            self._register_trend()
+
         if self.stationary_initialization:
             # Solve for matrix quadratic for P0
             T = self.ssm["transition"]
             R = self.ssm["selection"]
             Q = self.ssm["state_cov"]
             c = self.ssm["state_intercept"]
+            if "state_intercept" in self.ssm.time_varying_names:
+                c = c[0]
 
             x0 = pt.linalg.solve(pt.eye(T.shape[0]) - T, c, assume_a="gen", check_finite=False)
             P0 = solve_discrete_lyapunov(
