@@ -7,7 +7,7 @@ dependencies:
   - better-optimize>=0.4.2,<1.0
   - dask<2025.1.1
   - xhistogram
-  - statsmodels
+  - statsmodels>=0.15
   - numba
   - pytest
   - pytest-cov

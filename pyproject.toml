@@ -51,7 +51,7 @@ dev = [
   "pytest>=6.0,<10.0",
   "dask[all]<2025.1.1",
   "blackjax>=0.12,<2.0",
-  "statsmodels",
+  "statsmodels>=0.15",
 ]
 docs = [
   "nbsphinx>=0.4.2,<1.0",
