@@ -9,6 +9,7 @@ import pytest
 import statsmodels.api as sm
 
 from numpy.testing import assert_allclose, assert_array_less
+from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.testing import mock_sample_setup_and_teardown
 
 from pymc_extras.statespace import BayesianSARIMAX
@@ -613,3 +614,93 @@ def test_rebuilding_with_missing_data_raises(rng):
 
     with pymc_model, pytest.raises(ValueError, match="cannot marginalize"):
         mod.build_statespace_graph(gappy)
+
+
+@pytest.mark.parametrize(
+    "order, trend, k_exog, expected_op",
+    [
+        ((2, 0, 0), "c", 0, StationaryVARRV),
+        ((2, 0, 0), "c", 2, StationaryVARRV),
+        ((2, 0, 0), "ct", 0, KalmanFilterRV),
+        ((1, 1, 1), "c", 0, KalmanFilterRV),
+        ((1, 0, 0), [1, 0, 1], 0, KalmanFilterRV),
+    ],
+    ids=["constant", "constant_with_exog", "linear", "drift_with_differencing", "flags"],
+)
+def test_trend_likelihood_matches_statsmodels(order, trend, k_exog, expected_op, rng):
+    """
+    A constant folds into the closed form as a level shift; anything else is filtered.
+
+    statsmodels' ``SARIMAX`` indexes the trend one period earlier than this model, so it needs
+    ``trend_offset`` one higher to describe the same trend.
+    """
+    p, d, q = order
+    data = rng.normal(size=(60, 1)).astype(floatX)
+    exog = rng.normal(size=(60, k_exog)).astype(floatX) if k_exog else None
+    initialization = {} if d == 0 else {"initialization": "approximate_diffuse"}
+    sm_sarimax = sm.tsa.SARIMAX(
+        data, exog=exog, order=order, trend=trend, trend_offset=2, **initialization
+    )
+
+    mod = BayesianSARIMAX(
+        order=order,
+        trend=trend,
+        exog_state_names=[f"x{i}" for i in range(k_exog)] or None,
+        stationary_initialization=d == 0,
+        verbose=False,
+    )
+    k_trend = mod.param_info["trend_params"]["shape"][0]
+
+    params = {
+        "trend_params": (rng.normal(size=(k_trend,)) * 0.1).astype(floatX),
+        "ar_params": [0.5, -0.2][:p],
+        "sigma_state": 1.3,
+    }
+    if q:
+        params["ma_params"] = [0.3]
+    if k_exog:
+        params["beta_exog"] = [0.7, -1.1]
+    if d:
+        params["x0"] = np.zeros(mod.k_states)
+        params["P0"] = (
+            np.eye(mod.k_states) * sm_sarimax.ssm.initialization.approximate_diffuse_variance
+        )
+
+    sm_params = np.r_[
+        params["trend_params"],
+        params.get("beta_exog", []),
+        params["ar_params"],
+        params.get("ma_params", []),
+        params["sigma_state"] ** 2,
+    ]
+    assert len(sm_params) == sm_sarimax.k_params
+
+    pymc_model, built, _ = compare_likelihood_to_filter(
+        mod, params, data, {"exogenous_data": exog} if k_exog else None
+    )
+
+    assert isinstance(pymc_model["obs"].owner.op, expected_op)
+    assert_allclose(built, sm_sarimax.loglike(sm_params), rtol=1e-6)
+
+
+def test_constant_with_differencing_forecasts_as_drift(rng):
+    n_obs = 40
+    time_idx = pd.date_range(start="2020-01-01", periods=n_obs, freq="D")
+    df = pd.DataFrame(rng.normal(size=(n_obs, 1)), columns=["y"], index=time_idx).astype(floatX)
+
+    mod = BayesianSARIMAX(
+        order=(1, 1, 0), trend="c", stationary_initialization=False, verbose=False
+    )
+    with pm.Model(coords=mod.coords) as m:
+        pm.Deterministic("x0", pt.zeros(mod.k_states), dims=mod.param_dims["x0"])
+        pm.Deterministic("P0", pt.eye(mod.k_states), dims=mod.param_dims["P0"])
+        pm.Deterministic("ar_params", pt.zeros(1), dims=mod.param_dims["ar_params"])
+        pm.Deterministic("sigma_state", pt.as_tensor(1e-4))
+        pm.Deterministic("trend_params", pt.as_tensor([0.5]), dims=mod.param_dims["trend_params"])
+        mod.build_statespace_graph(df)
+
+    with freeze_dims_and_data(m):
+        prior = pm.sample_prior_predictive(draws=1, random_seed=rng)
+    forecast = mod.forecast(prior, periods=5, group="prior", random_seed=rng)
+
+    assert_allclose(np.diff(forecast.forecast_observed.values[0, 0, :, 0]), 0.5, atol=1e-3)
