@@ -34,6 +34,14 @@ from pymc_extras.statespace.utils.constants import (
     SEASONAL_AR_PARAM_DIM,
     SEASONAL_MA_PARAM_DIM,
     TIME_DIM,
+    TREND_DIM,
+)
+from pymc_extras.statespace.utils.trend import (
+    TrendSpec,
+    constant_as_regressor,
+    parse_trend,
+    trend_design,
+    trend_names,
 )
 
 
@@ -145,7 +153,8 @@ class BayesianSARIMAX(PyMCStateSpace):
         (1- \phi_1 B - \cdots - \phi_p B^p) (1-B)^d \eta_{t} &= (1 + \theta_1 B + \cdots + \theta_q B^q) \varepsilon_t
         \end{align}
 
-    Where the design matrix `X` can include a constant, trends, or exogenous regressors.
+    Where the design matrix :math:`X` holds exogenous regressors. Deterministic terms are specified through ``trend``
+    and enter the ARMA equation of the differenced series instead, so a constant is a drift under differencing.
 
     ARIMA models can be represented in statespace form, as described in [1]. For more details, see chapters 3.4, 3.6,
     and 8.4.
@@ -185,6 +194,8 @@ class BayesianSARIMAX(PyMCStateSpace):
         order: tuple[int, int, int],
         seasonal_order: tuple[int, int, int, int] | None = None,
         exog_state_names: Sequence[str] | None = None,
+        trend: TrendSpec = None,
+        trend_offset: int = 1,
         stationary_initialization: bool = True,
         filter_type: str = "standard",
         smoother_type: str = "disturbance",
@@ -220,6 +231,17 @@ class BayesianSARIMAX(PyMCStateSpace):
 
         exog_state_names : Sequence of str, optional
             Names of the exogenous state variables.
+
+        trend : {None, "n", "c", "ct", "ctt"} or sequence of int, optional
+            Deterministic polynomial trend :math:`A(t)` added to the ARMA equation of the differenced series, as in
+            statsmodels. ``"c"`` is a constant, ``"ct"`` adds a linear term, ``"ctt"`` a quadratic. A sequence of ints
+            gives presence flags per power, so ``[1, 1, 0, 1]`` includes :math:`1, t, t^3`. With differencing, a
+            constant is a drift in levels. Coefficients are registered as ``trend_params``. Default None, no trend.
+
+        trend_offset : int, default 1
+            Value of :math:`t` at the first observation, so the linear term runs ``1, 2, ..., n``. This is the
+            convention of statsmodels' ``VARMAX``. statsmodels' ``SARIMAX`` indexes the trend one period earlier, so
+            its ``trend_offset`` is this one plus one.
 
         stationary_initialization : bool, default True
             If true, the initial state and initial state covariance will not be assigned priors. Instead, their steady
@@ -279,6 +301,8 @@ class BayesianSARIMAX(PyMCStateSpace):
 
         self.exog_state_names = tuple(exog_state_names) if exog_state_names is not None else None
         self.k_exog = k_exog
+        self.trend_powers = parse_trend(trend)
+        self.trend_offset = trend_offset
 
         self.P, self.D, self.Q, self.S = seasonal_order
         _verify_order(self.p, self.d, self.q, self.P, self.D, self.Q, self.S)
@@ -407,6 +431,16 @@ class BayesianSARIMAX(PyMCStateSpace):
                 )
             )
 
+        if self.trend_powers:
+            parameters.append(
+                Parameter(
+                    name="trend_params",
+                    shape=(len(self.trend_powers),),
+                    dims=(TREND_DIM,),
+                    constraints=None,
+                )
+            )
+
         parameters.append(
             Parameter(
                 name="sigma_state",
@@ -487,6 +521,9 @@ class BayesianSARIMAX(PyMCStateSpace):
         if self.k_exog > 0:
             coords.append(Coord(dimension=EXOG_STATE_DIM, labels=tuple(self.exog_state_names)))
 
+        if self.trend_powers:
+            coords.append(Coord(dimension=TREND_DIM, labels=trend_names(self.trend_powers)))
+
         return tuple(coords)
 
     def _stationary_initialization(self):
@@ -495,6 +532,8 @@ class BayesianSARIMAX(PyMCStateSpace):
         R = self.ssm["selection"]
         Q = self.ssm["state_cov"]
         c = self.ssm["state_intercept"]
+        if "state_intercept" in self.ssm.time_varying_names:
+            c = c[0]
 
         x0 = pt.linalg.solve(pt.identity_like(T) - T, c, assume_a="gen", check_finite=False)
         P0 = solve_discrete_lyapunov(T, pt.linalg.matrix_dot(R, Q, R.T), method="bilinear")
@@ -505,14 +544,16 @@ class BayesianSARIMAX(PyMCStateSpace):
         """
         Register a :class:`~pymc_extras.statespace.filters.distributions.StationaryVAR`.
 
-        The closed form covers a pure autoregression, seasonal or not, with no measurement error
-        and a stationary initialization -- which also rules out differencing, since the two
-        cannot be combined. Anything else is filtered,
-        including data with missing values, which only the filter marginalizes.
+        The closed form covers a pure autoregression, seasonal or not, with no measurement error,
+        a stationary initialization -- which also rules out differencing, since the two cannot be
+        combined -- and at most a constant trend. Anything else is filtered, including data with
+        missing values, which only the filter marginalizes.
         """
         if self.q > 0 or self.Q > 0 or self.p + self.P == 0 or self.measurement_error:
             return super().make_likelihood(data, matrices, dims, missing)
         if not self.stationary_initialization or self.state_structure != "fast":
+            return super().make_likelihood(data, matrices, dims, missing)
+        if self.trend_powers not in ((), (0,)):
             return super().make_likelihood(data, matrices, dims, missing)
         if missing.any():
             return super().make_likelihood(data, matrices, dims, missing)
@@ -520,14 +561,22 @@ class BayesianSARIMAX(PyMCStateSpace):
         pymc_model = modelcontext(None)
         *_, transition, _, _, _, state_cov = matrices
 
+        # For a pure autoregression the Harvey representation carries the expanded multiplicative
+        # AR polynomial in the first column of the transition.
+        coefficients = transition[:, 0][None, :]
+
         exog = pymc_model["exogenous_data"] if self.k_exog > 0 else None
         exog_coefficients = pymc_model["beta_exog"][None, :] if self.k_exog > 0 else None
 
-        # For a pure autoregression the Harvey representation carries the expanded multiplicative
-        # AR polynomial in the first column of the transition.
+        if self.trend_powers == (0,):
+            mean = pymc_model["trend_params"][0] / (1 - coefficients.sum())
+            exog, exog_coefficients = constant_as_regressor(
+                mean, exog, exog_coefficients, data.shape[0]
+            )
+
         return StationaryVAR(
             OBSERVED_LIKELIHOOD_NAME,
-            transition[:, 0][None, :],
+            coefficients,
             state_cov,
             data,
             exog=exog,
@@ -535,6 +584,29 @@ class BayesianSARIMAX(PyMCStateSpace):
             observed=data,
             dims=dims,
         )
+
+    def _register_trend(self):
+        r"""
+        Write the polynomial trend into the state intercept on the first ARMA state.
+
+        The filter applies the intercept of step ``t`` to the transition into ``t + 1``, so the
+        design starts one period past ``trend_offset`` for the term to reach ``y_t`` at
+        :math:`A(t + \text{offset})`. A constant keeps the intercept static.
+        """
+        trend_params = self.make_and_register_variable(
+            "trend_params", shape=(len(self.trend_powers),), dtype=floatX
+        )
+        row = self._k_diffs
+
+        if self.trend_powers == (0,):
+            intercept = pt.zeros((self.k_states,), dtype=floatX)
+            self.ssm["state_intercept"] = pt.set_subtensor(intercept[row], trend_params[0])
+            return
+
+        design = trend_design(self.trend_powers, self.n_timesteps, self.trend_offset + 1)
+        intercept = pt.zeros((self.n_timesteps, self.k_states), dtype=floatX)
+        self.ssm["state_intercept"] = pt.set_subtensor(intercept[:, row], design @ trend_params)
+        self.ssm.declare_time_varying("state_intercept")
 
     def make_symbolic_graph(self) -> None:
         p, d, q = self.p, self.d, self.q
@@ -669,6 +741,9 @@ class BayesianSARIMAX(PyMCStateSpace):
 
             self.ssm["obs_intercept"] = (exog_data @ exog_beta)[:, None]
             self.ssm.declare_time_varying("obs_intercept")
+
+        if self.trend_powers:
+            self._register_trend()
 
         # Set up the state covariance matrix
         state_cov = self.make_and_register_variable(

@@ -866,3 +866,74 @@ def test_closed_form_likelihood_matches_the_kalman_filter(exog_state_names, rng)
 
     assert isinstance(pymc_model["obs"].owner.op, StationaryVARRV)
     assert_allclose(built, kalman, atol=1e-8)
+
+
+@pytest.mark.parametrize(
+    "trend, expected_op",
+    [("c", StationaryVARRV), ("ct", KalmanFilterRV)],
+    ids=["constant", "linear"],
+)
+def test_trend_likelihood_matches_statsmodels(data, trend, expected_op, rng):
+    """
+    A constant folds into the closed form as a level shift; a time-varying trend is filtered.
+    Both agree with statsmodels' ``VARMAX``, which shares the timing of the state intercept.
+    """
+    sm_var = sm.tsa.VARMAX(data, order=(1, 0), trend=trend)
+
+    params = {
+        "trend_params": (rng.normal(size=(3, len(trend))) * 0.1).astype(floatX),
+        "ar_params": (rng.normal(size=(3, 1, 3)) * 0.2).astype(floatX),
+        "state_cov": np.eye(3, dtype=floatX),
+    }
+    sm_params = np.concatenate(
+        [
+            params["trend_params"].ravel(),
+            params["ar_params"].reshape(3, 3).ravel(),
+            np.eye(3)[np.tril_indices(3)],
+        ]
+    )
+    assert len(sm_params) == sm_var.k_params
+
+    mod = BayesianVARMAX(
+        endog_names=data.columns.tolist(),
+        order=(1, 0),
+        trend=trend,
+        stationary_initialization=True,
+        verbose=False,
+    )
+    assert mod.coords["trend"] == ("constant", "linear")[: len(trend)]
+
+    pymc_model, built, _ = compare_likelihood_to_filter(mod, params, data.values)
+
+    assert isinstance(pymc_model["obs"].owner.op, expected_op)
+    assert_allclose(built, sm_var.loglike(sm_params), rtol=1e-6)
+
+
+def test_forecast_continues_the_trend(rng):
+    """The trend is built from the symbolic timestep count, so a forecast needs no scenario."""
+    n_obs = 40
+    time_idx = pd.date_range(start="2020-01-01", periods=n_obs, freq="D")
+    df = pd.DataFrame(rng.normal(size=(n_obs, 2)), columns=["a", "b"], index=time_idx).astype(
+        floatX
+    )
+    trend_params = np.array([[1.0, 0.5], [0.0, -0.25]], dtype=floatX)
+
+    mod = BayesianVARMAX(endog_names=["a", "b"], order=(1, 0), trend="ct", verbose=False)
+    with pm.Model(coords=mod.coords) as m:
+        pm.Deterministic("x0", pt.zeros(mod.k_states), dims=mod.param_dims["x0"])
+        pm.Deterministic("P0", pt.eye(mod.k_states), dims=mod.param_dims["P0"])
+        pm.Deterministic("ar_params", pt.zeros((2, 1, 2)), dims=mod.param_dims["ar_params"])
+        pm.Deterministic("state_cov", 1e-8 * pt.eye(2), dims=mod.param_dims["state_cov"])
+        pm.Deterministic(
+            "trend_params", pt.as_tensor(trend_params), dims=mod.param_dims["trend_params"]
+        )
+        mod.build_statespace_graph(df)
+
+    with freeze_dims_and_data(m):
+        prior = pm.sample_prior_predictive(draws=1, random_seed=rng)
+    forecast = mod.forecast(prior, periods=5, group="prior", random_seed=rng)
+
+    # Observation i (1-based) receives A(i), and the forecast picks up at i = n_obs + 1.
+    time = np.arange(n_obs + 1, n_obs + 6)
+    expected = np.stack([trend_params[:, 0] + trend_params[:, 1] * t for t in time])
+    assert_allclose(forecast.forecast_observed.values[0, 0], expected, atol=1e-3)
