@@ -49,7 +49,8 @@ jobs:
           - tests/model
           - tests/statespace/core/test_statespace.py
           - tests/statespace/filters/test_kalman_filter.py
-          - tests/statespace --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py
+          - tests/statespace/models
+          - tests/statespace --ignore tests/statespace/models --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py
           - tests/distributions
           - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions --ignore tests/inference/pathfinder
       fail-fast: false
@@ -97,7 +98,8 @@ jobs:
           - tests/model
           - tests/statespace/core/test_statespace.py
           - tests/statespace/filters/test_kalman_filter.py
-          - tests/statespace --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py
+          - tests/statespace/models
+          - tests/statespace --ignore tests/statespace/models --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py
           - tests/distributions
           - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions
       fail-fast: false
