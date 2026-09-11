@@ -427,9 +427,13 @@ def test_disturbance_smoother_matches_rts(stochastic_states, n_missing, rng):
         data, matrices, filter_outputs
     )
 
-    assert np.linalg.matrix_rank(filter_outputs[4][-1].eval()) == stochastic_states
-    assert_allclose(dk_states.eval(), rts_states.eval(), atol=1e-6)
-    assert_allclose(dk_covs.eval(), rts_covs.eval(), atol=1e-6)
+    P_last, dk_states, rts_states, dk_covs, rts_covs = pytensor.function(
+        [], [filter_outputs[4][-1], dk_states, rts_states, dk_covs, rts_covs]
+    )()
+
+    assert np.linalg.matrix_rank(P_last) == stochastic_states
+    assert_allclose(dk_states, rts_states, atol=1e-6)
+    assert_allclose(dk_covs, rts_covs, atol=1e-6)
 
 
 @pytest.mark.parametrize("filter_name", filter_names)
