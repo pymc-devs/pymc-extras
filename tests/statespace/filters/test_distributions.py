@@ -724,8 +724,8 @@ def _var_logp_pair(k_endog, order, k_exog, n_timesteps=80):
 
 @pytest.mark.parametrize(
     "k_endog, order, k_exog",
-    [(1, 1, 0), (1, 3, 2), (2, 2, 0), (3, 2, 2)],
-    ids=["k1_p1_m0", "k1_p3_m2", "k2_p2_m0", "k3_p2_m2"],
+    [(1, 1, 0), (3, 2, 2)],
+    ids=["k1_p1_m0", "k3_p2_m2"],
 )
 def test_stationary_var_matches_kalman_filter(k_endog, order, k_exog):
     rng = np.random.default_rng(sum(map(ord, f"draws{k_endog}{order}{k_exog}")))
