@@ -618,13 +618,14 @@ class TestVARMAXWithExogenous:
         assert mod.param_info["beta_exog"]["shape"] == (mod.k_endog, 2)
         assert mod.param_info["beta_exog"]["dims"] == ("observed_state", "exogenous")
 
-    def _build_varmax(self, df, exog_state_names, exog_data):
+    def _build_varmax(self, df, exog_state_names, exog_data, exog_in_observation=False):
         endog_names = df.columns.values.tolist()
 
         mod = BayesianVARMAX(
             endog_names=endog_names,
             order=(1, 0),
             exog_state_names=exog_state_names,
+            exog_in_observation=exog_in_observation,
             verbose=False,
             measurement_error=False,
             stationary_initialization=False,
@@ -669,8 +670,9 @@ class TestVARMAXWithExogenous:
         ],
         ids=["exog_state_names_list", "exog_state_names_dict"],
     )
+    @pytest.mark.parametrize("exog_in_observation", [False, True], ids=["state", "observation"])
     @pytest.mark.filterwarnings("ignore::UserWarning")
-    def test_varmax_with_exog(self, rng, exog_state_names):
+    def test_varmax_with_exog(self, rng, exog_state_names, exog_in_observation):
         endog_names = ["y1", "y2", "y3"]
         n_obs = 50
         time_idx = pd.date_range(start="2020-01-01", periods=n_obs, freq="D")
@@ -696,39 +698,38 @@ class TestVARMAXWithExogenous:
                 )
             }
 
-        mod, m = self._build_varmax(df, exog_state_names, exog_data)
+        mod, m = self._build_varmax(df, exog_state_names, exog_data, exog_in_observation)
 
-        with freeze_dims_and_data(m):
-            prior = pm.sample_prior_predictive(
-                draws=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
+        # In the state equation the filter applies the intercept of step t to the transition into
+        # t + 1, so row t holds B x_{t + 1} and the last row repeats the final regressors. In the
+        # observation equation the intercept is B x_t as given.
+        matrix_index = 3 if exog_in_observation else 2
+        with m:
+            betas = [m[name] for name in mod.param_names if name.startswith("beta")]
+            *drawn_betas, intercept = pm.draw(
+                [*betas, mod._insert_data_variables(mod._insert_random_variables())[matrix_index]],
+                random_seed=rng,
             )
-
-        prior_cond = mod.sample_conditional_prior(prior, mvn_method="eigh")
-        beta_dot_data = prior_cond.filtered_prior_observed.values - prior_cond.filtered_prior.values
+        drawn_betas = dict(zip([beta.name for beta in betas], drawn_betas))
 
         if isinstance(exog_state_names, list):
-            beta = prior.prior.beta_exog
-            assert beta.shape == (1, 10, 3, 2)
-
-            np.testing.assert_allclose(
-                beta_dot_data,
-                np.einsum("tx,...sx->...ts", exog_data["exogenous_data"].values, beta),
-                atol=1e-2,
-            )
+            exog_effect = exog_data["exogenous_data"].values @ drawn_betas["beta_exog"].T
 
         elif isinstance(exog_state_names, dict):
-            assert prior.prior.beta_y1.shape == (1, 10, 2)
-            assert prior.prior.beta_y2.shape == (1, 10, 1)
-
-            obs_intercept = [
-                np.einsum("tx,...x->...t", exog_data[f"{name}_exogenous_data"].values, beta)
-                for name, beta in zip(["y1", "y2"], [prior.prior.beta_y1, prior.prior.beta_y2])
+            per_series = [
+                exog_data[f"{name}_exogenous_data"].values @ drawn_betas[f"beta_{name}"]
+                for name in ["y1", "y2"]
             ]
 
             # y3 has no exogenous variables
-            obs_intercept.append(np.zeros_like(obs_intercept[0]))
+            per_series.append(np.zeros_like(per_series[0]))
+            exog_effect = np.stack(per_series, axis=-1)
 
-            np.testing.assert_allclose(beta_dot_data, np.stack(obs_intercept, axis=-1), atol=1e-2)
+        if exog_in_observation:
+            expected = exog_effect
+        else:
+            expected = np.concatenate([exog_effect[1:], exog_effect[-1:]], axis=0)
+        np.testing.assert_allclose(intercept, expected, atol=1e-6)
 
     @pytest.mark.filterwarnings("ignore::UserWarning")
     def test_forecast_with_exog(self, rng):
@@ -835,19 +836,36 @@ def test_likelihood_dispatch(kwargs, expected_op, rng):
 
 
 @pytest.mark.parametrize(
-    "exog_state_names",
-    [None, ["x1", "x2"], {"a": ["x1", "x2"], "b": ["x3"]}, {"a": ["x1"]}],
-    ids=["no_exog", "shared", "per_series", "one_series_only"],
+    "exog_state_names, exog_in_observation",
+    [
+        (None, False),
+        (["x1", "x2"], False),
+        ({"a": ["x1", "x2"], "b": ["x3"]}, False),
+        ({"a": ["x1"]}, False),
+        (["x1", "x2"], True),
+        ({"a": ["x1", "x2"], "b": ["x3"]}, True),
+    ],
+    ids=[
+        "no_exog",
+        "shared",
+        "per_series",
+        "one_series_only",
+        "shared_observation",
+        "per_series_observation",
+    ],
 )
-def test_closed_form_likelihood_matches_the_kalman_filter(exog_state_names, rng):
+def test_closed_form_likelihood_matches_the_kalman_filter(
+    exog_state_names, exog_in_observation, rng
+):
     """
-    The dict form joins per-series regressions into the observation intercept; the closed form
-    writes the same thing as one product against a block coefficient matrix.
+    The dict form joins per-series regressions into one intercept; the closed form writes the
+    same thing as one product against a block coefficient matrix.
     """
     mod = BayesianVARMAX(
         order=(2, 0),
         endog_names=["a", "b"],
         exog_state_names=exog_state_names,
+        exog_in_observation=exog_in_observation,
         stationary_initialization=True,
         verbose=False,
     )
@@ -866,6 +884,46 @@ def test_closed_form_likelihood_matches_the_kalman_filter(exog_state_names, rng)
 
     assert isinstance(pymc_model["obs"].owner.op, StationaryVARRV)
     assert_allclose(built, kalman, atol=1e-8)
+
+
+def test_exogenous_likelihood_matches_statsmodels(data, rng):
+    """
+    Regressors enter the VAR equation with the timing statsmodels uses, so the two likelihoods
+    agree at the same parameter values.
+    """
+    exog = pd.DataFrame(
+        rng.normal(size=(len(data), 2)).astype(floatX), index=data.index, columns=["x1", "x2"]
+    )
+    sm_var = sm.tsa.VARMAX(data, exog=exog, order=(1, 0), trend="n")
+
+    params = {
+        "ar_params": (rng.normal(size=(3, 1, 3)) * 0.2).astype(floatX),
+        "beta_exog": rng.normal(size=(3, 2)).astype(floatX),
+        "state_cov": np.eye(3, dtype=floatX),
+    }
+    sm_params = np.concatenate(
+        [
+            params["ar_params"].reshape(3, 3).ravel(),
+            params["beta_exog"].ravel(),
+            np.eye(3)[np.tril_indices(3)],
+        ]
+    )
+    assert len(sm_params) == sm_var.k_params
+
+    mod = BayesianVARMAX(
+        endog_names=data.columns.tolist(),
+        order=(1, 0),
+        exog_state_names=["x1", "x2"],
+        stationary_initialization=True,
+        verbose=False,
+    )
+    pymc_model, built, kalman = compare_likelihood_to_filter(
+        mod, params, data.values, {"exogenous_data": exog.values}
+    )
+
+    assert isinstance(pymc_model["obs"].owner.op, StationaryVARRV)
+    assert_allclose(built, kalman, atol=1e-8)
+    assert_allclose(built, sm_var.loglike(sm_params), rtol=1e-6)
 
 
 @pytest.mark.parametrize(
