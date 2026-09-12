@@ -9,6 +9,9 @@ dependencies:
   - xhistogram
   - statsmodels>=0.15
   - numba
+  # conda-forge's scipy 1.18.1 is built with Cython 3.3, whose fused-function names no longer
+  # match the __pyx_capi__ keys pytensor's numba backend looks up (KeyError in _available_impls).
+  - scipy<1.18.1
   - pytest
   - pytest-cov
   - pydantic>=2.0.0,<3.0
