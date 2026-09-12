@@ -4,12 +4,16 @@ import sys
 import numpy as np
 import pytest
 
+from rich.file_proxy import FileProxy
+
 import pymc_extras as pmx
 
 from pymc_extras.inference.pathfinder import multipath as multipath_mod
 from pymc_extras.inference.pathfinder.multipath import (
+    REFRESH_INTERVAL,
     _make_multipath_progress,
     _make_progress_callback,
+    _make_refresher,
 )
 from tests.inference.pathfinder.equivalence_models import make_ard_regression
 
@@ -193,6 +197,15 @@ def test_parallel_path_order_is_deterministic(monkeypatch):
         np.testing.assert_array_equal(forward[var].values, backward[var].values)
 
 
+def test_live_progress_display_starts_no_thread_and_no_stream_proxies():
+    """Workers fork while the display is live, so it must own no refresh thread and no
+    stdout/stderr proxies for a child to inherit locked (pymc#8421)."""
+    with _make_multipath_progress(progressbar=True) as progress:
+        assert progress.live._refresh_thread is None
+        assert not isinstance(sys.stdout, FileProxy)
+        assert not isinstance(sys.stderr, FileProxy)
+
+
 def _new_task():
     progress = _make_multipath_progress(progressbar=False)
     task_id = progress.add_task(
@@ -213,6 +226,55 @@ def test_progress_callback_formats_fields():
 
     cb({"best_elbo": np.inf})  # non-finite renders as a dash
     assert progress.tasks[0].fields["elbo"] == "—"
+
+
+def test_serial_paths_redraw_after_every_message():
+    """With Rich's refresh thread off, the executor is the only thing that redraws."""
+    messages = [{"iteration": 1}, {"best_elbo": 0.5}, {"status": "ok"}]
+
+    def fake_path(seed, cb):
+        for info in messages:
+            cb(info)
+        return seed
+
+    redraws = []
+    results = list(
+        multipath_mod._execute_serially(
+            fake_path,
+            seeds=[7, 8],
+            progress_callbacks=[lambda info: None] * 2,
+            refresh=lambda: redraws.append(1),
+        )
+    )
+
+    assert results == [(0, 7), (1, 8)]
+    assert len(redraws) == 2 * len(messages)
+
+
+def test_parallel_fit_redraws_from_the_parent(monkeypatch):
+    redraws = []
+    monkeypatch.setattr(
+        multipath_mod, "_make_refresher", lambda progress: lambda: redraws.append(1)
+    )
+
+    _small_serial_fit(make_ard_regression(), parallel=True, num_paths=2)
+
+    assert redraws
+
+
+def test_refresher_throttles_to_the_refresh_interval(monkeypatch):
+    progress, _ = _new_task()
+    redraws = []
+    monkeypatch.setattr(progress, "refresh", lambda: redraws.append(1))
+    clock = iter([1.0, 1.0 + REFRESH_INTERVAL / 2, 1.0 + 2 * REFRESH_INTERVAL])
+    monkeypatch.setattr(multipath_mod.time, "monotonic", lambda: next(clock))
+    refresh = _make_refresher(progress)
+
+    refresh()
+    refresh()
+    refresh()
+
+    assert len(redraws) == 2
 
 
 def test_progress_callback_stops_task_on_terminal_status():
