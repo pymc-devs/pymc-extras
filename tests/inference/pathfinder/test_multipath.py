@@ -103,6 +103,23 @@ def _small_serial_fit(model, **overrides):
         return pmx.fit(**kwargs)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="fork start method is unavailable on Windows")
+@pytest.mark.parametrize("parallel", [True, False], ids=["parallel", "serial"])
+def test_fork_caps_blas_to_one_thread_only_while_workers_run(monkeypatch, parallel):
+    """A parallel fit under fork caps BLAS to one thread in the parent so forked workers inherit
+    the cap; a serial fit keeps the parent's full BLAS width."""
+    requested = []
+    monkeypatch.setattr(
+        multipath_mod,
+        "threadpool_limits",
+        lambda limits=None: (requested.append(limits), contextlib.nullcontext())[1],
+    )
+
+    _small_serial_fit(make_ard_regression(), parallel=parallel, mp_ctx="fork")
+
+    assert requested == ([1] if parallel else [])
+
+
 def test_compile_mode_threaded_to_mp_context(monkeypatch):
     """The compile ``mode`` must reach the multiprocessing-context resolver so a JAX backend can
     dodge a fork+JAX deadlock; resolution is unconditional, so a serial fit exercises it."""
