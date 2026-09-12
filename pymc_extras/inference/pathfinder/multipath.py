@@ -98,7 +98,8 @@ def multipath_pathfinder(
         mirroring pm.sample. Default None.
     blas_cores : int or "auto" or None, optional
         Total number of threads BLAS/OpenMP should use per worker. "auto" matches the total to
-        ``cores``; None keeps default BLAS behavior. Default "auto".
+        ``cores``; None keeps default BLAS behavior. Under the ``"fork"`` start method every worker
+        runs BLAS single-threaded regardless. Default "auto".
     mp_ctx : str or multiprocessing.Context, optional
         Multiprocessing context for parallel path execution (e.g. ``"spawn"``, ``"fork"``).
         Default None.
@@ -162,13 +163,16 @@ def multipath_pathfinder(
     mp_ctx = _initialize_multiprocessing_context(
         mp_ctx, mode=compile_kwargs.get("mode"), quiet=True
     )
-    # Split the BLAS thread budget across workers and get a parent-side limiter, as pymc.sample and
-    # pymc.smc do. joined_blas_limiter caps BLAS threads in this process while paths run (a no-op
-    # for fork or blas_cores=None); num_blas_per_worker is each worker's share.
+    # Split the BLAS thread budget across workers as pymc.sample does: joined_blas_limiter caps BLAS
+    # threads in this process while paths run, and num_blas_per_worker is each worker's share. pymc
+    # leaves fork uncapped, but forked workers inherit whatever the parent set, so fork is capped
+    # here to one thread instead.
     effective_cores = _default_cores(num_paths, cores)
     joined_blas_limiter, effective_cores, num_blas_per_worker = setup_cores_blas_cores(
         blas_cores, num_paths, effective_cores, mp_ctx
     )
+    if parallel and mp_ctx.get_start_method() == "fork":
+        joined_blas_limiter = _single_threaded_blas
 
     # One progress row per path, updated in real time.
     progress = _make_multipath_progress(progressbar)
@@ -239,6 +243,15 @@ def multipath_pathfinder(
         )
 
     return mpr
+
+
+def _single_threaded_blas():
+    """Cap BLAS to one thread in the parent so forked workers inherit the cap."""
+    # MKL keeps an OpenMP team alive after any large product. A forked worker inherits that team's
+    # synchronization state with none of its threads, so its first large product blocks forever.
+    # The cap is set in the parent because driving the OpenMP runtime from inside a forked process
+    # is what crashed pymc's workers in pymc-devs/pymc#7354.
+    return threadpool_limits(limits=1)
 
 
 def _default_cores(num_paths: int, cores: int | None) -> int:
