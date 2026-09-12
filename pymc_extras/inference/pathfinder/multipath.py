@@ -1,6 +1,7 @@
 import contextlib
 import logging
 import multiprocessing as mp
+import platform
 import time
 
 from collections.abc import Callable, Iterator
@@ -101,8 +102,8 @@ def multipath_pathfinder(
         ``cores``; None keeps default BLAS behavior. Under the ``"fork"`` start method every worker
         runs BLAS single-threaded regardless. Default "auto".
     mp_ctx : str or multiprocessing.Context, optional
-        Multiprocessing context for parallel path execution (e.g. ``"spawn"``, ``"fork"``).
-        Default None.
+        Multiprocessing context for parallel path execution (e.g. ``"spawn"``, ``"fork"``). If
+        None, ``"spawn"`` on macOS and pymc's default elsewhere. Default None.
     random_seed : RandomSeed, optional
         Random seed for reproducibility. Default None.
     max_init_retries : int, optional
@@ -158,11 +159,7 @@ def multipath_pathfinder(
 
     compute_start = time.time()
 
-    # Resolve the multiprocessing context once, threading the compile mode through so a JAX backend
-    # forces a non-fork start method -- fork + JAX can deadlock. Mirrors pymc.sample.
-    mp_ctx = _initialize_multiprocessing_context(
-        mp_ctx, mode=compile_kwargs.get("mode"), quiet=True
-    )
+    mp_ctx = _resolve_mp_context(mp_ctx, mode=compile_kwargs.get("mode"))
     # Split the BLAS thread budget across workers as pymc.sample does: joined_blas_limiter caps BLAS
     # threads in this process while paths run, and num_blas_per_worker is each worker's share. pymc
     # leaves fork uncapped, but forked workers inherit whatever the parent set, so fork is capped
@@ -243,6 +240,17 @@ def multipath_pathfinder(
         )
 
     return mpr
+
+
+def _resolve_mp_context(
+    mp_ctx: mp.context.BaseContext | str | None, mode
+) -> mp.context.BaseContext:
+    """Resolve the start method, threading the compile mode through so a JAX backend never forks."""
+    # Accelerate runs large BLAS calls on libdispatch, which aborts in any process forked from a
+    # parent that has already used it, and forkserver's server is itself forked from the parent.
+    if mp_ctx is None and platform.system() == "Darwin":
+        mp_ctx = "spawn"
+    return _initialize_multiprocessing_context(mp_ctx, mode=mode, quiet=True)
 
 
 def _single_threaded_blas():
