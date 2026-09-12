@@ -177,8 +177,11 @@ def multipath_pathfinder(
     path_callbacks: list[Callable | None] = []
     with progress:
         for i in range(num_paths):
+            # start=False defers each row's clock until its first message, so a path that waits
+            # for a free core is timed from when it starts rather than from the run's start.
             tid = progress.add_task(
                 f"Path {i + 1}",
+                start=False,
                 status="queued",
                 elbo="—",
                 speed=0.0,
@@ -472,6 +475,9 @@ def _make_refresher(progress: CustomProgress) -> Callable[[], None]:
 
 def _make_progress_callback(progress: CustomProgress, task_id: TaskID) -> Callable[[dict], None]:
     def cb(info: dict) -> None:
+        if not progress.tasks[task_id].started:
+            progress.start_task(task_id)
+
         fields: dict[str, Any] = {}
         update_kwargs: dict[str, Any] = {}
         if info.get("status") is not None:
