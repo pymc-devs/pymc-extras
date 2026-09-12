@@ -38,6 +38,8 @@ from pymc_extras.inference.pathfinder.single_path import (
 
 logger = logging.getLogger(__name__)
 
+REFRESH_INTERVAL = 0.1
+
 
 def multipath_pathfinder(
     model: Model,
@@ -170,6 +172,7 @@ def multipath_pathfinder(
 
     # One progress row per path, updated in real time.
     progress = _make_multipath_progress(progressbar)
+    refresh = _make_refresher(progress)
     task_ids: list[TaskID] = []
     path_callbacks: list[Callable | None] = []
     with progress:
@@ -195,6 +198,7 @@ def multipath_pathfinder(
             blas_cores=num_blas_per_worker,
             progress_callbacks=path_callbacks,
             mp_ctx=mp_ctx,
+            refresh=refresh,
         )
         collected: list[tuple[int, PathfinderResult]] = []
         with joined_blas_limiter():
@@ -289,12 +293,14 @@ def _execute_concurrently(
     blas_cores: int | None,
     progress_callbacks: list[Callable | None] | None = None,
     mp_ctx: mp.context.BaseContext | str | None = None,
+    refresh: Callable[[], None] | None = None,
 ) -> Iterator[tuple[int, PathfinderResult]]:
     """Run paths in worker processes, at most ``cores`` alive at once.
 
     Workers are spawned as slots free, so the process count never exceeds ``cores`` regardless of
     the number of paths. A worker that errors or dies yields a failed PathfinderResult rather than
-    aborting the whole fit.
+    aborting the whole fit. ``refresh`` runs once per polling cycle, after every ready message has
+    been handled, and at least every ``REFRESH_INTERVAL`` seconds.
     """
     # mp_ctx is already resolved (mode-aware, JAX fork-safe) by multipath_pathfinder.
     start_method = mp_ctx.get_start_method()
@@ -330,7 +336,7 @@ def _execute_concurrently(
     try:
         _fill()
         while active:
-            for conn in wait(list(active)):
+            for conn in wait(list(active), timeout=REFRESH_INTERVAL):
                 chain, proc = active[conn]
                 try:
                     kind, payload = conn.recv()
@@ -355,6 +361,8 @@ def _execute_concurrently(
                     if payload is not None:
                         logger.warning("Pathfinder path %d failed: %s", chain, payload)
                     yield chain, _failed_path()
+            if refresh is not None:
+                refresh()
     finally:
         for conn, (_, proc) in active.items():
             with contextlib.suppress(Exception):
@@ -368,11 +376,25 @@ def _execute_serially(
     fn: SinglePathfinderFn,
     seeds: list[int],
     progress_callbacks: list[Callable | None] | None = None,
+    refresh: Callable[[], None] | None = None,
 ) -> Iterator[tuple[int, PathfinderResult]]:
-    """Execute pathfinder runs serially."""
+    """Execute pathfinder runs serially, redrawing after each progress message."""
     callbacks = progress_callbacks or [None] * len(seeds)
     for chain, (seed, cb) in enumerate(zip(seeds, callbacks)):
-        yield chain, fn(seed, cb)
+        yield chain, fn(seed, _with_refresh(cb, refresh))
+
+
+def _with_refresh(
+    cb: Callable[[dict], None] | None, refresh: Callable[[], None] | None
+) -> Callable[[dict], None] | None:
+    if cb is None or refresh is None:
+        return cb
+
+    def cb_then_refresh(info: dict) -> None:
+        cb(info)
+        refresh()
+
+    return cb_then_refresh
 
 
 def make_generator(
@@ -383,6 +405,7 @@ def make_generator(
     blas_cores: int | None = None,
     progress_callbacks: list[Callable | None] | None = None,
     mp_ctx: mp.context.BaseContext | None = None,
+    refresh: Callable[[], None] | None = None,
 ) -> Iterator[tuple[int, PathfinderResult]]:
     """Generator yielding ``(chain, result)`` pairs from pathfinder runs, concurrently or serially.
 
@@ -398,9 +421,10 @@ def make_generator(
             blas_cores=blas_cores,
             progress_callbacks=progress_callbacks,
             mp_ctx=mp_ctx,
+            refresh=refresh,
         )
     else:
-        yield from _execute_serially(fn, seeds, progress_callbacks)
+        yield from _execute_serially(fn, seeds, progress_callbacks, refresh=refresh)
 
 
 def _make_multipath_progress(progressbar: bool) -> CustomProgress:
@@ -423,7 +447,27 @@ def _make_multipath_progress(progressbar: bool) -> CustomProgress:
         include_headers=True,
         console=Console(theme=default_progress_theme),
         disable=not progressbar,
+        # Workers are forked while this display is live. Rich's refresh thread and its
+        # stdout/stderr proxies hold locks a forked child would inherit mid-acquire and hang on
+        # (pymc#8421), so neither runs; the parent redraws from its own polling loop instead.
+        auto_refresh=False,
+        redirect_stdout=False,
+        redirect_stderr=False,
     )
+
+
+def _make_refresher(progress: CustomProgress) -> Callable[[], None]:
+    """Redraw ``progress`` at most every ``REFRESH_INTERVAL`` seconds."""
+    last_refresh = 0.0
+
+    def refresh() -> None:
+        nonlocal last_refresh
+        now = time.monotonic()
+        if now - last_refresh >= REFRESH_INTERVAL:
+            last_refresh = now
+            progress.refresh()
+
+    return refresh
 
 
 def _make_progress_callback(progress: CustomProgress, task_id: TaskID) -> Callable[[dict], None]:
