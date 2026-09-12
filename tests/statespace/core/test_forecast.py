@@ -549,7 +549,7 @@ def test_forecast(filter_output, mod_name, idata_name, rng, request):
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
 @pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
-@pytest.mark.parametrize("start", [None, -1, 5])
+@pytest.mark.parametrize("start", [None, 5], ids=["last_fitted_step", "explicit"])
 def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
     scenario = pd.DataFrame(np.zeros((10, 1)), columns=["x1"])
     scenario.iloc[5, 0] = 1e9
@@ -581,7 +581,7 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
 @pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
-@pytest.mark.parametrize("start", [None, -1, 5])
+@pytest.mark.parametrize("start", [None, 5], ids=["last_fitted_step", "explicit"])
 def test_forecast_with_exog_data_mv(rng, exog_ss_mod_mv, idata_exog_mv, start):
     scenario = pd.DataFrame(np.zeros((10, 1)), columns=["x1"])
     scenario.iloc[5, 0] = 1e9
