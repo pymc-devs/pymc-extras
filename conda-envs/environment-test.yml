@@ -7,16 +7,19 @@ dependencies:
   - better-optimize>=0.4.2,<1.0
   - dask<2025.1.1
   - xhistogram
-  - statsmodels
+  - statsmodels>=0.15
   - numba
+  # conda-forge's scipy 1.18.1 is built with Cython 3.3, whose fused-function names no longer
+  # match the __pyx_capi__ keys pytensor's numba backend looks up (KeyError in _available_impls).
+  - scipy<1.18.1
   - pytest
   - pytest-cov
   - pydantic>=2.0.0,<3.0
   - h5netcdf
-  - pymc>=6.2.0,<6.3
-  - pytensor>=3.2.3,<3.3
+  - pymc>=6.3.0,<6.4
+  - pytensor>=3.3.0,<3.4
   - arviz>=1.2,<2.0
-  - preliz>=0.27,<0.28
+  - preliz>=0.27,<0.29
   - pip
   - pip:
       - jax

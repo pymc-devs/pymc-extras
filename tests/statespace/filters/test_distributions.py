@@ -619,7 +619,7 @@ def test_simulation_smoother_against_statsmodels(rng):
     n_draws = 2_000
     ours = np.stack([f()[1] for _ in range(n_draws)])
 
-    sim = sm_res.model.simulation_smoother(random_state=1234)
+    sim = sm_res.model.simulation_smoother(rng=1234)
     sm_samples = np.empty_like(ours)
     for i in range(n_draws):
         sim.simulate()
