@@ -435,8 +435,18 @@ def test_forecast_defaults_start_regardless_of_verbosity(
     assert announced == verbose
 
 
+def _expected_first_forecast_step(time_idx, start):
+    if isinstance(start, str):
+        t0 = pd.Timestamp(start)
+    elif isinstance(start, int):
+        t0 = time_idx[start]
+    else:
+        t0 = time_idx[-1]
+    delta = time_idx.freq if isinstance(time_idx, pd.DatetimeIndex) else 1
+    return t0 + delta
+
+
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
-@pytest.mark.parametrize("filter_output", ["predicted", "filtered", "smoothed"])
 @pytest.mark.parametrize(
     "mod_name, idata_name, start, end, periods",
     [
@@ -484,23 +494,41 @@ def test_forecast_defaults_start_regardless_of_verbosity(
         "multivariate_datetime_datetime",
     ],
 )
-def test_forecast(filter_output, mod_name, idata_name, start, end, periods, rng, request):
+def test_forecast_index(mod_name, idata_name, start, end, periods, request):
+    """The forecast index starts one step after ``start`` and covers the requested horizon, for
+    every way of naming the horizon on both index types."""
+    mod = request.getfixturevalue(mod_name)
+    idata = request.getfixturevalue(idata_name)
+    time_idx = mod._get_fit_time_index(idata)
+    if start is None:  # forecast() substitutes the last fitted step before building the index
+        start = time_idx[-1]
+
+    _, forecast_idx = mod._build_forecast_index(time_idx, start=start, end=end, periods=periods)
+
+    assert forecast_idx.shape == (10,)
+    assert forecast_idx[0] == _expected_first_forecast_step(time_idx, start)
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+@pytest.mark.parametrize("filter_output", ["predicted", "filtered", "smoothed"])
+@pytest.mark.parametrize(
+    "mod_name, idata_name",
+    [
+        ("ss_mod_no_exog", "idata_no_exog"),
+        ("ss_mod_no_exog_dt", "idata_no_exog_dt"),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv"),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv_dt"),
+    ],
+    ids=["range", "datetime", "multivariate", "multivariate_datetime"],
+)
+def test_forecast(filter_output, mod_name, idata_name, rng, request):
     mod = request.getfixturevalue(mod_name)
     idata = request.getfixturevalue(idata_name)
     time_idx = mod._get_fit_time_index(idata)
     is_datetime = isinstance(time_idx, pd.DatetimeIndex)
 
-    if isinstance(start, str):
-        t0 = pd.Timestamp(start)
-    elif isinstance(start, int):
-        t0 = time_idx[start]
-    else:
-        t0 = time_idx[-1]
-
-    delta = time_idx.freq if is_datetime else 1
-
     forecast_idata = mod.forecast(
-        idata, start=start, end=end, periods=periods, filter_output=filter_output, random_seed=rng
+        idata, start=10, periods=10, filter_output=filter_output, random_seed=rng
     )
 
     forecast_idx = forecast_idata.coords["time"].values
@@ -513,7 +541,7 @@ def test_forecast(filter_output, mod_name, idata_name, start, end, periods, rng,
     assert not np.any(np.isnan(forecast_idata.forecast_latent.values))
     assert not np.any(np.isnan(forecast_idata.forecast_observed.values))
 
-    assert forecast_idx[0] == (t0 + delta)
+    assert forecast_idx[0] == _expected_first_forecast_step(time_idx, 10)
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
