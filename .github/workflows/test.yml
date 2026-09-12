@@ -45,13 +45,15 @@ jobs:
         os: [ubuntu-latest]
         linker: [cvm, numba]
         python-version: ["3.12"]
+        # Shards are balanced by measured runtime under numba, about 12-14 minutes each.
         test-subset:
           - tests/model
-          - tests/statespace/core/test_statespace.py
-          - tests/statespace/filters/test_kalman_filter.py
-          - tests/statespace --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py
           - tests/distributions
           - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions --ignore tests/inference/pathfinder
+          - tests/statespace/models/test_VARMAX.py tests/statespace/models/test_SARIMAX.py
+          - tests/statespace/models tests/statespace/core/test_statespace.py --ignore tests/statespace/models/test_VARMAX.py --ignore tests/statespace/models/test_SARIMAX.py
+          - tests/statespace/filters/test_kalman_filter.py tests/statespace/core/test_forward_sampling.py
+          - tests/statespace --ignore tests/statespace/models --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py --ignore tests/statespace/core/test_forward_sampling.py
       fail-fast: false
     runs-on: ${{ matrix.os }}
     env:
@@ -95,11 +97,18 @@ jobs:
         python-version: ["3.12"]
         test-subset:
           - tests/model
-          - tests/statespace/core/test_statespace.py
-          - tests/statespace/filters/test_kalman_filter.py
-          - tests/statespace --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py
+          # Windows runs one end-to-end statespace workflow per model class; the full statespace
+          # suite runs on Ubuntu.
+          - >-
+            tests/statespace/models/test_ETS.py::test_ets_workflow
+            tests/statespace/models/test_VARMAX.py::test_varmax_workflow
+            tests/statespace/models/test_SARIMAX.py::test_sarimax_workflow
+            tests/statespace/models/test_DFM.py::test_dfm_workflow
           - tests/distributions
-          - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions
+          # Pathfinder spawns workers on Windows, which rebuild their compiled functions, so it
+          # takes as long as the rest of this shard combined.
+          - tests/inference/pathfinder
+          - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions --ignore tests/inference/pathfinder
       fail-fast: false
     runs-on: ${{ matrix.os }}
     env:

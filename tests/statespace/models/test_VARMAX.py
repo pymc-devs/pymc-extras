@@ -188,17 +188,18 @@ def test_measurement_error_enters_obs_cov_as_a_variance():
     assert_allclose(obs_cov, np.diag(sigma**2))
 
 
-@pytest.mark.parametrize("filter_output", ["filtered", "predicted", "smoothed"])
-def test_all_prior_covariances_are_PSD(filter_output, varma_mod, idata, rng):
-    cov_name = f"{filter_output}_covariances"
+def test_all_prior_covariances_are_PSD(varma_mod, idata, rng):
+    cov_names = [f"{output}_covariances" for output in ("filtered", "predicted", "smoothed")]
     filter_idata = varma_mod.sample_filter_outputs(
-        idata, filter_output_names=[cov_name], group="prior", random_seed=rng
+        idata, filter_output_names=cov_names, group="prior", random_seed=rng
     )
-    cov_mats = filter_idata.posterior_predictive[cov_name].values.reshape(
-        -1, varma_mod.k_states, varma_mod.k_states
-    )
-    w, v = np.linalg.eig(cov_mats)
-    assert_array_less(0, w, err_msg=f"Smallest eigenvalue: {min(w.ravel())}")
+
+    for cov_name in cov_names:
+        cov_mats = filter_idata.posterior_predictive[cov_name].values.reshape(
+            -1, varma_mod.k_states, varma_mod.k_states
+        )
+        w, v = np.linalg.eig(cov_mats)
+        assert_array_less(0, w, err_msg=f"{cov_name}: smallest eigenvalue {min(w.ravel())}")
 
 
 @pytest.mark.skipif(floatX == "float32", reason="Impulse covariance not PSD if float32")
