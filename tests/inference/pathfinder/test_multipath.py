@@ -7,6 +7,7 @@ import pytest
 import pymc_extras as pmx
 
 from pymc_extras.inference.pathfinder import multipath as multipath_mod
+from pymc_extras.inference.pathfinder.lbfgs import LBFGS, LBFGSStatus
 from pymc_extras.inference.pathfinder.multipath import (
     _make_multipath_progress,
     _make_progress_callback,
@@ -97,6 +98,36 @@ def _small_serial_fit(model, **overrides):
     kwargs.update(overrides)
     with model:
         return pmx.fit(**kwargs)
+
+
+def test_low_update_pct_paths_are_counted_but_still_succeed(monkeypatch):
+    """A path whose L-BFGS run is flagged LOW_UPDATE_PCT keeps its samples: the flag lands in the
+    lbfgs status counts while the path itself counts as a success."""
+    real_minimize = LBFGS.minimize_streaming
+
+    def flag_low_update_pct(self, callback, x0):
+        niter, _ = real_minimize(self, callback, x0)
+        return niter, LBFGSStatus.LOW_UPDATE_PCT
+
+    monkeypatch.setattr(LBFGS, "minimize_streaming", flag_low_update_pct)
+
+    idata = _small_serial_fit(make_ard_regression(), num_paths=3)
+
+    assert idata.lbfgs.status_counts.sel(status="LOW_UPDATE_PCT").item() == 3
+    assert idata.pathfinder.path_status_counts.sel(status="SUCCESS").item() == 3
+
+
+def test_all_paths_failing_raises(monkeypatch):
+    """When L-BFGS fails on every path there is nothing to sample from, and fit raises rather than
+    returning an empty result."""
+
+    def fail(self, callback, x0):
+        return 0, LBFGSStatus.LBFGS_FAILED
+
+    monkeypatch.setattr(LBFGS, "minimize_streaming", fail)
+
+    with pytest.raises(ValueError, match="All paths failed"):
+        _small_serial_fit(make_ard_regression(), num_paths=3)
 
 
 def test_compile_mode_threaded_to_mp_context(monkeypatch):
