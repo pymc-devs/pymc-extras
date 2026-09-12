@@ -526,9 +526,10 @@ def test_forecast(filter_output, mod_name, idata_name, rng, request):
     idata = request.getfixturevalue(idata_name)
     time_idx = mod._get_fit_time_index(idata)
     is_datetime = isinstance(time_idx, pd.DatetimeIndex)
+    start = 10
 
     forecast_idata = mod.forecast(
-        idata, start=10, periods=10, filter_output=filter_output, random_seed=rng
+        idata, start=start, periods=10, filter_output=filter_output, random_seed=rng
     )
 
     forecast_idx = forecast_idata.coords["time"].values
@@ -541,7 +542,7 @@ def test_forecast(filter_output, mod_name, idata_name, rng, request):
     assert not np.any(np.isnan(forecast_idata.forecast_latent.values))
     assert not np.any(np.isnan(forecast_idata.forecast_observed.values))
 
-    assert forecast_idx[0] == _expected_first_forecast_step(time_idx, 10)
+    assert forecast_idx[0] == _expected_first_forecast_step(time_idx, start)
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")

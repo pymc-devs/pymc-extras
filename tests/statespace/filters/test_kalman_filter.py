@@ -400,6 +400,8 @@ def test_square_root_filter_takes_a_covariance_for_P0(rng):
 
 
 class TestDisturbanceSmootherMatchesRTS:
+    """Compare the disturbance smoother with the RTS smoother through one compiled function."""
+
     @classmethod
     def setup_class(cls):
         inputs, _ = initialize_filter(StandardFilter(cov_jitter=0.0))

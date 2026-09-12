@@ -392,6 +392,8 @@ def small_lgssm():
 class TestSimulationSmoother:
     """Draws from one compiled simulation smoother, fed with the matrices of each test."""
 
+    INPUT_NAMES = ("y", "a0", "P0", "c", "d", "T", "Z", "R", "H", "Q")
+
     @classmethod
     def setup_class(cls):
         y = pt.tensor("y", dtype=floatX, shape=(None, None))
@@ -422,9 +424,7 @@ class TestSimulationSmoother:
     def draws(self, params, seed, n_draws):
         """Return the smoothed mean and ``n_draws`` simulation-smoother draws for ``params``."""
         self.rng.set_value(np.random.default_rng(seed))
-
-        simulation_smoother_inputs = ("y", "a0", "P0", "c", "d", "T", "Z", "R", "H", "Q")
-        args = [np.asarray(params[name], dtype=floatX) for name in simulation_smoother_inputs]
+        args = [np.asarray(params[name], dtype=floatX) for name in self.INPUT_NAMES]
 
         a_smooth, _ = self.simulate(*args)
         return a_smooth, np.stack([self.simulate(*args)[1] for _ in range(n_draws)])
