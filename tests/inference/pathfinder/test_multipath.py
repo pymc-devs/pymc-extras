@@ -4,12 +4,17 @@ import sys
 import numpy as np
 import pytest
 
+from rich.file_proxy import FileProxy
+
 import pymc_extras as pmx
 
 from pymc_extras.inference.pathfinder import multipath as multipath_mod
 from pymc_extras.inference.pathfinder.multipath import (
+    REFRESH_INTERVAL,
     _make_multipath_progress,
     _make_progress_callback,
+    _make_refresher,
+    _resolve_mp_context,
 )
 from tests.inference.pathfinder.equivalence_models import make_ard_regression
 
@@ -97,6 +102,41 @@ def _small_serial_fit(model, **overrides):
     kwargs.update(overrides)
     with model:
         return pmx.fit(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "system, expected", [("Darwin", "spawn"), ("Linux", None)], ids=["macos", "linux"]
+)
+def test_default_context_spawns_on_macos(monkeypatch, system, expected):
+    """macOS defaults to spawn; elsewhere the choice is left to pymc's resolver."""
+    seen = []
+    monkeypatch.setattr(multipath_mod.platform, "system", lambda: system)
+    monkeypatch.setattr(
+        multipath_mod,
+        "_initialize_multiprocessing_context",
+        lambda mp_ctx, *, mode=None, quiet=False: seen.append(mp_ctx),
+    )
+
+    _resolve_mp_context(None, mode=None)
+
+    assert seen == [expected]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fork start method is unavailable on Windows")
+@pytest.mark.parametrize("parallel", [True, False], ids=["parallel", "serial"])
+def test_fork_caps_blas_to_one_thread_only_while_workers_run(monkeypatch, parallel):
+    """A parallel fit under fork caps BLAS to one thread in the parent so forked workers inherit
+    the cap; a serial fit keeps the parent's full BLAS width."""
+    requested = []
+    monkeypatch.setattr(
+        multipath_mod,
+        "threadpool_limits",
+        lambda limits=None: (requested.append(limits), contextlib.nullcontext())[1],
+    )
+
+    _small_serial_fit(make_ard_regression(), parallel=parallel, mp_ctx="fork")
+
+    assert requested == ([1] if parallel else [])
 
 
 def test_compile_mode_threaded_to_mp_context(monkeypatch):
@@ -193,12 +233,39 @@ def test_parallel_path_order_is_deterministic(monkeypatch):
         np.testing.assert_array_equal(forward[var].values, backward[var].values)
 
 
+def test_live_progress_display_starts_no_thread_and_no_stream_proxies():
+    """Workers fork while the display is live, so it must own no refresh thread and no
+    stdout/stderr proxies for a child to inherit locked (pymc#8421)."""
+    with _make_multipath_progress(progressbar=True) as progress:
+        assert progress.live._refresh_thread is None
+        assert not isinstance(sys.stdout, FileProxy)
+        assert not isinstance(sys.stderr, FileProxy)
+
+
 def _new_task():
     progress = _make_multipath_progress(progressbar=False)
     task_id = progress.add_task(
-        "path 0", status="", elbo="", speed=0.0, speed_unit="it/s", total=1000, completed=0
+        "path 0",
+        start=False,
+        status="",
+        elbo="",
+        speed=0.0,
+        speed_unit="it/s",
+        total=1000,
+        completed=0,
     )
     return progress, task_id
+
+
+def test_progress_callback_starts_the_clock_on_first_message():
+    """A queued path's elapsed time counts from its first message, not from the run's start."""
+    progress, task_id = _new_task()
+    cb = _make_progress_callback(progress, task_id)
+    assert progress.tasks[0].start_time is None
+
+    cb({"status": "running"})
+
+    assert progress.tasks[0].start_time is not None
 
 
 def test_progress_callback_formats_fields():
@@ -213,6 +280,55 @@ def test_progress_callback_formats_fields():
 
     cb({"best_elbo": np.inf})  # non-finite renders as a dash
     assert progress.tasks[0].fields["elbo"] == "—"
+
+
+def test_serial_paths_redraw_after_every_message():
+    """With Rich's refresh thread off, the executor is the only thing that redraws."""
+    messages = [{"iteration": 1}, {"best_elbo": 0.5}, {"status": "ok"}]
+
+    def fake_path(seed, cb):
+        for info in messages:
+            cb(info)
+        return seed
+
+    redraws = []
+    results = list(
+        multipath_mod._execute_serially(
+            fake_path,
+            seeds=[7, 8],
+            progress_callbacks=[lambda info: None] * 2,
+            refresh=lambda: redraws.append(1),
+        )
+    )
+
+    assert results == [(0, 7), (1, 8)]
+    assert len(redraws) == 2 * len(messages)
+
+
+def test_parallel_fit_redraws_from_the_parent(monkeypatch):
+    redraws = []
+    monkeypatch.setattr(
+        multipath_mod, "_make_refresher", lambda progress: lambda: redraws.append(1)
+    )
+
+    _small_serial_fit(make_ard_regression(), parallel=True, num_paths=2)
+
+    assert redraws
+
+
+def test_refresher_throttles_to_the_refresh_interval(monkeypatch):
+    progress, _ = _new_task()
+    redraws = []
+    monkeypatch.setattr(progress, "refresh", lambda: redraws.append(1))
+    clock = iter([1.0, 1.0 + REFRESH_INTERVAL / 2, 1.0 + 2 * REFRESH_INTERVAL])
+    monkeypatch.setattr(multipath_mod.time, "monotonic", lambda: next(clock))
+    refresh = _make_refresher(progress)
+
+    refresh()
+    refresh()
+    refresh()
+
+    assert len(redraws) == 2
 
 
 def test_progress_callback_stops_task_on_terminal_status():

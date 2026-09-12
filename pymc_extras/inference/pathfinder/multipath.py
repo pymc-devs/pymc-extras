@@ -1,6 +1,7 @@
 import contextlib
 import logging
 import multiprocessing as mp
+import platform
 import time
 
 from collections.abc import Callable, Iterator
@@ -37,6 +38,8 @@ from pymc_extras.inference.pathfinder.single_path import (
 )
 
 logger = logging.getLogger(__name__)
+
+REFRESH_INTERVAL = 0.1
 
 
 def multipath_pathfinder(
@@ -96,10 +99,11 @@ def multipath_pathfinder(
         mirroring pm.sample. Default None.
     blas_cores : int or "auto" or None, optional
         Total number of threads BLAS/OpenMP should use per worker. "auto" matches the total to
-        ``cores``; None keeps default BLAS behavior. Default "auto".
+        ``cores``; None keeps default BLAS behavior. Under the ``"fork"`` start method every worker
+        runs BLAS single-threaded regardless. Default "auto".
     mp_ctx : str or multiprocessing.Context, optional
-        Multiprocessing context for parallel path execution (e.g. ``"spawn"``, ``"fork"``).
-        Default None.
+        Multiprocessing context for parallel path execution (e.g. ``"spawn"``, ``"fork"``). If
+        None, ``"spawn"`` on macOS and pymc's default elsewhere. Default None.
     random_seed : RandomSeed, optional
         Random seed for reproducibility. Default None.
     max_init_retries : int, optional
@@ -155,27 +159,30 @@ def multipath_pathfinder(
 
     compute_start = time.time()
 
-    # Resolve the multiprocessing context once, threading the compile mode through so a JAX backend
-    # forces a non-fork start method -- fork + JAX can deadlock. Mirrors pymc.sample.
-    mp_ctx = _initialize_multiprocessing_context(
-        mp_ctx, mode=compile_kwargs.get("mode"), quiet=True
-    )
-    # Split the BLAS thread budget across workers and get a parent-side limiter, as pymc.sample and
-    # pymc.smc do. joined_blas_limiter caps BLAS threads in this process while paths run (a no-op
-    # for fork or blas_cores=None); num_blas_per_worker is each worker's share.
+    mp_ctx = _resolve_mp_context(mp_ctx, mode=compile_kwargs.get("mode"))
+    # Split the BLAS thread budget across workers as pymc.sample does: joined_blas_limiter caps BLAS
+    # threads in this process while paths run, and num_blas_per_worker is each worker's share. pymc
+    # leaves fork uncapped, but forked workers inherit whatever the parent set, so fork is capped
+    # here to one thread instead.
     effective_cores = _default_cores(num_paths, cores)
     joined_blas_limiter, effective_cores, num_blas_per_worker = setup_cores_blas_cores(
         blas_cores, num_paths, effective_cores, mp_ctx
     )
+    if parallel and mp_ctx.get_start_method() == "fork":
+        joined_blas_limiter = _single_threaded_blas
 
     # One progress row per path, updated in real time.
     progress = _make_multipath_progress(progressbar)
+    refresh = _make_refresher(progress)
     task_ids: list[TaskID] = []
     path_callbacks: list[Callable | None] = []
     with progress:
         for i in range(num_paths):
+            # start=False defers each row's clock until its first message, so a path that waits
+            # for a free core is timed from when it starts rather than from the run's start.
             tid = progress.add_task(
                 f"Path {i + 1}",
+                start=False,
                 status="queued",
                 elbo="—",
                 speed=0.0,
@@ -195,6 +202,7 @@ def multipath_pathfinder(
             blas_cores=num_blas_per_worker,
             progress_callbacks=path_callbacks,
             mp_ctx=mp_ctx,
+            refresh=refresh,
         )
         collected: list[tuple[int, PathfinderResult]] = []
         with joined_blas_limiter():
@@ -232,6 +240,26 @@ def multipath_pathfinder(
         )
 
     return mpr
+
+
+def _resolve_mp_context(
+    mp_ctx: mp.context.BaseContext | str | None, mode
+) -> mp.context.BaseContext:
+    """Resolve the start method, threading the compile mode through so a JAX backend never forks."""
+    # Accelerate runs large BLAS calls on libdispatch, which aborts in any process forked from a
+    # parent that has already used it, and forkserver's server is itself forked from the parent.
+    if mp_ctx is None and platform.system() == "Darwin":
+        mp_ctx = "spawn"
+    return _initialize_multiprocessing_context(mp_ctx, mode=mode, quiet=True)
+
+
+def _single_threaded_blas():
+    """Cap BLAS to one thread in the parent so forked workers inherit the cap."""
+    # MKL keeps an OpenMP team alive after any large product. A forked worker inherits that team's
+    # synchronization state with none of its threads, so its first large product blocks forever.
+    # The cap is set in the parent because driving the OpenMP runtime from inside a forked process
+    # is what crashed pymc's workers in pymc-devs/pymc#7354.
+    return threadpool_limits(limits=1)
 
 
 def _default_cores(num_paths: int, cores: int | None) -> int:
@@ -289,12 +317,14 @@ def _execute_concurrently(
     blas_cores: int | None,
     progress_callbacks: list[Callable | None] | None = None,
     mp_ctx: mp.context.BaseContext | str | None = None,
+    refresh: Callable[[], None] | None = None,
 ) -> Iterator[tuple[int, PathfinderResult]]:
     """Run paths in worker processes, at most ``cores`` alive at once.
 
     Workers are spawned as slots free, so the process count never exceeds ``cores`` regardless of
     the number of paths. A worker that errors or dies yields a failed PathfinderResult rather than
-    aborting the whole fit.
+    aborting the whole fit. ``refresh`` runs once per polling cycle, after every ready message has
+    been handled, and at least every ``REFRESH_INTERVAL`` seconds.
     """
     # mp_ctx is already resolved (mode-aware, JAX fork-safe) by multipath_pathfinder.
     start_method = mp_ctx.get_start_method()
@@ -330,7 +360,7 @@ def _execute_concurrently(
     try:
         _fill()
         while active:
-            for conn in wait(list(active)):
+            for conn in wait(list(active), timeout=REFRESH_INTERVAL):
                 chain, proc = active[conn]
                 try:
                     kind, payload = conn.recv()
@@ -355,6 +385,8 @@ def _execute_concurrently(
                     if payload is not None:
                         logger.warning("Pathfinder path %d failed: %s", chain, payload)
                     yield chain, _failed_path()
+            if refresh is not None:
+                refresh()
     finally:
         for conn, (_, proc) in active.items():
             with contextlib.suppress(Exception):
@@ -368,11 +400,25 @@ def _execute_serially(
     fn: SinglePathfinderFn,
     seeds: list[int],
     progress_callbacks: list[Callable | None] | None = None,
+    refresh: Callable[[], None] | None = None,
 ) -> Iterator[tuple[int, PathfinderResult]]:
-    """Execute pathfinder runs serially."""
+    """Execute pathfinder runs serially, redrawing after each progress message."""
     callbacks = progress_callbacks or [None] * len(seeds)
     for chain, (seed, cb) in enumerate(zip(seeds, callbacks)):
-        yield chain, fn(seed, cb)
+        yield chain, fn(seed, _with_refresh(cb, refresh))
+
+
+def _with_refresh(
+    cb: Callable[[dict], None] | None, refresh: Callable[[], None] | None
+) -> Callable[[dict], None] | None:
+    if cb is None or refresh is None:
+        return cb
+
+    def cb_then_refresh(info: dict) -> None:
+        cb(info)
+        refresh()
+
+    return cb_then_refresh
 
 
 def make_generator(
@@ -383,6 +429,7 @@ def make_generator(
     blas_cores: int | None = None,
     progress_callbacks: list[Callable | None] | None = None,
     mp_ctx: mp.context.BaseContext | None = None,
+    refresh: Callable[[], None] | None = None,
 ) -> Iterator[tuple[int, PathfinderResult]]:
     """Generator yielding ``(chain, result)`` pairs from pathfinder runs, concurrently or serially.
 
@@ -398,9 +445,10 @@ def make_generator(
             blas_cores=blas_cores,
             progress_callbacks=progress_callbacks,
             mp_ctx=mp_ctx,
+            refresh=refresh,
         )
     else:
-        yield from _execute_serially(fn, seeds, progress_callbacks)
+        yield from _execute_serially(fn, seeds, progress_callbacks, refresh=refresh)
 
 
 def _make_multipath_progress(progressbar: bool) -> CustomProgress:
@@ -423,11 +471,34 @@ def _make_multipath_progress(progressbar: bool) -> CustomProgress:
         include_headers=True,
         console=Console(theme=default_progress_theme),
         disable=not progressbar,
+        # Workers are forked while this display is live. Rich's refresh thread and its
+        # stdout/stderr proxies hold locks a forked child would inherit mid-acquire and hang on
+        # (pymc#8421), so neither runs; the parent redraws from its own polling loop instead.
+        auto_refresh=False,
+        redirect_stdout=False,
+        redirect_stderr=False,
     )
+
+
+def _make_refresher(progress: CustomProgress) -> Callable[[], None]:
+    """Redraw ``progress`` at most every ``REFRESH_INTERVAL`` seconds."""
+    last_refresh = 0.0
+
+    def refresh() -> None:
+        nonlocal last_refresh
+        now = time.monotonic()
+        if now - last_refresh >= REFRESH_INTERVAL:
+            last_refresh = now
+            progress.refresh()
+
+    return refresh
 
 
 def _make_progress_callback(progress: CustomProgress, task_id: TaskID) -> Callable[[dict], None]:
     def cb(info: dict) -> None:
+        if not progress.tasks[task_id].started:
+            progress.start_task(task_id)
+
         fields: dict[str, Any] = {}
         update_kwargs: dict[str, Any] = {}
         if info.get("status") is not None:
