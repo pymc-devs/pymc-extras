@@ -14,6 +14,7 @@ from pymc_extras.inference.pathfinder.multipath import (
     _make_multipath_progress,
     _make_progress_callback,
     _make_refresher,
+    _resolve_mp_context,
 )
 from tests.inference.pathfinder.equivalence_models import make_ard_regression
 
@@ -101,6 +102,24 @@ def _small_serial_fit(model, **overrides):
     kwargs.update(overrides)
     with model:
         return pmx.fit(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "system, expected", [("Darwin", "spawn"), ("Linux", None)], ids=["macos", "linux"]
+)
+def test_default_context_spawns_on_macos(monkeypatch, system, expected):
+    """macOS defaults to spawn; elsewhere the choice is left to pymc's resolver."""
+    seen = []
+    monkeypatch.setattr(multipath_mod.platform, "system", lambda: system)
+    monkeypatch.setattr(
+        multipath_mod,
+        "_initialize_multiprocessing_context",
+        lambda mp_ctx, *, mode=None, quiet=False: seen.append(mp_ctx),
+    )
+
+    _resolve_mp_context(None, mode=None)
+
+    assert seen == [expected]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fork start method is unavailable on Windows")
