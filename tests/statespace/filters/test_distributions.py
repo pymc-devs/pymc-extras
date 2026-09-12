@@ -389,41 +389,121 @@ def small_lgssm():
     }
 
 
-def _build_simulation_smoother_func(params, seed):
-    """Compile a callable that returns ``(a_smooth, sample)`` per call."""
-    a0 = pt.as_tensor_variable(params["a0"])
-    P0 = pt.as_tensor_variable(params["P0"])
-    c = pt.as_tensor_variable(params["c"])
-    d = pt.as_tensor_variable(params["d"])
-    T_mat = pt.as_tensor_variable(params["T"])
-    Z_mat = pt.as_tensor_variable(params["Z"])
-    R_mat = pt.as_tensor_variable(params["R"])
-    H_mat = pt.as_tensor_variable(params["H"])
-    Q_mat = pt.as_tensor_variable(params["Q"])
-    y = pt.as_tensor_variable(np.asarray(params["y"], dtype=floatX))
+class TestSimulationSmoother:
+    """Draws from one compiled simulation smoother, fed with the matrices of each test."""
 
-    filt = StandardFilter().build_graph(y, a0, P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat)
-    a_smooth, _ = RTSSmoother().build_graph(
-        y, (a0, P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat), filt
-    )
+    @classmethod
+    def setup_class(cls):
+        y = pt.tensor("y", dtype=floatX, shape=(None, None))
+        a0 = pt.tensor("a0", dtype=floatX, shape=(None,))
+        P0 = pt.tensor("P0", dtype=floatX, shape=(None, None))
+        c = pt.tensor("c", dtype=floatX, shape=(None,))
+        d = pt.tensor("d", dtype=floatX, shape=(None,))
+        T_mat = pt.tensor("T", dtype=floatX, shape=(None, None))
+        Z_mat = pt.tensor("Z", dtype=floatX, shape=(None, None))
+        R_mat = pt.tensor("R", dtype=floatX, shape=(None, None))
+        H_mat = pt.tensor("H", dtype=floatX, shape=(None, None))
+        Q_mat = pt.tensor("Q", dtype=floatX, shape=(None, None))
+        matrices = (a0, P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat)
 
-    rng_var = pytensor.shared(np.random.default_rng(seed), name="rng")
-    sample = SimulationSmoother.dist(
-        y,
-        a0,
-        P0,
-        c,
-        d,
-        T_mat,
-        Z_mat,
-        R_mat,
-        H_mat,
-        Q_mat,
-        kalman_filter=StandardFilter(),
-        kalman_smoother=RTSSmoother(),
-        rng=rng_var,
-    )
-    return pm.compile([], [a_smooth, sample], on_unused_input="ignore")
+        filt = StandardFilter().build_graph(y, *matrices)
+        a_smooth, _ = RTSSmoother().build_graph(y, matrices, filt)
+
+        cls.rng = pytensor.shared(np.random.default_rng(0), name="rng")
+        sample = SimulationSmoother.dist(
+            y,
+            *matrices,
+            kalman_filter=StandardFilter(),
+            kalman_smoother=RTSSmoother(),
+            rng=cls.rng,
+        )
+        cls.simulate = pm.compile([y, *matrices], [a_smooth, sample], on_unused_input="ignore")
+
+    def draws(self, params, seed, n_draws):
+        """Return the smoothed mean and ``n_draws`` simulation-smoother draws for ``params``."""
+        self.rng.set_value(np.random.default_rng(seed))
+
+        simulation_smoother_inputs = ("y", "a0", "P0", "c", "d", "T", "Z", "R", "H", "Q")
+        args = [np.asarray(params[name], dtype=floatX) for name in simulation_smoother_inputs]
+
+        a_smooth, _ = self.simulate(*args)
+        return a_smooth, np.stack([self.simulate(*args)[1] for _ in range(n_draws)])
+
+    def test_joint_covariance(self, small_lgssm):
+        """Empirical joint mean and covariance over draws match the analytic posterior."""
+        params = small_lgssm
+        post_mean, post_cov = _analytic_joint_posterior(
+            params["a0"],
+            params["P0"],
+            params["c"],
+            params["d"],
+            params["T"],
+            params["Z"],
+            params["R"],
+            params["H"],
+            params["Q"],
+            params["y"],
+        )
+        n_draws = 5_000
+        _, samples = self.draws(params, seed=12345, n_draws=n_draws)
+        emp_cov = np.cov(samples.reshape(n_draws, -1).T)
+        assert_allclose(samples.mean(0), post_mean, atol=0.05)
+        assert_allclose(emp_cov, post_cov, atol=0.04)
+
+    def test_unbiased_under_large_d(self, small_lgssm):
+        """Draws stay centered on the smoothed mean when the observation intercept is large.
+
+        The Durbin-Koopman identity is invariant to ``d``, so a ``d`` term applied
+        inconsistently across the simulated trajectory shows up as a mean shift here while
+        leaving the joint covariance intact.
+        """
+        params = {**small_lgssm, "d": np.array([50.0, -30.0], dtype=floatX)}
+        a_smooth, draws = self.draws(params, seed=99, n_draws=2_000)
+
+        assert_allclose(draws.mean(0), a_smooth, atol=0.1)
+
+    def test_against_statsmodels(self, rng):
+        """End-to-end check against statsmodels' simulation_smoother on the Nile model.
+
+        Builds a Local Linear Trend in statsmodels and the same matrices in pymc-extras,
+        draws from both simulation smoothers, and asserts empirical mean and joint
+        covariance agree to MC tolerance.
+        """
+        sm_res, [data, _a0, _diffuse_P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat] = (
+            nile_test_test_helper(rng)
+        )
+        # Override the helper's diffuse P0=1e6*I with a tight prior so MC noise
+        # doesn't dominate the comparison.
+        a0 = np.zeros(2, dtype=floatX)
+        P0 = np.eye(2, dtype=floatX) * 0.5
+        sm_res.model.initialize_known(initial_state=a0, initial_state_cov=P0)
+        sm_res = sm_res.model.smooth(sm_res.params)
+
+        params = {
+            "a0": a0,
+            "P0": P0,
+            "c": c,
+            "d": d,
+            "T": T_mat,
+            "Z": Z_mat,
+            "R": R_mat,
+            "H": H_mat,
+            "Q": Q_mat,
+            "y": data,
+        }
+        n_draws = 2_000
+        _, ours = self.draws(params, seed=42, n_draws=n_draws)
+
+        sim = sm_res.model.simulation_smoother(random_state=1234)
+        sm_samples = np.empty_like(ours)
+        for i in range(n_draws):
+            sim.simulate()
+            sm_samples[i] = sim.simulated_state.T
+
+        cov_ours = np.cov(ours.reshape(n_draws, -1).T)
+        cov_sm = np.cov(sm_samples.reshape(n_draws, -1).T)
+        assert_allclose(cov_ours, cov_sm, atol=0.05)
+        assert_allclose(ours.mean(0), sm_samples.mean(0), atol=0.1)
 
 
 def test_simulation_smoother_signature(small_lgssm):
@@ -472,45 +552,6 @@ def test_simulation_smoother_signature(small_lgssm):
         sample.owner.op.extended_signature
         == "(t,p),(s),(s,s),(s),(t,p),(s,s),(p,s),(s,r),(p,p),(r,r),[rng]->[rng],(t,s)"
     )
-
-
-def test_simulation_smoother_joint_covariance(small_lgssm):
-    """Empirical joint mean and covariance over draws match the analytic posterior."""
-    params = small_lgssm
-    post_mean, post_cov = _analytic_joint_posterior(
-        params["a0"],
-        params["P0"],
-        params["c"],
-        params["d"],
-        params["T"],
-        params["Z"],
-        params["R"],
-        params["H"],
-        params["Q"],
-        params["y"],
-    )
-    f = _build_simulation_smoother_func(params, seed=12345)
-    n_draws = 5_000
-    samples = np.stack([f()[1] for _ in range(n_draws)])
-    emp_cov = np.cov(samples.reshape(n_draws, -1).T)
-    assert_allclose(samples.mean(0), post_mean, atol=0.05)
-    assert_allclose(emp_cov, post_cov, atol=0.04)
-
-
-def test_simulation_smoother_unbiased_under_large_d(small_lgssm):
-    """Draws stay centered on the smoothed mean when the observation intercept is large.
-
-    The Durbin-Koopman identity is invariant to ``d``, so a ``d`` term applied
-    inconsistently across the simulated trajectory shows up as a mean shift here while
-    leaving the joint covariance intact.
-    """
-    params = {**small_lgssm, "d": np.array([50.0, -30.0], dtype=floatX)}
-    f = _build_simulation_smoother_func(params, seed=99)
-
-    a_smooth = f()[0]
-    draws = np.stack([f()[1] for _ in range(2_000)])
-
-    assert_allclose(draws.mean(0), a_smooth, atol=0.1)
 
 
 def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
@@ -583,52 +624,6 @@ def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
     draws = np.stack([f()[1] for _ in range(2_000)])
 
     assert_allclose(draws.mean(0), smoothed_mean, atol=0.1)
-
-
-def test_simulation_smoother_against_statsmodels(rng):
-    """End-to-end check against statsmodels' simulation_smoother on the Nile model.
-
-    Builds a Local Linear Trend in statsmodels and the same matrices in pymc-extras,
-    draws from both simulation smoothers, and asserts empirical mean and joint
-    covariance agree to MC tolerance.
-    """
-    sm_res, [data, _a0, _diffuse_P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat] = (
-        nile_test_test_helper(rng)
-    )
-    # Override the helper's diffuse P0=1e6*I with a tight prior so MC noise
-    # doesn't dominate the comparison.
-    a0 = np.zeros(2, dtype=floatX)
-    P0 = np.eye(2, dtype=floatX) * 0.5
-    sm_res.model.initialize_known(initial_state=a0, initial_state_cov=P0)
-    sm_res = sm_res.model.smooth(sm_res.params)
-
-    params = {
-        "a0": a0,
-        "P0": P0,
-        "c": c,
-        "d": d,
-        "T": T_mat,
-        "Z": Z_mat,
-        "R": R_mat,
-        "H": H_mat,
-        "Q": Q_mat,
-        "y": data,
-    }
-    f = _build_simulation_smoother_func(params, seed=42)
-
-    n_draws = 2_000
-    ours = np.stack([f()[1] for _ in range(n_draws)])
-
-    sim = sm_res.model.simulation_smoother(random_state=1234)
-    sm_samples = np.empty_like(ours)
-    for i in range(n_draws):
-        sim.simulate()
-        sm_samples[i] = sim.simulated_state.T
-
-    cov_ours = np.cov(ours.reshape(n_draws, -1).T)
-    cov_sm = np.cov(sm_samples.reshape(n_draws, -1).T)
-    assert_allclose(cov_ours, cov_sm, atol=0.05)
-    assert_allclose(ours.mean(0), sm_samples.mean(0), atol=0.1)
 
 
 def _var_parameters(rng, k_endog, order, k_exog):
