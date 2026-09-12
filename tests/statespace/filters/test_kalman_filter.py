@@ -399,41 +399,49 @@ def test_square_root_filter_takes_a_covariance_for_P0(rng):
         assert_allclose(actual, expected, atol=ATOL, rtol=RTOL, err_msg=name)
 
 
-@pytest.mark.parametrize("stochastic_states", [4, 1], ids=["full_rank_P", "singular_P"])
-@pytest.mark.parametrize("n_missing", [0, 5], ids=["complete", "missing"])
-def test_disturbance_smoother_matches_rts(stochastic_states, n_missing, rng):
-    """
-    The disturbance smoother never inverts ``P``, so it must agree with the RTS form even where
-    ``P`` is singular. A diagonal transition keeps process noise out of the noiseless states, so
-    ``P`` stays rank-deficient at every step rather than filling in.
-    """
-    m, p, n = 4, 1, 30
-    T = np.diag(np.linspace(0.5, 0.9, m)).astype(floatX)
-    R = np.eye(m, dtype=floatX)[:, :stochastic_states]
-    Q = np.eye(stochastic_states, dtype=floatX) * 0.3
-    Z = (rng.normal(size=(p, m)) * 0.5).astype(floatX)
-    H = np.eye(p, dtype=floatX) * 0.4
-    a0, c, d = np.zeros(m, dtype=floatX), np.zeros(m, dtype=floatX), np.zeros(p, dtype=floatX)
-    P0 = (R @ Q @ R.T).astype(floatX)
+class TestDisturbanceSmootherMatchesRTS:
+    @classmethod
+    def setup_class(cls):
+        inputs, _ = initialize_filter(StandardFilter(cov_jitter=0.0))
+        data, *matrices = inputs
+        filter_outputs = StandardFilter(cov_jitter=0.0).build_graph(data, *matrices)
+        rts_states, rts_covs = RTSSmoother(cov_jitter=0.0).build_graph(
+            data, matrices, filter_outputs
+        )
+        dk_states, dk_covs = DisturbanceSmoother(cov_jitter=0.0).build_graph(
+            data, matrices, filter_outputs
+        )
+        cls.smoother_fn = pytensor.function(
+            inputs, [filter_outputs[4][-1], dk_states, rts_states, dk_covs, rts_covs]
+        )
 
-    y = rng.normal(size=(n, p)).astype(floatX)
-    y[rng.choice(n, n_missing, replace=False), 0] = np.nan
-    matrices = [pt.as_tensor_variable(x) for x in (a0, P0, c, d, T, Z, R, H, Q)]
-    data = pt.specify_shape(pt.as_tensor_variable(y), y.shape)
+    @pytest.mark.parametrize("stochastic_states", [4, 1], ids=["full_rank_P", "singular_P"])
+    @pytest.mark.parametrize("n_missing", [0, 5], ids=["complete", "missing"])
+    def test_matches_rts(self, stochastic_states, n_missing, rng):
+        """
+        The disturbance smoother never inverts ``P``, so it must agree with the RTS form even where
+        ``P`` is singular. A diagonal transition keeps process noise out of the noiseless states, so
+        ``P`` stays rank-deficient at every step rather than filling in.
+        """
+        m, p, n = 4, 1, 30
+        T = np.diag(np.linspace(0.5, 0.9, m)).astype(floatX)
+        R = np.eye(m, dtype=floatX)[:, :stochastic_states]
+        Q = np.eye(stochastic_states, dtype=floatX) * 0.3
+        Z = (rng.normal(size=(p, m)) * 0.5).astype(floatX)
+        H = np.eye(p, dtype=floatX) * 0.4
+        a0, c, d = np.zeros(m, dtype=floatX), np.zeros(m, dtype=floatX), np.zeros(p, dtype=floatX)
+        P0 = (R @ Q @ R.T).astype(floatX)
 
-    filter_outputs = StandardFilter(cov_jitter=0.0).build_graph(data, *matrices)
-    rts_states, rts_covs = RTSSmoother(cov_jitter=0.0).build_graph(data, matrices, filter_outputs)
-    dk_states, dk_covs = DisturbanceSmoother(cov_jitter=0.0).build_graph(
-        data, matrices, filter_outputs
-    )
+        y = rng.normal(size=(n, p)).astype(floatX)
+        y[rng.choice(n, n_missing, replace=False), 0] = np.nan
 
-    P_last, dk_states, rts_states, dk_covs, rts_covs = pytensor.function(
-        [], [filter_outputs[4][-1], dk_states, rts_states, dk_covs, rts_covs]
-    )()
+        P_last, dk_states, rts_states, dk_covs, rts_covs = self.smoother_fn(
+            y, a0, P0, c, d, T, Z, R, H, Q
+        )
 
-    assert np.linalg.matrix_rank(P_last) == stochastic_states
-    assert_allclose(dk_states, rts_states, atol=1e-6)
-    assert_allclose(dk_covs, rts_covs, atol=1e-6)
+        assert np.linalg.matrix_rank(P_last) == stochastic_states
+        assert_allclose(dk_states, rts_states, atol=1e-6)
+        assert_allclose(dk_covs, rts_covs, atol=1e-6)
 
 
 @pytest.mark.parametrize("filter_name", filter_names)
