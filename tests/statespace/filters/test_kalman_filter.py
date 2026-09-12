@@ -611,69 +611,130 @@ def assert_results_match(out_std, out_conv, names, err_prefix=""):
         assert_allclose(conv, std, atol=ATOL, rtol=RTOL, err_msg=f"{err_prefix}{name} mismatch")
 
 
+def _make_local_level_system(n, rng):
+    """A unit-root (non-stationary) but observable and controllable local level. Its Riccati
+    recursion still converges to a steady-state gain, so ConvergentFilter applies -- convergence
+    requires detectability and stabilizability, not stationarity."""
+    sigma_level, sigma_obs = 0.4, 0.7
+    T_np = np.array([[1.0]], dtype=floatX)
+    Z_np = np.array([[1.0]], dtype=floatX)
+    R_np = np.array([[1.0]], dtype=floatX)
+    Q_np = np.array([[sigma_level**2]], dtype=floatX)
+    H_np = np.array([[sigma_obs**2]], dtype=floatX)
+    c_np = np.zeros(1, dtype=floatX)
+    d_np = np.zeros(1, dtype=floatX)
+    a0_np = np.zeros(1, dtype=floatX)
+    P0_np = np.array([[1.0]], dtype=floatX)
+    level = rng.standard_normal()
+    data_np = np.empty((n, 1), dtype=floatX)
+    for t in range(n):
+        level = level + sigma_level * rng.standard_normal()
+        data_np[t] = level + sigma_obs * rng.standard_normal()
+    return [data_np, a0_np, P0_np, c_np, d_np, T_np, Z_np, R_np, H_np, Q_np]
+
+
 N_FORWARD_OUTPUTS = len(output_names)
 
 
-@cache
-def get_convergent_test_function(filter_name: str) -> Callable:
-    """
-    Compile a filter with unknown shapes once, returning every forward output followed by the loss
-    and its gradients, so each ConvergentFilter comparison reuses the same compiled graph.
-    """
-    match filter_name:
-        case "StandardFilter":
-            kfilter = StandardFilter()
-        case "ConvergentFilter":
-            kfilter = ConvergentFilter()
-        case "ConvergentFilter(tol=0)":
-            kfilter = ConvergentFilter(tol=0.0)
-        case _:
-            raise ValueError(f"Unknown filter name: {filter_name}")
+class TestConvergentFilter:
+    """Compare ConvergentFilter with StandardFilter through one compiled function per filter."""
 
-    inputs, outputs = initialize_filter(kfilter)
-    loss = outputs[-1].sum()
-    grads = pt.grad(loss, inputs[1:])
+    @classmethod
+    def setup_class(cls):
+        cls.standard = cls._compile(StandardFilter())
+        cls.convergent = cls._compile(ConvergentFilter())
+        cls.convergent_never_converging = cls._compile(ConvergentFilter(tol=0.0))
 
-    return pytensor.function(inputs, [*outputs, loss, *grads], on_unused_input="ignore")
+    @staticmethod
+    def _compile(kfilter) -> Callable:
+        """Compile with unknown shapes, returning every forward output, the loss, and its gradients."""
+        inputs, outputs = initialize_filter(kfilter)
+        loss = outputs[-1].sum()
+        grads = pt.grad(loss, inputs[1:])
+        return pytensor.function(inputs, [*outputs, loss, *grads], on_unused_input="ignore")
 
+    @staticmethod
+    def _forward_and_gradients(fn, vals):
+        results = fn(*vals)
+        return results[:N_FORWARD_OUTPUTS], results[N_FORWARD_OUTPUTS:]
 
-def _forward_and_gradients(filter_name, vals):
-    results = get_convergent_test_function(filter_name)(*vals)
-    return results[:N_FORWARD_OUTPUTS], results[N_FORWARD_OUTPUTS:]
+    @pytest.mark.parametrize(
+        "m,p,n_shocks,n",
+        [(5, 2, 5, 100), (10, 3, 10, 200)],
+        ids=["small", "medium"],
+    )
+    def test_forward_matches_standard(self, m, p, n_shocks, n, rng):
+        """ConvergentFilter forward outputs should match StandardFilter to numerical precision."""
+        vals = _make_stationary_system(m, p, n_shocks, n, rng)
+        out_std, _ = self._forward_and_gradients(self.standard, vals)
+        out_conv, _ = self._forward_and_gradients(self.convergent, vals)
 
+        # The tail path only runs once the Riccati recursion converges. Without this the comparison
+        # could pass vacuously, with ConvergentFilter having degenerated into StandardFilter.
+        predicted_covs = out_conv[output_names.index("predicted_covs")]
+        assert_allclose(predicted_covs[-1], predicted_covs[n // 2], atol=ATOL, rtol=RTOL)
 
-@pytest.mark.parametrize(
-    "m,p,n_shocks,n",
-    [(5, 2, 5, 100), (10, 3, 10, 200)],
-    ids=["small", "medium"],
-)
-def test_convergent_filter_forward_matches_standard(m, p, n_shocks, n, rng):
-    """ConvergentFilter forward outputs should match StandardFilter to numerical precision."""
-    vals = _make_stationary_system(m, p, n_shocks, n, rng)
-    out_std, _ = _forward_and_gradients("StandardFilter", vals)
-    out_conv, _ = _forward_and_gradients("ConvergentFilter", vals)
+        assert_results_match(out_std, out_conv, output_names, err_prefix="ConvergentFilter ")
 
-    # The tail path only runs once the Riccati recursion converges. Without this the comparison
-    # could pass vacuously, with ConvergentFilter having degenerated into StandardFilter.
-    predicted_covs = out_conv[output_names.index("predicted_covs")]
-    assert_allclose(predicted_covs[-1], predicted_covs[n // 2], atol=ATOL, rtol=RTOL)
+    @pytest.mark.parametrize(
+        "m,p,n_shocks,n",
+        [(5, 2, 5, 100), (10, 3, 10, 200)],
+        ids=["small", "medium"],
+    )
+    def test_gradient_matches_standard(self, m, p, n_shocks, n, rng):
+        """ConvergentFilter's analytic gradients should match StandardFilter's autodiff gradients
+        for every model parameter."""
+        vals = _make_stationary_system(m, p, n_shocks, n, rng)
+        _, grads_std = self._forward_and_gradients(self.standard, vals)
+        _, grads_conv = self._forward_and_gradients(self.convergent, vals)
 
-    assert_results_match(out_std, out_conv, output_names, err_prefix="ConvergentFilter ")
+        assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="ConvergentFilter ")
 
+    def test_asserts_nan_symbolic_data(self, rng):
+        """For fully symbolic data, NaN should be caught by a runtime Assert op."""
+        m, p, n_shocks, n = 3, 2, 3, 30
+        vals = _make_stationary_system(m, p, n_shocks, n, rng)
+        # Inject NaN at runtime
+        vals[0][5, 0] = np.nan
 
-@pytest.mark.parametrize(
-    "m,p,n_shocks,n",
-    [(5, 2, 5, 100), (10, 3, 10, 200)],
-    ids=["small", "medium"],
-)
-def test_convergent_filter_gradient_matches_standard(m, p, n_shocks, n, rng):
-    """ConvergentFilter's analytic gradients should match StandardFilter's autodiff gradients for
-    every model parameter."""
-    vals = _make_stationary_system(m, p, n_shocks, n, rng)
-    _, grads_std = _forward_and_gradients("StandardFilter", vals)
-    _, grads_conv = _forward_and_gradients("ConvergentFilter", vals)
+        with pytest.raises(AssertionError, match="missing data"):
+            self.convergent(*vals)
 
-    assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="ConvergentFilter ")
+    def test_singular_H_gradient_matches_standard(self, rng):
+        """A measurement-error-free model has singular H. The tail backward routes its one
+        H-coupled term through F^{-1}, so every gradient -- d_H included -- matches StandardFilter
+        even when H is singular."""
+        m, p, n_shocks, n = 4, 3, 4, 120
+        vals = _make_stationary_system(m, p, n_shocks, n, rng)
+        # Perfectly observe one series: zero its measurement-noise row and column.
+        vals[8][0, :] = 0.0
+        vals[8][:, 0] = 0.0
+
+        _, grads_std = self._forward_and_gradients(self.standard, vals)
+        _, grads_conv = self._forward_and_gradients(self.convergent, vals)
+        assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="singular H: ")
+
+    def test_local_level_matches_standard(self, rng):
+        """A unit-root local level converges to a steady-state gain. ConvergentFilter forward
+        outputs and gradients should match StandardFilter even though the system is
+        non-stationary."""
+        vals = _make_local_level_system(250, rng)
+
+        out_std = self.standard(*vals)
+        out_conv = self.convergent(*vals)
+        for std, conv in zip(out_std, out_conv, strict=True):
+            assert_allclose(np.asarray(conv), np.asarray(std), atol=ATOL, rtol=RTOL)
+
+    def test_k_equals_n_gradient_matches_standard(self, rng):
+        """With tol=0 the until clause never fires, so the Riccati never converges. The split is
+        then capped at n-1 (a one-step tail -- a single tail step is exactly the Kalman step), and
+        the gradient of this degenerate no-convergence case must still match StandardFilter."""
+        m, p, n_shocks, n = 4, 2, 4, 40
+        vals = _make_stationary_system(m, p, n_shocks, n, rng)
+
+        _, grads_std = self._forward_and_gradients(self.standard, vals)
+        _, grads_conv = self._forward_and_gradients(self.convergent_never_converging, vals)
+        assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="tol=0: ")
 
 
 def test_convergent_filter_rejects_time_varying_params():
@@ -711,17 +772,6 @@ def test_convergent_filter_rejects_nan_constant_data():
         ConvergentFilter().build_graph(data, a0, P0, c, d, T, Z, R, H, Q)
 
 
-def test_convergent_filter_asserts_nan_symbolic_data(rng):
-    """For fully symbolic data, NaN should be caught by a runtime Assert op."""
-    m, p, n_shocks, n = 3, 2, 3, 30
-    vals = _make_stationary_system(m, p, n_shocks, n, rng)
-    # Inject NaN at runtime
-    vals[0][5, 0] = np.nan
-
-    with pytest.raises(AssertionError, match="missing data"):
-        get_convergent_test_function("ConvergentFilter")(*vals)
-
-
 def test_convergent_filter_rejects_missing_fill_sentinel(rng):
     """The statespace core replaces NaN with missing_fill_value before the filter runs, so the
     sentinel -- not just NaN -- must be rejected. This mirrors the real PyMC path, where data is a
@@ -737,67 +787,6 @@ def test_convergent_filter_rejects_missing_fill_sentinel(rng):
         ConvergentFilter().build_graph(
             pt.as_tensor_variable(shared_data), a0, P0, c, d, T, Z, R, H, Q
         )
-
-
-def test_convergent_filter_singular_H_gradient_matches_standard(rng):
-    """A measurement-error-free model has singular H. The tail backward routes its one H-coupled
-    term through F^{-1}, so every gradient -- d_H included -- matches StandardFilter even when H is
-    singular."""
-    m, p, n_shocks, n = 4, 3, 4, 120
-    vals = _make_stationary_system(m, p, n_shocks, n, rng)
-    # Perfectly observe one series: zero its measurement-noise row and column.
-    vals[8][0, :] = 0.0
-    vals[8][:, 0] = 0.0
-
-    _, grads_std = _forward_and_gradients("StandardFilter", vals)
-    _, grads_conv = _forward_and_gradients("ConvergentFilter", vals)
-    assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="singular H: ")
-
-
-def _make_local_level_system(n, rng):
-    """A unit-root (non-stationary) but observable and controllable local level. Its Riccati
-    recursion still converges to a steady-state gain, so ConvergentFilter applies -- convergence
-    requires detectability and stabilizability, not stationarity."""
-    sigma_level, sigma_obs = 0.4, 0.7
-    T_np = np.array([[1.0]], dtype=floatX)
-    Z_np = np.array([[1.0]], dtype=floatX)
-    R_np = np.array([[1.0]], dtype=floatX)
-    Q_np = np.array([[sigma_level**2]], dtype=floatX)
-    H_np = np.array([[sigma_obs**2]], dtype=floatX)
-    c_np = np.zeros(1, dtype=floatX)
-    d_np = np.zeros(1, dtype=floatX)
-    a0_np = np.zeros(1, dtype=floatX)
-    P0_np = np.array([[1.0]], dtype=floatX)
-    level = rng.standard_normal()
-    data_np = np.empty((n, 1), dtype=floatX)
-    for t in range(n):
-        level = level + sigma_level * rng.standard_normal()
-        data_np[t] = level + sigma_obs * rng.standard_normal()
-    return [data_np, a0_np, P0_np, c_np, d_np, T_np, Z_np, R_np, H_np, Q_np]
-
-
-def test_convergent_filter_local_level_matches_standard(rng):
-    """A unit-root local level converges to a steady-state gain. ConvergentFilter forward outputs
-    and gradients should match StandardFilter even though the system is non-stationary."""
-    n = 250
-    vals = _make_local_level_system(n, rng)
-
-    out_std = get_convergent_test_function("StandardFilter")(*vals)
-    out_conv = get_convergent_test_function("ConvergentFilter")(*vals)
-    for std, conv in zip(out_std, out_conv, strict=True):
-        assert_allclose(np.asarray(conv), np.asarray(std), atol=ATOL, rtol=RTOL)
-
-
-def test_convergent_filter_k_equals_n_gradient_matches_standard(rng):
-    """With tol=0 the until clause never fires, so the Riccati never converges. The split is then
-    capped at n-1 (a one-step tail -- a single tail step is exactly the Kalman step), and the
-    gradient of this degenerate no-convergence case must still match StandardFilter."""
-    m, p, n_shocks, n = 4, 2, 4, 40
-    vals = _make_stationary_system(m, p, n_shocks, n, rng)
-
-    _, grads_std = _forward_and_gradients("StandardFilter", vals)
-    _, grads_conv = _forward_and_gradients("ConvergentFilter(tol=0)", vals)
-    assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="tol=0: ")
 
 
 def test_convergent_filter_builds_and_runs_at_float32(rng):
