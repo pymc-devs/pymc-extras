@@ -2,11 +2,13 @@ import contextlib
 import sys
 
 import numpy as np
+import pymc as pm
 import pytest
 
 import pymc_extras as pmx
 
 from pymc_extras.inference.pathfinder import multipath as multipath_mod
+from pymc_extras.inference.pathfinder.lbfgs import LBFGSConfig
 from pymc_extras.inference.pathfinder.multipath import (
     _make_multipath_progress,
     _make_progress_callback,
@@ -97,6 +99,27 @@ def _small_serial_fit(model, **overrides):
     kwargs.update(overrides)
     with model:
         return pmx.fit(**kwargs)
+
+
+def test_low_update_pct_paths_are_counted_but_still_succeed():
+    """A strict curvature threshold makes L-BFGS reject most of its steps, so the run is flagged
+    LOW_UPDATE_PCT in the lbfgs status counts while the path itself still counts as a success."""
+    idata = _small_serial_fit(
+        make_ard_regression(), num_paths=3, lbfgs_config=LBFGSConfig(epsilon=0.1)
+    )
+
+    assert idata.lbfgs.status_counts.sel(status="LOW_UPDATE_PCT").item() > 0
+    assert idata.pathfinder.path_status_counts.sel(status="SUCCESS").item() > 0
+
+
+def test_all_paths_failing_raises():
+    """A negative prior sigma gives every path a non-finite logp, so L-BFGS cannot take a step
+    and fit raises rather than returning an empty result."""
+    with pm.Model() as model:
+        pm.Normal("x", mu=0.0, sigma=-1.0)
+
+    with pytest.raises(ValueError, match="All paths failed"):
+        _small_serial_fit(model, num_paths=3, max_init_retries=0)
 
 
 def test_compile_mode_threaded_to_mp_context(monkeypatch):

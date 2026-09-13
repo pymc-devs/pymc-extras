@@ -61,7 +61,7 @@ class TestGeneralizedPoisson:
         def test_random_lam_expected_moments(self, mu):
             lam = np.array([-0.9, -0.7, -0.2, 0, 0.2, 0.7, 0.9])
             dist = self.pymc_dist.dist(mu=mu, lam=lam, size=(10_000, len(lam)))
-            draws = dist.eval()
+            draws = pm.draw(dist, random_seed=1234)
 
             expected_mean = mu / (1 - lam)
             np.testing.assert_allclose(draws.mean(0), expected_mean, rtol=1e-1)
