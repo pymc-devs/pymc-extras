@@ -431,7 +431,8 @@ class TestDisturbanceSmootherMatchesRTS:
         Q = np.eye(stochastic_states, dtype=floatX) * 0.3
         Z = (rng.normal(size=(p, m)) * 0.5).astype(floatX)
         H = np.eye(p, dtype=floatX) * 0.4
-        a0, c, d = np.zeros(m, dtype=floatX), np.zeros(m, dtype=floatX), np.zeros(p, dtype=floatX)
+        a0, d = np.zeros(m, dtype=floatX), np.zeros(p, dtype=floatX)
+        c = rng.normal(size=m).astype(floatX)
         P0 = (R @ Q @ R.T).astype(floatX)
 
         y = rng.normal(size=(n, p)).astype(floatX)

@@ -17,7 +17,7 @@ from pymc_extras.statespace.utils.constants import (
 )
 
 # The smoother's backward pass only ever touches these three matrices.
-SMOOTHER_PARAM_NAMES = ("T", "R", "Q")
+SMOOTHER_PARAM_NAMES = ("c", "T", "R", "Q")
 
 # The disturbance smoother's backward pass reads the observation block as well as the transition.
 DISTURBANCE_PARAM_NAMES = ("d", "T", "Z", "H")
@@ -46,8 +46,8 @@ class RTSSmoother:
         Parameters
         ----------
         time_varying_names : iterable of str, optional
-            Long names of the matrices the model declared time-varying. Only the transition, selection
-            and state covariance matrices reach the smoother. Default is no time-varying matrices.
+            Long names of the matrices the model declared time-varying. Only the state intercept,
+            transition, selection and state covariance matrices reach the smoother. Default is no time-varying matrices.
         cov_jitter : float, optional
             Jitter added to the diagonal of every covariance matrix at each step. Default 1e-8, or
             1e-6 if ``pytensor.config.floatX`` is float32.
@@ -81,14 +81,14 @@ class RTSSmoother:
         smoothed_covariances : TensorVariable
             Smoothed state covariances, shape ``(T, k_states, k_states)``.
         """
-        *_, T, _, R, _, Q = matrices
+        _, _, c, _, T, _, R, _, Q = matrices
         filtered_states, filtered_covariances = filter_outputs[0], filter_outputs[3]
         k = filtered_states.type.shape[1]
 
         a_last = pt.specify_shape(filtered_states[-1], (k,))
         P_last = pt.specify_shape(filtered_covariances[-1], (k, k))
 
-        params = dict(zip(SMOOTHER_PARAM_NAMES, [T, R, Q], strict=True))
+        params = dict(zip(SMOOTHER_PARAM_NAMES, [c, T, R, Q], strict=True))
         sequences = [params[name] for name in self.seq_names]
         non_sequences = [params[name] for name in self.non_seq_names]
 
@@ -121,8 +121,8 @@ class RTSSmoother:
 
         return smoothed_states, smoothed_covariances
 
-    def smoother_step(self, a, P, a_smooth, P_smooth, T, R, Q):
-        a_hat, P_hat = self.predict(a, P, T, R, Q)
+    def smoother_step(self, a, P, a_smooth, P_smooth, c, T, R, Q):
+        a_hat, P_hat = self.predict(a, P, c, T, R, Q)
 
         # Use pinv, otherwise P_hat is singular when there is missing data
         smoother_gain = (pt.linalg.pinv(P_hat, hermitian=True) @ T @ P).mT
@@ -134,8 +134,8 @@ class RTSSmoother:
 
         return a_smooth_next, P_smooth_next
 
-    def predict(self, a, P, T, R, Q):
-        a_hat = T.dot(a)
+    def predict(self, a, P, c, T, R, Q):
+        a_hat = c + T.dot(a)
         P_hat = quad_form_sym(T, P) + quad_form_sym(R, Q)
         P_hat = stabilize(P_hat, self.cov_jitter)
 
