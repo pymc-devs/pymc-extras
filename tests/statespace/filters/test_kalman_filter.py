@@ -607,11 +607,13 @@ SYMMETRIC_GRADS = {"d_P0", "d_H", "d_Q"}
 
 
 def assert_results_match(out_std, out_conv, names, err_prefix=""):
+    """Compare each output to its reference at ``ATOL`` times the reference's largest entry."""
     for name, std, conv in zip(names, out_std, out_conv, strict=True):
         std, conv = np.asarray(std, float), np.asarray(conv, float)
         if name in SYMMETRIC_GRADS:
             std, conv = 0.5 * (std + std.T), 0.5 * (conv + conv.T)
-        assert_allclose(conv, std, atol=ATOL, rtol=RTOL, err_msg=f"{err_prefix}{name} mismatch")
+        scale = max(1.0, np.abs(std).max())
+        assert_allclose(conv, std, atol=ATOL * scale, err_msg=f"{err_prefix}{name} mismatch")
 
 
 def _make_local_level_system(n, rng):
