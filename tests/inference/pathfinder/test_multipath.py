@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from rich.file_proxy import FileProxy
+from threadpoolctl import threadpool_limits
 
 import pymc_extras as pmx
 
@@ -128,11 +129,12 @@ def test_fork_caps_blas_to_one_thread_only_while_workers_run(monkeypatch, parall
     """A parallel fit under fork caps BLAS to one thread in the parent so forked workers inherit
     the cap; a serial fit keeps the parent's full BLAS width."""
     requested = []
-    monkeypatch.setattr(
-        multipath_mod,
-        "threadpool_limits",
-        lambda limits=None: (requested.append(limits), contextlib.nullcontext())[1],
-    )
+
+    def recording_limits(limits=None):
+        requested.append(limits)
+        return threadpool_limits(limits=limits)
+
+    monkeypatch.setattr(multipath_mod, "threadpool_limits", recording_limits)
 
     _small_serial_fit(make_ard_regression(), parallel=parallel, mp_ctx="fork")
 
