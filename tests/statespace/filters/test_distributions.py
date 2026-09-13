@@ -753,37 +753,27 @@ def test_stationary_var_draws_come_from_the_predictive_moments(rng):
     The sampling path uses the same moments the density does.
 
     ``_predictive_moments`` can be right while ``rv_op`` wires it up wrong, and a test that calls
-    the helper directly would not notice.
+    the helper directly would not notice. A draw must equal a same-seed ``MvNormal`` draw from
+    the moments, since that is the only randomness in ``rv_op``.
     """
-    k_endog, order, n_timesteps, n_draws = 2, 2, 12, 4000
+    k_endog, order, n_timesteps = 2, 2, 12
     coefficients, _, state_cov = _var_parameters(rng, k_endog, order, 0)
     endog = rng.normal(size=(n_timesteps, k_endog)).astype(floatX)
 
-    draws = pm.draw(
-        StationaryVAR.dist(coefficients, state_cov, endog), draws=n_draws, random_seed=13
-    )
-    means, covariances = (
-        x.eval()
-        for x in _predictive_moments(
-            pt.as_tensor_variable(coefficients),
-            pt.zeros((k_endog, 0)),
-            pt.as_tensor_variable(state_cov),
-            pt.zeros((n_timesteps, 0)),
-            pt.as_tensor_variable(endog),
-            order=order,
-            k_endog=k_endog,
-        )
+    means, covariances = _predictive_moments(
+        pt.as_tensor_variable(coefficients),
+        pt.zeros((k_endog, 0)),
+        pt.as_tensor_variable(state_cov),
+        pt.zeros((n_timesteps, 0)),
+        pt.as_tensor_variable(endog),
+        order=order,
+        k_endog=k_endog,
     )
 
-    assert draws.shape == (n_draws, n_timesteps, k_endog)
+    draw = pm.draw(StationaryVAR.dist(coefficients, state_cov, endog), random_seed=13)
+    expected = pm.draw(pm.MvNormal.dist(mu=means, cov=covariances, method="svd"), random_seed=13)
 
-    standard_error = np.sqrt(np.diagonal(covariances, axis1=1, axis2=2) / n_draws)
-    assert_array_less(np.abs(draws.mean(0) - means), 5 * standard_error)
-
-    # Per timestep, not pooled. The first ``order`` rows are the only ones whose covariance
-    # differs from the innovation covariance, so pooling hides an error confined to them.
-    empirical = np.stack([np.cov(draws[:, t], rowvar=False) for t in range(n_timesteps)])
-    assert_allclose(empirical, covariances, atol=0.1 * np.abs(covariances).max())
+    assert_allclose(draw, expected, atol=ATOL, rtol=RTOL)
 
 
 def test_stationary_var_logp_follows_the_observed_data():
