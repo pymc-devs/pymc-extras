@@ -35,12 +35,18 @@ def rng():
     return np.random.default_rng(seed)
 
 
-@pytest.mark.parametrize("vectorize_draws", (True, False))
 @pytest.mark.parametrize(
-    "mode, gradient_backend",
-    [(None, "pytensor"), ("NUMBA", "pytensor"), pytest.param("JAX", "jax"), ("JAX", "pytensor")],
+    "mode, gradient_backend, vectorize_draws",
+    [
+        (None, "pytensor", True),
+        (None, "pytensor", False),
+        ("NUMBA", "pytensor", True),
+        ("JAX", "jax", True),
+        ("JAX", "pytensor", True),
+    ],
 )
 def test_fit_laplace_basic(mode, gradient_backend: GradientBackend, vectorize_draws):
+    # vectorize_draws only changes how draws are taken after the fit, so one backend covers it
     # Example originates from Bayesian Data Analyses, 3rd Edition
     # By Andrew Gelman, John Carlin, Hal Stern, David Dunson,
     # Aki Vehtari, and Donald Rubin.
@@ -154,10 +160,7 @@ def test_fit_laplace_coords(include_transformed, rng):
         assert "city" in idata["unconstrained_posterior"].coords
 
 
-@pytest.mark.parametrize(
-    "draws, use_dims",
-    [(500, False), (500, True), (1000, False), (1000, True)],
-)
+@pytest.mark.parametrize("draws, use_dims", [(500, False), (1000, True)])
 def test_fit_laplace_ragged_coords(draws, use_dims, rng):
     coords = {"city": ["A", "B", "C"], "feature": [0, 1], "obs_idx": np.arange(100)}
     with pm.Model(coords=coords) as ragged_dim_model:

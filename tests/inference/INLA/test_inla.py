@@ -66,7 +66,17 @@ def test_AR1(rng):
         y = pm.Poisson("y", mu=pm.math.exp(x), observed=y_obs)
 
         # Use INLA
-        idata = pmx.fit(method="INLA", x=x, Q=tau, return_latent_posteriors=False, random_seed=123)
+        # cores=1 samples the chains in this process. Spawned chain workers, which Windows uses,
+        # would each recompile the marginal model and its inner minimize.
+        idata = pmx.fit(
+            method="INLA",
+            x=x,
+            Q=tau,
+            return_latent_posteriors=False,
+            random_seed=123,
+            chains=2,
+            cores=1,
+        )
 
     theta_inla = idata.posterior.theta.mean(axis=(0, 1))
     tau_inla = idata.posterior.tau.mean(axis=(0, 1))
@@ -120,6 +130,8 @@ def test_3_layer_normal(rng):
             Q=tau,
             return_latent_posteriors=False,
             random_seed=123,
+            chains=2,
+            cores=1,
         )
 
     posterior_mean_inla = idata.posterior.mu.mean(axis=(0, 1))

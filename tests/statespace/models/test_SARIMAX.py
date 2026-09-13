@@ -332,20 +332,21 @@ def test_SARIMAX_update_matches_statsmodels(p, d, q, P, D, Q, S, data, rng):
         assert_allclose(matrix_dict[matrix], sm_sarimax.ssm[matrix], err_msg=f"{matrix} not equal")
 
 
-@pytest.mark.parametrize("filter_output", ["filtered", "predicted", "smoothed"])
-def test_all_prior_covariances_are_PSD(filter_output, arima_mod, pymc_mod, rng):
+def test_all_prior_covariances_are_PSD(arima_mod, pymc_mod, rng):
     with pymc_mod:
         idata = pm.sample_prior_predictive(draws=10, random_seed=rng)
 
-    cov_name = f"{filter_output}_covariances"
+    cov_names = [f"{output}_covariances" for output in ("filtered", "predicted", "smoothed")]
     filter_idata = arima_mod.sample_filter_outputs(
-        idata, filter_output_names=[cov_name], group="prior", random_seed=rng
+        idata, filter_output_names=cov_names, group="prior", random_seed=rng
     )
-    cov_mats = filter_idata.posterior_predictive[cov_name].values.reshape(
-        -1, arima_mod.k_states, arima_mod.k_states
-    )
-    w, v = np.linalg.eig(cov_mats)
-    assert_array_less(0, w, err_msg=f"Smallest eigenvalue: {min(w.ravel())}")
+
+    for cov_name in cov_names:
+        cov_mats = filter_idata.posterior_predictive[cov_name].values.reshape(
+            -1, arima_mod.k_states, arima_mod.k_states
+        )
+        w, v = np.linalg.eig(cov_mats)
+        assert_array_less(0, w, err_msg=f"{cov_name}: smallest eigenvalue {min(w.ravel())}")
 
 
 def test_interpretable_raises_if_d_nonzero():

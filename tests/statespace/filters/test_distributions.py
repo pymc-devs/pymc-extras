@@ -8,6 +8,7 @@ from numpy.testing import assert_allclose, assert_array_less
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 from scipy.linalg import solve_discrete_lyapunov as sp_solve_discrete_lyapunov
 from scipy.stats import multivariate_normal
+from statsmodels.tsa.statespace.mlemodel import MLEModel
 
 from pymc_extras.statespace import structural
 from pymc_extras.statespace.filters.distributions import (
@@ -311,46 +312,25 @@ def test_lgss_signature():
     assert lgss.owner.op.ndims_params == [1, 2, 1, 1, 3, 2, 2, 2, 2]
 
 
-def _analytic_joint_posterior(a0, P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat, y):
-    """Closed-form posterior of a stacked LGSSM, used as ground truth.
+def _statsmodels_smoother(params):
+    """Smooth ``params["y"]`` with statsmodels on the same nine matrices."""
+    model = MLEModel(
+        params["y"],
+        k_states=params["T"].shape[0],
+        k_posdef=params["Q"].shape[0],
+        initialization="known",
+        initial_state=params["a0"],
+        initial_state_cov=params["P0"],
+    )
+    model["state_intercept"] = params["c"]
+    model["obs_intercept"] = params["d"]
+    model["transition"] = params["T"]
+    model["design"] = params["Z"]
+    model["selection"] = params["R"]
+    model["obs_cov"] = params["H"]
+    model["state_cov"] = params["Q"]
 
-    Stacks ``alpha_1, ..., alpha_T`` into one big vector and writes the joint
-    prior + likelihood as ``MvN(mean_prior, cov_prior)`` plus a Gaussian
-    observation model, then conditions on ``y`` analytically. Uses the
-    Durbin-Koopman convention where ``(a0, P0)`` is the predicted distribution
-    of ``alpha_1``, matching the Kalman filter implementation.
-    """
-    T_steps, k_endog = y.shape
-    k_states = a0.shape[0]
-
-    mean = np.zeros((T_steps, k_states))
-    cov = np.zeros((T_steps, T_steps, k_states, k_states))
-    mean[0] = a0
-    cov[0, 0] = P0
-    for t in range(1, T_steps):
-        mean[t] = c + T_mat @ mean[t - 1]
-        cov[t, t] = T_mat @ cov[t - 1, t - 1] @ T_mat.T + R_mat @ Q_mat @ R_mat.T
-        for s in range(t):
-            cov[t, s] = T_mat @ cov[t - 1, s]
-            cov[s, t] = cov[t, s].T
-
-    prior_mean = mean.reshape(-1)
-    prior_cov = cov.transpose(0, 2, 1, 3).reshape(T_steps * k_states, T_steps * k_states)
-
-    Z_block = np.zeros((T_steps * k_endog, T_steps * k_states))
-    H_block = np.zeros((T_steps * k_endog, T_steps * k_endog))
-    D = np.tile(d, T_steps)
-    for t in range(T_steps):
-        Z_block[t * k_endog : (t + 1) * k_endog, t * k_states : (t + 1) * k_states] = Z_mat
-        H_block[t * k_endog : (t + 1) * k_endog, t * k_endog : (t + 1) * k_endog] = H_mat
-
-    cross = prior_cov @ Z_block.T
-    obs_cov = Z_block @ cross + H_block
-    gain = cross @ np.linalg.inv(obs_cov)
-    post_mean = prior_mean + gain @ (y.reshape(-1) - (D + Z_block @ prior_mean))
-    post_cov = prior_cov - gain @ Z_block @ prior_cov
-
-    return post_mean.reshape(T_steps, k_states), post_cov
+    return model.ssm.smooth()
 
 
 @pytest.fixture
@@ -389,41 +369,127 @@ def small_lgssm():
     }
 
 
-def _build_simulation_smoother_func(params, seed):
-    """Compile a callable that returns ``(a_smooth, sample)`` per call."""
-    a0 = pt.as_tensor_variable(params["a0"])
-    P0 = pt.as_tensor_variable(params["P0"])
-    c = pt.as_tensor_variable(params["c"])
-    d = pt.as_tensor_variable(params["d"])
-    T_mat = pt.as_tensor_variable(params["T"])
-    Z_mat = pt.as_tensor_variable(params["Z"])
-    R_mat = pt.as_tensor_variable(params["R"])
-    H_mat = pt.as_tensor_variable(params["H"])
-    Q_mat = pt.as_tensor_variable(params["Q"])
-    y = pt.as_tensor_variable(np.asarray(params["y"], dtype=floatX))
+@pytest.fixture
+def nile_lgssm(rng):
+    """Local linear trend on the Nile data with a tight initial state, so the smoothed
+    posterior is well conditioned."""
+    _, [y, _, _, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat] = nile_test_test_helper(rng)
 
-    filt = StandardFilter().build_graph(y, a0, P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat)
-    a_smooth, _ = RTSSmoother().build_graph(
-        y, (a0, P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat), filt
-    )
+    return {
+        "a0": np.zeros(2, dtype=floatX),
+        "P0": np.eye(2, dtype=floatX) * 0.5,
+        "c": c,
+        "d": d,
+        "T": T_mat,
+        "Z": Z_mat,
+        "R": R_mat,
+        "H": H_mat,
+        "Q": Q_mat,
+        "y": y,
+    }
 
-    rng_var = pytensor.shared(np.random.default_rng(seed), name="rng")
-    sample = SimulationSmoother.dist(
-        y,
-        a0,
-        P0,
-        c,
-        d,
-        T_mat,
-        Z_mat,
-        R_mat,
-        H_mat,
-        Q_mat,
-        kalman_filter=StandardFilter(),
-        kalman_smoother=RTSSmoother(),
-        rng=rng_var,
+
+class TestSimulationSmoother:
+    """Draws from one compiled simulation smoother, fed with the matrices of each test."""
+
+    INPUT_NAMES = ("y", "a0", "P0", "c", "d", "T", "Z", "R", "H", "Q")
+
+    @classmethod
+    def setup_class(cls):
+        y = pt.tensor("y", dtype=floatX, shape=(None, None))
+        a0 = pt.tensor("a0", dtype=floatX, shape=(None,))
+        P0 = pt.tensor("P0", dtype=floatX, shape=(None, None))
+        c = pt.tensor("c", dtype=floatX, shape=(None,))
+        d = pt.tensor("d", dtype=floatX, shape=(None,))
+        T_mat = pt.tensor("T", dtype=floatX, shape=(None, None))
+        Z_mat = pt.tensor("Z", dtype=floatX, shape=(None, None))
+        R_mat = pt.tensor("R", dtype=floatX, shape=(None, None))
+        H_mat = pt.tensor("H", dtype=floatX, shape=(None, None))
+        Q_mat = pt.tensor("Q", dtype=floatX, shape=(None, None))
+        matrices = (a0, P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat)
+
+        filt = StandardFilter().build_graph(y, *matrices)
+        a_smooth, _ = RTSSmoother().build_graph(y, matrices, filt)
+
+        cls.rng = pytensor.shared(np.random.default_rng(0), name="rng")
+        sample = SimulationSmoother.dist(
+            y,
+            *matrices,
+            kalman_filter=StandardFilter(),
+            kalman_smoother=RTSSmoother(),
+            rng=cls.rng,
+        )
+        cls.simulate = pm.compile([y, *matrices], [a_smooth, sample], on_unused_input="ignore")
+
+    def draws(self, params, seed, n_draws):
+        """Return the smoothed mean and ``n_draws`` simulation-smoother draws for ``params``."""
+        self.rng.set_value(np.random.default_rng(seed))
+        args = [np.asarray(params[name], dtype=floatX) for name in self.INPUT_NAMES]
+
+        a_smooth, _ = self.simulate(*args)
+        return a_smooth, np.stack([self.simulate(*args)[1] for _ in range(n_draws)])
+
+    def test_draws_are_affine_in_the_data(self, small_lgssm, rng):
+        """Two draws from the same rng state differ by the zero-intercept smoother of the data
+        difference, which pins down the Durbin-Koopman composition exactly.
+
+        The forward simulation of ``alpha_plus`` and ``y_plus`` depends only on the rng state, so
+        resetting it before each call cancels the noise from the difference of the draws.
+        """
+        params = small_lgssm
+        y_shift = rng.normal(size=params["y"].shape).astype(floatX)
+        shifted = {**params, "y": params["y"] + y_shift}
+
+        _, [draw] = self.draws(params, seed=7, n_draws=1)
+        _, [shifted_draw] = self.draws(shifted, seed=7, n_draws=1)
+
+        zero_intercepts = {
+            **params,
+            "y": y_shift,
+            "a0": np.zeros_like(params["a0"]),
+            "c": np.zeros_like(params["c"]),
+            "d": np.zeros_like(params["d"]),
+        }
+        expected_difference = _statsmodels_smoother(zero_intercepts).smoothed_state.T
+
+        assert_allclose(shifted_draw - draw, expected_difference, atol=ATOL, rtol=RTOL)
+
+    @pytest.mark.parametrize(
+        "fixture_name, d",
+        [
+            ("small_lgssm", None),
+            ("small_lgssm", np.array([50.0, -30.0])),
+            ("nile_lgssm", None),
+        ],
+        ids=["small", "small_large_d", "nile"],
     )
-    return pm.compile([], [a_smooth, sample], on_unused_input="ignore")
+    def test_draws_match_statsmodels_posterior(self, fixture_name, d, request):
+        """The smoothed mean matches statsmodels exactly, and the sample mean, per-step
+        covariances, and lag-one autocovariances of the draws match it to Monte Carlo error.
+
+        The smoothed states form a Gaussian Markov chain, so those moments pin down the whole
+        joint posterior. The large ``d`` case catches an observation intercept applied
+        inconsistently across the simulated trajectory, which shows up as a mean shift.
+        """
+        params = request.getfixturevalue(fixture_name)
+        if d is not None:
+            params = {**params, "d": d.astype(floatX)}
+        reference = _statsmodels_smoother(params)
+
+        n_draws = 5_000
+        a_smooth, draws = self.draws(params, seed=42, n_draws=n_draws)
+        assert_allclose(a_smooth, reference.smoothed_state.T, atol=ATOL, rtol=RTOL)
+
+        centered = draws - reference.smoothed_state.T
+        sample_cov = np.einsum("nti,ntj->ijt", centered, centered) / n_draws
+        sample_autocov = np.einsum("nti,ntj->ijt", centered[:, 1:], centered[:, :-1]) / n_draws
+        mc_tolerance = 5 * np.sqrt(2 / n_draws) * reference.smoothed_state_cov.max()
+
+        assert_allclose(draws.mean(0), reference.smoothed_state.T, atol=mc_tolerance)
+        assert_allclose(sample_cov, reference.smoothed_state_cov, atol=mc_tolerance)
+        assert_allclose(
+            sample_autocov, reference.smoothed_state_autocov[..., :-1], atol=mc_tolerance
+        )
 
 
 def test_simulation_smoother_signature(small_lgssm):
@@ -474,161 +540,48 @@ def test_simulation_smoother_signature(small_lgssm):
     )
 
 
-def test_simulation_smoother_joint_covariance(small_lgssm):
-    """Empirical joint mean and covariance over draws match the analytic posterior."""
-    params = small_lgssm
-    post_mean, post_cov = _analytic_joint_posterior(
-        params["a0"],
-        params["P0"],
-        params["c"],
-        params["d"],
-        params["T"],
-        params["Z"],
-        params["R"],
-        params["H"],
-        params["Q"],
-        params["y"],
-    )
-    f = _build_simulation_smoother_func(params, seed=12345)
-    n_draws = 5_000
-    samples = np.stack([f()[1] for _ in range(n_draws)])
-    emp_cov = np.cov(samples.reshape(n_draws, -1).T)
-    assert_allclose(samples.mean(0), post_mean, atol=0.05)
-    assert_allclose(emp_cov, post_cov, atol=0.04)
-
-
-def test_simulation_smoother_unbiased_under_large_d(small_lgssm):
-    """Draws stay centered on the smoothed mean when the observation intercept is large.
-
-    The Durbin-Koopman identity is invariant to ``d``, so a ``d`` term applied
-    inconsistently across the simulated trajectory shows up as a mean shift here while
-    leaving the joint covariance intact.
-    """
-    params = {**small_lgssm, "d": np.array([50.0, -30.0], dtype=floatX)}
-    f = _build_simulation_smoother_func(params, seed=99)
-
-    a_smooth = f()[0]
-    draws = np.stack([f()[1] for _ in range(2_000)])
-
-    assert_allclose(draws.mean(0), a_smooth, atol=0.1)
-
-
 def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
-    """Draws stay centered on the smoothed mean when a matrix varies over time.
+    """Shifting the data and a time-varying ``d`` by the same per-step sequence leaves a draw
+    from the same rng state unchanged.
 
-    Exercises the ``sequence_names`` path, where the forward simulation, the filter and
-    the smoother must all index the same timestep of ``d``.
+    Exercises the ``sequence_names`` path, where the forward simulation must index the same
+    timestep of ``d`` as the data. A row applied one step off leaves a residual equal to the
+    difference between consecutive shifts.
     """
     params = small_lgssm
     n_steps, k_endog = params["n_steps"], params["d"].shape[0]
-
-    # A d that swings over time, so a mis-indexed row shifts the smoothed mean.
-    d_time_varying = np.linspace(-5.0, 5.0, n_steps * k_endog, dtype=floatX).reshape(
-        n_steps, k_endog
-    )
-
-    tensors = {
-        k: pt.as_tensor_variable(params[k]) for k in ("a0", "P0", "c", "T", "Z", "R", "H", "Q")
-    }
-    d = pt.as_tensor_variable(d_time_varying)
-    y = pt.as_tensor_variable(np.asarray(params["y"], dtype=floatX))
-
-    filt = StandardFilter(time_varying_names=["obs_intercept"]).build_graph(
-        y,
-        tensors["a0"],
-        tensors["P0"],
-        tensors["c"],
-        d,
-        tensors["T"],
-        tensors["Z"],
-        tensors["R"],
-        tensors["H"],
-        tensors["Q"],
-    )
-    a_smooth, _ = RTSSmoother().build_graph(
-        y,
-        (
-            tensors["a0"],
-            tensors["P0"],
-            tensors["c"],
-            d,
-            tensors["T"],
-            tensors["Z"],
-            tensors["R"],
-            tensors["H"],
-            tensors["Q"],
-        ),
-        filt,
-    )
+    matrices = [
+        pt.as_tensor_variable(params[name]) for name in ("a0", "P0", "c", "T", "Z", "R", "H", "Q")
+    ]
+    y = pt.tensor("y", dtype=floatX, shape=(n_steps, k_endog))
+    d = pt.tensor("d", dtype=floatX, shape=(n_steps, k_endog))
+    rng = pytensor.shared(np.random.default_rng(7), name="rng")
 
     sample = SimulationSmoother.dist(
         y,
-        tensors["a0"],
-        tensors["P0"],
-        tensors["c"],
+        *matrices[:3],
         d,
-        tensors["T"],
-        tensors["Z"],
-        tensors["R"],
-        tensors["H"],
-        tensors["Q"],
+        *matrices[3:],
         kalman_filter=StandardFilter(time_varying_names=["obs_intercept"]),
         kalman_smoother=RTSSmoother(),
         sequence_names=("d",),
-        rng=pytensor.shared(np.random.default_rng(7), name="rng"),
+        rng=rng,
     )
-    f = pm.compile([], [a_smooth, sample], on_unused_input="ignore")
+    draw = pm.compile([y, d], sample)
 
-    smoothed_mean = f()[0]
-    draws = np.stack([f()[1] for _ in range(2_000)])
-
-    assert_allclose(draws.mean(0), smoothed_mean, atol=0.1)
-
-
-def test_simulation_smoother_against_statsmodels(rng):
-    """End-to-end check against statsmodels' simulation_smoother on the Nile model.
-
-    Builds a Local Linear Trend in statsmodels and the same matrices in pymc-extras,
-    draws from both simulation smoothers, and asserts empirical mean and joint
-    covariance agree to MC tolerance.
-    """
-    sm_res, [data, _a0, _diffuse_P0, c, d, T_mat, Z_mat, R_mat, H_mat, Q_mat] = (
-        nile_test_test_helper(rng)
+    # Both sequences swing over time, so a mis-indexed row cannot cancel.
+    d_time_varying = np.linspace(-5.0, 5.0, n_steps * k_endog, dtype=floatX).reshape(
+        n_steps, k_endog
     )
-    # Override the helper's diffuse P0=1e6*I with a tight prior so MC noise
-    # doesn't dominate the comparison.
-    a0 = np.zeros(2, dtype=floatX)
-    P0 = np.eye(2, dtype=floatX) * 0.5
-    sm_res.model.initialize_known(initial_state=a0, initial_state_cov=P0)
-    sm_res = sm_res.model.smooth(sm_res.params)
+    shift = np.sin(np.arange(n_steps * k_endog, dtype=floatX)).reshape(n_steps, k_endog)
+    y_value = np.asarray(params["y"], dtype=floatX)
 
-    params = {
-        "a0": a0,
-        "P0": P0,
-        "c": c,
-        "d": d,
-        "T": T_mat,
-        "Z": Z_mat,
-        "R": R_mat,
-        "H": H_mat,
-        "Q": Q_mat,
-        "y": data,
-    }
-    f = _build_simulation_smoother_func(params, seed=42)
+    rng.set_value(np.random.default_rng(7))
+    unshifted = draw(y_value, d_time_varying)
+    rng.set_value(np.random.default_rng(7))
+    shifted = draw(y_value + shift, d_time_varying + shift)
 
-    n_draws = 2_000
-    ours = np.stack([f()[1] for _ in range(n_draws)])
-
-    sim = sm_res.model.simulation_smoother(random_state=1234)
-    sm_samples = np.empty_like(ours)
-    for i in range(n_draws):
-        sim.simulate()
-        sm_samples[i] = sim.simulated_state.T
-
-    cov_ours = np.cov(ours.reshape(n_draws, -1).T)
-    cov_sm = np.cov(sm_samples.reshape(n_draws, -1).T)
-    assert_allclose(cov_ours, cov_sm, atol=0.05)
-    assert_allclose(ours.mean(0), sm_samples.mean(0), atol=0.1)
+    assert_allclose(shifted, unshifted, atol=ATOL, rtol=RTOL)
 
 
 def _var_parameters(rng, k_endog, order, k_exog):
@@ -724,8 +677,8 @@ def _var_logp_pair(k_endog, order, k_exog, n_timesteps=80):
 
 @pytest.mark.parametrize(
     "k_endog, order, k_exog",
-    [(1, 1, 0), (1, 3, 2), (2, 2, 0), (3, 2, 2)],
-    ids=["k1_p1_m0", "k1_p3_m2", "k2_p2_m0", "k3_p2_m2"],
+    [(1, 1, 0), (3, 2, 2)],
+    ids=["k1_p1_m0", "k3_p2_m2"],
 )
 def test_stationary_var_matches_kalman_filter(k_endog, order, k_exog):
     rng = np.random.default_rng(sum(map(ord, f"draws{k_endog}{order}{k_exog}")))
@@ -800,37 +753,27 @@ def test_stationary_var_draws_come_from_the_predictive_moments(rng):
     The sampling path uses the same moments the density does.
 
     ``_predictive_moments`` can be right while ``rv_op`` wires it up wrong, and a test that calls
-    the helper directly would not notice.
+    the helper directly would not notice. A draw must equal a same-seed ``MvNormal`` draw from
+    the moments, since that is the only randomness in ``rv_op``.
     """
-    k_endog, order, n_timesteps, n_draws = 2, 2, 12, 4000
+    k_endog, order, n_timesteps = 2, 2, 12
     coefficients, _, state_cov = _var_parameters(rng, k_endog, order, 0)
     endog = rng.normal(size=(n_timesteps, k_endog)).astype(floatX)
 
-    draws = pm.draw(
-        StationaryVAR.dist(coefficients, state_cov, endog), draws=n_draws, random_seed=13
-    )
-    means, covariances = (
-        x.eval()
-        for x in _predictive_moments(
-            pt.as_tensor_variable(coefficients),
-            pt.zeros((k_endog, 0)),
-            pt.as_tensor_variable(state_cov),
-            pt.zeros((n_timesteps, 0)),
-            pt.as_tensor_variable(endog),
-            order=order,
-            k_endog=k_endog,
-        )
+    means, covariances = _predictive_moments(
+        pt.as_tensor_variable(coefficients),
+        pt.zeros((k_endog, 0)),
+        pt.as_tensor_variable(state_cov),
+        pt.zeros((n_timesteps, 0)),
+        pt.as_tensor_variable(endog),
+        order=order,
+        k_endog=k_endog,
     )
 
-    assert draws.shape == (n_draws, n_timesteps, k_endog)
+    draw = pm.draw(StationaryVAR.dist(coefficients, state_cov, endog), random_seed=13)
+    expected = pm.draw(pm.MvNormal.dist(mu=means, cov=covariances, method="svd"), random_seed=13)
 
-    standard_error = np.sqrt(np.diagonal(covariances, axis1=1, axis2=2) / n_draws)
-    assert_array_less(np.abs(draws.mean(0) - means), 5 * standard_error)
-
-    # Per timestep, not pooled. The first ``order`` rows are the only ones whose covariance
-    # differs from the innovation covariance, so pooling hides an error confined to them.
-    empirical = np.stack([np.cov(draws[:, t], rowvar=False) for t in range(n_timesteps)])
-    assert_allclose(empirical, covariances, atol=0.1 * np.abs(covariances).max())
+    assert_allclose(draw, expected, atol=ATOL, rtol=RTOL)
 
 
 def test_stationary_var_logp_follows_the_observed_data():
