@@ -175,7 +175,7 @@ class BayesianETS(PyMCStateSpace):
         Whether to estimate a dense covariance for statespace innovations. In an ETS models, each observed variable
         has a single source of stochastic variation. If True, these innovations are allowed to be correlated.
         Ignored if ``k_endog == 1``
-    stationary_initialization: bool, default False
+    stationary_initialization: bool, default True
         If True, the initial state covariance is fixed at :math:`R Q R^T`, the steady state of the
         single-source-of-error filter, and no prior on ``P0`` is required. With no measurement error and
         no missing data, the likelihood is then evaluated through the innovations recursion instead of
@@ -221,7 +221,7 @@ class BayesianETS(PyMCStateSpace):
         measurement_error: bool = False,
         use_transformed_parameterization: bool = False,
         dense_innovation_covariance: bool = False,
-        stationary_initialization: bool = False,
+        stationary_initialization: bool = True,
         filter_type: str = "standard",
         smoother_type: str = "disturbance",
         joint_smoothed_draws: bool = True,

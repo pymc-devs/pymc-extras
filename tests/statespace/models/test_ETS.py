@@ -121,7 +121,7 @@ def test_mode_argument():
 def test_param_info(order: tuple[str, str, str], expected_params):
     mod = BayesianETS(order=order, endog_names=["y"], seasonal_periods=4)
 
-    all_expected_params = [*expected_params, "sigma_state", "P0"]
+    all_expected_params = [*expected_params, "sigma_state"]
     assert all(param in mod.param_names for param in all_expected_params)
     assert all(param in all_expected_params for param in mod.param_names)
     assert all(
@@ -143,6 +143,7 @@ def test_statespace_matrices(
         seasonal_periods=seasonal_periods,
         measurement_error=True,
         use_transformed_parameterization=use_transformed,
+        stationary_initialization=False,
     )
     expected_states = 2 + int(order[1] != "N") + int(order[2] != "N") * seasonal_periods
 
@@ -238,6 +239,7 @@ def test_statespace_matches_statsmodels(rng, order: tuple[str, str, str], params
         seasonal_periods=seasonal_periods,
         measurement_error=False,
         use_transformed_parameterization=True,
+        stationary_initialization=False,
     )
     sm_mod = sm.tsa.statespace.ExponentialSmoothing(
         data,
@@ -301,6 +303,7 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
         use_transformed_parameterization=True,
         dense_innovation_covariance=dense_cov,
         endog_names=["A", "B"],
+        stationary_initialization=False,
     )
 
     single_mod = BayesianETS(
@@ -309,6 +312,7 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
         seasonal_periods=seasonal_periods,
         measurement_error=False,
         use_transformed_parameterization=True,
+        stationary_initialization=False,
     )
 
     simplex_params = ["alpha", "beta", "gamma"]
@@ -508,7 +512,7 @@ def test_ets_workflow(mock_sample):
     [
         ({"stationary_initialization": True}, 0, InnovationsStateSpaceRV),
         ({"stationary_initialization": True, "measurement_error": True}, 0, KalmanFilterRV),
-        ({}, 0, KalmanFilterRV),
+        ({"stationary_initialization": False}, 0, KalmanFilterRV),
         ({"stationary_initialization": True}, 3, KalmanFilterRV),
     ],
     ids=["eligible", "measurement_error", "free_P0", "missing_data"],
