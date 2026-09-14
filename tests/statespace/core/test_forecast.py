@@ -137,6 +137,50 @@ def test_forecast_index(use_datetime_index):
     assert forecast_idx.equals(scenario["a"].index)
 
 
+def _trading_day_index():
+    """Business days with one holiday removed, so pandas cannot infer a frequency."""
+    index = pd.bdate_range("2024-01-01", periods=30).drop(pd.Timestamp("2024-01-15"))
+    assert index.freq is None and index.inferred_freq is None
+    return index
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"periods": 3},
+        {"end": pd.Timestamp("2024-02-16")},
+        {"scenario": np.zeros((3, 1)), "use_scenario_index": True},
+        {
+            "scenario": pd.DataFrame(
+                np.zeros((3, 1)), index=pd.bdate_range("2024-02-12", periods=3)
+            ),
+            "use_scenario_index": True,
+        },
+    ],
+    ids=["periods", "end", "array_scenario", "frame_scenario"],
+)
+def test_forecast_index_without_freq_raises(kwargs):
+    ss_mod = make_statespace_mod(
+        k_endog=1, k_posdef=1, k_states=2, filter_type="standard", verbose=False
+    )
+    time_idx = _trading_day_index()
+
+    with pytest.raises(ValueError, match="fit on has no frequency"):
+        ss_mod._build_forecast_index(time_idx, start=time_idx[-1], **kwargs)
+
+
+def test_scenario_index_without_freq_raises():
+    ss_mod = make_statespace_mod(
+        k_endog=1, k_posdef=1, k_states=2, filter_type="standard", verbose=False
+    )
+    time_idx, _ = _make_time_idx(use_datetime_index=True)
+    irregular_index = pd.DatetimeIndex(["2024-02-12", "2024-02-13", "2024-02-15"])
+    scenario = pd.DataFrame(np.zeros((3, 1)), index=irregular_index)
+
+    with pytest.raises(ValueError, match="scenario's DatetimeIndex has no frequency"):
+        ss_mod._build_forecast_index(time_idx, scenario=scenario, use_scenario_index=True)
+
+
 @pytest.mark.parametrize("use_datetime_index", [True, False])
 def test_end_is_inclusive_for_both_index_types(use_datetime_index):
     """`end` names the last forecast period, whichever index the model was fit on."""
