@@ -1,18 +1,34 @@
 import numpy as np
 import pymc as pm
 import pytensor
+import pytensor.tensor as pt
 import pytest
 import statsmodels.api as sm
 
-from numpy.testing import assert_allclose
+from numpy.testing import assert_allclose, assert_array_less
+from pymc.logprob.utils import ParameterValueError
+from pymc.sampling.mcmc import assign_step_methods
+from pymc.step_methods import STEP_METHODS
+from pymc.step_methods.hmc import NUTS
 from pymc.testing import mock_sample_setup_and_teardown
 from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
 
+from pymc_extras.statespace.filters import StandardFilter
+from pymc_extras.statespace.filters.distributions import (
+    InnovationsStateSpace,
+    InnovationsStateSpaceRV,
+    KalmanFilterRV,
+)
 from pymc_extras.statespace.models.ETS import BayesianETS
 from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES
 from tests.statespace.shared_fixtures import rng
-from tests.statespace.test_utilities import load_nile_test_data
+from tests.statespace.test_utilities import (
+    load_nile_test_data,
+    unpack_symbolic_matrices_with_params,
+)
+
+floatX = pytensor.config.floatX
 
 mock_sample = pytest.fixture(scope="function")(mock_sample_setup_and_teardown)
 
@@ -105,7 +121,7 @@ def test_mode_argument():
 def test_param_info(order: tuple[str, str, str], expected_params):
     mod = BayesianETS(order=order, endog_names=["y"], seasonal_periods=4)
 
-    all_expected_params = [*expected_params, "sigma_state", "P0"]
+    all_expected_params = [*expected_params, "sigma_state"]
     assert all(param in mod.param_names for param in all_expected_params)
     assert all(param in all_expected_params for param in mod.param_names)
     assert all(
@@ -127,6 +143,7 @@ def test_statespace_matrices(
         seasonal_periods=seasonal_periods,
         measurement_error=True,
         use_transformed_parameterization=use_transformed,
+        stationary_initialization=False,
     )
     expected_states = 2 + int(order[1] != "N") + int(order[2] != "N") * seasonal_periods
 
@@ -222,6 +239,7 @@ def test_statespace_matches_statsmodels(rng, order: tuple[str, str, str], params
         seasonal_periods=seasonal_periods,
         measurement_error=False,
         use_transformed_parameterization=True,
+        stationary_initialization=False,
     )
     sm_mod = sm.tsa.statespace.ExponentialSmoothing(
         data,
@@ -285,6 +303,7 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
         use_transformed_parameterization=True,
         dense_innovation_covariance=dense_cov,
         endog_names=["A", "B"],
+        stationary_initialization=False,
     )
 
     single_mod = BayesianETS(
@@ -293,6 +312,7 @@ def test_ETS_with_multiple_endog(rng, order, params, dense_cov):
         seasonal_periods=seasonal_periods,
         measurement_error=False,
         use_transformed_parameterization=True,
+        stationary_initialization=False,
     )
 
     simplex_params = ["alpha", "beta", "gamma"]
@@ -393,15 +413,10 @@ def test_ETS_stationary_initialization():
         endog_names=["y"],
         seasonal_periods=4,
         stationary_initialization=True,
-        initialization_dampening=0.66,
     )
 
     matrices = mod._unpack_statespace_with_placeholders()
     inputs = list(explicit_graph_inputs(matrices))
-    input_names = [x.name for x in inputs]
-
-    # Make sure the stationary_dampening dummy variables was completely rewritten away
-    assert "stationary_dampening" not in input_names
 
     # P0 should have been removed from param names
     assert "P0" not in mod.param_names
@@ -411,20 +426,44 @@ def test_ETS_stationary_initialization():
     test_values = f(**{x.name: np.full(x.type.shape, 0.5) for x in inputs})
     outputs = {name: val for name, val in zip(LONG_MATRIX_NAMES, test_values)}
 
-    # Make sure that the transition matrix has ones in the expected positions, not the model dampening factor
+    # The transition matrix carries ones where the model is undampened
     assert outputs["transition"][1, 1] == 1.0
     assert outputs["transition"][2, 2] == 0.5  # phi = 0.5 -- trend is dampened anyway
     assert outputs["transition"][3, -1] == 1.0
 
-    # P0 should be equal to the solution to the Lyapunov equation using the dampening factors in the transition matrix
-    T_stationary = outputs["transition"].copy()
-    T_stationary[1, 1] = mod.initialization_dampening
-    T_stationary[3, -1] = mod.initialization_dampening
-
     R, Q = outputs["selection"], outputs["state_cov"]
-    P0_expected = linalg.solve_discrete_lyapunov(T_stationary, R @ Q @ R.T)
 
-    assert_allclose(outputs["initial_state_cov"], P0_expected, rtol=1e-8, atol=1e-8)
+    assert_allclose(outputs["initial_state_cov"], R @ Q @ R.T, rtol=1e-8, atol=1e-8)
+
+
+def test_ETS_stationary_initialization_holds_the_filter_steady(rng):
+    """
+    A single source of error leaves the state known, so the filter never moves off ``R Q R'``.
+
+    This is what the initialization is for: without it the predicted covariance runs a transient
+    before settling, and the density over the first few observations is not the model's.
+    """
+    mod = BayesianETS(
+        order=("A", "N", "N"), endog_names=["y"], stationary_initialization=True, verbose=False
+    )
+    params = {
+        "initial_level": np.array(1.0),
+        "alpha": np.array(0.4),
+        "sigma_state": np.array(2.0),
+    }
+    matrices = unpack_symbolic_matrices_with_params(mod, params)
+    data = rng.normal(size=(50, 1)).astype(floatX)
+
+    _, _, _, filtered_covariances, predicted_covariances, _, _ = [
+        output.eval()
+        for output in StandardFilter(cov_jitter=0.0).build_graph(
+            pt.specify_shape(pt.as_tensor_variable(data), (50, 1)),
+            *[pt.as_tensor_variable(matrix) for matrix in matrices],
+        )
+    ]
+
+    assert_allclose(predicted_covariances[1:], predicted_covariances[:-1], atol=1e-12)
+    assert_allclose(filtered_covariances, 0.0, atol=1e-12)
 
 
 def test_ets_workflow(mock_sample):
@@ -435,7 +474,6 @@ def test_ets_workflow(mock_sample):
         endog_names=["height"],
         stationary_initialization=True,
         measurement_error=True,
-        initialization_dampening=0.8,
     )
 
     with pm.Model(coords=ss_mod.coords) as m:
@@ -452,7 +490,8 @@ def test_ets_workflow(mock_sample):
 
         idata = pm.sample()
 
-    post = ss_mod.sample_conditional_posterior(idata, mvn_method="cholesky")
+    # Not "cholesky": a single source of error makes P0 singular, so it has no Cholesky factor.
+    post = ss_mod.sample_conditional_posterior(idata, mvn_method="eigh")
     assert "filtered_posterior" in post
     assert "smoothed_posterior" in post
     assert "predicted_posterior" in post
@@ -466,3 +505,149 @@ def test_ets_workflow(mock_sample):
     irf = ss_mod.impulse_response_function(idata, n_steps=10, random_seed=42)
     assert "irf" in irf
     assert np.isfinite(irf.irf.values).all()
+
+
+@pytest.mark.parametrize(
+    "kwargs, n_missing, expected_op",
+    [
+        ({"stationary_initialization": True}, 0, InnovationsStateSpaceRV),
+        ({"stationary_initialization": True, "measurement_error": True}, 0, KalmanFilterRV),
+        ({"stationary_initialization": False}, 0, KalmanFilterRV),
+        ({"stationary_initialization": True}, 3, KalmanFilterRV),
+    ],
+    ids=["eligible", "measurement_error", "free_P0", "missing_data"],
+)
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+@pytest.mark.filterwarnings(
+    "ignore:Provided data contains missing values:pymc.exceptions.ImputationWarning"
+)
+def test_ETS_likelihood_dispatch(kwargs, n_missing, expected_op):
+    mod = BayesianETS(order=("A", "N", "N"), endog_names=["y"], verbose=False, **kwargs)
+    data = np.zeros((30, 1), dtype=floatX)
+    data[5 : 5 + n_missing] = np.nan
+
+    with pm.Model(coords=mod.coords) as pymc_model:
+        for name, info in mod.param_info.items():
+            pm.Flat(name, shape=info["shape"])
+        mod.build_statespace_graph(data)
+
+    assert isinstance(pymc_model["obs"].owner.op, expected_op)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"order": ("A", "N", "N"), "endog_names": ["y"]},
+        {"order": ("A", "A", "N"), "endog_names": ["y"]},
+        {"order": ("A", "Ad", "A"), "seasonal_periods": 4, "endog_names": ["y"]},
+        {"order": ("A", "N", "N"), "endog_names": ["a", "b"]},
+    ],
+    ids=["ANN", "AAN", "AAdA_seasonal", "ANN_multivariate"],
+)
+def test_ETS_recursion_matches_the_kalman_filter(kwargs, rng):
+    """
+    The recursion carries no covariance, so agreeing with the filter is the whole claim.
+
+    A single source of error leaves the state determined by the data, which is what lets the
+    density come from the one-step-ahead errors alone.
+    """
+    defaults = {"alpha": 0.4, "beta": 0.2, "gamma": 0.1, "phi": 0.9, "sigma_state": 2.0}
+    mod = BayesianETS(verbose=False, stationary_initialization=True, **kwargs)
+    params = {
+        name: np.full(info["shape"], defaults.get(name, 0.5))
+        for name, info in mod.param_info.items()
+    }
+    data = rng.normal(size=(60, mod.k_endog)).astype(floatX)
+
+    x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(mod, params)
+    recursion = pm.logp(
+        InnovationsStateSpace.dist(x0, T, Z, R, Q, data), pt.as_tensor_variable(data)
+    ).eval()
+    *_, loglike = StandardFilter(cov_jitter=0.0).build_graph(
+        pt.specify_shape(pt.as_tensor_variable(data), data.shape),
+        *[pt.as_tensor_variable(matrix) for matrix in (x0, P0, c, d, T, Z, R, H, Q)],
+    )
+
+    assert_allclose(recursion, loglike.sum().eval(), atol=1e-8)
+
+
+def test_ETS_recursion_draws_come_from_the_predictive_moments(rng):
+    """Draws are centered on the filter's one-step-ahead means with the innovation covariance."""
+    n_draws, n_timesteps = 4000, 12
+    mod = BayesianETS(
+        order=("A", "N", "N"), endog_names=["y"], stationary_initialization=True, verbose=False
+    )
+    params = {"initial_level": np.array(1.0), "alpha": np.array(0.4), "sigma_state": np.array(2.0)}
+    data = rng.normal(size=(n_timesteps, 1)).astype(floatX)
+
+    x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(mod, params)
+    draws = pm.draw(InnovationsStateSpace.dist(x0, T, Z, R, Q, data), draws=n_draws, random_seed=13)
+    _, _, means, *_ = [
+        output.eval()
+        for output in StandardFilter(cov_jitter=0.0).build_graph(
+            pt.specify_shape(pt.as_tensor_variable(data), data.shape),
+            *[pt.as_tensor_variable(matrix) for matrix in (x0, P0, c, d, T, Z, R, H, Q)],
+        )
+    ]
+
+    assert draws.shape == (n_draws, n_timesteps, 1)
+    assert_array_less(np.abs(draws.mean(0) - means), 5 * np.sqrt(Q[0, 0] / n_draws))
+    assert_allclose(draws.var(0), Q[0, 0], rtol=0.15)
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+def test_ETS_recursion_logp_is_differentiable(rng):
+    """
+    Every parameter keeps a gradient once the model substitutes value variables.
+
+    Taking the gradient of the distribution alone is not enough: the recursion's scan closes over
+    the state space matrices, and if it captures them implicitly the model graph pulls a
+    ``ValuedRV`` into the scan's inner graph. PyMC then falls back to Slice and Metropolis
+    without raising, which is a silent and very slow failure.
+    """
+    mod = BayesianETS(
+        order=("A", "Ad", "A"),
+        endog_names=["y"],
+        seasonal_periods=4,
+        stationary_initialization=True,
+        verbose=False,
+    )
+    with pm.Model(coords=mod.coords) as pymc_model:
+        pm.Normal("initial_level")
+        pm.Normal("initial_trend")
+        pm.ZeroSumNormal("initial_seasonal", sigma=1, dims=["seasonal_lag"])
+        for name in ("alpha", "beta", "gamma", "phi"):
+            pm.Beta(name, alpha=1, beta=1)
+        pm.Exponential("sigma_state", lam=1)
+        mod.build_statespace_graph(rng.normal(size=(40, 1)).astype(floatX))
+
+    assert isinstance(pymc_model["obs"].owner.op, InnovationsStateSpaceRV)
+
+    _, selected_steps = assign_step_methods(pymc_model, None, methods=STEP_METHODS)
+
+    assert set(selected_steps) == {NUTS}
+
+
+def test_innovations_state_space_rejects_an_unrecoverable_innovation(rng):
+    """
+    ``design @ selection`` must be the identity, or the error is not the innovation.
+
+    Every batteries-included model that reaches this distribution satisfies it, so the guard
+    exists for the ones that do not: without it the density is finite, smooth, and wrong.
+    """
+    x0 = np.zeros(2, dtype=floatX)
+    transition = np.array([[0.0, 0.0], [0.0, 1.0]], dtype=floatX)
+    design = np.array([[1.0, 1.0]], dtype=floatX)
+    state_cov = np.array([[2.0]], dtype=floatX)
+    data = rng.normal(size=(30, 1)).astype(floatX)
+
+    selection = np.array([[0.6], [0.4]], dtype=floatX)
+    assert np.allclose(design @ selection, np.eye(1))
+    dist = InnovationsStateSpace.dist(x0, transition, design, selection, state_cov, data)
+    assert np.isfinite(pm.logp(dist, pt.as_tensor_variable(data)).eval())
+
+    selection = np.array([[0.6], [0.1]], dtype=floatX)
+    dist = InnovationsStateSpace.dist(x0, transition, design, selection, state_cov, data)
+
+    with pytest.raises(ParameterValueError, match="design @ selection"):
+        pm.logp(dist, pt.as_tensor_variable(data)).eval()

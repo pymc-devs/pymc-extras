@@ -1007,3 +1007,137 @@ def stationary_var_logp(
         msg="Observed data and exogenous data must span the same number of timesteps, and the "
         "series must be longer than the lag order",
     )
+
+
+def _innovations_moments(x0, transition, design, selection, endog):
+    """
+    One-step-ahead predictive means, conditional on ``endog``.
+
+    The predictive covariance of a single-source-of-error model is constant at its innovation
+    covariance, so only the means vary and only they are returned.
+
+    Returns
+    -------
+    means : TensorVariable
+        Of shape ``(T, k_endog)``.
+    """
+
+    def step(observation, state, transition, design, selection):
+        error = observation - design @ state
+
+        return transition @ (state + selection @ error)
+
+    states = pytensor.scan(
+        fn=step,
+        sequences=[endog],
+        outputs_info=[x0],
+        non_sequences=[transition, design, selection],
+        strict=True,
+        return_updates=False,
+    )
+    predicted = pt.concatenate([x0[None], states[:-1]], axis=0)
+
+    return predicted @ design.T
+
+
+class InnovationsStateSpaceRV(SymbolicRandomVariable):
+    default_output = 1
+    _print_name = ("InnovationsStateSpace", "\\operatorname{InnovationsStateSpace}")
+    extended_signature = "(s),(s,s),(p,s),(s,p),(p,p),(t,p),[rng]->[rng],(t,p)"
+
+    def update(self, node: Node):
+        return {node.inputs[-1]: node.outputs[0]}
+
+
+class InnovationsStateSpace(Continuous):
+    r"""
+    A linear state space model whose observation and transition share one shock.
+
+    .. math::
+        \begin{align}
+        y_t &= Z \alpha_t \\
+        \alpha_{t+1} &= T \alpha_t + R \varepsilon_t
+        \end{align}
+
+    The density requires :math:`Z R = I`, no observation noise, and an initial state covariance
+    of :math:`R Q R^T`. Under those conditions the state is exactly determined by the
+    observations, and exponential smoothing with additive errors is such a model.
+
+    Parameters
+    ----------
+    x0 : tensor_like
+        Predicted state for the first timestep, of shape ``(k_states,)``.
+    transition : tensor_like
+        ``T``, of shape ``(k_states, k_states)``.
+    design : tensor_like
+        ``Z``, of shape ``(k_endog, k_states)``.
+    selection : tensor_like
+        ``R``, of shape ``(k_states, k_endog)``. ``Z @ R`` must be the identity.
+    state_cov : tensor_like
+        ``Q``, the innovation covariance, of shape ``(k_endog, k_endog)``.
+    endog : tensor_like
+        The observed series, of shape ``(T, k_endog)``.
+    """
+
+    rv_type = InnovationsStateSpaceRV
+
+    @classmethod
+    def dist(cls, x0, transition, design, selection, state_cov, endog, *, method="svd", **kwargs):
+        x0, transition, design, selection, state_cov, endog = map(
+            pt.as_tensor_variable, (x0, transition, design, selection, state_cov, endog)
+        )
+
+        return super().dist(
+            [x0, transition, design, selection, state_cov, endog], method=method, **kwargs
+        )
+
+    @classmethod
+    def rv_op(
+        cls, x0, transition, design, selection, state_cov, endog, method="svd", size=None, rng=None
+    ):
+        rng = normalize_rng_param(rng)
+        x0_, transition_, design_ = x0.type(), transition.type(), design.type()
+        selection_, state_cov_, endog_ = selection.type(), state_cov.type(), endog.type()
+        rng_ = rng.type()
+
+        means = _innovations_moments(x0_, transition_, design_, selection_, endog_)
+        covariances = pt.broadcast_to(state_cov_, (endog_.shape[0], *state_cov_.shape))
+        next_rng, draws = multivariate_normal(
+            mean=means, cov=covariances, rng=rng_, method=method, return_next_rng=True
+        )
+
+        op = InnovationsStateSpaceRV(
+            inputs=[x0_, transition_, design_, selection_, state_cov_, endog_, rng_],
+            outputs=[next_rng, draws],
+            ndim_supp=2,
+        )
+
+        return op(x0, transition, design, selection, state_cov, endog, rng)
+
+
+@_logprob.register(InnovationsStateSpaceRV)
+def innovations_state_space_logp(
+    op, values, x0, transition, design, selection, state_cov, endog, rng, **kwargs
+):
+    """Exact log-density, from the one-step-ahead errors rather than from a Kalman filter."""
+    (value,) = values
+    residuals = value - _innovations_moments(x0, transition, design, selection, value)
+
+    n_timesteps, k_endog = value.shape
+    cov_cholesky = pt.linalg.cholesky(state_cov)
+    whitened = pt.linalg.cho_solve((cov_cholesky, True), residuals.T @ residuals, b_ndim=2)
+
+    logp = (
+        -0.5 * n_timesteps * k_endog * pt.log(2 * pt.pi)
+        - n_timesteps * pt.log(pt.diag(cov_cholesky)).sum()
+        - 0.5 * pt.trace(whitened)
+    )
+
+    return check_parameters(
+        logp,
+        pt.allclose(design @ selection, pt.eye(k_endog)),
+        pt.eq(value.shape[0], endog.shape[0]),
+        msg="An innovations state space model needs design @ selection to be the identity, so "
+        "that the innovation is recoverable from the one-step-ahead error, and needs the observed "
+        "data to span the same number of timesteps as the series it was built with",
+    )
