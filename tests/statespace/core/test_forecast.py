@@ -593,7 +593,7 @@ def test_forecast(filter_output, mod_name, idata_name, rng, request):
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
 @pytest.mark.parametrize("start", [None, 5], ids=["last_fitted_step", "explicit"])
 def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
     scenario = pd.DataFrame(np.zeros((10, 1)), columns=["x1"])
@@ -625,7 +625,7 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
 @pytest.mark.parametrize("start", [None, 5], ids=["last_fitted_step", "explicit"])
 def test_forecast_with_exog_data_mv(rng, exog_ss_mod_mv, idata_exog_mv, start):
     scenario = pd.DataFrame(np.zeros((10, 1)), columns=["x1"])
@@ -670,7 +670,7 @@ def test_forecast_with_exog_data_mv(rng, exog_ss_mod_mv, idata_exog_mv, start):
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
 def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_exog):
     data_before_build_forecast_model = {d.name: d.get_value() for d in exog_pymc_mod.data_vars}
 
@@ -766,7 +766,7 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
 def test_forecast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
     # Regression test for issue reported at  https://github.com/pymc-devs/pymc-extras/issues/424
     with exog_pymc_mod:

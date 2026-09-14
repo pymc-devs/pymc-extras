@@ -90,7 +90,7 @@ def create_model(load_dataset):
 
 
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
 @pytest.mark.parametrize("f, warning", func_inputs, ids=function_names)
 def test_filter_output_coord_assignment(f, warning, create_model):
     with warning:
