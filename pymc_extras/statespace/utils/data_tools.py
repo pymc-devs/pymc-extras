@@ -257,3 +257,30 @@ def register_data_with_pymc(data, n_obs, obs_coords, missing_fill_value=None, da
     data_variable = add_data_to_active_model(filled_values, index, data_dims)
 
     return data_variable, nan_mask
+
+
+def is_single_parameterization(ds) -> bool:
+    """Return True if the dataset represents a single parameterization (e.g., MAP point estimate)."""
+    if ds is None:
+        return True
+    if hasattr(ds, "to_dataset"):
+        ds = ds.to_dataset()
+    n_chains = ds.sizes.get("chain", 1)
+    n_draws = ds.sizes.get("draw", 1)
+    return (n_chains * n_draws) <= 1
+
+
+def ensure_chain_and_draw(ds):
+    """Ensure dataset has chain and draw dimensions required for sample_posterior_predictive."""
+    if ds is None:
+        return ds
+    if hasattr(ds, "to_dataset"):
+        ds = ds.to_dataset()
+    missing_dims = {}
+    if "chain" not in ds.dims:
+        missing_dims["chain"] = 1
+    if "draw" not in ds.dims:
+        missing_dims["draw"] = 1
+    if missing_dims:
+        return ds.expand_dims(dim=missing_dims)
+    return ds

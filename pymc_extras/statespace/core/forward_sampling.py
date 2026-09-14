@@ -34,7 +34,11 @@ from pymc_extras.statespace.utils.constants import (
     SHORT_NAME_TO_LONG,
     TIME_DIM,
 )
-from pymc_extras.statespace.utils.data_tools import register_data_with_pymc
+from pymc_extras.statespace.utils.data_tools import (
+    ensure_chain_and_draw,
+    is_single_parameterization,
+    register_data_with_pymc,
+)
 
 if TYPE_CHECKING:
     from pymc_extras.statespace.core.statespace import PyMCStateSpace
@@ -47,6 +51,7 @@ def _sample_conditional(
     random_seed: RandomState | None = None,
     data: pt.TensorLike | None = None,
     mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+    deterministic: bool | None = None,
     **kwargs,
 ):
     """
@@ -87,6 +92,9 @@ def _sample_conditional(
     """
     verify_group(group)
     group_idata = getattr(idata, group)
+    if deterministic is None:
+        deterministic = is_single_parameterization(group_idata)
+    group_idata = ensure_chain_and_draw(group_idata)
 
     compile_kwargs = kwargs.pop("compile_kwargs", {})
     compile_kwargs.setdefault("mode", ss_mod.mode)
@@ -121,58 +129,63 @@ def _sample_conditional(
         )
 
         for name, (mu, cov) in zip(FILTER_OUTPUT_TYPES, grouped_outputs, strict=True):
-            if name == "smoothed" and ss_mod.joint_smoothed_draws:
-                # The simulation smoother draws the whole latent path jointly, so the
-                # states carry their cross-time posterior covariance.
-                kalman_filter, kalman_smoother = ss_mod.make_filters()
-                latent_states = SimulationSmoother(
-                    f"{name}_{group}",
-                    data=forward_model[OBSERVED_DATA_NAME],
-                    x0=x0,
-                    P0=P0,
-                    c=c,
-                    d=d,
-                    T=T,
-                    Z=Z,
-                    R=R,
-                    H=H,
-                    Q=Q,
-                    kalman_filter=kalman_filter,
-                    kalman_smoother=kalman_smoother,
-                    sequence_names=tuple(scan_sequence_names(ss_mod.ssm.time_varying_names)),
-                    dims=state_dims,
-                    method=mvn_method,
-                )
-                # Conditional on a joint draw of the latent path, the observation noise
-                # is iid, so H alone is the correct per-step covariance. Adding the
-                # zeros materializes the time axis, which keeps SequenceMvNormal's
-                # ``(n),(n,n)->(n)`` gufunc from collapsing to a length-1 scan when H is
-                # rank-3 but time-broadcastable.
-                obs_mu = d + (Z @ latent_states[..., None]).squeeze(-1)
-                obs_cov = pt.zeros((obs_mu.shape[0], 1, 1), dtype=H.dtype) + H
-                obs_logp = pt.zeros_like(obs_mu)
-            else:
-                SequenceMvNormal(
-                    f"{name}_{group}",
-                    mus=mu,
-                    covs=cov,
-                    logp=pt.zeros_like(mu),
-                    dims=state_dims,
-                    method=mvn_method,
-                )
-
+            if deterministic:
+                pm.Deterministic(f"{name}_{group}", mu, dims=state_dims)
                 obs_mu = d + (Z @ mu[..., None]).squeeze(-1)
-                obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H
-                obs_logp = pt.zeros_like(obs_mu)
+                pm.Deterministic(f"{name}_{group}_observed", obs_mu, dims=obs_dims)
+            else:
+                if name == "smoothed" and ss_mod.joint_smoothed_draws:
+                    # The simulation smoother draws the whole latent path jointly, so the
+                    # states carry their cross-time posterior covariance.
+                    kalman_filter, kalman_smoother = ss_mod.make_filters()
+                    latent_states = SimulationSmoother(
+                        f"{name}_{group}",
+                        data=forward_model[OBSERVED_DATA_NAME],
+                        x0=x0,
+                        P0=P0,
+                        c=c,
+                        d=d,
+                        T=T,
+                        Z=Z,
+                        R=R,
+                        H=H,
+                        Q=Q,
+                        kalman_filter=kalman_filter,
+                        kalman_smoother=kalman_smoother,
+                        sequence_names=tuple(scan_sequence_names(ss_mod.ssm.time_varying_names)),
+                        dims=state_dims,
+                        method=mvn_method,
+                    )
+                    # Conditional on a joint draw of the latent path, the observation noise
+                    # is iid, so H alone is the correct per-step covariance. Adding the
+                    # zeros materializes the time axis, which keeps SequenceMvNormal's
+                    # ``(n),(n,n)->(n)`` gufunc from collapsing to a length-1 scan when H is
+                    # rank-3 but time-broadcastable.
+                    obs_mu = d + (Z @ latent_states[..., None]).squeeze(-1)
+                    obs_cov = pt.zeros((obs_mu.shape[0], 1, 1), dtype=H.dtype) + H
+                    obs_logp = pt.zeros_like(obs_mu)
+                else:
+                    SequenceMvNormal(
+                        f"{name}_{group}",
+                        mus=mu,
+                        covs=cov,
+                        logp=pt.zeros_like(mu),
+                        dims=state_dims,
+                        method=mvn_method,
+                    )
 
-            SequenceMvNormal(
-                f"{name}_{group}_observed",
-                mus=obs_mu,
-                covs=obs_cov,
-                logp=obs_logp,
-                dims=obs_dims,
-                method=mvn_method,
-            )
+                    obs_mu = d + (Z @ mu[..., None]).squeeze(-1)
+                    obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H
+                    obs_logp = pt.zeros_like(obs_mu)
+
+                SequenceMvNormal(
+                    f"{name}_{group}_observed",
+                    mus=obs_mu,
+                    covs=obs_cov,
+                    logp=obs_logp,
+                    dims=obs_dims,
+                    method=mvn_method,
+                )
 
     # TODO: Remove this after pm.Flat initial values are fixed
     forward_model.rvs_to_initial_values = {
@@ -261,6 +274,7 @@ def _sample_unconditional(
     compile_kwargs.setdefault("mode", ss_mod.mode)
 
     group_idata = getattr(idata, group)
+    group_idata = ensure_chain_and_draw(group_idata)
     trajectory_dims = None
     fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
     fit_dims = dims_from_idata(ss_mod, idata, group)
@@ -351,6 +365,7 @@ def sample_conditional_posterior(
     idata: DataTree,
     random_seed: RandomState | None = None,
     mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+    deterministic: bool | None = None,
     **kwargs,
 ):
     return _sample_conditional(
@@ -359,6 +374,7 @@ def sample_conditional_posterior(
         group="posterior",
         random_seed=random_seed,
         mvn_method=mvn_method,
+        deterministic=deterministic,
         **kwargs,
     )
 
