@@ -176,18 +176,13 @@ class BayesianETS(PyMCStateSpace):
         has a single source of stochastic variation. If True, these innovations are allowed to be correlated.
         Ignored if ``k_endog == 1``
     stationary_initialization: bool, default False
-        If True, the Kalman Filter's initial covariance matrix is set to :math:`R Q R^T`, and no prior
-        on ``P0`` is required.
+        If True, the initial state covariance is fixed at :math:`R Q R^T`, the steady state of the
+        single-source-of-error filter, and no prior on ``P0`` is required. With no measurement error and
+        no missing data, the likelihood is then evaluated through the innovations recursion instead of
+        the Kalman filter.
 
-        An additive exponential smoothing model has a single source of error, so its state is exactly
-        determined by the observations. The filtered covariance is therefore zero at every step, and the
-        predicted covariance never moves off :math:`R Q R^T`. Starting there makes the filter stationary
-        from the first observation rather than after a transient.
-
-        :math:`R Q R^T` has the rank of the innovation, not of the state, so it is singular. Sampling
-        methods that factor it must tolerate that: pass ``mvn_method="svd"`` or ``"eigh"`` to the
-        conditional sampling methods, not ``"cholesky"``.
-
+        :math:`R Q R^T` is singular, so pass ``mvn_method="svd"`` or ``"eigh"`` to the conditional
+        sampling methods, not ``"cholesky"``.
     filter_type: str, default "standard"
         The type of Kalman Filter to use. Options are "standard", "single", "univariate", "steady_state",
         and "cholesky". See the docs for kalman filters for more details.
