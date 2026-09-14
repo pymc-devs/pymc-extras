@@ -19,7 +19,6 @@ from pymc_extras.statespace.filters.distributions import (
     InnovationsStateSpace,
     InnovationsStateSpaceRV,
     KalmanFilterRV,
-    _innovations_moments,
 )
 from pymc_extras.statespace.models.ETS import BayesianETS
 from pymc_extras.statespace.utils.constants import LONG_MATRIX_NAMES
@@ -569,7 +568,7 @@ def test_ETS_recursion_matches_the_kalman_filter(kwargs, rng):
 
 
 def test_ETS_recursion_draws_come_from_the_predictive_moments(rng):
-    """The sampling path uses the same means the density does, and a constant covariance."""
+    """Draws are centered on the filter's one-step-ahead means with the innovation covariance."""
     n_draws, n_timesteps = 4000, 12
     mod = BayesianETS(
         order=("A", "N", "N"), endog_names=["y"], stationary_initialization=True, verbose=False
@@ -577,11 +576,15 @@ def test_ETS_recursion_draws_come_from_the_predictive_moments(rng):
     params = {"initial_level": np.array(1.0), "alpha": np.array(0.4), "sigma_state": np.array(2.0)}
     data = rng.normal(size=(n_timesteps, 1)).astype(floatX)
 
-    x0, _, _, _, T, Z, R, _, Q = unpack_symbolic_matrices_with_params(mod, params)
+    x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(mod, params)
     draws = pm.draw(InnovationsStateSpace.dist(x0, T, Z, R, Q, data), draws=n_draws, random_seed=13)
-    means = _innovations_moments(
-        *(pt.as_tensor_variable(m) for m in (x0, T, Z, R)), pt.as_tensor_variable(data)
-    ).eval()
+    _, _, means, *_ = [
+        output.eval()
+        for output in StandardFilter(cov_jitter=0.0).build_graph(
+            pt.specify_shape(pt.as_tensor_variable(data), data.shape),
+            *[pt.as_tensor_variable(matrix) for matrix in (x0, P0, c, d, T, Z, R, H, Q)],
+        )
+    ]
 
     assert draws.shape == (n_draws, n_timesteps, 1)
     assert_array_less(np.abs(draws.mean(0) - means), 5 * np.sqrt(Q[0, 0] / n_draws))
