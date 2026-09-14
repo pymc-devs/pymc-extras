@@ -1432,9 +1432,11 @@ class Prior:
         if "mu" in self.parameters:
             raise MuAlreadyExistsError(self)
 
+        # Rebind the original parameters instead of keeping the deep copies. A
+        # deep copy of a pytensor variable is a detached clone, so a pm.Data
+        # parameter would stop tracking pm.set_data updates.
         distribution = self.deepcopy()
-        distribution.parameters["mu"] = mu
-        distribution.parameters["observed"] = observed
+        distribution.parameters = {**self.parameters, "mu": mu, "observed": observed}
         return distribution.create_variable(name, xdist=xdist)
 
 
@@ -1678,8 +1680,10 @@ class Censored:
         if "mu" in self.distribution.parameters:
             raise MuAlreadyExistsError(self.distribution)
 
+        # See the note in Prior.create_likelihood_variable: the deep copies of
+        # the parameters have to be replaced by the originals.
         distribution = self.distribution.deepcopy()
-        distribution.parameters["mu"] = mu
+        distribution.parameters = {**self.distribution.parameters, "mu": mu}
         dist = distribution.create_variable(name, xdist=xdist)
         _remove_random_variable(var=dist)
 
