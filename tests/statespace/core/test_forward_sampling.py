@@ -195,7 +195,7 @@ def test_sample_conditional_with_time_varying():
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
 def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
     # Simple tests
     idata_filter_prior = exog_ss_mod.sample_filter_outputs(
@@ -295,7 +295,7 @@ class TestTimeVaryingTransition:
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
 def test_sample_statespace_matrices_keeps_its_dims(exog_ss_mod, idata_exog):
     """Every sampled matrix carries the dims MATRIX_DIMS declares for it.
 
@@ -318,7 +318,7 @@ def test_sample_statespace_matrices_keeps_its_dims(exog_ss_mod, idata_exog):
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
 @pytest.mark.parametrize(
     "mod_name, idata_name",
     [("ss_mod", "idata"), ("exog_ss_mod", "idata_exog")],

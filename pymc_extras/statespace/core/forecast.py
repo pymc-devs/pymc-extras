@@ -37,6 +37,15 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger("pymc.experimental.statespace")
 
+NO_FIT_FREQ_ERROR = (
+    "The DatetimeIndex the model was fit on has no frequency, so it cannot be extended into a "
+    "forecast index. Set a frequency on the data's index before fitting."
+)
+NO_SCENARIO_FREQ_ERROR = (
+    "The scenario's DatetimeIndex has no frequency, so it cannot define a forecast index. Set a "
+    "frequency on the scenario's index."
+)
+
 
 def _validate_filter_arg(filter_arg):
     if filter_arg.lower() not in FILTER_OUTPUT_TYPES:
@@ -245,6 +254,11 @@ def _validate_scenario_data(
         return scenario
 
 
+def _require_index_freq(index: pd.Index, message: str) -> None:
+    if isinstance(index, pd.DatetimeIndex) and index.freq is None:
+        raise ValueError(message)
+
+
 def _build_forecast_index(
     time_index: pd.RangeIndex | pd.DatetimeIndex,
     start: int | pd.Timestamp | None = None,
@@ -306,10 +320,12 @@ def _build_forecast_index(
         else:
             raise ValueError(f"{type(x)} is not a valid type for scenario data.")
 
+    _require_index_freq(time_index, NO_FIT_FREQ_ERROR)
     x0_idx = None
 
     if use_scenario_index:
         forecast_index = get_or_create_index(scenario, time_index, start)
+        _require_index_freq(forecast_index, NO_SCENARIO_FREQ_ERROR)
         is_datetime = isinstance(forecast_index, pd.DatetimeIndex)
 
         # If the user provided an index, we want to take it as-is (without removing the start value). Instead,
