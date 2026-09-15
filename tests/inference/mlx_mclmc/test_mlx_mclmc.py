@@ -413,6 +413,25 @@ def test_ascent_skips_non_finite_steps_instead_of_absorbing_them():
     np.testing.assert_allclose(np.asarray(reached).ravel(), [3.0], atol=1e-2)
 
 
+def test_optimize_steps_moves_the_adapting_chain_to_the_mode():
+    """The ascent is off by default, so the opt-in has to be seen to reach warmup."""
+    mode = np.array([5.0, -5.0], dtype="float32")
+
+    def logdensity_fn(x):
+        return -0.5 * mx.sum((x - mx.array(mode)) ** 2) * 100.0
+
+    # A budget this small gives the dynamics no chance to cross 5 units on their own.
+    tuned = warmup(
+        logdensity_fn,
+        np.zeros(2),
+        num_steps=20,
+        settings=AdaptationSettings(optimize_steps=300, optimize_learning_rate=0.1),
+        seed=0,
+    )
+
+    np.testing.assert_allclose(np.asarray(tuned.position), mode, atol=0.5)
+
+
 def test_ascent_gives_up_when_the_gradient_never_becomes_finite():
     always_nan = mx.vmap(mx.value_and_grad(lambda x: mx.sum(x) * mx.array(float("nan"))))
     start = mx.array([[0.7, -0.3]])
