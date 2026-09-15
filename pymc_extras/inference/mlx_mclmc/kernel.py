@@ -265,18 +265,13 @@ def _low_rank_metric(
     Returns
     -------
     Metric or None
+        The fitted metric, without a correction when no direction passes ``eigval_cutoff``.
         None when the window does not support a trustworthy fit, in which case the caller should
         keep the diagonal it already has.
-
-    Returns
-    -------
-    scale : np.ndarray
-        Diagonal :math:`\sigma`, of shape ``(dim,)``.
-    vectors : np.ndarray
-        Retained directions, of shape ``(dim, k)``.
-    scales : np.ndarray
-        The :math:`\sqrt{\Lambda} - 1` gains, of shape ``(k,)``.
     """
+    if not (np.isfinite(draws).all() and np.isfinite(grads).all()):
+        return None
+
     dim, n_draws = draws.shape
 
     draw_mean, grad_mean = draws.mean(axis=1), grads.mean(axis=1)
@@ -313,8 +308,12 @@ def _low_rank_metric(
     if not (np.all(scale > 0) and np.all(gains > -1.0 + _MIN_LOW_RANK_GAIN)):
         return None
 
+    diagonal_scale = mx.array(scale.astype(np.float32))
+    if not keep.any():
+        return Metric(scale=diagonal_scale)
+
     return Metric(
-        scale=mx.array(scale.astype(np.float32)),
+        scale=diagonal_scale,
         correction=LowRankCorrection(
             vectors=mx.array((subspace @ vectors[:, keep]).astype(np.float32)),
             scales=mx.array(gains.astype(np.float32)),

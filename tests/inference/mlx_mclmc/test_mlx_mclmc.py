@@ -13,6 +13,10 @@ from pymc_extras.inference.mlx_mclmc.kernel import (
     AdaptationSettings,
     Metric,
     TunedParameters,
+    _accumulate,
+    _empty_moments,
+    _fit_metric,
+    _low_rank_metric,
     _optimize_to_mode,
     sample,
     tune_step_size,
@@ -525,6 +529,46 @@ def test_warmup_survives_a_non_finite_step_in_phase_three():
 
     assert np.isfinite(tuned.L)
     assert np.isfinite(np.asarray(tuned.position)).all()
+
+
+def test_low_rank_fit_rejects_a_window_it_cannot_trust(caplog):
+    dim = 4
+    rng = np.random.default_rng(0)
+    clean = rng.normal(size=(dim, 20))
+    draws = clean.copy()
+    draws[0, 0] = np.nan
+
+    assert _low_rank_metric(draws, grads=-draws) is None
+
+    def as_row(column):
+        return mx.array(column[None].astype("float32"))
+
+    # The running moments are clean; only the retained window carries the nan.
+    moments = _empty_moments(dim)
+    for column in clean.T:
+        moments = _accumulate(moments, position=as_row(column), grad=-as_row(column), weight=1.0)
+    retained = [(as_row(column), -as_row(column)) for column in draws.T[:3]]
+
+    with caplog.at_level("WARNING"):
+        metric = _fit_metric(
+            moments, retained, dim=dim, mass_matrix="low_rank", allow_low_rank=True
+        )
+
+    assert metric.correction is None
+    assert "rejected as unreliable" in caplog.text
+
+
+def test_low_rank_fit_drops_the_correction_when_no_direction_qualifies():
+    """An axis-aligned window has nothing for the correction to add, so it must not carry an
+    empty one that costs two matmuls per step."""
+    dim = 4
+    rng = np.random.default_rng(1)
+    draws = rng.normal(size=(dim, 400))
+
+    metric = _low_rank_metric(draws, grads=-draws)
+
+    assert metric is not None
+    assert metric.correction is None
 
 
 def test_unpreconditioned_L_is_the_root_summed_position_variance():
