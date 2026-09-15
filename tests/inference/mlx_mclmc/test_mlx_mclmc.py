@@ -15,9 +15,11 @@ from pymc_extras.inference.mlx_mclmc.kernel import (
     TunedParameters,
     _accumulate,
     _empty_moments,
+    _ess_per_dim,
     _fit_metric,
     _low_rank_metric,
     _optimize_to_mode,
+    _window_switch_steps,
     sample,
     tune_step_size,
     warmup,
@@ -531,6 +533,36 @@ def test_warmup_survives_a_non_finite_step_in_phase_three():
     assert np.isfinite(np.asarray(tuned.position)).all()
 
 
+def test_low_rank_metric_beats_the_diagonal_on_a_rotated_gaussian():
+    """The low-rank correction exists to precondition ridges the diagonal cannot see."""
+    dim = 12
+    rng = np.random.default_rng(3)
+    factor = rng.normal(size=(dim, dim))
+    covariance = factor @ factor.T + 0.05 * np.eye(dim)
+    precision = mx.array(np.linalg.inv(covariance).astype("float32"))
+
+    def logdensity_fn(x):
+        return -0.5 * mx.sum(x * (precision @ x))
+
+    ess = {}
+    for mass_matrix in ("gradient", "low_rank"):
+        output, tuned = warmup_and_sample(
+            logdensity_fn,
+            np.zeros(dim),
+            num_tune=4000,
+            draws=4000,
+            chains=4,
+            seed=0,
+            settings=AdaptationSettings(mass_matrix=mass_matrix),
+        )
+        draws = np.asarray(output.samples)
+        ess[mass_matrix] = np.mean([_ess_per_dim(draws[:, chain]).mean() for chain in range(4)])
+
+    assert tuned.metric.correction is not None
+    # Measured 330 against 2306; a factor of 3 leaves room for the seed.
+    assert ess["low_rank"] > 3 * ess["gradient"]
+
+
 def test_low_rank_fit_rejects_a_window_it_cannot_trust(caplog):
     dim = 4
     rng = np.random.default_rng(0)
@@ -569,6 +601,15 @@ def test_low_rank_fit_drops_the_correction_when_no_direction_qualifies():
 
     assert metric is not None
     assert metric.correction is None
+
+
+def test_window_switch_schedule():
+    """Short early windows, then windows that start at switch_freq and grow by window_growth,
+    stopping before a window that could not finish inside num_steps."""
+    schedule = dict(early_switch_freq=10, switch_freq=80, window_growth=1.5)
+
+    assert _window_switch_steps(num_steps=300, early_end=30, **schedule) == {10, 20, 30, 110, 230}
+    assert _window_switch_steps(num_steps=200, early_end=0, **schedule) == {80, 200}
 
 
 def test_unpreconditioned_L_is_the_root_summed_position_variance():
