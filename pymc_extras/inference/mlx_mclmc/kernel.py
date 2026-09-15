@@ -647,6 +647,20 @@ def _transition(
     return ChainState(position, momentum, logdensity, grad), energy_error
 
 
+def _guarded_transition(
+    state: ChainState, keys: tuple[mx.array, mx.array, mx.array], dynamics: Dynamics
+) -> tuple[ChainState, mx.array, mx.array]:
+    """Take one transition and revert the chains whose step came out non-finite."""
+    refresh_key, decohere_key, resample_key = keys
+    proposed, energy_error = _transition(
+        state=state, keys=(refresh_key, decohere_key), dynamics=dynamics
+    )
+
+    return _revert_nonfinite(
+        proposed=proposed, previous=state, energy_error=energy_error, key=resample_key
+    )
+
+
 def sample(
     logdensity_fn: Callable[[mx.array], mx.array],
     initial_positions: ArrayLike,
@@ -737,14 +751,7 @@ def sample(
     )
 
     def one_step(state, keys):
-        refresh_key, decohere_key, resample_key = keys
-        proposed, energy_error = _transition(
-            state=state, keys=(refresh_key, decohere_key), dynamics=dynamics
-        )
-
-        return _revert_nonfinite(
-            proposed=proposed, previous=state, energy_error=energy_error, key=resample_key
-        )
+        return _guarded_transition(state=state, keys=keys, dynamics=dynamics)
 
     step = mx.compile(one_step) if compile_step else one_step
 
@@ -1059,7 +1066,6 @@ def warmup(
         Non-finite steps are rejected with ``mx.where`` rather than a Python branch, so the loop
         stays lazy and this body compiles.
         """
-        refresh_key, decohere_key, resample_key = keys
         dynamics = Dynamics(
             logp_and_grad=logp_and_grad,
             step_size=state.step_size,
@@ -1069,11 +1075,8 @@ def warmup(
             dim=dim,
         )
         previous = ChainState(state.position, state.momentum, state.logdensity, state.grad)
-        proposed, energy_error = _transition(
-            state=previous, keys=(refresh_key, decohere_key), dynamics=dynamics
-        )
-        chain, energy_error, is_finite = _revert_nonfinite(
-            proposed=proposed, previous=previous, energy_error=energy_error, key=resample_key
+        chain, energy_error, is_finite = _guarded_transition(
+            state=previous, keys=keys, dynamics=dynamics
         )
         position, momentum, logdensity, grad = chain
         step_size_max = mx.where(is_finite, state.step_size_max, state.step_size * 0.8)
