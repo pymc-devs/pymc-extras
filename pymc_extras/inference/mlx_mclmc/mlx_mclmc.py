@@ -51,9 +51,10 @@ def fit_mlx_mclmc(
     Sample a model with unadjusted MCLMC on the Apple Silicon GPU.
 
     Microcanonical Langevin Monte Carlo evolves an isokinetic Hamiltonian: the momentum is held
-    on the unit sphere and partially refreshed each step, so trajectories decorrelate without a
-    Metropolis accept step. Dropping that accept step is what makes the sampler cheap, and also
-    what makes it approximate. Draws carry a bias of order :math:`\\epsilon^4` in the step size,
+    on the unit sphere and partially refreshed each step, and that refreshment is what
+    decorrelates the chain. The integrator's discretization error is never corrected by a
+    Metropolis accept step. Leaving that step out is what makes the sampler cheap, and also what
+    makes it approximate. Draws carry a bias of order :math:`\\epsilon^4` in the step size,
     which ``desired_energy_var`` controls, so treat the result as an approximation to the
     posterior rather than an exact sample from it.
 

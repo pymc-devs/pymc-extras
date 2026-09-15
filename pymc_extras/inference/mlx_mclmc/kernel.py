@@ -664,8 +664,9 @@ def sample(
     Run unadjusted MCLMC from fixed parameters.
 
     The sampler evolves an isokinetic Hamiltonian: the momentum is held on the unit sphere and
-    partially refreshed each step, so trajectories decorrelate without a Metropolis accept step.
-    Chains are the leading array axis and evolve independently.
+    partially refreshed each step, which is what decorrelates the chain. No Metropolis accept
+    step corrects the integrator's discretization error. Chains are the leading array axis and
+    evolve independently.
 
     Parameters
     ----------
