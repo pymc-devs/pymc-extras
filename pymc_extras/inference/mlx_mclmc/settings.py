@@ -12,7 +12,7 @@ class AdaptationSettings(NamedTuple):
         nuts-rs's :math:`\sqrt{\mathrm{Var}[x] / \mathrm{Var}[\nabla \log p]}`, or
         ``"low_rank"`` to fit a low-rank correction on top of the latter. Only ``"low_rank"`` can
         precondition a posterior whose ridges are not axis-aligned.
-    settings.diagonal_preconditioning : bool
+    diagonal_preconditioning : bool
         Whether to install the estimated metric at all.
     early_switch_freq, switch_freq : int
         Moment-estimator window lengths, before and after ``early_end``.
@@ -26,23 +26,23 @@ class AdaptationSettings(NamedTuple):
     low_rank_refits : int
         Refits within phase 2 before the final one. The first is always the gradient diagonal,
         which seeds the later low-rank fits with draws taken under something better than identity.
-    settings.desired_energy_var : float
+    desired_energy_var : float
         Target energy variance per dimension for the step-size controller.
-    settings.trust_in_estimate : float
+    trust_in_estimate : float
         Width of the controller's Gaussian weighting. Larger values give more weight to single-step
         estimates far from the target.
-    settings.num_effective_samples : float
+    num_effective_samples : float
         Sets the controller's exponential decay rate.
-    settings.frac_tune1, settings.frac_tune2, settings.frac_tune3 : float
+    frac_tune1, frac_tune2, frac_tune3 : float
         Fractions of the step budget given to each adaptation phase.
-    settings.l_factor : float
+    l_factor : float
         Multiplier on the autocorrelation-derived ``L`` in phase 3.
-    settings.optimize_steps : int
+    optimize_steps : int
         Maximum Adam steps taken toward the mode before adaptation. Off by default. Turn it on
         for a concentrated unimodal posterior far from the initial point. Leave it off for a
         log-density unbounded above, such as a centered hierarchical model, where the ascent
         runs into the funnel and the adaptation follows it there.
-    settings.optimize_learning_rate : float
+    optimize_learning_rate : float
         Adam learning rate for that ascent.
     """
 
