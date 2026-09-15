@@ -1024,9 +1024,11 @@ def warmup(
     seed : int
         Seed for the MLX random key. Default is 0.
     settings.optimize_steps : int
-        Maximum number of Adam steps taken toward the mode before adaptation. Pass 0 for a model
-        whose log-density is unbounded above, such as a centered hierarchical model, where the
-        ascent runs off into a region of high density but negligible mass. Default is 200.
+        Maximum number of Adam steps taken toward the mode before adaptation. Turn it on for a
+        concentrated unimodal posterior far from the initial point, where the chain otherwise
+        wanders under the large initial step while the variances are collected. Leave it off for
+        a log-density unbounded above, such as a centered hierarchical model, where the ascent
+        runs into the funnel and the adaptation follows it there. Default is 0.
     settings.optimize_learning_rate : float
         Adam learning rate for that ascent. Default is 0.05.
     compile_step : bool
@@ -1118,8 +1120,6 @@ def warmup(
     position = mx.array(initial_position).reshape(1, dim)
     _check_initial_state(*logp_and_grad(position))
 
-    # Without this ascent the chain wanders under the large initial step while the diagonal
-    # variances are collected, which inflates the metric and forces a step size too small to mix.
     position = _optimize_to_mode(
         logp_and_grad=logp_and_grad,
         position=position,

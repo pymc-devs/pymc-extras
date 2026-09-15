@@ -477,3 +477,22 @@ def test_fit_samples_a_model_with_live_data_and_dims(float32):
     assert idata["posterior"]["mu"].shape == (2, 400)
     np.testing.assert_allclose(idata["posterior"]["mu"].mean(), 2.0, atol=0.1)
     np.testing.assert_allclose(idata["posterior"]["sigma"].mean(), 0.5, atol=0.1)
+
+
+def test_fit_recovers_the_funnel_of_a_centered_hierarchical_model(float32):
+    """Eight schools, centered. A warmup that seeks the mode ends up in the neck and never leaves."""
+    y = np.array([28, 8, -3, 7, -1, 1, 18, 12], dtype="float32")
+    sigma = np.array([15, 10, 16, 11, 9, 11, 10, 18], dtype="float32")
+
+    with pm.Model() as model:
+        mu = pm.Normal("mu", 0.0, 5.0)
+        tau = pm.HalfCauchy("tau", 5.0)
+        theta = pm.Normal("theta", mu, tau, shape=8)
+        pm.Normal("obs", theta, sigma, observed=y)
+
+    idata = fit_mlx_mclmc(draws=2000, tune=2000, chains=4, model=model, random_seed=0)
+    tau_draws = idata["posterior"]["tau"]
+
+    # NUTS puts tau's mean near 3.6 with a standard deviation near 3.2. The neck is at tau < 0.1.
+    assert 2.0 < float(tau_draws.mean()) < 6.0
+    assert float(tau_draws.std()) > 1.5

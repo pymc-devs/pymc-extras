@@ -38,8 +38,10 @@ class AdaptationSettings(NamedTuple):
     settings.l_factor : float
         Multiplier on the autocorrelation-derived ``L`` in phase 3.
     settings.optimize_steps : int
-        Maximum Adam steps taken toward the mode before adaptation. Pass 0 for a log-density
-        unbounded above, such as a centered hierarchical model.
+        Maximum Adam steps taken toward the mode before adaptation. Off by default. Turn it on
+        for a concentrated unimodal posterior far from the initial point. Leave it off for a
+        log-density unbounded above, such as a centered hierarchical model, where the ascent
+        runs into the funnel and the adaptation follows it there.
     settings.optimize_learning_rate : float
         Adam learning rate for that ascent.
     """
@@ -59,5 +61,5 @@ class AdaptationSettings(NamedTuple):
     frac_tune2: float = 0.1
     frac_tune3: float = 0.1
     l_factor: float = 0.4
-    optimize_steps: int = 200
+    optimize_steps: int = 0
     optimize_learning_rate: float = 0.05
