@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 import logging
 import warnings
+
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pymc as pm
@@ -9,16 +13,10 @@ from pymc.util import RandomSeed, _get_seeds_per_chain
 from xarray import DataTree
 
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
-from pymc_extras.inference.mlx_mclmc.kernel import (
-    AdaptationSettings,
-    TunedParameters,
-    warmup_and_sample,
-)
-from pymc_extras.inference.mlx_mclmc.logp import (
-    MLXLogp,
-    check_model_is_sampleable,
-    draws_to_datasets,
-)
+from pymc_extras.inference.mlx_mclmc.settings import AdaptationSettings
+
+if TYPE_CHECKING:
+    from pymc_extras.inference.mlx_mclmc.kernel import TunedParameters
 
 _log = logging.getLogger(__name__)
 
@@ -83,7 +81,7 @@ def fit_mlx_mclmc(
         ``"velocity_verlet"``, which takes 1. Default is ``"mclachlan"``.
     adaptation : AdaptationSettings
         How warmup adapts the step size, the metric, and ``L``. Defaults to
-        :class:`~pymc_extras.inference.mlx_mclmc.kernel.AdaptationSettings`.
+        :class:`~pymc_extras.inference.mlx_mclmc.settings.AdaptationSettings`.
     initial_point : dict or array, optional
         Starting point for the adaptation, given either as unconstrained value-variable arrays
         keyed by name or as a flat vector in ``model.value_vars`` order. Defaults to the model's
@@ -112,6 +110,15 @@ def fit_mlx_mclmc(
     .. [2] Robnik, J., & Seljak, U. (2024). Fluctuation without dissipation: Microcanonical
        Langevin Monte Carlo. arXiv:2303.18221.
     """
+    # Both modules import mlx at load time, and mlx only installs on Apple Silicon. Importing
+    # them here keeps this module, and its docstring, importable everywhere else.
+    from pymc_extras.inference.mlx_mclmc.kernel import warmup_and_sample
+    from pymc_extras.inference.mlx_mclmc.logp import (
+        MLXLogp,
+        check_model_is_sampleable,
+        draws_to_datasets,
+    )
+
     model = pm.modelcontext(model)
     check_model_is_sampleable(model)
 
