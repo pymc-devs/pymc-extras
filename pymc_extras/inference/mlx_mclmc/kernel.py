@@ -967,106 +967,36 @@ def _optimize_to_mode(
     return position
 
 
-def warmup(
-    logdensity_fn: Callable[[mx.array], mx.array],
-    initial_position: ArrayLike,
-    *,
-    num_steps: int,
-    settings: AdaptationSettings = AdaptationSettings(),
-    integrator: str = "mclachlan",
-    seed: int = 0,
-    compile_step: bool = True,
-) -> TunedParameters:
-    r"""
-    Adapt the step size, the diagonal metric, and ``L``.
+class _WarmupContext(NamedTuple):
+    """What every adaptation phase needs and none of them change."""
 
-    A single adapting chain, carried as shape ``(1, dim)`` so the batched primitives apply, both
-    tunes the parameters and moves into the typical set, so the result cold-starts sampling
-    without a hand-supplied metric. Adaptation runs in three phases, sized by the ``frac_tune``
-    fractions of ``num_steps``:
+    step: Callable
+    logp_and_grad: Callable
+    coefficients: list[float]
+    settings: AdaptationSettings
+    dim: int
 
-    1. Tune the step size alone, with a controller that drives
-       :math:`\\mathrm{Var}[E]` per dimension to ``settings.desired_energy_var``.
-    2. Keep tuning while accumulating a step-size-weighted running mean and mean-square of the
-       position, then set the metric to the per-coordinate variance and re-adjust the step size
-       under it.
-    3. Hold the parameters fixed, sample, and set ``L`` from the autocorrelation length.
 
-    Parameters
-    ----------
-    logdensity_fn : callable
-        Maps an MLX array of shape ``(dim,)`` to a scalar log-density. If it also has a
-        ``value_and_grad`` method, that supplies the gradient instead of MLX autodiff.
-    initial_position : array
-        Starting point of the adapting chain, of shape ``(dim,)``.
-    num_steps : int
-        Budget of integrator steps, of which the ``frac_tune`` fractions are taken.
-    integrator : str
-        Either ``"mclachlan"`` or ``"velocity_verlet"``. Default is ``"mclachlan"``.
-    settings.diagonal_preconditioning : bool
-        Whether to estimate a diagonal inverse mass matrix in phase 2. Default is True.
-    mass_matrix : str or MassMatrixSettings
-        How phase 2 estimates the metric. A bare string selects the method and leaves the estimator
-        windows at their defaults; pass a :class:`MassMatrixSettings` to set those too. Default is
-        ``"gradient"``.
-    settings.desired_energy_var : float
-        Target energy variance per dimension. Default is 5e-4.
-    settings.trust_in_estimate : float
-        Width of the controller's Gaussian weighting. Larger values give more weight to
-        single-step estimates far from the target. Default is 1.5.
-    settings.num_effective_samples : float
-        Sets the controller's exponential decay rate. Default is 150.
-    settings.frac_tune1, settings.frac_tune2, settings.frac_tune3 : float
-        Fractions of ``num_steps`` given to each phase. Each defaults to 0.1.
-    settings.l_factor : float
-        Multiplier on the autocorrelation-derived ``L`` in phase 3. Default is 0.4.
-    seed : int
-        Seed for the MLX random key. Default is 0.
-    settings.optimize_steps : int
-        Maximum number of Adam steps taken toward the mode before adaptation. Turn it on for a
-        concentrated unimodal posterior far from the initial point, where the chain otherwise
-        wanders under the large initial step while the variances are collected. Leave it off for
-        a log-density unbounded above, such as a centered hierarchical model, where the ascent
-        runs into the funnel and the adaptation follows it there. Default is 0.
-    settings.optimize_learning_rate : float
-        Adam learning rate for that ascent. Default is 0.05.
-    compile_step : bool
-        Whether to fuse the adapting step with ``mx.compile``. Default is True.
-
-    Returns
-    -------
-    TunedParameters
-        The adapting chain's final ``position`` of shape ``(dim,)``, which should be jittered by
-        ``sqrt(inverse_mass_matrix)`` to seed the sampling chains, along with the adapted ``L``,
-        ``step_size``, and ``metric``, and the ``num_tuning_steps`` spent.
+def _make_adapt_step(
+    logp_and_grad: Callable,
+    coefficients: list[float],
+    settings: AdaptationSettings,
+    dim: int,
+    compile_step: bool,
+) -> Callable:
     """
-    if settings.mass_matrix not in _MASS_MATRIX_METHODS:
-        raise ValueError(
-            f"mass_matrix must be one of {_MASS_MATRIX_METHODS}, got {settings.mass_matrix!r}"
-        )
+    Build the adapting step: dynamics, the step-size controller, then the streaming moments.
 
-    coefficients = INTEGRATOR_COEFFICIENTS[integrator]
-    initial_position = np.asarray(initial_position, dtype=np.float32).ravel()
-    dim = initial_position.shape[0]
-    _check_dim(dim)
-    logp_and_grad = _batched_value_and_grad(logdensity_fn)
+    Non-finite steps are rejected with ``mx.where`` rather than a Python branch, so the loop
+    stays lazy and the body compiles.
+    """
     decay_rate = (settings.num_effective_samples - 1.0) / (settings.num_effective_samples + 1.0)
 
     # Phases 1 and 2 hold L at sqrt(dim), so their refresh rate is a compile-time constant rather
     # than threaded state.
     adaptation_inverse_L = 1.0 / math.sqrt(dim)
 
-    num_steps1 = round(num_steps * settings.frac_tune1)
-    num_steps2 = round(num_steps * settings.frac_tune2)
-    num_steps3 = round(num_steps * settings.frac_tune3)
-
     def adapt_step(state, metric, mask, keys):
-        """
-        Take one adapting step: dynamics, the step-size controller, then the streaming moments.
-
-        Non-finite steps are rejected with ``mx.where`` rather than a Python branch, so the loop
-        stays lazy and this body compiles.
-        """
         dynamics = Dynamics(
             logp_and_grad=logp_and_grad,
             step_size=state.step_size,
@@ -1111,25 +1041,29 @@ def warmup(
             background=background,
         )
 
-    step = mx.compile(adapt_step) if compile_step else adapt_step
+    return mx.compile(adapt_step) if compile_step else adapt_step
 
-    key = mx.random.key(seed)
-    key, subkey = mx.random.split(key, num=2)
+
+def _initial_adaptation_state(
+    context: _WarmupContext, initial_position: np.ndarray, key: mx.array
+) -> AdaptationState:
+    """Check the starting point, optionally ascend toward the mode, and seed the controller."""
+    dim, settings = context.dim, context.settings
 
     position = mx.array(initial_position).reshape(1, dim)
-    _check_initial_state(*logp_and_grad(position))
+    _check_initial_state(*context.logp_and_grad(position))
 
     position = _optimize_to_mode(
-        logp_and_grad=logp_and_grad,
+        logp_and_grad=context.logp_and_grad,
         position=position,
         steps=settings.optimize_steps,
         learning_rate=settings.optimize_learning_rate,
     )
-    logdensity, grad = logp_and_grad(position)
+    logdensity, grad = context.logp_and_grad(position)
 
-    state = AdaptationState(
+    return AdaptationState(
         position=position,
-        momentum=_unit_vectors(shape=(1, dim), key=subkey),
+        momentum=_unit_vectors(shape=(1, dim), key=key),
         logdensity=logdensity,
         grad=grad,
         step_size=mx.array([math.sqrt(dim) * 0.25], dtype=mx.float32),
@@ -1140,123 +1074,293 @@ def warmup(
         background=_empty_moments(dim),
     )
 
-    metric = Metric(scale=mx.ones((dim,)))
-    num_tuning_steps = 0
 
-    # Phase 1 tunes the step size alone; phase 2 also accumulates the windowed moments. The swap
-    # schedule is a function of the step index alone, so it needs no synchronization -- a draw
-    # rejected as non-finite simply leaves the window one sample short of its nominal length.
-    # The low-rank fit needs the raw draws, not running moments, so phase 2 retains a trailing
-    # window of them. nuts-rs keeps the same buffer and splits it on each switch; keeping the most
-    # recent low_rank_window draws is the streaming approximation of that.
-    retained: list[tuple[mx.array, mx.array]] = []
+def _run_adapt_steps(
+    context: _WarmupContext,
+    state: AdaptationState,
+    metric: Metric,
+    key: mx.array,
+    n_steps: int,
+    accumulate_moments: bool,
+) -> tuple[AdaptationState, mx.array]:
+    """Take ``n_steps`` adapting steps under a fixed metric, returning the state and the key."""
+    mask = mx.array([float(accumulate_moments)], dtype=mx.float32)
 
-    # Phase 2 is cut into segments: at each boundary the metric is refitted from what has been seen
-    # since the last one, the step-size controller is re-seeded, and the draw window is cleared so
-    # the next fit only sees draws taken under the improved metric.
-    refits = settings.low_rank_refits
-    refit_steps = (
-        {round(num_steps2 * i / (refits + 1)): i for i in range(1, refits + 1)}
-        if settings.mass_matrix == "low_rank"
-        else {}
-    )
-    switch_steps = _window_switch_steps(
-        num_steps2,
-        settings.early_end,
-        settings.early_switch_freq,
-        settings.switch_freq,
-        settings.window_growth,
-    )
-    for n_phase_steps, mask_value in ((num_steps1, 0.0), (num_steps2, 1.0)):
-        mask = mx.array([mask_value], dtype=mx.float32)
-        for phase_step in range(1, n_phase_steps + 1):
-            key, *keys = mx.random.split(key, num=4)
-            state = step(state, metric=metric, mask=mask, keys=tuple(keys))
-            if mask_value and settings.mass_matrix == "low_rank":
-                retained.append((state.position, state.grad))
-                del retained[: -settings.low_rank_window]
-            if mask_value and phase_step in switch_steps:
-                state = state._replace(foreground=state.background, background=_empty_moments(dim))
-            if mask_value and phase_step in refit_steps:
-                metric = _fit_metric(
-                    moments=state.foreground,
-                    retained=retained,
-                    dim=dim,
-                    mass_matrix=settings.mass_matrix,
-                    allow_low_rank=refit_steps[phase_step] > 1,
-                )
-                state = _reset_step_size_controller(state)
-                retained.clear()
-                mx.eval(state)
-            num_tuning_steps += 1
-            if num_tuning_steps % _EVAL_EVERY == 0:
-                mx.eval(state)
+    for step_index in range(1, n_steps + 1):
+        key, *keys = mx.random.split(key, num=4)
+        state = context.step(state, metric=metric, mask=mask, keys=tuple(keys))
+        if step_index % _EVAL_EVERY == 0:
+            mx.eval(state)
     mx.eval(state)
 
+    return state, key
+
+
+def _tune_with_windowed_moments(
+    context: _WarmupContext,
+    state: AdaptationState,
+    metric: Metric,
+    key: mx.array,
+    n_steps: int,
+) -> tuple[AdaptationState, Metric, list[tuple[mx.array, mx.array]], mx.array]:
+    """
+    Phase 2: keep tuning the step size while the windowed moments accumulate.
+
+    Under ``"low_rank"`` the phase is cut into segments. At each boundary the metric is refitted
+    from the draws since the last one, the step-size controller is re-seeded, and the draw window
+    is cleared so the next fit only sees draws taken under the improved metric.
+
+    Returns
+    -------
+    state : AdaptationState
+    metric : Metric
+        The metric in force at the end of the phase.
+    retained : list of (position, grad) pairs
+        The trailing draw window, for the final low-rank fit.
+    key : mx.array
+    """
+    settings, dim = context.settings, context.dim
+    low_rank = settings.mass_matrix == "low_rank"
+
+    refits = settings.low_rank_refits
+    refit_steps = (
+        {round(n_steps * i / (refits + 1)): i for i in range(1, refits + 1)} if low_rank else {}
+    )
+    switch_steps = _window_switch_steps(
+        num_steps=n_steps,
+        early_end=settings.early_end,
+        early_switch_freq=settings.early_switch_freq,
+        switch_freq=settings.switch_freq,
+        window_growth=settings.window_growth,
+    )
+    retained: list[tuple[mx.array, mx.array]] = []
+    mask = mx.array([1.0], dtype=mx.float32)
+
+    # The swap schedule depends on the step index alone, so a draw rejected as non-finite just
+    # leaves the window one sample short. The retained draws are the streaming approximation of
+    # nuts-rs's buffer, which it splits on each switch.
+    for phase_step in range(1, n_steps + 1):
+        key, *keys = mx.random.split(key, num=4)
+        state = context.step(state, metric=metric, mask=mask, keys=tuple(keys))
+        if low_rank:
+            retained.append((state.position, state.grad))
+            del retained[: -settings.low_rank_window]
+        if phase_step in switch_steps:
+            state = state._replace(foreground=state.background, background=_empty_moments(dim))
+        if phase_step in refit_steps:
+            metric = _fit_metric(
+                moments=state.foreground,
+                retained=retained,
+                dim=dim,
+                mass_matrix=settings.mass_matrix,
+                allow_low_rank=refit_steps[phase_step] > 1,
+            )
+            state = _reset_step_size_controller(state)
+            retained.clear()
+            mx.eval(state)
+        if phase_step % _EVAL_EVERY == 0:
+            mx.eval(state)
+    mx.eval(state)
+
+    return state, metric, retained, key
+
+
+def _install_metric(
+    context: _WarmupContext,
+    state: AdaptationState,
+    metric: Metric,
+    retained: list[tuple[mx.array, mx.array]],
+    key: mx.array,
+    readjust_steps: int,
+) -> tuple[AdaptationState, Metric, float, mx.array]:
+    r"""
+    Fit the metric from phase 2, then either install it or set ``L`` from the position variance.
+
+    With ``diagonal_preconditioning`` the fitted metric replaces the working one, the step-size
+    controller is re-seeded, and ``readjust_steps`` further steps re-tune the step size under it,
+    with ``L`` held at :math:`\sqrt{d}`. Without it the metric is left alone and ``L`` becomes
+    :math:`\sqrt{\sum_i \mathrm{Var}[x_i]}`, as in blackjax.
+    """
+    settings, dim = context.settings, context.dim
+
+    fitted = _fit_metric(
+        moments=state.foreground,
+        retained=retained,
+        dim=dim,
+        mass_matrix=settings.mass_matrix,
+        allow_low_rank=True,
+    )
+    if not settings.diagonal_preconditioning:
+        variances = _diagonal_from_moments(state.foreground, dim=dim, method="variance")
+        return state, metric, float(np.sqrt(variances.sum())), key
+
+    state = _reset_step_size_controller(state)
+    state, key = _run_adapt_steps(
+        context, state, metric=fitted, key=key, n_steps=readjust_steps, accumulate_moments=True
+    )
+
+    return state, fitted, math.sqrt(dim), key
+
+
+def _estimate_L(
+    context: _WarmupContext,
+    chain: ChainState,
+    metric: Metric,
+    step_size: float,
+    L: float,
+    key: mx.array,
+    n_steps: int,
+) -> tuple[float, ChainState]:
+    r"""
+    Phase 3: hold the parameters fixed, sample, and set ``L`` from the autocorrelation length.
+
+    Runs at the ``L`` phase 2 settled on, which is :math:`\sqrt{d}` only under diagonal
+    preconditioning. Holding it at :math:`\sqrt{d}` regardless would measure the autocorrelation
+    length under the wrong decoherence rate.
+    """
+    settings, dim = context.settings, context.dim
+    dynamics = Dynamics(
+        logp_and_grad=context.logp_and_grad,
+        step_size=step_size,
+        coefficients=context.coefficients,
+        metric=metric,
+        inverse_L=1.0 / L,
+        dim=dim,
+    )
+
+    positions = []
+    for step_index in range(1, n_steps + 1):
+        key, *keys = mx.random.split(key, num=4)
+        chain, _, _ = _guarded_transition(state=chain, keys=tuple(keys), dynamics=dynamics)
+
+        positions.append(chain.position)
+        if step_index % _EVAL_EVERY == 0:
+            mx.eval(chain)
+
+    samples = mx.stack(positions, axis=0).reshape(n_steps, dim)
+    mx.eval(samples)
+    ess = _ess_per_dim(np.asarray(samples))
+    L = settings.l_factor * step_size * float(np.mean(n_steps / np.clip(ess, 1e-8, None)))
+
+    return L, chain
+
+
+def warmup(
+    logdensity_fn: Callable[[mx.array], mx.array],
+    initial_position: ArrayLike,
+    *,
+    num_steps: int,
+    settings: AdaptationSettings = AdaptationSettings(),
+    integrator: str = "mclachlan",
+    seed: int = 0,
+    compile_step: bool = True,
+) -> TunedParameters:
+    r"""
+    Adapt the step size, the metric, and ``L``.
+
+    A single adapting chain, carried as shape ``(1, dim)`` so the batched primitives apply, both
+    tunes the parameters and moves into the typical set, so the result cold-starts sampling
+    without a hand-supplied metric. Adaptation runs in three phases, sized by the ``frac_tune``
+    fractions of ``num_steps``:
+
+    1. Tune the step size alone, with a controller that drives
+       :math:`\mathrm{Var}[E]` per dimension to ``settings.desired_energy_var``.
+    2. Keep tuning while accumulating windowed moments of the position and the gradient, then fit
+       the metric ``settings.mass_matrix`` selects and re-adjust the step size under it.
+    3. Hold the parameters fixed, sample, and set ``L`` from the autocorrelation length.
+
+    Parameters
+    ----------
+    logdensity_fn : callable
+        Maps an MLX array of shape ``(dim,)`` to a scalar log-density. If it also has a
+        ``value_and_grad`` method, that supplies the gradient instead of MLX autodiff.
+    initial_position : array
+        Starting point of the adapting chain, of shape ``(dim,)``.
+    num_steps : int
+        Budget of integrator steps, of which the ``frac_tune`` fractions are taken.
+    settings : AdaptationSettings
+        What each phase adapts and how. See
+        :class:`~pymc_extras.inference.mlx_mclmc.settings.AdaptationSettings`.
+    integrator : str
+        Either ``"mclachlan"`` or ``"velocity_verlet"``. Default is ``"mclachlan"``.
+    seed : int
+        Seed for the MLX random key. Default is 0.
+    compile_step : bool
+        Whether to fuse the adapting step with ``mx.compile``. Default is True.
+
+    Returns
+    -------
+    TunedParameters
+        The adapting chain's final ``position`` of shape ``(dim,)``, which should be jittered by
+        ``sqrt(inverse_mass_matrix)`` to seed the sampling chains, along with the adapted ``L``,
+        ``step_size``, and ``metric``, and the ``num_tuning_steps`` spent.
+    """
+    if settings.mass_matrix not in _MASS_MATRIX_METHODS:
+        raise ValueError(
+            f"mass_matrix must be one of {_MASS_MATRIX_METHODS}, got {settings.mass_matrix!r}"
+        )
+
+    coefficients = INTEGRATOR_COEFFICIENTS[integrator]
+    initial_position = np.asarray(initial_position, dtype=np.float32).ravel()
+    dim = initial_position.shape[0]
+    _check_dim(dim)
+    logp_and_grad = _batched_value_and_grad(logdensity_fn)
+
+    context = _WarmupContext(
+        step=_make_adapt_step(
+            logp_and_grad=logp_and_grad,
+            coefficients=coefficients,
+            settings=settings,
+            dim=dim,
+            compile_step=compile_step,
+        ),
+        logp_and_grad=logp_and_grad,
+        coefficients=coefficients,
+        settings=settings,
+        dim=dim,
+    )
+
+    num_steps1 = round(num_steps * settings.frac_tune1)
+    num_steps2 = round(num_steps * settings.frac_tune2)
+    num_steps3 = round(num_steps * settings.frac_tune3)
+    # A metric needs more than one draw, and an autocorrelation length needs at least two.
+    has_metric_window = num_steps2 > 1
+    readjust_steps = (
+        round(num_steps2 / 3) if has_metric_window and settings.diagonal_preconditioning else 0
+    )
+    if num_steps3 < 2:
+        num_steps3 = 0
+
+    key = mx.random.key(seed)
+    key, subkey = mx.random.split(key, num=2)
+    state = _initial_adaptation_state(context, initial_position=initial_position, key=subkey)
+    metric = Metric(scale=mx.ones((dim,)))
     L = math.sqrt(dim)
 
-    if num_steps2 > 1:
-        fitted = _fit_metric(
-            moments=state.foreground,
-            retained=retained,
-            dim=dim,
-            mass_matrix=settings.mass_matrix,
-            allow_low_rank=True,
+    state, key = _run_adapt_steps(
+        context, state, metric=metric, key=key, n_steps=num_steps1, accumulate_moments=False
+    )
+    state, metric, retained, key = _tune_with_windowed_moments(
+        context, state, metric=metric, key=key, n_steps=num_steps2
+    )
+    if has_metric_window:
+        state, metric, L, key = _install_metric(
+            context, state, metric=metric, retained=retained, key=key, readjust_steps=readjust_steps
         )
 
-        if not settings.diagonal_preconditioning:
-            variances = _diagonal_from_moments(state.foreground, dim=dim, method="variance")
-            L = float(np.sqrt(variances.sum()))
-        else:
-            metric = fitted
-            mask = mx.array([1.0], dtype=mx.float32)
-
-            state = _reset_step_size_controller(state)
-
-            for _ in range(round(num_steps2 / 3)):
-                key, *keys = mx.random.split(key, num=4)
-                state = step(state, metric=metric, mask=mask, keys=tuple(keys))
-                num_tuning_steps += 1
-                if num_tuning_steps % _EVAL_EVERY == 0:
-                    mx.eval(state)
-            mx.eval(state)
-
-    step_size = float(np.asarray(state.step_size).reshape(-1)[0])
+    step_size = float(state.step_size.item())
     chain = ChainState(state.position, state.momentum, state.logdensity, state.grad)
-
-    if num_steps3 >= 2:
-        # Phase 3 runs at the L phase 2 settled on, which is sqrt(dim) only under diagonal
-        # preconditioning. Holding it at sqrt(dim) regardless would measure the autocorrelation
-        # length under the wrong decoherence rate.
-        dynamics = Dynamics(
-            logp_and_grad=logp_and_grad,
-            step_size=state.step_size,
-            coefficients=coefficients,
-            metric=metric,
-            inverse_L=1.0 / L,
-            dim=dim,
+    if num_steps3:
+        L, chain = _estimate_L(
+            context, chain, metric=metric, step_size=step_size, L=L, key=key, n_steps=num_steps3
         )
-        positions = []
-        for _ in range(num_steps3):
-            key, *keys = mx.random.split(key, num=4)
-            chain, _, _ = _guarded_transition(state=chain, keys=tuple(keys), dynamics=dynamics)
-
-            positions.append(chain.position)
-            num_tuning_steps += 1
-            if num_tuning_steps % _EVAL_EVERY == 0:
-                mx.eval(chain)
-
-        samples = mx.stack(positions, axis=0).reshape(num_steps3, dim)
-        mx.eval(samples)
-        ess = _ess_per_dim(np.asarray(samples))
-        L = settings.l_factor * step_size * float(np.mean(num_steps3 / np.clip(ess, 1e-8, None)))
 
     return TunedParameters(
         position=mx.array(np.asarray(chain.position).reshape(dim)),
         L=float(L),
         step_size=step_size,
         metric=metric,
-        num_tuning_steps=num_tuning_steps,
+        num_tuning_steps=num_steps1 + num_steps2 + readjust_steps + num_steps3,
     )
 
 
