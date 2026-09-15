@@ -42,6 +42,29 @@ def test_fit_advi_recovers_conjugate_posterior(conjugate_model):
     np.testing.assert_allclose(theta.std(), np.sqrt(post_var), rtol=0.25)
 
 
+def test_fit_advi_returns_fit_and_optimizer_result_groups(conjugate_model):
+    model, post_mean, _ = conjugate_model
+    n_steps = 200
+
+    idata = fit_advi(model=model, n_steps=n_steps, draws=100, random_seed=1)
+
+    assert {"/posterior", "/fit", "/optimizer_result"} <= set(idata.groups)
+
+    fit = idata["fit"].dataset
+    assert set(fit.data_vars) == {"mean_vector", "standard_deviation"}
+    assert list(fit.coords["rows"].values) == ["theta"]
+    # the default guide is mean-field, so the fit group carries the converged mean
+    np.testing.assert_allclose(fit["mean_vector"].values, [post_mean], atol=0.1)
+    assert (fit["standard_deviation"].values > 0).all()
+
+    optimizer_result = idata["optimizer_result"].dataset
+    assert optimizer_result["elbo"].shape == (n_steps,)
+    assert optimizer_result["step_count"].item() == n_steps
+    # the trace ends higher than it starts, since the ELBO is what training maximizes
+    elbo = optimizer_result["elbo"].values
+    assert elbo[-20:].mean() > elbo[:20].mean()
+
+
 def test_fit_advi_random_seed(conjugate_model):
     model, *_ = conjugate_model
 
