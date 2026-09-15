@@ -185,15 +185,13 @@ def test_adaptation_settings_reach_the_warmup(conjugate_model):
     model, *_ = conjugate_model
     shared = dict(draws=100, tune=400, chains=1, model=model, random_seed=0)
 
-    default = fit_mlx_mclmc(**shared, adaptation=AdaptationSettings(optimize_steps=20))
-    # Dropping phase 3 removes its share of the step budget, which is reported in the attrs.
-    without_phase_three = fit_mlx_mclmc(
-        **shared, adaptation=AdaptationSettings(optimize_steps=20, frac_tune3=0.0)
-    )
+    default = fit_mlx_mclmc(**shared)
+    without_phase_three = fit_mlx_mclmc(**shared, adaptation=AdaptationSettings(frac_tune3=0.0))
 
-    assert without_phase_three["posterior"].attrs["num_tuning_steps"] == (
-        default["posterior"].attrs["num_tuning_steps"] - 40
-    )
+    # blackjax's budget: 40 + 40 for phases 1 and 2, 40 // 3 to re-adjust under the metric, and
+    # 40 for phase 3, which frac_tune3=0 drops.
+    assert default["posterior"].attrs["num_tuning_steps"] == 133
+    assert without_phase_three["posterior"].attrs["num_tuning_steps"] == 93
 
 
 @pytest.mark.parametrize(
