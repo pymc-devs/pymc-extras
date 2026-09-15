@@ -496,3 +496,30 @@ def test_fit_recovers_the_funnel_of_a_centered_hierarchical_model(float32):
     # NUTS puts tau's mean near 3.6 with a standard deviation near 3.2. The neck is at tau < 0.1.
     assert 2.0 < float(tau_draws.mean()) < 6.0
     assert float(tau_draws.std()) > 1.5
+
+
+def test_warmup_survives_a_non_finite_step_in_phase_three():
+    """Phase 3 measures autocorrelation from raw positions, so one nan there must be reverted."""
+
+    class BandedGaussian:
+        """A nan band straddling the mode, so any long run lands in it. The gradient is nan there
+        too, as PyTensor's would be, where MLX autodiff through ``mx.where`` would give zero."""
+
+        def __call__(self, x):
+            return self.value_and_grad(x)[0]
+
+        def value_and_grad(self, x):
+            in_band = mx.abs(x[0]) < 0.05
+            nan = mx.array(float("nan"))
+            return mx.where(in_band, nan, -0.5 * mx.sum(x**2)), mx.where(in_band, nan, -x)
+
+    tuned = warmup(
+        BandedGaussian(),
+        np.array([1.0, 0.0, 0.0], dtype="float32"),
+        num_steps=3000,
+        settings=AdaptationSettings(frac_tune1=0.05, frac_tune2=0.05, frac_tune3=0.9),
+        seed=1,
+    )
+
+    assert np.isfinite(tuned.L)
+    assert np.isfinite(np.asarray(tuned.position)).all()

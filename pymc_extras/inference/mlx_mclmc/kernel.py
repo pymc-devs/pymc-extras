@@ -1234,8 +1234,8 @@ def warmup(
         )
         positions = []
         for _ in range(num_steps3):
-            key, refresh_key, decohere_key = mx.random.split(key, num=3)
-            chain, _ = _transition(state=chain, keys=(refresh_key, decohere_key), dynamics=dynamics)
+            key, *keys = mx.random.split(key, num=4)
+            chain, _, _ = _guarded_transition(state=chain, keys=tuple(keys), dynamics=dynamics)
 
             positions.append(chain.position)
             num_tuning_steps += 1
