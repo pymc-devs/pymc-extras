@@ -4,6 +4,8 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 
+from scipy.special import gamma
+
 mx = pytest.importorskip("mlx.core", reason="MCLMC requires mlx, which needs Apple Silicon")
 
 from pymc_extras.inference.mlx_mclmc import fit_mlx_mclmc
@@ -523,3 +525,24 @@ def test_warmup_survives_a_non_finite_step_in_phase_three():
 
     assert np.isfinite(tuned.L)
     assert np.isfinite(np.asarray(tuned.position)).all()
+
+
+def test_unpreconditioned_L_is_the_root_summed_position_variance():
+    """Without preconditioning, L is sqrt(sum Var[x]) as in blackjax. The gradient-ratio proxy
+    the metric uses agrees on a Gaussian only, so the target here is a quartic."""
+    dim = 4
+    quartic_variance = 2.0 * gamma(0.75) / gamma(0.25)
+
+    def logdensity_fn(x):
+        return -0.25 * mx.sum(x**4)
+
+    tuned = warmup(
+        logdensity_fn,
+        np.zeros(dim),
+        num_steps=20000,
+        seed=0,
+        settings=AdaptationSettings(diagonal_preconditioning=False, frac_tune3=0.0),
+    )
+
+    # The proxy would give sqrt(dim * 0.568) = 1.51 against the true 1.64.
+    np.testing.assert_allclose(tuned.L, np.sqrt(dim * quartic_variance), rtol=0.04)

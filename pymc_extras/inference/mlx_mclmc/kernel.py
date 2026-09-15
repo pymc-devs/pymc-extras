@@ -342,9 +342,9 @@ def _fit_metric(
     dim: int,
     mass_matrix: str,
     allow_low_rank: bool,
-) -> tuple[Metric, np.ndarray]:
+) -> Metric:
     """
-    Build the metric for the next stretch of adaptation, and the diagonal it implies.
+    Build the metric for the next stretch of adaptation.
 
     The low-rank fit is only as good as the draws behind it, and draws taken under an identity
     metric on an ill-conditioned target do not span the posterior. So the first fit is always the
@@ -357,7 +357,7 @@ def _fit_metric(
         grads = np.stack([np.asarray(g).reshape(dim) for _, g in retained], axis=1)
         fitted = _low_rank_metric(draws, grads)
         if fitted is not None:
-            return fitted, (np.asarray(fitted.scale) ** 2).astype(np.float32)
+            return fitted
 
         _log.warning(
             "The low-rank mass matrix fit was rejected as unreliable; keeping the diagonal."
@@ -367,7 +367,7 @@ def _fit_metric(
         moments, dim, "gradient" if mass_matrix == "low_rank" else mass_matrix
     )
 
-    return _as_metric(diagonal), diagonal
+    return _as_metric(diagonal)
 
 
 def _window_switch_steps(
@@ -1179,11 +1179,11 @@ def warmup(
             if mask_value and phase_step in switch_steps:
                 state = state._replace(foreground=state.background, background=_empty_moments(dim))
             if mask_value and phase_step in refit_steps:
-                metric, _ = _fit_metric(
-                    state.foreground,
-                    retained,
-                    dim,
-                    settings.mass_matrix,
+                metric = _fit_metric(
+                    moments=state.foreground,
+                    retained=retained,
+                    dim=dim,
+                    mass_matrix=settings.mass_matrix,
                     allow_low_rank=refit_steps[phase_step] > 1,
                 )
                 state = _reset_step_size_controller(state)
@@ -1197,13 +1197,18 @@ def warmup(
     L = math.sqrt(dim)
 
     if num_steps2 > 1:
-        fitted, variances = _fit_metric(
-            state.foreground, retained, dim, settings.mass_matrix, allow_low_rank=True
+        fitted = _fit_metric(
+            moments=state.foreground,
+            retained=retained,
+            dim=dim,
+            mass_matrix=settings.mass_matrix,
+            allow_low_rank=True,
         )
-        L = float(np.sqrt(variances.sum()))
 
-        if settings.diagonal_preconditioning:
-            L = math.sqrt(dim)
+        if not settings.diagonal_preconditioning:
+            variances = _diagonal_from_moments(state.foreground, dim=dim, method="variance")
+            L = float(np.sqrt(variances.sum()))
+        else:
             metric = fitted
             mask = mx.array([1.0], dtype=mx.float32)
 
