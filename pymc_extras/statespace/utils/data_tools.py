@@ -20,7 +20,10 @@ NO_TIME_INDEX_WARNING = (
     "No time index found on the supplied data. A simple range index will be automatically "
     "generated."
 )
-NO_FREQ_INFO_WARNING = "No frequency was specific on the data's DateTimeIndex."
+NO_FREQ_INFO_WARNING = (
+    "No frequency was specified on the data's DatetimeIndex. One will be inferred from the index "
+    "if possible, and forecasting needs a regular frequency."
+)
 
 
 def get_data_dims(data):
