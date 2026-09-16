@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
@@ -23,6 +25,8 @@ except ImportError as exc:  # pragma: no cover
         "Silicon. Install it with `pip install mlx`."
     ) from exc
 
+_log = logging.getLogger(__name__)
+
 
 def _mlxify(inputs, outputs):
     """Rewrite a PyTensor graph under the MLX mode and funcify it to a raw MLX callable."""
@@ -43,9 +47,10 @@ class MLXLogp:
 
     The free value variables are packed into a single unconstrained vector, and the density
     carries the transform Jacobian. Both the packing and the gradient live in the PyTensor graph,
-    which is then funcified straight to ``mlx.core``: the gradient is PyTensor's own, so ops whose
-    reverse rule MLX lacks -- matrix inverse and Cholesky among them -- still differentiate, and
-    ``mx.vmap`` and ``mx.compile`` see through the result.
+    which is vectorized over a leading chain axis and then funcified straight to ``mlx.core``: the
+    gradient is PyTensor's own, so ops whose reverse rule MLX lacks -- matrix inverse and Cholesky
+    among them -- still differentiate, and the batching is PyTensor's own, so the graph never
+    meets ``mx.vmap``, which cannot batch the backend's Metal kernels.
 
     Dim lengths and ``pm.Data`` containers stay as shared variables of the compiled graph, so
     the model is used as given and a later ``pm.set_data`` is picked up on the next call. Freeze
@@ -82,12 +87,15 @@ class MLXLogp:
         self.dim = int(sum(self.sizes))
         self._initial_point = initial_point
 
-        flat = pt.vector("flat_value", shape=(self.dim,), dtype=model.value_vars[0].dtype)
+        dtype = model.value_vars[0].dtype
+        flat = pt.vector("flat_value", shape=(self.dim,), dtype=dtype)
         value_vars = pt.unpack(flat, packed_shapes=self.shapes)
         logp = graph_replace(model.logp(), dict(zip(model.value_vars, value_vars, strict=True)))
         if negative:
             logp = -logp
         grad, _ = pt.pack(*pt.grad(logp, value_vars))
+
+        batched = pt.matrix("batched_flat_value", shape=(None, self.dim), dtype=dtype)
 
         # Dim lengths and pm.Data are shared variables, which are graph inputs rather than
         # constants unless the caller froze the model. Carrying them as trailing inputs of the
@@ -101,7 +109,38 @@ class MLXLogp:
             self._shared
         )
 
-        self._raw = _mlxify([flat, *self._shared], [logp, grad])
+        self._raw = self._build_batched(flat, batched, logp, grad)
+
+    def _build_batched(self, flat, batched, logp, grad):
+        """
+        Funcify the graph vectorized over a leading chain axis, or under ``mx.vmap`` if that fails.
+
+        PyTensor's own vectorization is preferred because ``mx.vmap`` cannot batch the Metal
+        kernels the MLX backend uses for special functions. Not every op vectorizes or funcifies
+        cleanly, though, so a graph that fails to build or to evaluate at the initial point falls
+        back to the per-chain graph under ``mx.vmap``.
+        """
+        probe = mx.array(self.flat_initial_point()[None])
+        shared = self._shared_values()
+        try:
+            batched_logp, batched_grad = vectorize_graph([logp, grad], replace={flat: batched})
+            raw = _mlxify([batched, *self._shared], [batched_logp, batched_grad])
+            mx.eval(raw(probe, *shared))
+            return raw
+        except Exception as exc:
+            _log.warning(
+                "Could not vectorize the log-density over chains in PyTensor (%s: %s); falling "
+                "back to mx.vmap, which cannot batch the MLX backend's Metal kernels.",
+                type(exc).__name__,
+                str(exc).splitlines()[0][:120],
+            )
+
+        per_chain = _mlxify([flat, *self._shared], [logp, grad])
+
+        def vmapped(x, *shared_values):
+            return mx.vmap(lambda row: per_chain(row, *shared_values))(x)
+
+        return vmapped
 
     def _shared_values(self) -> list[mx.array]:
         """The current shared-variable values as MLX arrays, converted only when they change."""
@@ -119,13 +158,20 @@ class MLXLogp:
         return values
 
     def __call__(self, x: mx.array) -> mx.array:
-        return self._raw(x, *self._shared_values())[0]
+        return self.value_and_grad(x)[0]
 
     def value_and_grad(self, x: mx.array) -> tuple[mx.array, mx.array]:
-        """Return the log-density and its gradient with respect to the flat vector ``x``."""
-        value, grad = self._raw(x, *self._shared_values())
+        """
+        Return the log-density and its gradient with respect to ``x``.
 
-        return value, grad
+        ``x`` is a flat vector of shape ``(dim,)`` or a batch of them of shape ``(chains, dim)``;
+        the outputs carry the same leading axis.
+        """
+        if x.ndim == 1:
+            value, grad = self._raw(x[None], *self._shared_values())
+            return value[0], grad[0]
+
+        return self._raw(x, *self._shared_values())
 
     def flat_initial_point(self) -> np.ndarray:
         """Return the model's initial point as one flat float32 vector."""

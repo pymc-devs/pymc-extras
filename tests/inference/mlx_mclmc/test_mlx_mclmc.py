@@ -531,12 +531,13 @@ def test_warmup_survives_a_non_finite_step_in_phase_three():
         too, as PyTensor's would be, where MLX autodiff through ``mx.where`` would give zero."""
 
         def __call__(self, x):
-            return self.value_and_grad(x)[0]
+            return self.value_and_grad(x[None])[0][0]
 
         def value_and_grad(self, x):
-            in_band = mx.abs(x[0]) < 0.05
+            in_band = mx.abs(x[:, :1]) < 0.05
             nan = mx.array(float("nan"))
-            return mx.where(in_band, nan, -0.5 * mx.sum(x**2)), mx.where(in_band, nan, -x)
+            value = mx.where(in_band[:, 0], nan, -0.5 * mx.sum(x**2, axis=-1))
+            return value, mx.where(in_band, nan, -x)
 
     tuned = warmup(
         BandedGaussian(),

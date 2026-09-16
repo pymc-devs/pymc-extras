@@ -425,13 +425,17 @@ def _batched_value_and_grad(logdensity_fn: Callable) -> Callable:
     """
     Build the batched value-and-gradient callable the dynamics use.
 
-    A ``logdensity_fn`` carrying its own ``value_and_grad`` supplies the gradient itself, which is
-    how :class:`~pymc_extras.inference.mlx_mclmc.logp.MLXLogp` hands over PyTensor's symbolic
-    gradient. Anything else is differentiated by MLX, whose reverse rules do not cover every op.
+    A ``logdensity_fn`` carrying its own ``value_and_grad`` supplies the gradient itself and is
+    expected to accept a ``(chains, dim)`` batch, which is how
+    :class:`~pymc_extras.inference.mlx_mclmc.logp.MLXLogp` hands over PyTensor's symbolic gradient
+    and batching. Anything else is a scalar function of one ``(dim,)`` vector, differentiated and
+    batched by MLX, whose reverse rules do not cover every op.
     """
     supplied = getattr(logdensity_fn, "value_and_grad", None)
+    if callable(supplied):
+        return supplied
 
-    return mx.vmap(supplied if callable(supplied) else mx.value_and_grad(logdensity_fn))
+    return mx.vmap(mx.value_and_grad(logdensity_fn))
 
 
 def _check_initial_state(logdensity: mx.array, grad: mx.array) -> None:
