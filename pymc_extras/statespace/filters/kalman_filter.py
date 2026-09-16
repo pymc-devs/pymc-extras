@@ -19,6 +19,7 @@ from pymc_extras.statespace.filters.utilities import (
     PARAM_NAMES,
     dim_of,
     mask_missing_values,
+    missing_mask,
     quad_form_sym,
     scan_sequence_names,
     stabilize,
@@ -921,7 +922,7 @@ class ConvergentFilter(StandardFilter):
             if np.isnan(arr).any() or (arr == sentinel).any():
                 raise ValueError(self._MISSING_DATA_MSG)
             return data
-        missing = pt.or_(pt.isnan(data), pt.eq(data, sentinel))
+        missing = missing_mask(data, sentinel)
         return Assert(self._MISSING_DATA_MSG)(data, pt.all(pt.bitwise_not(missing)))
 
     def _kalman_step(self, y, a, P, c, d, T, Z, R, H, Q):

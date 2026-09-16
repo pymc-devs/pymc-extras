@@ -24,6 +24,7 @@ from pymc_extras.statespace.filters.kalman_filter import StandardFilter
 from pymc_extras.statespace.filters.kalman_smoother import RTSSmoother
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
+    MISSING_FILL,
     OBS_STATE_DIM,
     TIME_DIM,
 )
@@ -455,29 +456,38 @@ class TestSimulationSmoother:
         assert_allclose(shifted_draw - draw, expected_difference, atol=ATOL, rtol=RTOL)
 
     @pytest.mark.parametrize(
-        "fixture_name, d",
+        "fixture_name, d, missing_block",
         [
-            ("small_lgssm", None),
-            ("small_lgssm", np.array([50.0, -30.0])),
-            ("nile_lgssm", None),
+            ("small_lgssm", None, None),
+            ("small_lgssm", np.array([50.0, -30.0]), None),
+            ("nile_lgssm", None, None),
+            ("nile_lgssm", None, slice(30, 60)),
         ],
-        ids=["small", "small_large_d", "nile"],
+        ids=["small", "small_large_d", "nile", "nile_missing"],
     )
-    def test_draws_match_statsmodels_posterior(self, fixture_name, d, request):
+    def test_draws_match_statsmodels_posterior(self, fixture_name, d, missing_block, request):
         """The smoothed mean matches statsmodels exactly, and the sample mean, per-step
         covariances, and lag-one autocovariances of the draws match it to Monte Carlo error.
 
         The smoothed states form a Gaussian Markov chain, so those moments pin down the whole
         joint posterior. The large ``d`` case catches an observation intercept applied
-        inconsistently across the simulated trajectory, which shows up as a mean shift.
+        inconsistently across the simulated trajectory, which shows up as a mean shift. The
+        missing block catches the smoother fitting ``data - y_plus`` at missing positions. It must
+        be fed the fill sentinel, as the statespace core does, because a ``NaN`` difference stays
+        ``NaN`` and is masked regardless.
         """
         params = request.getfixturevalue(fixture_name)
         if d is not None:
             params = {**params, "d": d.astype(floatX)}
+        if missing_block is not None:
+            y = params["y"].copy()
+            y[missing_block] = np.nan
+            params = {**params, "y": y}
         reference = _statsmodels_smoother(params)
 
         n_draws = 5_000
-        a_smooth, draws = self.draws(params, seed=42, n_draws=n_draws)
+        filled = {**params, "y": np.nan_to_num(params["y"], nan=MISSING_FILL)}
+        a_smooth, draws = self.draws(filled, seed=42, n_draws=n_draws)
         assert_allclose(a_smooth, reference.smoothed_state.T, atol=ATOL, rtol=RTOL)
 
         centered = draws - reference.smoothed_state.T

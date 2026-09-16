@@ -11,6 +11,8 @@ from pytensor.graph.basic import Node
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 from pytensor.tensor.random import multivariate_normal
 
+from pymc_extras.statespace.filters.utilities import missing_mask
+
 floatX = pytensor.config.floatX
 COV_ZERO_TOL = 0
 
@@ -540,8 +542,8 @@ class SimulationSmoother(Continuous):
     x0, P0, c, d, T, Z, R, H, Q : TensorVariable
         State-space matrices defining the model.
     kalman_filter : BaseFilter
-        Filter object exposing ``build_graph``, called once while building the sampling
-        graph. A Python-side graph builder, not a random-variable input.
+        Filter object exposing ``build_graph`` and ``missing_fill_value``, called once while
+        building the sampling graph. A Python-side graph builder, not a random-variable input.
     kalman_smoother : DisturbanceSmoother
         Smoother object exposing ``build_graph``, used the same way as ``kalman_filter``.
     sequence_names : iterable of str, optional
@@ -659,9 +661,12 @@ class SimulationSmoother(Continuous):
 
         # 2. Filter + smooth the difference under the same theta. The filter and smoother are
         # affine in the data, so smooth(y) - smooth(y_plus) is one pass over y - y_plus with the
-        # intercepts zeroed, rather than one pass over each.
+        # intercepts zeroed, rather than one pass over each. A missing entry arrives as the fill
+        # sentinel, and sentinel - y_plus is no longer recognized as missing, so the sentinel is
+        # written back into the difference to keep those periods masked.
         zero_state, zero_obs = pt.zeros_like(x0_), pt.zeros_like(d_)
-        delta = data_ - y_plus
+        sentinel = kalman_filter.missing_fill_value
+        delta = pt.where(missing_mask(data_, sentinel), sentinel, data_ - y_plus)
         delta_matrices = (zero_state, P0_, zero_state, zero_obs, T_, Z_, R_, H_, Q_)
         filter_outputs = kalman_filter.build_graph(delta, *delta_matrices)
 

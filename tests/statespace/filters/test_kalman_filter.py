@@ -368,6 +368,8 @@ def test_loglike_matches_statsmodels(filter_name, obs_cov, rng):
     """
     Each timestep scores the observed components of ``y_t``, so the per-timestep log-likelihood must
     match statsmodels -- normalizing constant included -- however much of the observation is missing.
+    The statespace core hands the filter the fill sentinel in place of ``NaN``, so both encodings
+    must score identically.
     """
     n = 20
     data = rng.normal(size=(n, LOGLIKE_TEST_K_ENDOG)).astype(floatX)
@@ -375,10 +377,11 @@ def test_loglike_matches_statsmodels(filter_name, obs_cov, rng):
     data[7, [0, 2]] = np.nan
     data[11, :] = np.nan
 
-    ll_obs = get_loglike_function(filter_name, obs_cov)(data)
+    loglike = get_loglike_function(filter_name, obs_cov)
     expected = statsmodels_loglike_obs(data, *loglike_test_matrices(obs_cov))
 
-    assert_allclose(ll_obs, expected, atol=ATOL, rtol=RTOL)
+    assert_allclose(loglike(data), expected, atol=ATOL, rtol=RTOL)
+    assert_allclose(loglike(np.nan_to_num(data, nan=MISSING_FILL)), expected, atol=ATOL, rtol=RTOL)
 
 
 def test_square_root_filter_takes_a_covariance_for_P0(rng):

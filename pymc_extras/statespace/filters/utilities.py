@@ -98,6 +98,11 @@ def quad_form_sym(A, B):
     return 0.5 * (out + out.mT)
 
 
+def missing_mask(y, missing_fill_value):
+    """Boolean mask that is True where ``y`` is ``NaN`` or equals ``missing_fill_value``."""
+    return pt.or_(pt.isnan(y), pt.eq(y, missing_fill_value))
+
+
 def mask_missing_values(y, Z, H, d, missing_fill_value):
     """
     Zero the observation rows that are missing, so they contribute nothing downstream.
@@ -131,7 +136,7 @@ def mask_missing_values(y, Z, H, d, missing_fill_value):
     nan_mask : TensorVariable
         Boolean vector, True where the observation is missing.
     """
-    nan_mask = pt.or_(pt.isnan(y), pt.eq(y, missing_fill_value))
+    nan_mask = missing_mask(y, missing_fill_value)
     W = pt.diag(pt.bitwise_not(nan_mask).astype(pytensor.config.floatX))
 
     return (
