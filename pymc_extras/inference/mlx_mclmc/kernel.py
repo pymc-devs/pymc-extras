@@ -118,14 +118,27 @@ def _unwhiten_momentum(metric: Metric, momentum: mx.array) -> mx.array:
 
 
 class Dynamics(NamedTuple):
-    """Everything a transition needs that does not change from one step to the next."""
+    """
+    Everything a transition needs that does not change from one step to the next.
+
+    ``step_size`` and ``inverse_L`` are scalars shared by every chain, or arrays of shape
+    ``(chains, 1)`` giving each chain its own.
+    """
 
     logp_and_grad: Callable
     step_size: float | mx.array
     coefficients: list[float]
     metric: Metric
-    inverse_L: float
+    inverse_L: float | mx.array
     dim: int
+
+
+def _per_chain(value) -> float | mx.array:
+    """A scalar as is, or a per-chain vector reshaped to broadcast against ``(chains, dim)``."""
+    if np.ndim(value) == 0:
+        return float(value)
+
+    return mx.array(np.asarray(value, dtype=np.float32)).reshape(-1, 1)
 
 
 class WindowedMoments(NamedTuple):
@@ -162,11 +175,22 @@ class SamplerOutput(NamedTuple):
 
 
 class TunedParameters(NamedTuple):
-    """Sampler parameters produced by :func:`warmup`."""
+    """
+    Sampler parameters produced by :func:`warmup`, with ``L`` and ``step_size`` per chain.
+
+    Attributes
+    ----------
+    position : mx.array
+        Where each adapting chain ended, of shape ``(chains, dim)``.
+    L : np.ndarray
+        Momentum decoherence scale per chain, of shape ``(chains,)``.
+    step_size : np.ndarray
+        Integrator step size per chain, of shape ``(chains,)``.
+    """
 
     position: mx.array
-    L: float
-    step_size: float
+    L: np.ndarray
+    step_size: np.ndarray
     metric: Metric
     num_tuning_steps: int
 
@@ -193,12 +217,21 @@ def _empty_moments(dim: int) -> WindowedMoments:
 
 
 def _accumulate(moments: WindowedMoments, position, grad, weight) -> WindowedMoments:
-    """Fold one draw into a running mean and mean-square, skipping zero-weight steps."""
-    count = moments.count + weight
+    """
+    Fold one draw per chain into a running mean and mean-square, skipping zero-weight draws.
+
+    ``position`` and ``grad`` have shape ``(chains, dim)`` and ``weight`` shape ``(chains,)``.
+    Every chain's draw counts as one sample of the pooled moments.
+    """
+    per_chain = weight[:, None]
+    count = moments.count + mx.sum(weight)
     safe = mx.maximum(count, 1e-30)
 
     def blend(previous, sample):
-        return mx.where(count > 0, (moments.count * previous + weight * sample) / safe, previous)
+        pooled = (
+            moments.count * previous + mx.sum(per_chain * sample, axis=0, keepdims=True)
+        ) / safe
+        return mx.where(count > 0, pooled, previous)
 
     return WindowedMoments(
         count=count,
@@ -331,9 +364,9 @@ def _reset_step_size_controller(state: "AdaptationState") -> "AdaptationState":
     enough that the controller cannot re-tune from it under a new one.
     """
     return state._replace(
-        step_size_max=mx.array([float("inf")], dtype=mx.float32),
-        time=mx.array([0.0], dtype=mx.float32),
-        x_average=mx.array([0.0], dtype=mx.float32),
+        step_size_max=mx.full(state.step_size.shape, float("inf"), dtype=mx.float32),
+        time=mx.zeros_like(state.time),
+        x_average=mx.zeros_like(state.x_average),
     )
 
 
@@ -694,10 +727,10 @@ def sample(
         ``value_and_grad`` method, that supplies the gradient instead of MLX autodiff.
     initial_positions : array
         Starting positions, of shape ``(chains, dim)``.
-    L : float
-        Momentum decoherence scale. Must be non-zero.
-    step_size : float
-        Integrator step size.
+    L : float or array
+        Momentum decoherence scale, shared or of shape ``(chains,)``. Must be non-zero.
+    step_size : float or array
+        Integrator step size, shared or of shape ``(chains,)``.
     n_steps : int
         Number of integrator steps to run, ``discard`` included.
     integrator : str
@@ -723,7 +756,7 @@ def sample(
     """
     if discard >= n_steps:
         raise ValueError(f"discard={discard} leaves no draws out of n_steps={n_steps}")
-    if L == 0:
+    if np.any(np.asarray(L) == 0):
         raise ValueError("L must be non-zero; pass float('inf') to disable momentum decoherence")
 
     position = mx.array(initial_positions, dtype=mx.float32)
@@ -732,10 +765,10 @@ def sample(
     logp_and_grad = _batched_value_and_grad(logdensity_fn)
     dynamics = Dynamics(
         logp_and_grad=logp_and_grad,
-        step_size=step_size,
+        step_size=_per_chain(step_size),
         coefficients=INTEGRATOR_COEFFICIENTS[integrator],
         metric=_as_metric(inverse_mass_matrix),
-        inverse_L=1.0 / L,
+        inverse_L=_per_chain(1.0 / np.asarray(L, dtype=np.float64)),
         dim=dim,
     )
 
@@ -1000,7 +1033,7 @@ def _make_adapt_step(
     def adapt_step(state, metric, mask, keys):
         dynamics = Dynamics(
             logp_and_grad=logp_and_grad,
-            step_size=state.step_size,
+            step_size=state.step_size[:, None],
             coefficients=coefficients,
             metric=metric,
             inverse_L=adaptation_inverse_L,
@@ -1013,6 +1046,7 @@ def _make_adapt_step(
         position, momentum, logdensity, grad = chain
         step_size_max = mx.where(is_finite, state.step_size_max, state.step_size * 0.8)
 
+        # Every chain runs its own controller; only the metric pools across chains.
         relative_error = energy_error**2 / (dim * settings.desired_energy_var) + 1e-8
         weight = mx.exp(-0.5 * (mx.log(relative_error) / (6.0 * settings.trust_in_estimate)) ** 2)
         x_average = decay_rate * state.x_average + weight * (relative_error / state.step_size**6)
@@ -1025,9 +1059,8 @@ def _make_adapt_step(
         # blackjax this is unweighted, matching nuts-rs, whose windowing plays the role the
         # step-size weighting played there.
         moment_weight = mask * is_finite.astype(mx.float32)
-        x = position.reshape(1, dim)
-        foreground = _accumulate(state.foreground, x, grad, moment_weight)
-        background = _accumulate(state.background, x, grad, moment_weight)
+        foreground = _accumulate(state.foreground, position, grad, moment_weight)
+        background = _accumulate(state.background, position, grad, moment_weight)
 
         return AdaptationState(
             position=position,
@@ -1045,14 +1078,36 @@ def _make_adapt_step(
     return mx.compile(adapt_step) if compile_step else adapt_step
 
 
+def _jittered_starts(
+    logp_and_grad: Callable, initial_position: mx.array, chains: int, width: float, key: mx.array
+) -> mx.array:
+    """
+    Scatter ``chains`` starting points around ``initial_position`` by ``Uniform(-width, width)``.
+
+    A chain whose jittered start has a non-finite log-density or gradient falls back to the
+    unjittered point, so a start on the boundary of the support does not take the run down.
+    """
+    shape = (chains, initial_position.shape[-1])
+    jitter = mx.random.uniform(low=-width, high=width, shape=shape, key=key)
+    proposed = initial_position + jitter
+    logdensity, grad = logp_and_grad(proposed)
+    usable = mx.isfinite(logdensity) & mx.all(mx.isfinite(grad), axis=-1)
+
+    return mx.where(usable[:, None], proposed, initial_position)
+
+
 def _initial_adaptation_state(
-    context: _WarmupContext, initial_position: np.ndarray, key: mx.array
+    context: _WarmupContext, initial_position: np.ndarray, chains: int, key: mx.array
 ) -> AdaptationState:
-    """Check the starting point, optionally ascend toward the mode, and seed the controller."""
+    """Check the starting point, scatter the chains, optionally ascend, and seed the controller."""
     dim, settings = context.dim, context.settings
+    jitter_key, momentum_key = mx.random.split(key, num=2)
 
     position = mx.array(initial_position).reshape(1, dim)
     _check_initial_state(*context.logp_and_grad(position))
+    position = _jittered_starts(
+        context.logp_and_grad, position, chains, width=settings.initial_jitter, key=jitter_key
+    )
 
     position = _optimize_to_mode(
         logp_and_grad=context.logp_and_grad,
@@ -1064,13 +1119,13 @@ def _initial_adaptation_state(
 
     return AdaptationState(
         position=position,
-        momentum=_unit_vectors(shape=(1, dim), key=key),
+        momentum=_unit_vectors(shape=(chains, dim), key=momentum_key),
         logdensity=logdensity,
         grad=grad,
-        step_size=mx.array([math.sqrt(dim) * 0.25], dtype=mx.float32),
-        step_size_max=mx.array([float("inf")], dtype=mx.float32),
-        time=mx.array([0.0], dtype=mx.float32),
-        x_average=mx.array([0.0], dtype=mx.float32),
+        step_size=mx.full((chains,), math.sqrt(dim) * 0.25, dtype=mx.float32),
+        step_size_max=mx.full((chains,), float("inf"), dtype=mx.float32),
+        time=mx.zeros((chains,), dtype=mx.float32),
+        x_average=mx.zeros((chains,), dtype=mx.float32),
         foreground=_empty_moments(dim),
         background=_empty_moments(dim),
     )
@@ -1144,7 +1199,7 @@ def _tune_with_windowed_moments(
         key, *keys = mx.random.split(key, num=4)
         state = context.step(state, metric=metric, mask=mask, keys=tuple(keys))
         if low_rank:
-            retained.append((state.position, state.grad))
+            retained.extend(zip(state.position, state.grad, strict=True))
             del retained[: -settings.low_rank_window]
         if phase_step in switch_steps:
             state = state._replace(foreground=state.background, background=_empty_moments(dim))
@@ -1173,7 +1228,7 @@ def _install_metric(
     retained: list[tuple[mx.array, mx.array]],
     key: mx.array,
     readjust_steps: int,
-) -> tuple[AdaptationState, Metric, float, mx.array]:
+) -> tuple[AdaptationState, Metric, np.ndarray, mx.array]:
     r"""
     Fit the metric from phase 2, then either install it or set ``L`` from the position variance.
 
@@ -1191,27 +1246,28 @@ def _install_metric(
         mass_matrix=settings.mass_matrix,
         allow_low_rank=True,
     )
+    chains = state.step_size.shape[0]
     if not settings.diagonal_preconditioning:
         variances = _diagonal_from_moments(state.foreground, dim=dim, method="variance")
-        return state, metric, float(np.sqrt(variances.sum())), key
+        return state, metric, np.full(chains, np.sqrt(variances.sum())), key
 
     state = _reset_step_size_controller(state)
     state, key = _run_adapt_steps(
         context, state, metric=fitted, key=key, n_steps=readjust_steps, accumulate_moments=True
     )
 
-    return state, fitted, math.sqrt(dim), key
+    return state, fitted, np.full(chains, math.sqrt(dim)), key
 
 
 def _estimate_L(
     context: _WarmupContext,
     chain: ChainState,
     metric: Metric,
-    step_size: float,
-    L: float,
+    step_size: np.ndarray,
+    L: np.ndarray,
     key: mx.array,
     n_steps: int,
-) -> tuple[float, ChainState]:
+) -> tuple[np.ndarray, ChainState]:
     r"""
     Phase 3: hold the parameters fixed, sample, and set ``L`` from the autocorrelation length.
 
@@ -1222,10 +1278,10 @@ def _estimate_L(
     settings, dim = context.settings, context.dim
     dynamics = Dynamics(
         logp_and_grad=context.logp_and_grad,
-        step_size=step_size,
+        step_size=_per_chain(step_size),
         coefficients=context.coefficients,
         metric=metric,
-        inverse_L=1.0 / L,
+        inverse_L=_per_chain(1.0 / L),
         dim=dim,
     )
 
@@ -1238,10 +1294,14 @@ def _estimate_L(
         if step_index % _EVAL_EVERY == 0:
             mx.eval(chain)
 
-    samples = mx.stack(positions, axis=0).reshape(n_steps, dim)
-    mx.eval(samples)
-    ess = _ess_per_dim(np.asarray(samples))
-    L = settings.l_factor * step_size * float(np.mean(n_steps / np.clip(ess, 1e-8, None)))
+    samples = np.asarray(mx.stack(positions, axis=0))
+    autocorrelation_time = np.array(
+        [
+            np.mean(n_steps / np.clip(_ess_per_dim(samples[:, chain]), 1e-8, None))
+            for chain in range(samples.shape[1])
+        ]
+    )
+    L = settings.l_factor * step_size * autocorrelation_time
 
     return L, chain
 
@@ -1251,6 +1311,7 @@ def warmup(
     initial_position: ArrayLike,
     *,
     num_steps: int,
+    chains: int = 1,
     settings: AdaptationSettings = AdaptationSettings(),
     integrator: str = "mclachlan",
     seed: int = 0,
@@ -1259,10 +1320,11 @@ def warmup(
     r"""
     Adapt the step size, the metric, and ``L``.
 
-    A single adapting chain, carried as shape ``(1, dim)`` so the batched primitives apply, both
-    tunes the parameters and moves into the typical set, so the result cold-starts sampling
-    without a hand-supplied metric. Adaptation runs in three phases, sized by the ``frac_tune``
-    fractions of ``num_steps``:
+    The adapting chains, scattered around ``initial_position``, both tune the parameters and
+    move into the typical set, so the result cold-starts sampling without a hand-supplied metric.
+    One step size serves every chain, and the moments the metric is fitted from pool every
+    chain's draws. Adaptation runs in three phases, sized by the ``frac_tune`` fractions of
+    ``num_steps``:
 
     1. Tune the step size alone, with a controller that drives
        :math:`\mathrm{Var}[E]` per dimension to ``settings.desired_energy_var``.
@@ -1279,6 +1341,8 @@ def warmup(
         Starting point of the adapting chain, of shape ``(dim,)``.
     num_steps : int
         Budget of integrator steps, of which the ``frac_tune`` fractions are taken.
+    chains : int
+        Number of adapting chains, run together as the leading array axis. Default is 1.
     settings : AdaptationSettings
         What each phase adapts and how. See
         :class:`~pymc_extras.inference.mlx_mclmc.settings.AdaptationSettings`.
@@ -1292,9 +1356,9 @@ def warmup(
     Returns
     -------
     TunedParameters
-        The adapting chain's final ``position`` of shape ``(dim,)``, which should be jittered by
-        ``sqrt(inverse_mass_matrix)`` to seed the sampling chains, along with the adapted ``L``,
-        ``step_size``, and ``metric``, and the ``num_tuning_steps`` spent.
+        The adapting chains' final ``position`` of shape ``(chains, dim)``, which seeds the
+        sampling chains directly, along with the adapted ``L``, ``step_size``, and ``metric``, and
+        the ``num_tuning_steps`` spent.
     """
     if settings.mass_matrix not in _MASS_MATRIX_METHODS:
         raise ValueError(
@@ -1334,9 +1398,11 @@ def warmup(
 
     key = mx.random.key(seed)
     key, subkey = mx.random.split(key, num=2)
-    state = _initial_adaptation_state(context, initial_position=initial_position, key=subkey)
+    state = _initial_adaptation_state(
+        context, initial_position=initial_position, chains=chains, key=subkey
+    )
     metric = Metric(scale=mx.ones((dim,)))
-    L = math.sqrt(dim)
+    L = np.full(chains, math.sqrt(dim))
 
     state, key = _run_adapt_steps(
         context, state, metric=metric, key=key, n_steps=num_steps1, accumulate_moments=False
@@ -1349,7 +1415,7 @@ def warmup(
             context, state, metric=metric, retained=retained, key=key, readjust_steps=readjust_steps
         )
 
-    step_size = float(state.step_size.item())
+    step_size = np.asarray(state.step_size, dtype=np.float64)
     chain = ChainState(state.position, state.momentum, state.logdensity, state.grad)
     if num_steps3:
         L, chain = _estimate_L(
@@ -1357,8 +1423,8 @@ def warmup(
         )
 
     return TunedParameters(
-        position=mx.array(np.asarray(chain.position).reshape(dim)),
-        L=float(L),
+        position=chain.position,
+        L=np.asarray(L, dtype=np.float64),
         step_size=step_size,
         metric=metric,
         num_tuning_steps=num_steps1 + num_steps2 + readjust_steps + num_steps3,
@@ -1379,7 +1445,7 @@ def warmup_and_sample(
     compile_step: bool = True,
 ) -> tuple[SamplerOutput, TunedParameters]:
     """
-    Adapt on one chain, then sample ``chains`` chains jittered around the tuned position.
+    Adapt ``chains`` chains scattered around ``initial_position``, then sample from where they end.
 
     Parameters
     ----------
@@ -1404,22 +1470,16 @@ def warmup_and_sample(
         logdensity_fn,
         initial_position,
         num_steps=num_tune,
+        chains=chains,
         settings=settings,
         integrator=integrator,
         seed=seed,
         compile_step=compile_step,
     )
 
-    dim = tuned.position.shape[0]
-    # A draw from N(0, M^-1) is forward_L(z), so the chains scatter along the fitted metric rather
-    # than along its diagonal -- which for a rotated posterior points the wrong way entirely.
-    jitter = _unwhiten_momentum(
-        tuned.metric, mx.random.normal(shape=(chains, dim), key=mx.random.key(seed + 1))
-    )
-
     output = sample(
         logdensity_fn,
-        tuned.position[None, :] + jitter,
+        tuned.position,
         L=tuned.L,
         step_size=tuned.step_size,
         n_steps=draws + discard,

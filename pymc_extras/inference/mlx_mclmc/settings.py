@@ -44,6 +44,10 @@ class AdaptationSettings(NamedTuple):
         runs into the funnel and the adaptation follows it there.
     optimize_learning_rate : float
         Adam learning rate for that ascent.
+    initial_jitter : float
+        Half-width of the uniform scatter of the adapting chains around the initial point, in the
+        unconstrained space. 0 starts every chain at the initial point; 1 is pymc's scatter, which
+        displaces a tall model too far for the tuning budget to recover from.
     """
 
     mass_matrix: str = "gradient"
@@ -63,3 +67,4 @@ class AdaptationSettings(NamedTuple):
     l_factor: float = 0.4
     optimize_steps: int = 0
     optimize_learning_rate: float = 0.05
+    initial_jitter: float = 0.3

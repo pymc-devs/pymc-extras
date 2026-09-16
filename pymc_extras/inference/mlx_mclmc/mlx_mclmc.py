@@ -66,15 +66,15 @@ def fit_mlx_mclmc(
     draws : int
         Number of draws to keep per chain. Default is 1000.
     tune : int
-        Number of integrator steps given to the adaptation, which runs on a single chain and
-        settles the step size, the diagonal metric, and ``L``. Default is 1000.
+        Number of integrator steps given to the adaptation, which runs on every chain at once and
+        settles the step size, the metric, and ``L``. Default is 1000.
     burn_in : int
         Number of sampling steps to run and discard before the kept draws. The chains start
-        jittered around the tuned position by ``sqrt(inverse_mass_matrix)``, which is a full unit
-        when ``diagonal_preconditioning`` is False, so without a burn-in the leading draws are
-        badly over-dispersed for a concentrated posterior. Default is 500.
+        where their adaptation ended, so this only needs to cover what the final parameter change
+        of warmup unsettles. Default is 500.
     chains : int
-        Number of chains, run simultaneously as the leading array axis. Default is 4.
+        Number of chains, run simultaneously as the leading array axis through both warmup and
+        sampling. Default is 4.
     model : pm.Model, optional
         Defaults to the model on the context stack.
     integrator : str
@@ -102,7 +102,8 @@ def fit_mlx_mclmc(
     -------
     idata : DataTree
         Posterior draws, per-step energy errors and divergence flags under ``sample_stats``, and
-        the adapted sampler parameters in the posterior group's attributes.
+        the adapted sampler parameters in the posterior group's attributes, ``L`` and
+        ``step_size`` as one value per chain.
 
     References
     ----------
@@ -224,10 +225,12 @@ def _warn_if_adaptation_failed(tuned: TunedParameters, diverging: np.ndarray) ->
             stacklevel=3,
         )
 
-    if not np.isfinite(tuned.L) or tuned.step_size <= _COLLAPSED_STEP_SIZE:
+    step_size, L = np.asarray(tuned.step_size), np.asarray(tuned.L)
+    if not np.isfinite(L).all() or (step_size <= _COLLAPSED_STEP_SIZE).any():
         warnings.warn(
-            f"MCLMC adaptation collapsed to step_size={tuned.step_size:.3g}, L={tuned.L:.3g}. "
-            "The draws are not usable; check that the posterior is proper.",
+            f"MCLMC adaptation collapsed to step_size={np.array2string(step_size, precision=3)}, "
+            f"L={np.array2string(L, precision=3)}. The draws are not usable; check that the "
+            "posterior is proper.",
             RuntimeWarning,
             stacklevel=3,
         )

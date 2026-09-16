@@ -76,7 +76,7 @@ def test_kernel_recovers_correlated_gaussian():
     draws = np.asarray(output.samples).reshape(-1, dim)
     true_sd = np.sqrt(np.diag(np.asarray(covariance)))
 
-    assert tuned.step_size > 0
+    assert (tuned.step_size > 0).all()
     assert np.isfinite(np.asarray(output.energy_errors)).all()
     assert not np.asarray(output.diverging).any()
     np.testing.assert_allclose(draws.std(axis=0), true_sd, rtol=0.1)
@@ -147,7 +147,7 @@ def test_fit_mlx_mclmc_recovers_conjugate_posterior(conjugate_model):
     assert idata["sample_stats"]["energy_error"].shape == (2, 2000)
     assert np.isfinite(idata["sample_stats"]["energy_error"].values).all()
     assert "mu" in idata["unconstrained_posterior"].dataset
-    assert posterior.attrs["step_size"] > 0
+    assert (posterior.attrs["step_size"] > 0).all()
 
     np.testing.assert_allclose(
         posterior["mu"].mean(dim=("chain", "draw")), posterior_mean, atol=0.15 * posterior_sd
@@ -429,7 +429,7 @@ def test_optimize_steps_moves_the_adapting_chain_to_the_mode():
         seed=0,
     )
 
-    np.testing.assert_allclose(np.asarray(tuned.position), mode, atol=0.5)
+    np.testing.assert_allclose(np.asarray(tuned.position)[0], mode, atol=0.5)
 
 
 def test_ascent_gives_up_when_the_gradient_never_becomes_finite():
@@ -547,7 +547,7 @@ def test_warmup_survives_a_non_finite_step_in_phase_three():
         seed=1,
     )
 
-    assert np.isfinite(tuned.L)
+    assert np.isfinite(tuned.L).all()
     assert np.isfinite(np.asarray(tuned.position)).all()
 
 
@@ -596,7 +596,9 @@ def test_low_rank_fit_rejects_a_window_it_cannot_trust(caplog):
     # The running moments are clean; only the retained window carries the nan.
     moments = _empty_moments(dim)
     for column in clean.T:
-        moments = _accumulate(moments, position=as_row(column), grad=-as_row(column), weight=1.0)
+        moments = _accumulate(
+            moments, position=as_row(column), grad=-as_row(column), weight=mx.ones((1,))
+        )
     retained = [(as_row(column), -as_row(column)) for column in draws.T[:3]]
 
     with caplog.at_level("WARNING"):
