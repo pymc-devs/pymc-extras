@@ -54,6 +54,11 @@ _SAFE_DIVISOR = 1e-30
 # MLX evaluates lazily, so the trajectory loop only forces the graph this often.
 _EVAL_EVERY = 64
 
+# Metal's SIMD group width and the largest threadgroup the momentum kernel asks for; its scratch
+# buffer holds one partial sum per SIMD group, so the two must agree.
+_SIMD_WIDTH = 32
+_MAX_THREADS_PER_GROUP = 256
+
 
 class ChainState(NamedTuple):
     """Position of each chain and everything the next transition needs to continue from it."""
@@ -526,6 +531,9 @@ def _momentum_update(
     kinetic_energy_change : mx.array
         Per-chain change in kinetic energy.
     """
+    if metric.correction is None and _use_fused_momentum():
+        return _momentum_update_fused(momentum, grad, effective_step, metric.scale, dim)
+
     scaled_grad = _whiten_gradient(metric, grad)
     grad_norm = mx.linalg.norm(scaled_grad, axis=-1, keepdims=True)
     grad_direction = _normalize(scaled_grad)
@@ -553,6 +561,154 @@ def _momentum_update(
     ).squeeze(-1)
 
     return momentum, _unwhiten_momentum(metric, momentum), kinetic_energy_change
+
+
+_MOMENTUM_KERNEL_HEADER = (
+    f"""
+#include <metal_stdlib>
+using namespace metal;
+
+constant float NORM_FLOOR = {_NORM_FLOOR!r}f;
+constant float SAFE_DIVISOR = {_SAFE_DIVISOR!r}f;
+constant float CANCELLATION_FREE_BELOW = {_CANCELLATION_FREE_BELOW!r}f;
+constant float LOG2 = {_LOG2!r}f;
+"""
+    + """
+
+// The trailing barrier keeps the next call from overwriting scratch while a slow SIMD group is
+// still summing this one.
+static inline float block_sum(float value, threadgroup float* scratch, uint simd_lane,
+                              uint simd_id, uint n_simd) {
+    value = simd_sum(value);
+    if (simd_lane == 0) scratch[simd_id] = value;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float total = 0.0f;
+    for (uint i = 0; i < n_simd; ++i) total += scratch[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    return total;
+}
+"""
+)
+
+# One threadgroup per chain. Each of the three reductions (whitened-gradient norm, projection of
+# the momentum onto it, norm of the new momentum) is a strided loop over the row followed by a
+# simd_sum and a threadgroup-shared reduction across SIMD groups, so the whole update is one launch
+# in place of the eight or so MLX ops it replaces. The kinetic-energy blend is the MLX path's, with
+# the same crossover.
+_MOMENTUM_KERNEL_SOURCE = """
+    const uint chain = threadgroup_position_in_grid.y;
+    const uint lane = thread_position_in_threadgroup.x;
+    const uint n_lanes = threads_per_threadgroup.x;
+    const uint simd_lane = thread_index_in_simdgroup;
+    const uint simd_id = simdgroup_index_in_threadgroup;
+    const uint n_simd = (n_lanes + 31) / 32;
+    const uint dim = grad_shape[1];
+    const uint base = chain * dim;
+    const float step = effective_step[step_per_chain ? chain : 0];
+
+    threadgroup float scratch[8];
+
+    float grad_norm_sq = 0.0f;
+    for (uint i = lane; i < dim; i += n_lanes) {
+        float g = grad[base + i] * scale[i];
+        grad_norm_sq += g * g;
+    }
+    grad_norm_sq = block_sum(grad_norm_sq, scratch, simd_lane, simd_id, n_simd);
+    const float grad_norm = sqrt(grad_norm_sq);
+    const float grad_inv = grad_norm > NORM_FLOOR ? 1.0f / max(grad_norm, SAFE_DIVISOR) : 1.0f;
+
+    float projection = 0.0f;
+    for (uint i = lane; i < dim; i += n_lanes) {
+        float direction = grad[base + i] * scale[i] * grad_inv;
+        projection += momentum[base + i] * direction;
+    }
+    projection = block_sum(projection, scratch, simd_lane, simd_id, n_simd);
+
+    const float delta = step * grad_norm / (float)(dim - 1);
+    const float zeta = exp(-delta);
+    const float along = (1.0f - zeta) * (1.0f + zeta + projection * (1.0f - zeta));
+    const float keep = 2.0f * zeta;
+
+    float new_norm_sq = 0.0f;
+    for (uint i = lane; i < dim; i += n_lanes) {
+        float direction = grad[base + i] * scale[i] * grad_inv;
+        float updated = direction * along + keep * momentum[base + i];
+        new_norm_sq += updated * updated;
+    }
+    new_norm_sq = block_sum(new_norm_sq, scratch, simd_lane, simd_id, n_simd);
+    const float new_norm = sqrt(new_norm_sq);
+    const float new_inv = new_norm > NORM_FLOOR ? 1.0f / max(new_norm, SAFE_DIVISOR) : 1.0f;
+
+    for (uint i = lane; i < dim; i += n_lanes) {
+        float direction = grad[base + i] * scale[i] * grad_inv;
+        float updated = (direction * along + keep * momentum[base + i]) * new_inv;
+        new_momentum[base + i] = updated;
+        velocity[base + i] = updated * scale[i];
+    }
+
+    if (lane == 0) {
+        float change;
+        if (fabs(delta) < CANCELLATION_FREE_BELOW) {
+            // Metal has no expm1; below the crossover a short Taylor series of exp(-2 delta) - 1
+            // is exact to float32 where the direct form cancels.
+            const float t = -2.0f * delta;
+            const float expm1_t = t * (1.0f + t * (0.5f + t * (1.0f / 6.0f + t * (1.0f / 24.0f
+                                  + t * (1.0f / 120.0f + t * (1.0f / 720.0f))))));
+            change = delta + log1p((1.0f - projection) * expm1_t / 2.0f);
+        } else {
+            change = delta - LOG2 + log(1.0f + projection + (1.0f - projection) * zeta * zeta);
+        }
+        kinetic_energy_change[chain] = change * (float)(dim - 1);
+    }
+"""
+
+
+def _use_fused_momentum() -> bool:
+    return mx.metal.is_available() and mx.default_device() == mx.gpu
+
+
+def _momentum_update_fused(
+    momentum: mx.array,
+    grad: mx.array,
+    effective_step: float | mx.array,
+    scale: mx.array,
+    dim: int,
+) -> tuple[mx.array, mx.array, mx.array]:
+    """
+    The diagonal-metric momentum update as one Metal launch.
+
+    ``effective_step`` is a scalar or a ``(chains, 1)`` array, and ``scale`` a scalar or a
+    ``(dim,)`` array, as the MLX path accepts them.
+    """
+    chains = momentum.shape[0]
+    if momentum.shape != grad.shape or grad.shape != (chains, dim):
+        raise ValueError(
+            f"momentum {momentum.shape} and grad {grad.shape} must both be ({chains}, {dim})"
+        )
+    step = mx.array(effective_step, dtype=mx.float32).reshape(-1)
+    if step.shape[0] not in (1, chains):
+        raise ValueError(f"effective_step has {step.shape[0]} entries for {chains} chains")
+    scale = mx.broadcast_to(mx.array(scale, dtype=mx.float32), (dim,))
+    threads = min(_MAX_THREADS_PER_GROUP, max(_SIMD_WIDTH, -(-dim // _SIMD_WIDTH) * _SIMD_WIDTH))
+
+    # MLX caches the compiled library by source, so building the kernel object per call costs
+    # nothing beyond the trace, and under mx.compile the trace runs once.
+    kernel = mx.fast.metal_kernel(
+        name="mclmc_momentum_update",
+        input_names=["momentum", "grad", "scale", "effective_step"],
+        output_names=["new_momentum", "velocity", "kinetic_energy_change"],
+        header=_MOMENTUM_KERNEL_HEADER,
+        source=_MOMENTUM_KERNEL_SOURCE,
+    )
+
+    return kernel(
+        inputs=[momentum, grad, scale, step],
+        output_shapes=[(chains, dim), (chains, dim), (chains,)],
+        output_dtypes=[mx.float32, mx.float32, mx.float32],
+        grid=(threads, chains, 1),
+        threadgroup=(threads, 1, 1),
+        template=[("step_per_chain", step.shape[0] > 1)],
+    )
 
 
 def _integrate(

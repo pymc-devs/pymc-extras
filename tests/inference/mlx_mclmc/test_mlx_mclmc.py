@@ -651,3 +651,25 @@ def test_unpreconditioned_L_is_the_root_summed_position_variance():
 
     # The proxy would give sqrt(dim * 0.568) = 1.51 against the true 1.64.
     np.testing.assert_allclose(tuned.L, np.sqrt(dim * quartic_variance), rtol=0.04)
+
+
+def test_fused_momentum_update_matches_the_mlx_path():
+    """The Metal kernel must reproduce the MLX ops it replaces, including the per-chain step."""
+    from pymc_extras.inference.mlx_mclmc.kernel import _momentum_update, _momentum_update_fused
+
+    dim, chains = 200, 4
+    rng = np.random.default_rng(0)
+    momentum = rng.normal(size=(chains, dim)).astype("float32")
+    momentum /= np.linalg.norm(momentum, axis=1, keepdims=True)
+    grad = (3.0 * rng.normal(size=(chains, dim))).astype("float32")
+    metric = Metric(scale=mx.array(rng.uniform(0.5, 2.0, dim).astype("float32")))
+
+    # A per-chain step spanning the small-delta branch, where the kernel uses a series for
+    # expm1, and the large-delta branch.
+    step = mx.array([1e-3, 0.05, 0.5, 5.0], dtype=mx.float32).reshape(-1, 1)
+    reference = _momentum_update(mx.array(momentum), mx.array(grad), step, metric, dim)
+    fused = _momentum_update_fused(mx.array(momentum), mx.array(grad), step, metric.scale, dim)
+    mx.eval(*reference, *fused)
+
+    for left, right in zip(reference, fused, strict=True):
+        np.testing.assert_allclose(np.asarray(left), np.asarray(right), rtol=1e-4, atol=1e-6)
