@@ -40,6 +40,7 @@ def compile_svi_step_fn(
     draws: int = 1,
     path_derivative_gradient: bool = True,
     logp_scalings: dict | None = None,
+    random_seed=None,
     **compile_kwargs,
 ) -> tuple[TrainingFn, dict[str, SharedVariable]]:
     """Compile one full SVI step, with optimizer updates applied in-graph.
@@ -54,6 +55,8 @@ def compile_svi_step_fn(
         The shared variables holding the guide parameters, keyed by name, from
         :func:`shared_guide_params`. The caller owns them, so several compiled steps can share
         one set.
+    random_seed : optional
+        Seeds the guide's RNGs before compilation, through :func:`pymc.pytensorf.compile`.
 
     Returns
     -------
@@ -107,13 +110,19 @@ def compile_svi_step_fn(
 
     compile_kwargs.setdefault("trust_input", True)
 
-    step_fn = compile(inputs=[], outputs=negative_elbo, updates=updates, **compile_kwargs)
+    step_fn = compile(
+        inputs=[],
+        outputs=negative_elbo,
+        updates=updates,
+        random_seed=random_seed,
+        **compile_kwargs,
+    )
 
     return step_fn, shared_optimizer_state
 
 
 def compile_sampling_fn(
-    model: Model, guide: AutoGuideModel, draws: int, **compile_kwargs
+    model: Model, guide: AutoGuideModel, draws: int, random_seed=None, **compile_kwargs
 ) -> SamplingFn:
     params = guide.params
 
@@ -130,6 +139,8 @@ def compile_sampling_fn(
 
     compile_kwargs.setdefault("trust_input", True)
 
-    f_sample = compile(inputs=list(params), outputs=sampled_rvs_draws, **compile_kwargs)
+    f_sample = compile(
+        inputs=list(params), outputs=sampled_rvs_draws, random_seed=random_seed, **compile_kwargs
+    )
 
     return f_sample

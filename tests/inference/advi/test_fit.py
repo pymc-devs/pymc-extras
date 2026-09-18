@@ -70,19 +70,52 @@ def test_fit_with_schedule_optimizer(conjugate_model):
 
 
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
-def test_fit_advi_random_seed_jax(conjugate_model):
-    # The JAX linker replaces RNG shared variables with internal copies at compile time,
-    # so seeding must reach the compiled function's own storage
-    pytest.importorskip("jax")
+@pytest.mark.filterwarnings("ignore:MLX does not support float64")
+@pytest.mark.parametrize("backend", ["jax", "mlx"])
+def test_fit_advi_random_seed_detaching_backend(conjugate_model, backend):
+    """The JAX and MLX linkers copy the RNGs at compile time, so a seed means a fresh compile."""
+    pytest.importorskip(backend)
     model, *_ = conjugate_model
 
-    kwargs = dict(model=model, n_steps=50, draws=50, backend="jax")
+    kwargs = dict(model=model, n_steps=50, draws=50, backend=backend)
     draws_a = fit_advi(random_seed=42, **kwargs)["posterior"].dataset["theta"].values
     draws_b = fit_advi(random_seed=42, **kwargs)["posterior"].dataset["theta"].values
     draws_c = fit_advi(random_seed=13, **kwargs)["posterior"].dataset["theta"].values
 
     np.testing.assert_array_equal(draws_a, draws_b)
     assert not np.array_equal(draws_a, draws_c)
+
+
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+@pytest.mark.filterwarnings("ignore:MLX does not support float64")
+@pytest.mark.parametrize(
+    "backend",
+    [
+        "numba",
+        "jax",
+        pytest.param(
+            "mlx",
+            marks=pytest.mark.skip(
+                reason="the MLX linker stores float32 mx.arrays back into float64 shared "
+                "variables, so the second compile sees mismatched dtypes; pytensor PR 2378"
+            ),
+        ),
+    ],
+)
+def test_reseeding_a_continued_fit(conjugate_model, backend):
+    """A seed on a later fit must change the stream without restarting the optimization."""
+    pytest.importorskip(backend)
+    model, *_ = conjugate_model
+
+    with model:
+        trainer = Trainer(backend=backend)
+        first = trainer.fit(20, random_seed=1)
+        second = trainer.fit(20, random_seed=1)
+        third = trainer.fit(20, random_seed=2)
+
+    assert (first.step, second.step, third.step) == (20, 40, 60)
+    np.testing.assert_array_equal(second.loss_history[:20], first.loss_history)
+    assert not np.array_equal(third.loss_history[40:], second.loss_history[20:40])
 
 
 def test_fit_continues(conjugate_model):
