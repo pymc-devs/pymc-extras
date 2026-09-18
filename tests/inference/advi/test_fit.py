@@ -116,6 +116,8 @@ def test_reseeding_a_continued_fit(conjugate_model, backend):
     assert (first.step, second.step, third.step) == (20, 40, 60)
     np.testing.assert_array_equal(second.loss_history[:20], first.loss_history)
     assert not np.array_equal(third.loss_history[40:], second.loss_history[20:40])
+    # The optimizer's state continues too, even where a new seed meant a new compiled step.
+    assert third.optimizer_state["adam_t"] == 60
 
 
 def test_fit_continues(conjugate_model):

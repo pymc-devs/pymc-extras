@@ -38,6 +38,7 @@ from pymc_extras.inference.advi.compile import (
     compile_sampling_fn,
     compile_svi_step_fn,
     shared_guide_params,
+    shared_optimizer_state,
 )
 from pymc_extras.inference.advi.optimizers import GradientTransformation, clipped_adam
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
@@ -102,10 +103,10 @@ class Trainer(WithMemoization):
     """
     Trainer for stochastic variational inference.
 
-    The trainer owns the training loop: the guide parameters and the optimizer state
-    live in shared variables inside the compiled step function. :meth:`fit` continues
-    from the current state, and resumes from a specific snapshot when passed a previous
-    :class:`SVIState`; the last state is kept on the trainer, where
+    The trainer owns the training state: the guide parameters and the optimizer state live
+    in shared variables it creates once and hands to every compiled step. :meth:`fit`
+    continues from the current state, and resumes from a specific snapshot when passed a
+    previous :class:`SVIState`. The last state is kept on the trainer, where
     :meth:`sample_posterior` picks it up.
 
     Configuration splits along the same line. Everything compiled into the step function
@@ -176,7 +177,7 @@ class Trainer(WithMemoization):
         self._stream_shareds: dict[str, SharedVariable] = {}
         self._logp_scalings: dict[str, float] = {}
         self._shared_params: dict[str, SharedVariable] | None = None
-        self._shared_optimizer_state: dict[str, SharedVariable] = {}
+        self._shared_optimizer_state: dict[str, SharedVariable] | None = None
         self._loss_history: list[float] = []
         self._step = 0
         self.state: SVIState | None = None
@@ -239,21 +240,24 @@ class Trainer(WithMemoization):
             return AutoDiagonalNormal(model, random_seed=self.random_seed)
 
     def _bind_guide(self, model: Model) -> None:
-        """Build the guide on first use and the shared variables that hold its parameters."""
+        """Build the guide on first use, and the shared variables that hold the training state."""
         if self._guide is None:
             self._guide = self._build_guide(model)
         if self._shared_params is None:
             self._shared_params = shared_guide_params(self._guide)
+            self._shared_optimizer_state = shared_optimizer_state(
+                self._optimizer, self._guide, self._shared_params
+            )
 
-    def _step_fn(self, model: Model, random_seed) -> tuple[TrainingFn, dict]:
+    def _step_fn(self, model: Model, random_seed) -> TrainingFn:
         if random_seed is not None and self._linker_detaches_rngs:
             return self._compile_step_fn(model, random_seed=random_seed)
 
-        step_fn, optimizer_state = self._cached_step_fn(model)
+        step_fn = self._cached_step_fn(model)
         if random_seed is not None:
             reseed_rngs(find_rng_nodes(step_fn.maker.fgraph.outputs), random_seed)
 
-        return step_fn, optimizer_state
+        return step_fn
 
     def _sampling_fn(self, model: Model, draws: int, random_seed) -> SamplingFn:
         if random_seed is not None and self._linker_detaches_rngs:
@@ -270,19 +274,20 @@ class Trainer(WithMemoization):
         return _rng_detaching_linker(self.compile_kwargs.get("mode"))
 
     @locally_cachedmethod
-    def _cached_step_fn(self, model: Model) -> tuple[TrainingFn, dict]:
+    def _cached_step_fn(self, model: Model) -> TrainingFn:
         return self._compile_step_fn(model, random_seed=None)
 
     @locally_cachedmethod
     def _cached_sampling_fn(self, model: Model, draws: int) -> SamplingFn:
         return self._compile_sampling_fn(model, draws, random_seed=None)
 
-    def _compile_step_fn(self, model: Model, random_seed) -> tuple[TrainingFn, dict]:
+    def _compile_step_fn(self, model: Model, random_seed) -> TrainingFn:
         return compile_svi_step_fn(
             model,
             self._guide,
             self._optimizer,
             shared_params=self._shared_params,
+            optimizer_state=self._shared_optimizer_state,
             draws=self._n_particles,
             path_derivative_gradient=self._path_derivative_gradient,
             logp_scalings=self._logp_scalings_for(model),
@@ -412,11 +417,10 @@ class Trainer(WithMemoization):
         """
         Run ``n`` optimization steps.
 
-        The guide parameters and the optimizer state live in shared variables updated in
-        place by the compiled step function, so nothing round-trips through Python per
-        step. Repeated calls continue from the current state; pass a previous
-        :class:`SVIState` to resume from a specific snapshot. The final state is stored
-        on the trainer.
+        The compiled step updates the guide parameters and the optimizer state in place, so
+        nothing round-trips through Python per step. Repeated calls continue from the current
+        state. Pass a previous :class:`SVIState` to resume from a specific snapshot. The final
+        state is stored on the trainer.
 
         Parameters
         ----------
@@ -498,9 +502,7 @@ class Trainer(WithMemoization):
             )
 
         self._bind_guide(model)
-        # Each compiled step creates its own optimizer buffers, so one compiled for a new seed
-        # starts from empty buffers. Passing a state restores the old values into them.
-        step_fn, self._shared_optimizer_state = self._step_fn(model, random_seed)
+        step_fn = self._step_fn(model, random_seed)
         if state is not None:
             self._restore(state)
 

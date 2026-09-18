@@ -1,4 +1,3 @@
-from collections import Counter
 from typing import Protocol
 
 import numpy as np
@@ -32,39 +31,41 @@ def shared_guide_params(guide: AutoGuideModel) -> dict[str, SharedVariable]:
     }
 
 
+def shared_optimizer_state(
+    optimizer: GradientTransformation,
+    guide: AutoGuideModel,
+    shared_params: dict[str, SharedVariable],
+) -> dict[str, SharedVariable]:
+    """The optimizer's state buffers for ``guide``'s parameters, keyed by name."""
+    return optimizer.pytensor_init([shared_params[param.name] for param in guide.params])
+
+
 def compile_svi_step_fn(
     model: Model,
     guide: AutoGuideModel,
     optimizer: GradientTransformation,
     shared_params: dict[str, SharedVariable],
+    optimizer_state: dict[str, SharedVariable],
     draws: int = 1,
     path_derivative_gradient: bool = True,
     logp_scalings: dict | None = None,
     random_seed=None,
     **compile_kwargs,
-) -> tuple[TrainingFn, dict[str, SharedVariable]]:
+) -> TrainingFn:
     """Compile one full SVI step, with optimizer updates applied in-graph.
 
     The step takes no inputs and returns the negative ELBO estimate. It reads and writes the
-    guide parameters through ``shared_params``, and the optimizer's own state lives in shared
-    variables the step creates.
+    guide parameters and the optimizer state in place through the shared variables it is given,
+    which the caller owns, so several compiled steps can drive one training state.
 
     Parameters
     ----------
     shared_params : dict
-        The shared variables holding the guide parameters, keyed by name, from
-        :func:`shared_guide_params`. The caller owns them, so several compiled steps can share
-        one set.
+        The guide parameters, keyed by name, from :func:`shared_guide_params`.
+    optimizer_state : dict
+        The optimizer's state buffers, keyed by name, from :func:`shared_optimizer_state`.
     random_seed : optional
         Seeds the guide's RNGs before compilation, through :func:`pymc.pytensorf.compile`.
-
-    Returns
-    -------
-    step_fn :
-        Compiled function ``step_fn() -> negative_elbo``.
-    shared_optimizer_state : dict
-        Maps each optimizer state variable name to the shared variable holding its value.
-        Empty for stateless optimizers such as ``sgd``.
     """
     if optimizer.pytensor is None:
         raise ValueError(
@@ -88,22 +89,7 @@ def compile_svi_step_fn(
 
     grads = pt.grad(rewrite_pregrad(negative_elbo), wrt=shared_param_list)
 
-    new_grads, updates = optimizer.pytensor(grads, shared_param_list)
-
-    # The optimizer's own state variables are the update keys that are not the guide
-    # parameters themselves. Snapshotting and restoring them keys on the name, so a
-    # duplicate would quietly drop one buffer and resume it from whatever it held.
-    guide_params = set(shared_param_list)
-    state_variables = [var for var in updates if var not in guide_params]
-    name_counts = Counter(var.name for var in state_variables)
-    duplicate_names = sorted(name for name, count in name_counts.items() if count > 1)
-    if duplicate_names:
-        raise ValueError(
-            f"The optimizer has more than one state variable named {duplicate_names}, so its "
-            "state cannot be snapshotted or restored unambiguously. Give each transform in the "
-            "chain state variables with distinct names."
-        )
-    shared_optimizer_state = {var.name: var for var in state_variables}
+    new_grads, updates = optimizer.pytensor(grads, shared_param_list, optimizer_state)
 
     for param, grad in zip(shared_param_list, new_grads):
         updates[param] = param + grad
@@ -118,7 +104,7 @@ def compile_svi_step_fn(
         **compile_kwargs,
     )
 
-    return step_fn, shared_optimizer_state
+    return step_fn
 
 
 def compile_sampling_fn(
