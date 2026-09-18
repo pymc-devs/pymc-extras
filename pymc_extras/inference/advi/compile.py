@@ -24,34 +24,44 @@ class SamplingFn(Protocol):
     def __call__(self, *params: np.ndarray) -> tuple[np.ndarray, ...]: ...
 
 
+def shared_guide_params(guide: AutoGuideModel) -> dict[str, SharedVariable]:
+    """A shared variable for each guide parameter at its initial value, keyed by parameter name."""
+    return {
+        param.name: pytensor.shared(np.asarray(value), name=param.name)
+        for param, value in guide.params_init_values.items()
+    }
+
+
 def compile_svi_step_fn(
     model: Model,
     guide: AutoGuideModel,
     optimizer: GradientTransformation,
+    shared_params: dict[str, SharedVariable],
     draws: int = 1,
     path_derivative_gradient: bool = True,
     logp_scalings: dict | None = None,
     **compile_kwargs,
-) -> tuple[TrainingFn, dict[str, SharedVariable], dict[str, SharedVariable]]:
+) -> tuple[TrainingFn, dict[str, SharedVariable]]:
     """Compile one full SVI step, with optimizer updates applied in-graph.
 
-    The guide parameters and the optimizer state live in shared variables that the
-    compiled function updates in place. It takes no inputs and returns only the
-    negative ELBO estimate, so no parameters or gradients round-trip through Python
-    during training.
+    The step takes no inputs and returns the negative ELBO estimate. It reads and writes the
+    guide parameters through ``shared_params``, and the optimizer's own state lives in shared
+    variables the step creates.
 
-    Together the two returned dicts hold the whole training state: reading their values
-    snapshots a run, writing them resumes one exactly.
+    Parameters
+    ----------
+    shared_params : dict
+        The shared variables holding the guide parameters, keyed by name, from
+        :func:`shared_guide_params`. The caller owns them, so several compiled steps can share
+        one set.
 
     Returns
     -------
     step_fn :
         Compiled function ``step_fn() -> negative_elbo``.
-    shared_params : dict
-        Maps each guide parameter name to the shared variable holding its value.
     shared_optimizer_state : dict
-        Maps each optimizer state variable name to the shared variable holding its
-        value. Empty for stateless optimizers such as ``sgd``.
+        Maps each optimizer state variable name to the shared variable holding its value.
+        Empty for stateless optimizers such as ``sgd``.
     """
     if optimizer.pytensor is None:
         raise ValueError(
@@ -69,21 +79,18 @@ def compile_svi_step_fn(
     [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
     negative_elbo = negative_elbo_draws.mean(axis=0)
 
-    params_to_shared = {
-        param: pytensor.shared(np.asarray(value), name=param.name)
-        for param, value in guide.params_init_values.items()
-    }
+    params_to_shared = {param: shared_params[param.name] for param in guide.params}
     [negative_elbo] = graph_replace([negative_elbo], replace=params_to_shared)
-    shared_params = list(params_to_shared.values())
+    shared_param_list = list(params_to_shared.values())
 
-    grads = pt.grad(rewrite_pregrad(negative_elbo), wrt=shared_params)
+    grads = pt.grad(rewrite_pregrad(negative_elbo), wrt=shared_param_list)
 
-    new_grads, updates = optimizer.pytensor(grads, shared_params)
+    new_grads, updates = optimizer.pytensor(grads, shared_param_list)
 
     # The optimizer's own state variables are the update keys that are not the guide
     # parameters themselves. Snapshotting and restoring them keys on the name, so a
     # duplicate would quietly drop one buffer and resume it from whatever it held.
-    guide_params = set(shared_params)
+    guide_params = set(shared_param_list)
     state_variables = [var for var in updates if var not in guide_params]
     name_counts = Counter(var.name for var in state_variables)
     duplicate_names = sorted(name for name, count in name_counts.items() if count > 1)
@@ -95,16 +102,14 @@ def compile_svi_step_fn(
         )
     shared_optimizer_state = {var.name: var for var in state_variables}
 
-    for param, grad in zip(shared_params, new_grads):
+    for param, grad in zip(shared_param_list, new_grads):
         updates[param] = param + grad
 
     compile_kwargs.setdefault("trust_input", True)
 
     step_fn = compile(inputs=[], outputs=negative_elbo, updates=updates, **compile_kwargs)
 
-    shared_params_by_name = {param.name: shared for param, shared in params_to_shared.items()}
-
-    return step_fn, shared_params_by_name, shared_optimizer_state
+    return step_fn, shared_optimizer_state
 
 
 def compile_sampling_fn(

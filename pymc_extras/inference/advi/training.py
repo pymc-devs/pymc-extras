@@ -35,6 +35,7 @@ from pymc_extras.inference.advi.compile import (
     TrainingFn,
     compile_sampling_fn,
     compile_svi_step_fn,
+    shared_guide_params,
 )
 from pymc_extras.inference.advi.optimizers import GradientTransformation, clipped_adam
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
@@ -198,8 +199,8 @@ class Trainer:
         self._stream_shareds: dict[str, SharedVariable] = {}
         self._logp_scalings: dict[str, float] = {}
         self._step_fn: TrainingFn | None = None
-        self._shared_params: dict | None = None
-        self._shared_optimizer_state: dict | None = None
+        self._shared_params: dict[str, SharedVariable] | None = None
+        self._shared_optimizer_state: dict[str, SharedVariable] = {}
         self._sampling_fn: TrainingFn | None = None
         self._sampling_draws: int | None = None
         self._loss_history: list[float] = []
@@ -263,14 +264,22 @@ class Trainer:
                 return self._guide_factory(model)
             return AutoDiagonalNormal(model, random_seed=self.random_seed)
 
+    def _bind_guide(self, model: Model) -> None:
+        """Build the guide on first use and the shared variables that hold its parameters."""
+        if self._guide is None:
+            self._guide = self._build_guide(model)
+        if self._shared_params is None:
+            self._shared_params = shared_guide_params(self._guide)
+
     def _compile_step_fn(
         self, model: Model, guide: AutoGuideModel, optimizer: GradientTransformation
-    ) -> tuple[TrainingFn, dict[str, SharedVariable], dict[str, SharedVariable]]:
-        """Compile the step function, returning it and its shared variables."""
+    ) -> tuple[TrainingFn, dict[str, SharedVariable]]:
+        """Compile the step function, returning it and the optimizer's shared state."""
         return compile_svi_step_fn(
             model,
             guide,
             optimizer,
+            shared_params=self._shared_params,
             draws=self._n_particles,
             path_derivative_gradient=self._path_derivative_gradient,
             logp_scalings=self._logp_scalings_for(model),
@@ -485,10 +494,9 @@ class Trainer:
             )
 
         if self._step_fn is None:
-            if self._guide is None:
-                self._guide = self._build_guide(model)
-            self._step_fn, self._shared_params, self._shared_optimizer_state = (
-                self._compile_step_fn(model, self._guide, self._optimizer)
+            self._bind_guide(model)
+            self._step_fn, self._shared_optimizer_state = self._compile_step_fn(
+                model, self._guide, self._optimizer
             )
         if state is not None:
             self._restore(state)
@@ -603,8 +611,7 @@ class Trainer:
         # stream-observed model, whose observed RVs are excluded from the posterior.
         fit_model = self._fit_model if self._fit_model is not None else model
         if self._sampling_fn is None or self._sampling_draws != draws:
-            if self._guide is None:
-                self._guide = self._build_guide(fit_model)
+            self._bind_guide(fit_model)
             self._sampling_fn = self._compile_sampling_fn(fit_model, self._guide, draws)
             self._sampling_draws = draws
 
