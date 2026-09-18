@@ -22,21 +22,27 @@ from pymc.testing import (
     BaseTestDistributionRandom,
     Domain,
     I,
+    Nat,
     Rplus,
     assert_support_point_is_expected,
+    check_logcdf,
     check_logp,
+    check_selfconsistency_discrete_logcdf,
     discrete_random_tester,
+    seeded_scipy_distribution_builder,
 )
 from pytensor import config, function
 
 from pymc_extras.distributions import (
     BetaNegativeBinomial,
+    FisherNoncentralHypergeometric,
     GeneralizedPoisson,
     Skellam,
 )
 
 pytestmark = pytest.mark.filterwarnings(
-    "ignore:Numba will use object mode to run generalized_poisson_rv:UserWarning"
+    # "ignore:Numba will use object mode to run generalized_poisson_rv:UserWarning"
+    "ignore:Numba will use object mode to run:UserWarning"
 )
 
 
@@ -127,6 +133,77 @@ class TestGeneralizedPoisson:
     def test_moment(self, mu, lam, size, expected):
         with pm.Model() as model:
             GeneralizedPoisson("x", mu=mu, lam=lam, size=size)
+        assert_support_point_is_expected(model, expected)
+
+
+class TestFisherNoncentralHypergeometric(BaseTestDistributionRandom):
+    pymc_dist = FisherNoncentralHypergeometric
+    pymc_dist_params = {"N": 20, "k": 12, "n": 5, "odds": 2.0}
+    expected_rv_op_params = {
+        "n": pymc_dist_params["k"],
+        "M": pymc_dist_params["N"],
+        "N": pymc_dist_params["n"],
+        "odds": pymc_dist_params["odds"],
+    }
+    reference_dist_params = expected_rv_op_params
+    reference_dist = seeded_scipy_distribution_builder("nchypergeom_fisher")
+    checks_to_run = [
+        "check_pymc_draws_match_reference",
+        "check_rv_size",
+    ]
+
+    def test_fisher_noncentral_hypergeometric(self):
+        N_domain = Domain([0, 10, 20, 30, np.inf], dtype="int64")
+        check_logp(
+            FisherNoncentralHypergeometric,
+            Nat,
+            {
+                "N": N_domain,
+                "k": Nat,
+                "n": Nat,
+                "odds": Domain([0.01, 0.1, 0.9, 1, 1.5, 2, np.inf]),
+            },
+            lambda value, N, k, n, odds: scipy.stats.nchypergeom_fisher.logpmf(
+                value, N, k, n, odds
+            ),
+        )
+        check_logcdf(
+            FisherNoncentralHypergeometric,
+            Nat,
+            {
+                "N": N_domain,
+                "k": Nat,
+                "n": Nat,
+                "odds": Domain([0.01, 0.1, 0.9, 1, 1.5, 2, np.inf]),
+            },
+            lambda value, N, k, n, odds: scipy.stats.nchypergeom_fisher.logcdf(
+                value, N, k, n, odds
+            ),
+        )
+        check_selfconsistency_discrete_logcdf(
+            FisherNoncentralHypergeometric,
+            Nat,
+            {
+                "N": N_domain,
+                "k": Nat,
+                "n": Nat,
+                "odds": Domain([0.01, 0.1, 0.9, 1, 1.5, 2, np.inf]),
+            },
+        )
+
+    @pytest.mark.parametrize(
+        "N, k, n, odds, size, expected",
+        [
+            (10, 5, 3, 2.0, None, 2),
+            (10, 5, 3, 2.0, 5, np.full(5, 2)),
+            (10, [3, 5], 3, 2.0, None, [1, 2]),
+            (10, 5, [3, 5], 2.0, None, [2, 3]),
+            (10, 5, [3, 5], 2.0, (5, 2), [[2, 3]] * 5),
+        ],
+    )
+    def test_moment(self, N, k, n, odds, size, expected):
+        with pm.Model() as model:
+            FisherNoncentralHypergeometric("x", N=N, k=k, n=n, odds=odds, size=size)
         assert_support_point_is_expected(model, expected)
 
 

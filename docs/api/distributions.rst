@@ -19,6 +19,7 @@ like regular PyMC distributions and can be used directly inside a model.
    ExtGenPareto
    R2D2M2CP
    Skellam
+   FisherNoncentralHypergeometric
    histogram_approximation
 
 Transforms
