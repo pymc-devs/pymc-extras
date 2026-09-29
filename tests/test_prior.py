@@ -1495,3 +1495,115 @@ class TestXDist:
         ip = m.initial_point()
         with pytensor.config.change_flags(mode="FAST_COMPILE"):
             assert m.compile_logp()(ip) == ref_m.compile_logp()(ip)
+
+
+class TestConsumedDims:
+    """Tests for distributions that 'consume' dims in their parameters.
+
+    Some distributions take vector/matrix parameters but produce lower-rank
+    output. For example, Categorical(p)->() consumes the 'p' dimension entirely.
+    These consumed dims must not be required to appear in the output dims.
+
+    See: https://github.com/pymc-devs/pymc-extras/issues/499
+    """
+
+    # --- Categorical: (p)->(), ndim_supp=0, ndims_params=[1] ---
+
+    def test_categorical_construction(self):
+        """Prior("Categorical", p=Prior("Dirichlet", ..., dims="probs")) should not raise.
+
+        Categorical: (p)->(), ndim_supp=0, ndims_params=[1]
+        p's dim is fully consumed — it must not be required to appear in output dims.
+        """
+        p = pr.Prior("Dirichlet", a=[1, 1, 1], dims="probs")
+        cat = pr.Prior("Categorical", p=p, dims="trial")
+        assert cat.dims == ("trial",)
+
+    def test_categorical_create_variable(self):
+        """Non-xdist create_variable produces correct shape.
+
+        Categorical: (p)->(), ndim_supp=0, ndims_params=[1]
+        The consumed 'probs' dim disappears; output shape is (trial,).
+        """
+        p = pr.Prior("Dirichlet", a=[1, 1, 1], dims="probs")
+        cat = pr.Prior("Categorical", p=p, dims="trial")
+        with pm.Model(coords={"probs": range(3), "trial": range(10)}) as m:
+            cat.create_variable("y")
+        assert fast_eval(m["y"]).shape == (10,)
+
+    @pytest.mark.filterwarnings("ignore:The `pymc.dims` module is experimental")
+    def test_categorical_create_variable_xdist(self):
+        """xdist=True create_variable produces correct named dims.
+
+        Categorical: (p)->(), ndim_supp=0, ndims_params=[1]
+        core_dims is auto-computed as ('probs',); output dims are ('trial',).
+        """
+        p = pr.Prior("Dirichlet", a=DataArray([1, 1, 1], dims="probs"), dims="probs")
+        cat = pr.Prior("Categorical", p=p, dims="trial")
+        with pm.Model(coords={"probs": range(3), "trial": range(10)}) as m:
+            cat.create_variable("y", xdist=True)
+        assert m.named_vars_to_dims["y"] == ("trial",)
+
+    def test_categorical_batch_broadcast(self):
+        """Non-xdist: batch dim 'geo' passes through, core dim 'probs' is consumed.
+
+        Categorical: (p)->(), ndim_supp=0, ndims_params=[1]
+        p has dims ('geo', 'probs'): 'probs' is consumed, 'geo' broadcasts into output.
+        """
+        p = pr.Prior("Dirichlet", a=np.ones((2, 3)), dims=("geo", "probs"))
+        cat = pr.Prior("Categorical", p=p, dims=("geo", "trial"))
+        with pm.Model(coords={"geo": range(2), "probs": range(3), "trial": range(10)}) as m:
+            cat.create_variable("y")
+        assert fast_eval(m["y"]).shape == (2, 10)
+
+    @pytest.mark.filterwarnings("ignore:The `pymc.dims` module is experimental")
+    def test_categorical_batch_broadcast_xdist(self):
+        """xdist=True: batch dim 'geo' passes through, core dim 'probs' is consumed.
+
+        Categorical: (p)->(), ndim_supp=0, ndims_params=[1]
+        p has dims ('geo', 'probs'): 'probs' is consumed, 'geo' broadcasts into output.
+        """
+        a = DataArray(np.ones((2, 3)), dims=("geo", "probs"))
+        p = pr.Prior("Dirichlet", a=a, dims=("geo", "probs"))
+        cat = pr.Prior("Categorical", p=p, dims=("geo", "trial"))
+        with pm.Model(coords={"geo": range(2), "probs": range(3), "trial": range(10)}) as m:
+            cat.create_variable("y", xdist=True)
+        assert m.named_vars_to_dims["y"] == ("geo", "trial")
+
+    # --- Interpolated: (x),(x),(x)->(), ndim_supp=0, ndims_params=[1,1,1] ---
+
+    def test_interpolated_construction(self):
+        """Interpolated with x_points as a Prior with dims should not raise.
+
+        Interpolated: (x),(x),(x)->(), ndim_supp=0, ndims_params=[1,1,1]
+        All three parameter dims are consumed — none appear in the scalar output.
+        """
+        x_pts = pr.Prior("Normal", mu=0, sigma=1, dims="knots")
+        interp = pr.Prior(
+            "Interpolated",
+            x_points=x_pts,
+            pdf_points=np.ones(5) / 5,
+            dims="obs",
+        )
+        assert interp.dims == ("obs",)
+
+    # --- MvNormal: (n),(n,n)->(n), ndim_supp=1, ndims_params=[1,2] ---
+
+    def test_mvnormal_cov_extra_dim(self):
+        """MvNormal cov with 2 named dims: the 2nd dim is consumed, 1st re-emitted.
+
+        MvNormal: (n),(n,n)->(n), ndim_supp=1, ndims_params=[1,2]
+        cov has 2 core dims but output only has 1 — so cov's 2nd dim is "extra consumed".
+        'component' is re-emitted in the output; 'component_' is consumed.
+        """
+        cov = pr.Prior("Wishart", nu=5, V=np.eye(3), dims=("component", "component_"))
+        mv = pr.Prior("MvNormal", mu=np.zeros(3), cov=cov, dims="component")
+        assert mv.dims == ("component",)
+
+    # --- Guard: non-consumed incompatible dims still raise ---
+
+    def test_incompatible_dims_still_raise(self):
+        """A truly incompatible (non-consumed) dim still raises UnsupportedShapeError."""
+        inner = pr.Prior("Normal", dims="other")
+        with pytest.raises(pr.UnsupportedShapeError):
+            pr.Prior("Normal", mu=inner, dims="channel")
