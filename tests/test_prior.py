@@ -1,3 +1,5 @@
+import warnings
+
 from copy import deepcopy
 
 import numpy as np
@@ -689,10 +691,9 @@ def test_custom_transform() -> None:
 
 
 @pytest.fixture
-def clear_custom_distributions() -> None:
-    yield
-    pr.CUSTOM_DISTRIBUTIONS.clear()
-    pr.CUSTOM_DIM_DISTRIBUTIONS.clear()
+def clear_custom_distributions(monkeypatch):
+    monkeypatch.setattr(pr, "CUSTOM_DISTRIBUTIONS", {})
+    monkeypatch.setattr(pr, "CUSTOM_DIM_DISTRIBUTIONS", {})
 
 
 def test_register_pymc_distribution(clear_custom_distributions) -> None:
@@ -718,7 +719,8 @@ def test_register_pymc_distribution_takes_precedence(
     clear_custom_distributions,
 ) -> None:
     # "Normal" also exists in the pymc namespace, but the registry wins
-    register_pymc_distribution("Normal", pm.HalfNormal)
+    with pytest.warns(UserWarning, match="Overriding"):
+        register_pymc_distribution("Normal", pm.HalfNormal)
 
     dist = Prior("Normal", sigma=1)
     prior = dist.sample_prior(draws=50)
@@ -736,11 +738,99 @@ def test_module_level_access_with_registered_distribution(
     assert dist == Prior("Skellam", mu1=5, mu2=2)
 
 
-def test_dims_lookup_falls_back_to_registry(clear_custom_distributions) -> None:
-    # Skellam is not in pymc.dims, only in the regular registry
+def test_register_pymc_distribution_rejects_non_class(
+    clear_custom_distributions,
+) -> None:
+    with pytest.raises(TypeError, match="must be a class"):
+        register_pymc_distribution("Bad", 42)
+
+    class NotADistribution:
+        pass
+
+    with pytest.raises(TypeError, match="'dist'"):
+        register_pymc_distribution("Bad2", NotADistribution)
+
+
+def test_register_pymc_distribution_no_warning_for_unknown_name(
+    clear_custom_distributions,
+) -> None:
+    # "Skellam" is in neither the pymc nor the pymc.dims namespace
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        register_pymc_distribution("Skellam", Skellam)
+
+
+def test_register_pymc_distribution_auto_detects_dim_class(
+    clear_custom_distributions,
+) -> None:
+    # pmd.Normal is a DimDistribution: registered for xdist without a flag
+    register_pymc_distribution("MyNormal", pmd.Normal)
+
+    assert "MyNormal" in pr.CUSTOM_DIM_DISTRIBUTIONS
+    assert "MyNormal" not in pr.CUSTOM_DISTRIBUTIONS
+    assert pr._get_pymc_dim_distribution("MyNormal") is pmd.Normal
+
+
+def test_register_pymc_distribution_xdist_flag_validates_class(
+    clear_custom_distributions,
+) -> None:
+    # An xdist flag contradicting the class type is rejected at registration
+    with pytest.raises(TypeError, match="xdist"):
+        register_pymc_distribution("MyNormal", pmd.Normal, xdist=False)
+
+    with pytest.raises(TypeError, match="xdist"):
+        register_pymc_distribution("MyHalfNormal", pm.HalfNormal, xdist=True)
+
+    # An explicit xdist=True consistent with a DimDistribution is accepted
+    register_pymc_distribution("MyNormal", pmd.Normal, xdist=True)
+    assert "MyNormal" in pr.CUSTOM_DIM_DISTRIBUTIONS
+
+
+def test_xdist_lookup_rejects_regular_only_registration(
+    clear_custom_distributions,
+) -> None:
+    # Skellam is only registered for the regular path
     register_pymc_distribution("Skellam", Skellam)
 
-    assert pr._get_pymc_dim_distribution("Skellam") is Skellam
+    with pytest.raises(UnsupportedDistributionError, match="xdist=True"):
+        pr._get_pymc_dim_distribution("Skellam")
+
+    # End-to-end: creation fails with the clear error, not a TypeError
+    dist = Prior("Skellam", mu1=5, mu2=2, dims="m")
+    with pytest.raises(UnsupportedDistributionError, match="xdist=True"):
+        dist.sample_prior(coords={"m": ["A", "B"]}, xdist=True)
+
+
+def test_regular_lookup_rejects_dim_only_registration(
+    clear_custom_distributions,
+) -> None:
+    # MyNormal is only registered for the xdist path
+    register_pymc_distribution("MyNormal", pmd.Normal)
+
+    with pytest.raises(UnsupportedDistributionError, match="without xdist=True"):
+        pr._get_pymc_distribution("MyNormal")
+
+    # Construction works: parameter introspection is lenient
+    dist = Prior("MyNormal", mu=0, sigma=1, dims="m")
+
+    # Regular variable creation fails with the clear error
+    with pm.Model(coords={"m": ["A", "B"]}):
+        with pytest.raises(UnsupportedDistributionError, match="xdist"):
+            dist.create_variable("x")
+
+
+def test_xdist_end_to_end_with_dim_only_registration(
+    clear_custom_distributions,
+) -> None:
+    # The name "MyNormal" is not in the pymc.dims namespace: the xdist
+    # path resolves it from the dim registry
+    register_pymc_distribution("MyNormal", pmd.Normal)
+
+    coords = {"m": ["A", "B"]}
+    dist = Prior("MyNormal", mu=0, sigma=1, dims="m")
+
+    res = dist.sample_prior(coords=coords, draws=7, xdist=True)
+    assert res.variable.dims == ("chain", "draw", "m")
 
 
 def test_dim_registry_does_not_shadow_pymc_namespace(
@@ -748,7 +838,8 @@ def test_dim_registry_does_not_shadow_pymc_namespace(
 ) -> None:
     # Only the dim variant registered: the regular path still resolves to
     # the pymc namespace class, not the dim registry one
-    register_pymc_distribution("Normal", pmd.Normal, xdist=True)
+    with pytest.warns(UserWarning, match="Overriding"):
+        register_pymc_distribution("Normal", pmd.Normal)
 
     assert pr._get_pymc_distribution("Normal") is pm.Normal
     assert pr._get_pymc_dim_distribution("Normal") is pmd.Normal
@@ -759,40 +850,22 @@ def test_regular_registry_does_not_shadow_pymc_dims_namespace(
 ) -> None:
     # Only the regular variant registered: the xdist path still resolves to
     # the pymc.dims namespace class, not the regular registry one
-    register_pymc_distribution("Normal", pm.Normal)
+    with pytest.warns(UserWarning, match="Overriding"):
+        register_pymc_distribution("Normal", pm.Normal)
 
     assert pr._get_pymc_distribution("Normal") is pm.Normal
     assert pr._get_pymc_dim_distribution("Normal") is pmd.Normal
 
 
-def test_regular_lookup_falls_back_to_dim_registry(clear_custom_distributions) -> None:
-    # A dim-only registration is used by the regular path when the name is
-    # not present in the pymc namespace at all
-    register_pymc_distribution("MyNormal", pmd.Normal, xdist=True)
-
-    assert pr._get_pymc_distribution("MyNormal") is pmd.Normal
-
-
 def test_same_name_two_classes_one_per_path(clear_custom_distributions) -> None:
-    # Register the regular and dim variants of HalfNormal under the same name
-    register_pymc_distribution("HalfNormal", pm.HalfNormal)
-    register_pymc_distribution("HalfNormal", pmd.HalfNormal, xdist=True)
+    # Auto-detection routes each class to its own registry
+    with pytest.warns(UserWarning, match="Overriding"):
+        register_pymc_distribution("HalfNormal", pm.HalfNormal)
+    with pytest.warns(UserWarning, match="Overriding"):
+        register_pymc_distribution("HalfNormal", pmd.HalfNormal)
 
     assert pr._get_pymc_distribution("HalfNormal") is pm.HalfNormal
     assert pr._get_pymc_dim_distribution("HalfNormal") is pmd.HalfNormal
-
-
-def test_register_pymc_distribution_with_xdist(clear_custom_distributions) -> None:
-    # A regular pm distribution also works in the xdist path, so registering
-    # only the regular class unblocks both modes
-    register_pymc_distribution("HalfNormal", pm.HalfNormal)
-
-    coords = {"m": ["A", "B"]}
-    prior = Prior("HalfNormal", sigma=1, dims="m")
-
-    res = prior.sample_prior(coords=coords, draws=7, xdist=True)
-    assert res.variable.dims == ("chain", "draw", "m")
-    assert np.all(res.variable >= 0)
 
 
 def test_custom_transform_comes_first() -> None:
