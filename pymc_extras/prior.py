@@ -315,29 +315,33 @@ def register_pymc_distribution(
 def _get_pymc_distribution(name: str) -> type[pm.Distribution]:
     if name in CUSTOM_DISTRIBUTIONS:
         return CUSTOM_DISTRIBUTIONS[name]
-    if name in CUSTOM_DIM_DISTRIBUTIONS:
-        return CUSTOM_DIM_DISTRIBUTIONS[name]
 
     try:
         return getattr(pm, name)
     except AttributeError:
-        raise UnsupportedDistributionError(f"PyMC doesn't have a distribution of name {name!r}")
+        pass
+
+    if name in CUSTOM_DIM_DISTRIBUTIONS:
+        return CUSTOM_DIM_DISTRIBUTIONS[name]
+
+    raise UnsupportedDistributionError(f"PyMC doesn't have a distribution of name {name!r}")
 
 
 def _get_pymc_dim_distribution(name: str) -> type[DimDistribution]:
     if name in CUSTOM_DIM_DISTRIBUTIONS:
         return CUSTOM_DIM_DISTRIBUTIONS[name]
-    if name in CUSTOM_DISTRIBUTIONS:
-        return CUSTOM_DISTRIBUTIONS[name]
 
     import pymc.dims as pmd
 
     try:
         return getattr(pmd, name)
     except AttributeError:
-        raise UnsupportedDistributionError(
-            f"PyMC.dims doesn't have a distribution of name {name!r}"
-        )
+        pass
+
+    if name in CUSTOM_DISTRIBUTIONS:
+        return CUSTOM_DISTRIBUTIONS[name]
+
+    raise UnsupportedDistributionError(f"PyMC.dims doesn't have a distribution of name {name!r}")
 
 
 Transform = Callable[[pt.TensorLike], pt.TensorLike]

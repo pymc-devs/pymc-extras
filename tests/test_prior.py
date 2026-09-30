@@ -743,12 +743,34 @@ def test_dims_lookup_falls_back_to_registry(clear_custom_distributions) -> None:
     assert pr._get_pymc_dim_distribution("Skellam") is Skellam
 
 
-def test_regular_lookup_falls_back_to_dim_registry(clear_custom_distributions) -> None:
-    # HalfNormal exists in both pymc and pymc.dims, but only the dim
-    # registry is populated; the regular path uses the dim class too
-    register_pymc_distribution("HalfNormal", pmd.HalfNormal, xdist=True)
+def test_dim_registry_does_not_shadow_pymc_namespace(
+    clear_custom_distributions,
+) -> None:
+    # Only the dim variant registered: the regular path still resolves to
+    # the pymc namespace class, not the dim registry one
+    register_pymc_distribution("Normal", pmd.Normal, xdist=True)
 
-    assert pr._get_pymc_distribution("HalfNormal") is pmd.HalfNormal
+    assert pr._get_pymc_distribution("Normal") is pm.Normal
+    assert pr._get_pymc_dim_distribution("Normal") is pmd.Normal
+
+
+def test_regular_registry_does_not_shadow_pymc_dims_namespace(
+    clear_custom_distributions,
+) -> None:
+    # Only the regular variant registered: the xdist path still resolves to
+    # the pymc.dims namespace class, not the regular registry one
+    register_pymc_distribution("Normal", pm.Normal)
+
+    assert pr._get_pymc_distribution("Normal") is pm.Normal
+    assert pr._get_pymc_dim_distribution("Normal") is pmd.Normal
+
+
+def test_regular_lookup_falls_back_to_dim_registry(clear_custom_distributions) -> None:
+    # A dim-only registration is used by the regular path when the name is
+    # not present in the pymc namespace at all
+    register_pymc_distribution("MyNormal", pmd.Normal, xdist=True)
+
+    assert pr._get_pymc_distribution("MyNormal") is pmd.Normal
 
 
 def test_same_name_two_classes_one_per_path(clear_custom_distributions) -> None:
