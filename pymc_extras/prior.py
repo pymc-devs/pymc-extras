@@ -279,10 +279,13 @@ def register_pymc_distribution(
     distribution : type[pm.Distribution]
         The PyMC distribution class.
     xdist : bool, default False
-        Whether the class belongs to the `pymc.dims` registry. Both registries
-        are consulted by both lookup paths with their own registry first, so a
-        single registration works for both regular and xdist usage, and the two
-        registries can hold different classes under the same name.
+        Whether the class belongs to the `pymc.dims` registry. Mirrors the
+        `xdist` parameter of `create_variable`: classes registered with
+        `xdist=True` are used when the prior creates an xdist variable.
+        Both registries are consulted by both lookup paths with their own
+        registry first, so a single registration works for both regular and
+        xdist usage, and the two registries can hold different classes under
+        the same name.
 
     Examples
     --------
