@@ -79,6 +79,20 @@ Create a prior with a custom transform function by registering it with
 
     custom_distribution = Prior("Normal", transform="square")
 
+Create a prior with a distribution that is not in the `pymc` namespace by
+registering it with `register_pymc_distribution`.
+
+.. code-block:: python
+
+    from pymc_extras.prior import register_pymc_distribution
+
+    from my_package import CustomDistribution
+
+
+    register_pymc_distribution("CustomDistribution", CustomDistribution)
+
+    custom_distribution = Prior("CustomDistribution")
+
 """
 
 from __future__ import annotations
