@@ -20,6 +20,7 @@ from pymc_extras.deserialize import (
     deserialize,
     register_deserialization,
 )
+from pymc_extras.distributions import Skellam
 from pymc_extras.prior import (
     Censored,
     MuAlreadyExistsError,
@@ -31,6 +32,7 @@ from pymc_extras.prior import (
     UnsupportedShapeError,
     VariableFactory,
     handle_dims,
+    register_pymc_distribution,
     register_tensor_transform,
     sample_prior,
 )
@@ -684,6 +686,60 @@ def test_custom_transform() -> None:
         df_prior.variable.to_numpy(),
         df_prior.variable_raw.to_numpy() ** 2,
     )
+
+
+@pytest.fixture
+def clear_custom_distributions() -> None:
+    yield
+    pr.CUSTOM_DISTRIBUTIONS.clear()
+
+
+def test_register_pymc_distribution(clear_custom_distributions) -> None:
+    register_pymc_distribution("Skellam", Skellam)
+
+    dist = Prior("Skellam", mu1=5, mu2=2)
+    prior = dist.sample_prior(draws=10)
+
+    assert prior.variable.shape == (1, 10)
+    assert prior.variable.dtype.kind == "i"
+
+
+def test_register_pymc_distribution_with_dims(clear_custom_distributions) -> None:
+    register_pymc_distribution("Skellam", Skellam)
+
+    dist = Prior("Skellam", mu1=5, mu2=2, dims="match")
+    prior = dist.sample_prior(coords={"match": ["A", "B"]}, draws=10)
+
+    assert prior.variable.dims == ("chain", "draw", "match")
+
+
+def test_register_pymc_distribution_takes_precedence(
+    clear_custom_distributions,
+) -> None:
+    # "Normal" also exists in the pymc namespace, but the registry wins
+    register_pymc_distribution("Normal", pm.HalfNormal)
+
+    dist = Prior("Normal", sigma=1)
+    prior = dist.sample_prior(draws=50)
+
+    assert np.all(prior.variable >= 0)
+
+
+def test_module_level_access_with_registered_distribution(
+    clear_custom_distributions,
+) -> None:
+    register_pymc_distribution("Skellam", Skellam)
+
+    dist = pr.Skellam(mu1=5, mu2=2)
+
+    assert dist == Prior("Skellam", mu1=5, mu2=2)
+
+
+def test_dims_lookup_falls_back_to_registry(clear_custom_distributions) -> None:
+    # Skellam is not in pymc.dims, only in the registry
+    register_pymc_distribution("Skellam", Skellam)
+
+    assert pr._get_pymc_dim_distribution("Skellam") is Skellam
 
 
 def test_custom_transform_comes_first() -> None:

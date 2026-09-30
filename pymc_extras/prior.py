@@ -258,7 +258,46 @@ def _dims_to_str(obj: tuple[str, ...]) -> str:
     return "(" + ", ".join(f'"{i}"' if isinstance(i, str) else str(i) for i in obj) + ")"
 
 
+CUSTOM_DISTRIBUTIONS: dict[str, type[pm.Distribution]] = {}
+"""Registry of custom distributions so they can be used in the `Prior` class."""
+
+
+def register_pymc_distribution(name: str, distribution: type[pm.Distribution]) -> None:
+    """Register a custom PyMC distribution to be used in the `Prior` class.
+
+    Parameters
+    ----------
+    name : str
+        The name of the distribution.
+    distribution : type[pm.Distribution]
+        The PyMC distribution class.
+
+    Examples
+    --------
+    Register a custom distribution, such as a distribution from another package.
+
+    .. code-block:: python
+
+        from pymc_extras.prior import (
+            Prior,
+            register_pymc_distribution,
+        )
+
+        from my_package import CustomDistribution
+
+
+        register_pymc_distribution("CustomDistribution", CustomDistribution)
+
+        prior = Prior("CustomDistribution", dims="channel")
+
+    """
+    CUSTOM_DISTRIBUTIONS[name] = distribution
+
+
 def _get_pymc_distribution(name: str) -> type[pm.Distribution]:
+    if name in CUSTOM_DISTRIBUTIONS:
+        return CUSTOM_DISTRIBUTIONS[name]
+
     try:
         return getattr(pm, name)
     except AttributeError:
@@ -266,6 +305,9 @@ def _get_pymc_distribution(name: str) -> type[pm.Distribution]:
 
 
 def _get_pymc_dim_distribution(name: str) -> type[DimDistribution]:
+    if name in CUSTOM_DISTRIBUTIONS:
+        return CUSTOM_DISTRIBUTIONS[name]
+
     import pymc.dims as pmd
 
     try:
