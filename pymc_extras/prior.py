@@ -259,10 +259,17 @@ def _dims_to_str(obj: tuple[str, ...]) -> str:
 
 
 CUSTOM_DISTRIBUTIONS: dict[str, type[pm.Distribution]] = {}
-"""Registry of custom distributions so they can be used in the `Prior` class."""
+"""Registry of regular PyMC distributions for the `Prior` class."""
+
+CUSTOM_DIM_DISTRIBUTIONS: dict[str, type[DimDistribution]] = {}
+"""Registry of pymc.dims distributions for the `Prior` class, used with xdist=True."""
 
 
-def register_pymc_distribution(name: str, distribution: type[pm.Distribution]) -> None:
+def register_pymc_distribution(
+    name: str,
+    distribution: type[pm.Distribution],
+    xdist: bool = False,
+) -> None:
     """Register a custom PyMC distribution to be used in the `Prior` class.
 
     Parameters
@@ -271,6 +278,11 @@ def register_pymc_distribution(name: str, distribution: type[pm.Distribution]) -
         The name of the distribution.
     distribution : type[pm.Distribution]
         The PyMC distribution class.
+    xdist : bool, default False
+        Whether the class belongs to the `pymc.dims` registry. Both registries
+        are consulted by both lookup paths with their own registry first, so a
+        single registration works for both regular and xdist usage, and the two
+        registries can hold different classes under the same name.
 
     Examples
     --------
@@ -291,12 +303,17 @@ def register_pymc_distribution(name: str, distribution: type[pm.Distribution]) -
         prior = Prior("CustomDistribution", dims="channel")
 
     """
-    CUSTOM_DISTRIBUTIONS[name] = distribution
+    if xdist:
+        CUSTOM_DIM_DISTRIBUTIONS[name] = distribution
+    else:
+        CUSTOM_DISTRIBUTIONS[name] = distribution
 
 
 def _get_pymc_distribution(name: str) -> type[pm.Distribution]:
     if name in CUSTOM_DISTRIBUTIONS:
         return CUSTOM_DISTRIBUTIONS[name]
+    if name in CUSTOM_DIM_DISTRIBUTIONS:
+        return CUSTOM_DIM_DISTRIBUTIONS[name]
 
     try:
         return getattr(pm, name)
@@ -305,6 +322,8 @@ def _get_pymc_distribution(name: str) -> type[pm.Distribution]:
 
 
 def _get_pymc_dim_distribution(name: str) -> type[DimDistribution]:
+    if name in CUSTOM_DIM_DISTRIBUTIONS:
+        return CUSTOM_DIM_DISTRIBUTIONS[name]
     if name in CUSTOM_DISTRIBUTIONS:
         return CUSTOM_DISTRIBUTIONS[name]
 

@@ -692,6 +692,7 @@ def test_custom_transform() -> None:
 def clear_custom_distributions() -> None:
     yield
     pr.CUSTOM_DISTRIBUTIONS.clear()
+    pr.CUSTOM_DIM_DISTRIBUTIONS.clear()
 
 
 def test_register_pymc_distribution(clear_custom_distributions) -> None:
@@ -736,10 +737,40 @@ def test_module_level_access_with_registered_distribution(
 
 
 def test_dims_lookup_falls_back_to_registry(clear_custom_distributions) -> None:
-    # Skellam is not in pymc.dims, only in the registry
+    # Skellam is not in pymc.dims, only in the regular registry
     register_pymc_distribution("Skellam", Skellam)
 
     assert pr._get_pymc_dim_distribution("Skellam") is Skellam
+
+
+def test_regular_lookup_falls_back_to_dim_registry(clear_custom_distributions) -> None:
+    # HalfNormal exists in both pymc and pymc.dims, but only the dim
+    # registry is populated; the regular path uses the dim class too
+    register_pymc_distribution("HalfNormal", pmd.HalfNormal, xdist=True)
+
+    assert pr._get_pymc_distribution("HalfNormal") is pmd.HalfNormal
+
+
+def test_same_name_two_classes_one_per_path(clear_custom_distributions) -> None:
+    # Register the regular and dim variants of HalfNormal under the same name
+    register_pymc_distribution("HalfNormal", pm.HalfNormal)
+    register_pymc_distribution("HalfNormal", pmd.HalfNormal, xdist=True)
+
+    assert pr._get_pymc_distribution("HalfNormal") is pm.HalfNormal
+    assert pr._get_pymc_dim_distribution("HalfNormal") is pmd.HalfNormal
+
+
+def test_register_pymc_distribution_with_xdist(clear_custom_distributions) -> None:
+    # A regular pm distribution also works in the xdist path, so registering
+    # only the regular class unblocks both modes
+    register_pymc_distribution("HalfNormal", pm.HalfNormal)
+
+    coords = {"m": ["A", "B"]}
+    prior = Prior("HalfNormal", sigma=1, dims="m")
+
+    res = prior.sample_prior(coords=coords, draws=7, xdist=True)
+    assert res.variable.dims == ("chain", "draw", "m")
+    assert np.all(res.variable >= 0)
 
 
 def test_custom_transform_comes_first() -> None:
