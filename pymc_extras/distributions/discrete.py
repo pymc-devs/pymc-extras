@@ -97,7 +97,7 @@ class GeneralizedPoissonRV(RandomVariable):
         x = y.copy()
         higher_than_zero = y > 0
         while np.any(higher_than_zero[idxs_mask]):
-            y = rng.poisson(lam_ * y)
+            y = rng.poisson(lam_ * y, size=dist_size)
             x[higher_than_zero] = x[higher_than_zero] + y[higher_than_zero]
             higher_than_zero = y > 0
         return x
