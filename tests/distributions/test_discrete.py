@@ -69,6 +69,15 @@ class TestGeneralizedPoisson:
             expected_std = np.sqrt(mu / (1 - lam) ** 3)
             np.testing.assert_allclose(draws.std(0), expected_std, rtol=1e-1)
 
+        def test_scalar_params(self):
+            # Test both branches (positive and negative lam) for scalar implicit size
+            # Regression test for https://github.com/pymc-devs/pymc-extras/issues/783
+            draws = pm.draw(self.pymc_dist.dist(mu=5.0, lam=0.5))
+            assert draws.shape == ()
+
+            draws = pm.draw(self.pymc_dist.dist(mu=5.0, lam=-0.5))
+            assert draws.shape == ()
+
     def test_logp_matches_poisson(self):
         # We are only checking this distribution for lambda=0 where it's equivalent to Poisson.
         mu = pt.scalar("mu")
