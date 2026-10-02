@@ -62,6 +62,25 @@ def test_fit_advi_returns_fit_and_fit_stats_groups(conjugate_model):
     assert elbo[-20:].mean() > elbo[:20].mean()
 
 
+def test_sample_posterior_groups_describe_the_sampled_state(conjugate_model):
+    model, *_ = conjugate_model
+    trainer = Trainer(random_seed=0)
+    early = trainer.fit(10, model=model, random_seed=1)
+    trainer.fit(20, model=model, random_seed=2)
+
+    latest = trainer.sample_posterior(10, model=model, random_seed=3)
+    snapshot = trainer.sample_posterior(10, state=early, model=model, random_seed=3)
+
+    # chunked fits accumulate one trace, and an older snapshot reports its own
+    latest_elbo = latest["fit_stats"].dataset["elbo"].values
+    snapshot_elbo = snapshot["fit_stats"].dataset["elbo"].values
+    assert latest_elbo.shape == (30,)
+    np.testing.assert_array_equal(latest_elbo[:10], snapshot_elbo)
+    np.testing.assert_allclose(
+        snapshot["fit"].dataset["mean_vector"].values, early.params["theta_loc"].ravel()
+    )
+
+
 def test_fit_advi_random_seed(conjugate_model):
     model, *_ = conjugate_model
 

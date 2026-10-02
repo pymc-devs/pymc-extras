@@ -5,10 +5,6 @@ import numpy as np
 from pymc import Model, modelcontext
 from xarray import DataTree
 
-from pymc_extras.inference.advi.idata import (
-    add_fit_stats_to_inference_data,
-    add_fit_to_inference_data,
-)
 from pymc_extras.inference.advi.optimizers import GradientTransformation
 from pymc_extras.inference.advi.training import Trainer
 
@@ -80,8 +76,5 @@ def fit_advi(
         compile_kwargs=compile_kwargs,
         random_seed=init_seed,
     )
-    state = trainer.fit(n_steps, model=model, random_seed=train_seed)
-    idata = trainer.sample_posterior(draws, model=model, random_seed=sampling_seed)
-    idata = add_fit_to_inference_data(idata, trainer.guide, state.params, model=model)
-    idata = add_fit_stats_to_inference_data(idata=idata, loss_history=state.loss_history)
-    return idata
+    trainer.fit(n_steps, model=model, random_seed=train_seed)
+    return trainer.sample_posterior(draws, model=model, random_seed=sampling_seed)
