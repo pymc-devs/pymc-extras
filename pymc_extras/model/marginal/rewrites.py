@@ -68,7 +68,7 @@ class MarginalSubgraph(MarginalSubgraphBase):
 class LaplaceMarginalSubgraph(MarginalSubgraphBase):
     """Marginalized subgraph to be resolved via Laplace approximation.
 
-    Created when the user calls ``marginalize(..., laplace_approx={rv: Q})``.
+    Created by ``approximate_marginalize(..., laplace_approx={rv: Q})``.
     The precision matrix Q of the marginalized variable is appended as the
     last boundary input; the minimizer options are stored on the marker and
     forwarded to the MarginalLaplaceRV.

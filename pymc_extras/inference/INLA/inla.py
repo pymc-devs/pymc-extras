@@ -5,7 +5,7 @@ import pymc as pm
 from pytensor.tensor import TensorLike, TensorVariable, as_tensor
 from xarray import DataTree
 
-from pymc_extras.model.marginal.marginalize import marginalize
+from pymc_extras.model.marginal.marginalize import approximate_marginalize
 
 
 def fit_INLA(
@@ -93,7 +93,7 @@ def fit_INLA(
     model = pm.modelcontext(model)
 
     # Marginalize out the latent field
-    marginal_model = marginalize(
+    marginal_model = approximate_marginalize(
         model,
         laplace_approx={x: as_tensor(Q)},
         minimizer_kwargs=minimizer_kwargs,

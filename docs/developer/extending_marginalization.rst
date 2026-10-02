@@ -1,22 +1,27 @@
 Extending marginalization
 =========================
 
-:func:`~pymc_extras.marginal.marginalize` is built on a small set of
-composable pieces, so new kinds of marginalization (a new conjugate pair, a
-new approximation) can be added without touching the core machinery. This
-page explains how the pipeline works and what you need to implement.
+:func:`~pymc_extras.marginal.marginalize` and
+:func:`~pymc_extras.marginal.approximate_marginalize` share a small set of
+composable pieces, so new conjugate pairs and approximations can be added
+without changing the graph machinery.
 
 All code lives under ``pymc_extras/model/marginal/``, organized along two
 seams. By *operation*: ``marginalize.py`` holds
-:func:`~pymc_extras.marginal.marginalize` / ``unmarginalize`` and
-``conditional.py`` holds :func:`~pymc_extras.marginal.conditional` /
-``recover``. By *strategy*: each kind of marginalization is one module under
+:func:`~pymc_extras.marginal.marginalize`, ``approximate_marginalize``, and
+``unmarginalize``; ``conditional.py`` holds ``conditional``, ``recover``,
+and their explicitly approximate counterparts. By *strategy*: each kind of
+marginalization is one module under
 ``distributions/`` (``enumerable.py``, ``laplace.py``, ``normal.py``)
 containing its ``MarginalRV`` subclass, the rewrite that recognizes it, its
 logp, and (optionally) its conditional. ``rewrites.py`` holds only the
 strategy-agnostic machinery: the marker Ops, the rewrite database, and the
 nesting/re-marginalization rewrites. A new marginalization is therefore one
 new module under ``distributions/`` — no existing file needs to change.
+
+Approximate ``MarginalRV`` subclasses must declare ``is_approximate = True``.
+The exact APIs recursively reject these Ops, including nested approximations,
+and direct callers to the corresponding ``approximate_*`` API.
 
 How marginalization works
 -------------------------
@@ -62,13 +67,14 @@ it "marginal" is its logp implementation:
   :func:`~pymc_extras.marginal.recover`.
 
 For ``MarginalLaplaceRV``, this reverse factor is a Gaussian approximation,
-not the exact conditional posterior. ``conditional`` and ``recover`` use
-the posterior mode as its mean and the precision
-``Q - Hessian(log_likelihood)`` evaluated at that mode. The mode and
-curvature condition on the supplied dependent values and current parent
-values, using the optimizer settings stored by ``marginalize``. Recovery
-is exact for Gaussian conditionals; for nonlinear likelihoods it retains
-the local Gaussian approximation's limitations.
+not the exact conditional posterior. Only ``approximate_conditional`` and
+``approximate_recover`` opt into it. They use the posterior mode as its mean
+and precision ``Q - Hessian(log_likelihood)`` evaluated at that mode. The mode
+and curvature condition on supplied dependent and current parent values,
+using optimizer settings stored by ``approximate_marginalize``. Recovery is
+exact for Gaussian conditionals; nonlinear likelihoods retain the local
+Gaussian approximation's limitations. ``marginalize``, ``conditional``, and
+``recover`` reject any model containing these approximations.
 
 :func:`~pymc_extras.marginal.unmarginalize` is fully generic: it just inlines
 the ``OpFromGraph`` and restores the marginalized variable as a free RV, so
