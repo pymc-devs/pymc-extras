@@ -104,6 +104,25 @@ class SVIState:
 # A fit whose last few ELBO estimates are all non-finite has most likely stopped moving.
 _STALLED_STEPS = 5
 
+# Steps evaluated together on a lazy backend. Each step reads the state the last one wrote, so an
+# unevaluated step keeps the whole chain behind it alive; one evaluation per batch bounds that and
+# amortizes the cost of forcing the graph.
+_EVAL_EVERY = 64
+
+
+def _evaluate_steps(losses: list, carried: list[SharedVariable]) -> list[float]:
+    """Evaluate a batch of steps and every shared variable they write, returning the losses."""
+    if not losses or not type(losses[0]).__module__.startswith("mlx"):
+        return [float(loss) for loss in losses]
+
+    import mlx.core as mx
+
+    batch = mx.stack(losses)
+    # A counter no loss reads, such as a guard's skip count, would otherwise grow an unevaluated
+    # chain across batches.
+    mx.eval(batch, [variable.get_value(borrow=True) for variable in carried])
+    return batch.tolist()
+
 
 def default_optimizer() -> Transform:
     """
@@ -528,18 +547,19 @@ class Trainer(WithMemoization):
         self._bind_guide(model)
         step_fn = self._step_fn(model, random_seed)
         _, updates = self._svi_step(model)
+        carried = list(updates)
         params = set(self._shared_params.values())
         self._shared_optimizer_state = {
-            variable.name: variable for variable in updates if variable not in params
+            variable.name: variable for variable in carried if variable not in params
         }
         if state is not None:
             self._restore(state)
 
         start_step = self._step
-        losses: list = []
+        losses: list[float] = []
+        pending: list = []
 
         progress = make_advi_progress_bar(theme=default_progress_theme)
-        progress_every = max(1, n // 1_000)
 
         try:
             with progress:
@@ -566,38 +586,44 @@ class Trainer(WithMemoization):
                             break
                         self._apply_batch(model, batch)
 
-                    loss = step_fn()
+                    pending.append(step_fn())
                     if start_time is None:
                         start_time = time.perf_counter()
-                    losses.append(loss)
 
-                    if i % progress_every == 0:
+                    if len(pending) == _EVAL_EVERY:
+                        losses += _evaluate_steps(pending, carried)
+                        pending = []
+                        loss = losses[-1]
                         elapsed = time.perf_counter() - start_time
                         speed, unit = compute_step_speed(elapsed, i)
                         progress.update(
                             task,
-                            completed=i,
-                            step=start_step + i,
-                            # Backends may return their own scalar types (e.g. JAX);
-                            # convert here rather than once per step
-                            loss=float(loss),
+                            completed=i + 1,
+                            step=start_step + i + 1,
+                            loss=loss,
                             training_speed=speed,
                             speed_unit=unit,
                         )
 
+                losses += _evaluate_steps(pending, carried)
+                pending = []
+                if losses:
+                    loss = losses[-1]
                 progress.update(
                     task,
                     completed=n,
                     step=start_step + len(losses),
-                    loss=float(loss),
+                    loss=loss,
                     training_speed=speed,
                     speed_unit=unit,
                     refresh=True,
                 )
         except KeyboardInterrupt:
-            pass
+            # The interrupted batch's steps have already moved the parameters, so their losses
+            # belong in the history and its length stays the step count.
+            losses += _evaluate_steps(pending, carried)
 
-        self._loss_history.extend(np.asarray(losses, dtype=float).tolist())
+        self._loss_history.extend(losses)
         recent = np.asarray(self._loss_history[-_STALLED_STEPS:])
         if recent.size == _STALLED_STEPS and not np.isfinite(recent).any():
             warnings.warn(
