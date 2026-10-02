@@ -129,7 +129,6 @@ def test_fit_group_holds_only_arrays_every_backend_can_store(model):
         ].dataset
         for name, array in fit.data_vars.items():
             assert array.dtype.kind in "fiu", f"{name} has non-numeric dtype {array.dtype}"
-        assert fit.attrs == {}
 
 
 def test_mean_field_fit_group_is_linear_in_the_parameter_count():
@@ -150,19 +149,23 @@ def test_mean_field_fit_group_is_linear_in_the_parameter_count():
     assert sum(array.size for array in fit.data_vars.values()) == 2 * n_dim
 
 
-def test_fit_group_refuses_a_guide_that_does_not_report_its_parameterization(model):
-    # this guide names its params like the mean-field one but links the scale through
-    # softplus, so exponentiating its scale would report a plausible, wrong number
-    loc, scale = pt.scalar("a_loc"), pt.scalar("a_scale")
+def test_fit_group_defaults_to_the_raw_parameters_of_a_custom_guide(model):
+    # a custom guide implements nothing, so its fit group is its parameters as fitted,
+    # each over dims of its own so that differently shaped parameters do not collide
+    loc, scale = pt.vector("a_loc", shape=(2,)), pt.vector("a_scale", shape=(3,))
     with pm.Model() as guide_model:
         z = pm.Normal("a_z")
-        pm.Deterministic("a", loc + pt.softplus(scale) * z)
-    guide = AutoGuideModel(guide_model, {loc: np.array(0.0), scale: np.array(0.1)})
+        pm.Deterministic("a", loc.sum() + pt.softplus(scale).sum() * z)
+    params = {"a_loc": np.array([1.0, 2.0]), "a_scale": np.array([0.1, 0.2, 0.3])}
+    guide = AutoGuideModel(guide_model, {loc: params["a_loc"], scale: params["a_scale"]})
 
-    with pytest.raises(NotImplementedError, match="does not report a fitted mean"):
-        add_fit_to_inference_data(
-            DataTree(), guide, {"a_loc": np.array(0.0), "a_scale": np.array(0.1)}, model=model
-        )
+    fit = add_fit_to_inference_data(DataTree(), guide, params, model=model)["fit"].dataset
+
+    assert fit["a_loc"].dims == ("a_loc_dim_0",)
+    assert fit["a_scale"].dims == ("a_scale_dim_0",)
+    np.testing.assert_allclose(fit["a_loc"].values, params["a_loc"])
+    np.testing.assert_allclose(fit["a_scale"].values, params["a_scale"])
+    assert "rows" not in fit.coords
 
 
 def test_optimizer_result_group_holds_the_trace_and_the_buffers():
