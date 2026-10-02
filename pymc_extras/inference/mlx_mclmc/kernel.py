@@ -1200,7 +1200,8 @@ def _make_adapt_step(
             state=previous, keys=keys, dynamics=dynamics
         )
         position, momentum, logdensity, grad = chain
-        step_size_max = mx.where(is_finite, state.step_size_max, state.step_size * 0.8)
+        # The cap relaxes on finite steps, so a run of NaN steps cannot ratchet it to the floor.
+        step_size_max = mx.where(is_finite, state.step_size_max * 1.02, state.step_size * 0.8)
 
         # Every chain runs its own controller; only the metric pools across chains.
         relative_error = energy_error**2 / (dim * settings.desired_energy_var) + 1e-8
