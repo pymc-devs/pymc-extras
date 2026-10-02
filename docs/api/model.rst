@@ -12,3 +12,16 @@ interface, with saving and loading included.
 
    as_model
    model_builder.ModelBuilder
+
+Float precision
+---------------
+
+``model_to_float32`` recreates a model with every float64 variable cast to
+float32, so that it can be sampled in single precision.
+
+.. currentmodule:: pymc_extras.model.transforms
+.. autosummary::
+   :toctree: ../generated/
+
+   precision.model_to_float32
+   precision.model_to_float64
