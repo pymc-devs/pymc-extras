@@ -79,6 +79,20 @@ Create a prior with a custom transform function by registering it with
 
     custom_distribution = Prior("Normal", transform="square")
 
+Create a prior with a distribution that is not in the `pymc` namespace by
+registering it with `register_pymc_distribution`.
+
+.. code-block:: python
+
+    from pymc_extras.prior import register_pymc_distribution
+
+    from my_package import CustomDistribution
+
+
+    register_pymc_distribution("CustomDistribution", CustomDistribution)
+
+    custom_distribution = Prior("CustomDistribution")
+
 """
 
 from __future__ import annotations
@@ -258,22 +272,172 @@ def _dims_to_str(obj: tuple[str, ...]) -> str:
     return "(" + ", ".join(f'"{i}"' if isinstance(i, str) else str(i) for i in obj) + ")"
 
 
+CUSTOM_DISTRIBUTIONS: dict[str, type[pm.Distribution]] = {}
+"""Registry of regular PyMC distributions for the `Prior` class."""
+
+CUSTOM_DIM_DISTRIBUTIONS: dict[str, type[DimDistribution]] = {}
+"""Registry of pymc.dims distributions for the `Prior` class, used with xdist=True."""
+
+
+def register_pymc_distribution(
+    name: str,
+    distribution: type[pm.Distribution] | type[DimDistribution],
+    xdist: bool | None = None,
+) -> None:
+    """Register a custom PyMC distribution to be used in the `Prior` class.
+
+    The registry is picked from the class itself: a
+    `pymc.dims.DimDistribution` subclass is registered for xdist usage, and
+    a class with a `dist` classmethod (including `pm.Distribution`
+    subclasses and bare classes such as `pymc_extras.distributions.Skellam`)
+    is registered for the regular path.
+
+    Parameters
+    ----------
+    name : str
+        The name of the distribution.
+    distribution : type
+        The distribution class. Must be a `pymc.dims.DimDistribution`
+        subclass or provide a `dist` classmethod.
+    xdist : bool, optional
+        Explicitly select the registry, mirroring the `xdist` parameter of
+        `create_variable`. Must agree with the class type when given; by
+        default the registry is inferred from the class.
+
+    Notes
+    -----
+    Registering a name that already resolves in the `pymc` or `pymc.dims`
+    namespace emits a `UserWarning`; the registration takes precedence.
+
+    Names that are already module attributes of `pymc_extras.prior` (such
+    as "Censored") are not reachable through the module-level
+    `pymc_extras.prior.<Name>` accessor.
+
+    A `Prior` keeps the class resolved at construction time;
+    re-registering a name afterwards affects new instances only.
+
+    Examples
+    --------
+    Register a distribution that is not in the `pymc` namespace.
+
+    .. code-block:: python
+
+        from pymc_extras.prior import Prior, register_pymc_distribution
+
+        from pymc_extras.distributions import Skellam
+
+
+        register_pymc_distribution("Skellam", Skellam)
+
+        prior = Prior("Skellam", mu1=5, mu2=2, dims="match")
+
+    Register a pymc.dims class for xdist usage (inferred from the class).
+
+    .. code-block:: python
+
+        import pymc.dims as pmd
+
+        from pymc_extras.prior import register_pymc_distribution
+
+
+        register_pymc_distribution("MyNormal", pmd.Normal)
+
+    """
+    if not isinstance(distribution, type):
+        raise TypeError(f"distribution must be a class, got {type(distribution).__name__}")
+
+    import pymc.dims as pmd
+
+    is_dim = issubclass(distribution, pmd.DimDistribution)
+    if not is_dim and not callable(getattr(distribution, "dist", None)):
+        raise TypeError(
+            f"{distribution!r} is not a pymc.dims.DimDistribution and has no "
+            "'dist' classmethod; it cannot be used in the Prior class"
+        )
+
+    if xdist is not None and xdist != is_dim:
+        raise TypeError(
+            f"xdist={xdist} contradicts {distribution!r}: "
+            + (
+                "it is a pymc.dims.DimDistribution; use xdist=True or omit xdist"
+                if is_dim
+                else "xdist=True requires a pymc.dims.DimDistribution class; "
+                "omit xdist to register it for the regular path"
+            )
+        )
+
+    if is_dim:
+        registry, namespace = CUSTOM_DIM_DISTRIBUTIONS, pmd
+    else:
+        registry, namespace = CUSTOM_DISTRIBUTIONS, pm
+
+    if hasattr(namespace, name):
+        warnings.warn(
+            f"Overriding {namespace.__name__}.{name}: "
+            f"{distribution.__name__} will be used in the Prior class",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    registry[name] = distribution
+
+
 def _get_pymc_distribution(name: str) -> type[pm.Distribution]:
+    if name in CUSTOM_DISTRIBUTIONS:
+        return CUSTOM_DISTRIBUTIONS[name]
+
     try:
         return getattr(pm, name)
     except AttributeError:
-        raise UnsupportedDistributionError(f"PyMC doesn't have a distribution of name {name!r}")
+        pass
+
+    if name in CUSTOM_DIM_DISTRIBUTIONS:
+        raise UnsupportedDistributionError(
+            f"{name!r} is only registered as a pymc.dims distribution; "
+            "register a regular distribution class to use it without xdist=True"
+        )
+    raise UnsupportedDistributionError(
+        f"PyMC doesn't have a distribution of name {name!r}. "
+        "Use register_pymc_distribution to add it."
+    )
 
 
 def _get_pymc_dim_distribution(name: str) -> type[DimDistribution]:
+    if name in CUSTOM_DIM_DISTRIBUTIONS:
+        return CUSTOM_DIM_DISTRIBUTIONS[name]
+
     import pymc.dims as pmd
 
     try:
         return getattr(pmd, name)
     except AttributeError:
+        pass
+
+    if name in CUSTOM_DISTRIBUTIONS:
         raise UnsupportedDistributionError(
-            f"PyMC.dims doesn't have a distribution of name {name!r}"
+            f"{name!r} is only registered as a regular distribution; "
+            "register a pymc.dims class to use it with xdist=True"
         )
+    raise UnsupportedDistributionError(
+        f"PyMC.dims doesn't have a distribution of name {name!r}. "
+        "Use register_pymc_distribution to add it."
+    )
+
+
+def _resolve_any_distribution(name: str) -> type:
+    """Resolve a distribution for construction-time introspection.
+
+    Tries the regular path first and then the pymc.dims path, so a `Prior`
+    referencing a dim-only registered distribution can still be constructed.
+    Variable creation resolves strictly through its own path.
+    """
+    try:
+        return _get_pymc_distribution(name)
+    except UnsupportedDistributionError as regular_error:
+        try:
+            return _get_pymc_dim_distribution(name)
+        except UnsupportedDistributionError:
+            raise regular_error from None
 
 
 Transform = Callable[[pt.TensorLike], pt.TensorLike]
@@ -731,7 +895,7 @@ class Prior:
             raise AttributeError("Can't change the distribution")
 
         self._distribution = distribution
-        self.pymc_distribution = _get_pymc_distribution(distribution)
+        self.pymc_distribution = _resolve_any_distribution(distribution)
 
     @property
     def transform(self) -> str | None:
@@ -891,7 +1055,7 @@ class Prior:
             pymc_distribution = _get_pymc_dim_distribution(self.distribution)
             core_dims_kwargs = {"core_dims": self.core_dims}
         else:
-            pymc_distribution = self.pymc_distribution
+            pymc_distribution = _get_pymc_distribution(self.distribution)
             core_dims_kwargs = {}
 
         return pymc_distribution(name, **parameters, **core_dims_kwargs, dims=self.dims)
@@ -925,7 +1089,7 @@ class Prior:
             pymc_distribution = _get_pymc_dim_distribution(self.distribution)
             core_dims_kwargs = {"core_dims": self.core_dims}
         else:
-            pymc_distribution = self.pymc_distribution
+            pymc_distribution = _get_pymc_distribution(self.distribution)
             core_dims_kwargs = {}
 
         offset = pymc_distribution(
