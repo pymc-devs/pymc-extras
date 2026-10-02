@@ -9,10 +9,12 @@ import numpy as np
 import pymc as pm
 
 from arviz_base import dict_to_dataset
+from pymc.progress_bar import ProgressBarOptions
 from pymc.util import RandomSeed, _get_seeds_per_chain
 from xarray import DataTree
 
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
+from pymc_extras.inference.mlx_mclmc.progress import MCLMCProgressBarManager
 from pymc_extras.inference.mlx_mclmc.settings import AdaptationSettings
 
 if TYPE_CHECKING:
@@ -46,6 +48,7 @@ def fit_mlx_mclmc(
     compile_step: bool = True,
     random_seed: RandomSeed = None,
     compile_kwargs: dict | None = None,
+    progressbar: bool | ProgressBarOptions = True,
 ) -> DataTree:
     """
     Sample a model with unadjusted MCLMC on the Apple Silicon GPU.
@@ -97,6 +100,13 @@ def fit_mlx_mclmc(
     random_seed : int, optional
     compile_kwargs : dict, optional
         Extra keyword arguments for the PyTensor function that maps draws back to model space.
+    progressbar : bool or str
+        True draws one bar covering every chain, sectioned into the three warmup phases, the
+        burn-in, and the kept draws, with the draw count restarting at each section. It shows the
+        median step size across chains and the number of NaN steps, the chain-steps that came
+        out NaN or infinite and were reverted.
+        ``"split"`` or ``"split+stats"`` draws one bar per chain, up to 16 chains. False hides it.
+        The bar advances every 64 steps, when the lazy MLX graph is forced. Default is True.
 
     Returns
     -------
@@ -114,7 +124,7 @@ def fit_mlx_mclmc(
     """
     # Both modules import mlx at load time, and mlx only installs on Apple Silicon. Importing
     # them here keeps this module, and its docstring, importable everywhere else.
-    from pymc_extras.inference.mlx_mclmc.kernel import warmup_and_sample
+    from pymc_extras.inference.mlx_mclmc.kernel import warmup_and_sample, warmup_schedule
     from pymc_extras.inference.mlx_mclmc.logp import (
         MLXLogp,
         check_model_is_sampleable,
@@ -149,23 +159,37 @@ def fit_mlx_mclmc(
         integrator=integrator,
         seed=seed,
     )
-    try:
-        output, tuned = warmup_and_sample(
-            logdensity_fn, start, compile_step=compile_step, **sampler_kwargs
-        )
-    except RuntimeError as exc:
-        if not (compile_step and _METAL_FUSION_LIMIT in str(exc)):
-            raise
-        warnings.warn(
-            "The fused sampler step exceeded Metal's argument-buffer limit, so MCLMC is falling "
-            "back to an unfused step, which is slower. Pass compile_step=False to skip this "
-            "attempt.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        output, tuned = warmup_and_sample(
-            logdensity_fn, start, compile_step=False, **sampler_kwargs
-        )
+    schedule = warmup_schedule(tune, adaptation)
+    sections = [schedule.step_size, schedule.metric + schedule.readjust, schedule.L, burn_in, draws]
+
+    # The fused attempt fails when its step is first forced, before any progress is reported, so
+    # one bar carries over to the unfused retry.
+    with MCLMCProgressBarManager(
+        chains=chains, sections=sections, progressbar=progressbar
+    ) as progress:
+
+        def run(compile_step):
+            return warmup_and_sample(
+                logdensity_fn,
+                start,
+                compile_step=compile_step,
+                progress=progress.update,
+                **sampler_kwargs,
+            )
+
+        try:
+            output, tuned = run(compile_step)
+        except RuntimeError as exc:
+            if not (compile_step and _METAL_FUSION_LIMIT in str(exc)):
+                raise
+            warnings.warn(
+                "The fused sampler step exceeded Metal's argument-buffer limit, so MCLMC is "
+                "falling back to an unfused step, which is slower. Pass compile_step=False to skip "
+                "this attempt.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            output, tuned = run(compile_step=False)
 
     # The kernel stacks draws first; InferenceData wants chains first.
     flat_draws = np.asarray(output.samples, dtype="float32").transpose(1, 0, 2)

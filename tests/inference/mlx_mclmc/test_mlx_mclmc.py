@@ -429,6 +429,7 @@ def test_step_size_cap_relaxes_after_finite_steps():
         x_average=mx.zeros((chains,)),
         foreground=_empty_moments(dim),
         background=_empty_moments(dim),
+        nan_steps=mx.zeros((), dtype=mx.int32),
     )
 
     key = mx.random.key(2)

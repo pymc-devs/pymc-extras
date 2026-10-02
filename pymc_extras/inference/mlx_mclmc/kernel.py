@@ -169,6 +169,7 @@ class AdaptationState(NamedTuple):
     x_average: mx.array
     foreground: WindowedMoments
     background: WindowedMoments
+    nan_steps: mx.array
 
 
 class SamplerOutput(NamedTuple):
@@ -177,6 +178,76 @@ class SamplerOutput(NamedTuple):
     samples: mx.array
     energy_errors: mx.array
     diverging: mx.array
+
+
+class ProgressReport(NamedTuple):
+    """
+    What the sampler reports each time it forces the lazy graph.
+
+    Attributes
+    ----------
+    phase : str
+        ``"step size"``, ``"metric"``, ``"L"``, or ``"sampling"``.
+    steps : int
+        Steps finished since the previous report.
+    step_size : np.ndarray
+        Current step size per chain, of shape ``(chains,)``.
+    nan_steps : int
+        Chain-steps over those steps whose position, momentum, log-density, or energy error came
+        out NaN or infinite, summed across chains. Each is reverted to the previous state with a
+        fresh momentum.
+    """
+
+    phase: str
+    steps: int
+    step_size: np.ndarray
+    nan_steps: int
+
+
+ProgressCallback = Callable[[ProgressReport], None]
+
+
+class WarmupSchedule(NamedTuple):
+    """Integrator steps in each warmup phase, as :func:`warmup` takes them."""
+
+    step_size: int
+    metric: int
+    readjust: int
+    L: int
+
+    @property
+    def total(self) -> int:
+        return self.step_size + self.metric + self.readjust + self.L
+
+
+def warmup_schedule(num_steps: int, settings: AdaptationSettings) -> WarmupSchedule:
+    """Split a warmup budget of ``num_steps`` into its phases by the ``frac_tune`` fractions."""
+    metric_steps = round(num_steps * settings.frac_tune2)
+    # A metric needs more than one draw, and an autocorrelation length needs at least two.
+    readjust_steps = (
+        round(metric_steps / 3) if metric_steps > 1 and settings.diagonal_preconditioning else 0
+    )
+    L_steps = round(num_steps * settings.frac_tune3)
+
+    return WarmupSchedule(
+        step_size=round(num_steps * settings.frac_tune1),
+        metric=metric_steps,
+        readjust=readjust_steps,
+        L=L_steps if L_steps >= 2 else 0,
+    )
+
+
+def _report(
+    progress: ProgressCallback | None,
+    phase: str,
+    steps: int,
+    step_size: np.ndarray | mx.array,
+    nan_steps: mx.array,
+) -> mx.array:
+    """Report ``steps`` finished steps, returning the NaN-step count reset for the next report."""
+    if progress is not None and steps:
+        progress(ProgressReport(phase, steps, np.asarray(step_size), int(nan_steps.item())))
+    return mx.zeros_like(nan_steps)
 
 
 class TunedParameters(NamedTuple):
@@ -867,6 +938,7 @@ def sample(
     discard: int = 0,
     seed: int = 0,
     compile_step: bool = True,
+    progress: ProgressCallback | None = None,
 ) -> SamplerOutput:
     """
     Run unadjusted MCLMC from fixed parameters.
@@ -902,6 +974,8 @@ def sample(
     compile_step : bool
         Whether to fuse the step with ``mx.compile``. Pass False for very large graphs, whose
         fused kernel can exceed Metal's argument-buffer limit. Default is True.
+    progress : callable, optional
+        Called with a :class:`ProgressReport` each time the lazy graph is forced.
 
     Returns
     -------
@@ -948,16 +1022,21 @@ def sample(
     # Lazy evaluation batches the graph between the periodic mx.eval, which hides the dispatch
     # cost of that loop.
     kept, energy_errors, diverging = [], [], []
+    step_size_per_chain = np.broadcast_to(np.asarray(step_size, dtype=np.float64), (n_chains,))
+    nan_steps = mx.zeros((), dtype=mx.int32)
     for t in range(n_steps):
         key, *step_keys = mx.random.split(key, num=4)
         state, energy_error, is_finite = step(state, keys=tuple(step_keys))
 
         energy_errors.append(energy_error)
         diverging.append(~is_finite)
+        nan_steps = nan_steps + mx.sum(~is_finite)
         if t >= discard:
             kept.append(state.position)
         if (t + 1) % _EVAL_EVERY == 0:
-            mx.eval(state)
+            mx.eval(state, nan_steps)
+            nan_steps = _report(progress, "sampling", _EVAL_EVERY, step_size_per_chain, nan_steps)
+    _report(progress, "sampling", n_steps % _EVAL_EVERY, step_size_per_chain, nan_steps)
 
     output = SamplerOutput(
         samples=mx.stack(kept, axis=0),
@@ -1165,6 +1244,7 @@ class _WarmupContext(NamedTuple):
     coefficients: list[float]
     settings: AdaptationSettings
     dim: int
+    progress: ProgressCallback | None = None
 
 
 def _make_adapt_step(
@@ -1230,6 +1310,7 @@ def _make_adapt_step(
             x_average=x_average,
             foreground=foreground,
             background=background,
+            nan_steps=state.nan_steps + mx.sum(~is_finite),
         )
 
     return mx.compile(adapt_step) if compile_step else adapt_step
@@ -1285,7 +1366,15 @@ def _initial_adaptation_state(
         x_average=mx.zeros((chains,), dtype=mx.float32),
         foreground=_empty_moments(dim),
         background=_empty_moments(dim),
+        nan_steps=mx.zeros((), dtype=mx.int32),
     )
+
+
+def _report_adaptation(
+    context: _WarmupContext, phase: str, steps: int, state: AdaptationState
+) -> AdaptationState:
+    nan_steps = _report(context.progress, phase, steps, state.step_size, state.nan_steps)
+    return state._replace(nan_steps=nan_steps)
 
 
 def _run_adapt_steps(
@@ -1295,6 +1384,7 @@ def _run_adapt_steps(
     key: mx.array,
     n_steps: int,
     accumulate_moments: bool,
+    phase: str,
 ) -> tuple[AdaptationState, mx.array]:
     """Take ``n_steps`` adapting steps under a fixed metric, returning the state and the key."""
     mask = mx.array([float(accumulate_moments)], dtype=mx.float32)
@@ -1304,7 +1394,9 @@ def _run_adapt_steps(
         state = context.step(state, metric=metric, mask=mask, keys=tuple(keys))
         if step_index % _EVAL_EVERY == 0:
             mx.eval(state)
+            state = _report_adaptation(context, phase, _EVAL_EVERY, state)
     mx.eval(state)
+    state = _report_adaptation(context, phase, n_steps % _EVAL_EVERY, state)
 
     return state, key
 
@@ -1373,7 +1465,9 @@ def _tune_with_windowed_moments(
             mx.eval(state)
         if phase_step % _EVAL_EVERY == 0:
             mx.eval(state)
+            state = _report_adaptation(context, "metric", _EVAL_EVERY, state)
     mx.eval(state)
+    state = _report_adaptation(context, "metric", n_steps % _EVAL_EVERY, state)
 
     return state, metric, retained, key
 
@@ -1410,7 +1504,13 @@ def _install_metric(
 
     state = _reset_step_size_controller(state)
     state, key = _run_adapt_steps(
-        context, state, metric=fitted, key=key, n_steps=readjust_steps, accumulate_moments=True
+        context,
+        state,
+        metric=fitted,
+        key=key,
+        n_steps=readjust_steps,
+        accumulate_moments=True,
+        phase="metric",
     )
 
     return state, fitted, np.full(chains, math.sqrt(dim)), key
@@ -1443,13 +1543,17 @@ def _estimate_L(
     )
 
     positions = []
+    nan_steps = mx.zeros((), dtype=mx.int32)
     for step_index in range(1, n_steps + 1):
         key, *keys = mx.random.split(key, num=4)
-        chain, _, _ = _guarded_transition(state=chain, keys=tuple(keys), dynamics=dynamics)
+        chain, _, is_finite = _guarded_transition(state=chain, keys=tuple(keys), dynamics=dynamics)
 
         positions.append(chain.position)
+        nan_steps = nan_steps + mx.sum(~is_finite)
         if step_index % _EVAL_EVERY == 0:
-            mx.eval(chain)
+            mx.eval(chain, nan_steps)
+            nan_steps = _report(context.progress, "L", _EVAL_EVERY, step_size, nan_steps)
+    _report(context.progress, "L", n_steps % _EVAL_EVERY, step_size, nan_steps)
 
     samples = np.asarray(mx.stack(positions, axis=0))
     autocorrelation_time = np.array(
@@ -1473,6 +1577,7 @@ def warmup(
     integrator: str = "mclachlan",
     seed: int = 0,
     compile_step: bool = True,
+    progress: ProgressCallback | None = None,
 ) -> TunedParameters:
     r"""
     Adapt the step size, the metric, and ``L``.
@@ -1509,6 +1614,8 @@ def warmup(
         Seed for the MLX random key. Default is 0.
     compile_step : bool
         Whether to fuse the adapting step with ``mx.compile``. Default is True.
+    progress : callable, optional
+        Called with a :class:`ProgressReport` each time the lazy graph is forced.
 
     Returns
     -------
@@ -1540,18 +1647,9 @@ def warmup(
         coefficients=coefficients,
         settings=settings,
         dim=dim,
+        progress=progress,
     )
-
-    num_steps1 = round(num_steps * settings.frac_tune1)
-    num_steps2 = round(num_steps * settings.frac_tune2)
-    num_steps3 = round(num_steps * settings.frac_tune3)
-    # A metric needs more than one draw, and an autocorrelation length needs at least two.
-    has_metric_window = num_steps2 > 1
-    readjust_steps = (
-        round(num_steps2 / 3) if has_metric_window and settings.diagonal_preconditioning else 0
-    )
-    if num_steps3 < 2:
-        num_steps3 = 0
+    schedule = warmup_schedule(num_steps, settings)
 
     key = mx.random.key(seed)
     key, subkey = mx.random.split(key, num=2)
@@ -1562,21 +1660,32 @@ def warmup(
     L = np.full(chains, math.sqrt(dim))
 
     state, key = _run_adapt_steps(
-        context, state, metric=metric, key=key, n_steps=num_steps1, accumulate_moments=False
+        context,
+        state,
+        metric=metric,
+        key=key,
+        n_steps=schedule.step_size,
+        accumulate_moments=False,
+        phase="step size",
     )
     state, metric, retained, key = _tune_with_windowed_moments(
-        context, state, metric=metric, key=key, n_steps=num_steps2
+        context, state, metric=metric, key=key, n_steps=schedule.metric
     )
-    if has_metric_window:
+    if schedule.metric > 1:
         state, metric, L, key = _install_metric(
-            context, state, metric=metric, retained=retained, key=key, readjust_steps=readjust_steps
+            context,
+            state,
+            metric=metric,
+            retained=retained,
+            key=key,
+            readjust_steps=schedule.readjust,
         )
 
     step_size = np.asarray(state.step_size, dtype=np.float64)
     chain = ChainState(state.position, state.momentum, state.logdensity, state.grad)
-    if num_steps3:
+    if schedule.L:
         L, chain = _estimate_L(
-            context, chain, metric=metric, step_size=step_size, L=L, key=key, n_steps=num_steps3
+            context, chain, metric=metric, step_size=step_size, L=L, key=key, n_steps=schedule.L
         )
 
     return TunedParameters(
@@ -1584,7 +1693,7 @@ def warmup(
         L=np.asarray(L, dtype=np.float64),
         step_size=step_size,
         metric=metric,
-        num_tuning_steps=num_steps1 + num_steps2 + readjust_steps + num_steps3,
+        num_tuning_steps=schedule.total,
     )
 
 
@@ -1600,6 +1709,7 @@ def warmup_and_sample(
     integrator: str = "mclachlan",
     seed: int = 0,
     compile_step: bool = True,
+    progress: ProgressCallback | None = None,
 ) -> tuple[SamplerOutput, TunedParameters]:
     """
     Adapt ``chains`` chains scattered around ``initial_position``, then sample from where they end.
@@ -1614,6 +1724,9 @@ def warmup_and_sample(
         Number of chains to run.
     discard : int
         Number of leading sampling steps to drop. Default is 0.
+    progress : callable, optional
+        Called with a :class:`ProgressReport` each time the lazy graph is forced, through
+        warmup and sampling alike.
 
     Returns
     -------
@@ -1632,6 +1745,7 @@ def warmup_and_sample(
         integrator=integrator,
         seed=seed,
         compile_step=compile_step,
+        progress=progress,
     )
 
     output = sample(
@@ -1645,6 +1759,7 @@ def warmup_and_sample(
         inverse_mass_matrix=tuned.metric,
         seed=seed + 2,
         compile_step=compile_step,
+        progress=progress,
     )
 
     return output, tuned
