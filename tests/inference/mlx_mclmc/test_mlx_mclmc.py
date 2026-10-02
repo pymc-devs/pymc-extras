@@ -4,6 +4,7 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 
+from pytensor_ml.optim import sgd
 from scipy.special import gamma
 
 mx = pytest.importorskip("mlx.core", reason="MCLMC requires mlx, which needs Apple Silicon")
@@ -21,8 +22,8 @@ from pymc_extras.inference.mlx_mclmc.kernel import (
     _fit_metric,
     _low_rank_metric,
     _make_adapt_step,
-    _optimize_to_mode,
     _window_switch_steps,
+    metric_from_low_rank_covariance,
     sample,
     tune_step_size,
     warmup,
@@ -33,7 +34,7 @@ from pymc_extras.inference.mlx_mclmc.logp import (
     check_model_is_sampleable,
     draws_to_datasets,
 )
-from pymc_extras.inference.mlx_mclmc.mlx_mclmc import _warn_if_adaptation_failed
+from pymc_extras.inference.mlx_mclmc.mlx_mclmc import _fit_approximation, _warn_if_adaptation_failed
 
 
 @pytest.fixture
@@ -441,50 +442,131 @@ def test_step_size_cap_relaxes_after_finite_steps():
     assert (np.asarray(state.step_size) > 0.02).all()
 
 
-def test_ascent_skips_non_finite_steps_instead_of_absorbing_them():
-    """A nan gradient must leave the position and the Adam moments untouched, not poison them."""
+def test_mean_field_recovers_a_diagonal_gaussian(float32):
+    """Mean-field ADVI is exact on a diagonal Gaussian, so its mean and scale must match it."""
+    loc, scale = np.array([3.0, -3.0]), np.array([0.1, 2.0])
+    with pm.Model() as model:
+        pm.Normal("x", mu=loc, sigma=scale, shape=2)
+    logdensity_fn = MLXLogp(model)
 
-    def logdensity_fn(x):
-        in_band = (x[0] > 1.0) & (x[0] < 1.2)
-        return mx.where(in_band, mx.array(float("nan")), -0.5 * mx.sum((x - 3.0) ** 2))
-
-    reached = _optimize_to_mode(
-        mx.vmap(mx.value_and_grad(logdensity_fn)),
-        mx.array([[0.0]]),
-        steps=400,
-        learning_rate=0.05,
-    )
-
-    # Absorbing the nan into the moments would freeze the ascent short of the band at 1.0.
-    np.testing.assert_allclose(np.asarray(reached).ravel(), [3.0], atol=1e-2)
-
-
-def test_optimize_steps_moves_the_adapting_chain_to_the_mode():
-    """The ascent is off by default, so the opt-in has to be seen to reach warmup."""
-    mode = np.array([5.0, -5.0], dtype="float32")
-
-    def logdensity_fn(x):
-        return -0.5 * mx.sum((x - mx.array(mode)) ** 2) * 100.0
-
-    # A budget this small gives the dynamics no chance to cross 5 units on their own.
-    tuned = warmup(
+    mean, metric = _fit_approximation(
+        model,
         logdensity_fn,
-        np.zeros(2),
-        num_steps=20,
-        settings=AdaptationSettings(optimize_steps=300, optimize_learning_rate=0.1),
+        logdensity_fn.flat_initial_point(),
+        settings=AdaptationSettings(advi_steps=3000),
         seed=0,
     )
 
-    np.testing.assert_allclose(np.asarray(tuned.position)[0], mode, atol=0.5)
+    np.testing.assert_allclose(mean, loc, atol=0.1)
+    np.testing.assert_allclose(np.asarray(metric.scale), scale, rtol=0.25)
 
 
-def test_ascent_gives_up_when_the_gradient_never_becomes_finite():
-    always_nan = mx.vmap(mx.value_and_grad(lambda x: mx.sum(x) * mx.array(float("nan"))))
-    start = mx.array([[0.7, -0.3]])
+def _dense_inverse_mass_matrix(metric):
+    scale = np.asarray(metric.scale, dtype=np.float64)
+    vectors = np.asarray(metric.correction.vectors, dtype=np.float64)
+    gains = np.asarray(metric.correction.scales, dtype=np.float64)
+    whitened = np.eye(scale.size) + vectors @ np.diag((1.0 + gains) ** 2 - 1.0) @ vectors.T
 
-    unchanged = _optimize_to_mode(always_nan, start, steps=400, learning_rate=0.05)
+    return scale[:, None] * whitened * scale[None, :]
 
-    np.testing.assert_array_equal(np.asarray(unchanged), np.asarray(start))
+
+def test_low_rank_covariance_converts_exactly_to_a_metric():
+    rng = np.random.default_rng(0)
+    diagonal_sd, factor = rng.uniform(0.5, 2.0, size=6), rng.normal(size=(6, 2))
+
+    metric = metric_from_low_rank_covariance(diagonal_sd, factor)
+
+    np.testing.assert_allclose(
+        _dense_inverse_mass_matrix(metric),
+        factor @ factor.T + np.diag(diagonal_sd**2),
+        rtol=1e-4,
+        atol=1e-5,
+    )
+
+
+def test_low_rank_advi_recovers_a_correlated_gaussian(float32):
+    """Two variables, so the guide's packing order has to be mapped back to the sampler's."""
+    # float64 numpy parameters would reach MLX's GPU-only Cholesky as float64.
+    cov = np.array([[1.0, 0.8], [0.8, 1.0]], dtype="float32")
+    with pm.Model() as model:
+        pm.Normal("a", -3.0, 0.5)
+        pm.MvNormal("b", mu=np.array([1.0, 2.0], dtype="float32"), cov=cov)
+    logdensity_fn = MLXLogp(model)
+
+    mean, metric = _fit_approximation(
+        model,
+        logdensity_fn,
+        logdensity_fn.flat_initial_point(),
+        settings=AdaptationSettings(advi_steps=4000, advi_guide="low_rank", advi_rank=2),
+        seed=0,
+    )
+
+    order = {name: index for index, name in enumerate(logdensity_fn.names)}
+    a, b = (0, slice(1, 3)) if order["a"] < order["b"] else (2, slice(0, 2))
+    np.testing.assert_allclose(mean[a], -3.0, atol=0.1)
+    np.testing.assert_allclose(mean[b], [1.0, 2.0], atol=0.1)
+    np.testing.assert_allclose(_dense_inverse_mass_matrix(metric)[b, b], cov, atol=0.2)
+
+
+def test_advi_optimizer_reaches_the_trainer(float32):
+    """At a learning rate of 0 the fitted mean can only be the starting point."""
+    with pm.Model() as model:
+        pm.Normal("x", mu=[3.0, -3.0], sigma=1.0, shape=2)
+    logdensity_fn = MLXLogp(model)
+    start = np.array([0.5, -0.5], dtype="float32")
+
+    mean, _ = _fit_approximation(
+        model,
+        logdensity_fn,
+        start,
+        settings=AdaptationSettings(advi_steps=50, advi_optimizer=sgd(0.0)),
+        seed=0,
+    )
+
+    np.testing.assert_array_equal(mean, start)
+
+
+def test_non_finite_advi_falls_back_to_the_uninformed_start(float32):
+    """An unguarded optimizer lets a nan gradient poison the fit, which must not reach warmup."""
+    with pm.Model() as model:
+        x = pm.Normal("x", 0.0, 1.0, shape=2)
+        pm.Potential("nan_past_one", pt.sqrt(1.0 - x).sum())
+    logdensity_fn = MLXLogp(model)
+
+    with (
+        pytest.warns(RuntimeWarning, match="ELBO estimates were not finite"),
+        pytest.warns(RuntimeWarning, match="non-finite approximation"),
+    ):
+        approximation = _fit_approximation(
+            model,
+            logdensity_fn,
+            logdensity_fn.flat_initial_point(),
+            settings=AdaptationSettings(advi_steps=200, advi_optimizer=sgd(0.01)),
+            seed=0,
+        )
+
+    assert approximation is None
+
+
+def test_advi_steps_move_the_adapting_chains_to_the_posterior(float32):
+    """A tuning budget this small cannot cross 5 units, so only the ADVI start gets there."""
+    with pm.Model() as model:
+        pm.Normal("x", mu=[5.0, -5.0], sigma=0.1, shape=2)
+
+    idata = fit_mlx_mclmc(
+        draws=200,
+        tune=30,
+        burn_in=10,
+        chains=4,
+        model=model,
+        adaptation=AdaptationSettings(advi_steps=2000),
+        random_seed=0,
+        progressbar=False,
+    )
+
+    np.testing.assert_allclose(
+        idata["posterior"]["x"].mean(dim=("chain", "draw")), [5.0, -5.0], atol=0.1
+    )
 
 
 def test_fit_falls_back_to_an_unfused_step_past_the_metal_limit(conjugate_model, monkeypatch):
