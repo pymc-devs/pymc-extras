@@ -2,6 +2,7 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
+from pymc import MvNormal
 from pymc.distributions.multivariate import _logdet_from_cholesky
 from pymc.logprob.abstract import _logprob
 from pymc.logprob.basic import conditional_logp
@@ -14,6 +15,7 @@ from pytensor.tensor.optimize import minimize
 from pymc_extras.model.marginal.distributions.core import (
     MarginalRV,
     inline_ofg_outputs,
+    marginalized_conditional,
 )
 from pymc_extras.model.marginal.rewrites import (
     DEFAULT_MINIMIZER_KWARGS,
@@ -31,6 +33,8 @@ class MarginalLaplaceRV(MarginalRV):
     The precision matrix Q of the marginalized variable is passed as the
     last input of the node (a dummy input, unused by the inner graph).
     """
+
+    is_approximate = True
 
     def __init__(
         self,
@@ -72,6 +76,20 @@ def _precision_mv_normal_logp(value: TensorLike, mean: TensorLike, tau: TensorLi
     return logp, posdef
 
 
+def _laplace_mode_and_precision(log_likelihood, logp_objective, x, x0_init, Q, minimizer_kwargs):
+    """Return the posterior mode and precision, with curvature evaluated at the mode."""
+    mode, _ = minimize(
+        objective=-logp_objective,
+        x=x,
+        use_vectorized_jac=True,
+        **minimizer_kwargs,
+    )
+    mode = graph_replace(mode, {x: x0_init})
+    likelihood_hessian = pytensor.gradient.hessian(log_likelihood, x)
+    precision = graph_replace(Q - likelihood_hessian, {x: mode}, strict=False)
+    return mode, precision
+
+
 def get_laplace_approx(
     log_likelihood: TensorVariable,
     logp_objective: TensorVariable,
@@ -105,28 +123,10 @@ def get_laplace_approx(
     log_laplace_approx: TensorVariable
         Laplace approximation of logp(x | y, params) evaluated at x.
     """
-    # Maximize log(p(x | y, params)) wrt x to find mode x0
-    # This step is currently bottlenecking the logp calculation.
-    x0, _ = minimize(
-        objective=-logp_objective,  # logp(x | y, params) = logp(y | x, params) + logp(x | params) + const (const omitted during minimization)
-        x=x,
-        use_vectorized_jac=True,
-        **minimizer_kwargs,
+    x0, tau = _laplace_mode_and_precision(
+        log_likelihood, logp_objective, x, x0_init, Q, minimizer_kwargs
     )
-
-    # Set minimizer initialisation to be random
-    x0 = pytensor.graph.replace.graph_replace(x0, {x: x0_init})
-
-    # This step is also expensive (but not as much as minimize). Could be made more efficient by recycling hessian from the minimizer step, however that requires a bespoke algorithm described in Rasmussen & Williams
-    # since the general optimisation scheme maximises logp(x | y, params) rather than logp(y | x, params), and thus the hessian that comes out of methods
-    # like L-BFGS-B is in fact not the hessian of logp(y | x, params)
-    # TODO: Use vectorized hessian?
-    hess = pytensor.gradient.hessian(log_likelihood, x)
-
-    # Evaluate logp of Laplace approx of logp(x | y, params) at some point x
-    tau = Q - hess
-    mu = x0
-    log_laplace_approx, _ = _precision_mv_normal_logp(x, mu, tau)
+    log_laplace_approx, _ = _precision_mv_normal_logp(x, x0, tau)
 
     return x0, log_laplace_approx
 
@@ -175,7 +175,41 @@ def laplace_marginal_rv_logp(op: MarginalLaplaceRV, values, *inputs_and_Q, **kwa
     # logp(y | params) = logp(y | x, params) + logp(x | params) - logp(x | y, params)
     # TODO: Can we recover the elementwise logp?
     marginal_likelihood = logp_total - log_laplace_approx
-    return graph_replace(marginal_likelihood, {marginalized_vv: x0})
+    joint_logp = graph_replace(marginal_likelihood, {marginalized_vv: x0})
+    # Assign the inseparable joint term once, with a factor for every dependent value.
+    dummy_logps = (pt.constant(0),) * (len(values) - 1)
+    return joint_logp, *dummy_logps
+
+
+@marginalized_conditional.register(MarginalLaplaceRV)
+def laplace_marginalized_conditional(op, inputs, dep_rvs):
+    """Build the Gaussian approximation to the conditional posterior, not an exact draw."""
+    # Derive logps over root placeholders, as in the enumerable conditional.
+    # Otherwise conditional_logp clones upstream RVs, losing caller graph identity
+    # and exposing generative samples to nested marginal logp implementations.
+    inner_graph = op.fgraph.unfreeze()
+    marginalized = inner_graph.outputs[0]
+    dependents = inner_graph.outputs[1 : 1 + op.n_dependent_rvs]
+    marginalized_value = marginalized.clone()
+    dep_values = [dep.type() for dep in dependents]
+    rv_values = {marginalized: marginalized_value} | dict(zip(dependents, dep_values))
+    logps = conditional_logp(rv_values)
+    prior_logp = logps.pop(marginalized_value).sum()
+    likelihood_logp = pt.sum([term.sum() for term in logps.values()])
+
+    d = pt.prod(constant_fold(tuple(marginalized.shape), raise_not_constant=True))
+    mode, precision = _laplace_mode_and_precision(
+        likelihood_logp,
+        prior_logp + likelihood_logp,
+        marginalized_value,
+        pt.ones(d, dtype=marginalized.dtype),
+        inner_graph.inputs[-1],
+        op.minimizer_kwargs,
+    )
+    conditional_rv = MvNormal.dist(mu=mode, tau=precision)
+    replacements = dict(zip(inner_graph.inputs, inputs))
+    replacements.update(zip(dep_values, dep_rvs))
+    return graph_replace(conditional_rv, replacements, strict=False)
 
 
 @node_rewriter(tracks=[LaplaceMarginalSubgraph])

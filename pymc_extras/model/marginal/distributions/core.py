@@ -30,6 +30,8 @@ class MarginalRV(OpFromGraph, MeasurableOp):
     guarantee that variable names/metadata survive cloning and rewrites.
     """
 
+    is_approximate = False
+
     def __init__(
         self,
         *args,
