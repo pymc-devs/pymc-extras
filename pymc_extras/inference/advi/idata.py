@@ -11,7 +11,7 @@ from xarray import DataTree
 from pymc_extras.inference.advi.autoguide import AutoGuideModel
 from pymc_extras.inference.idata_utils import make_unpacked_variable_names
 
-# Dims labelled by the guide parameter they index, as opposed to a bare integer range.
+# Dims labelled by the free RV element they index, as in the Laplace fit group.
 _PARAMETER_DIMS = ("rows", "columns")
 
 
@@ -21,12 +21,10 @@ def add_fit_to_inference_data(
     params: dict[str, np.ndarray],
     model: pm.Model | None = None,
 ) -> DataTree:
-    """Add the fitted guide's mean and covariance to a DataTree, in the ``fit`` group.
+    """Add the fitted guide's summary to a DataTree, in the ``fit`` group.
 
-    The guide reports the covariance in whatever form it stores, so the group holds a
-    marginal standard deviation for a mean-field guide, a Cholesky factor for a full-rank
-    one, and a factor plus a diagonal standard deviation for a low-rank one. Which entries
-    are present therefore identifies the family.
+    The group holds whatever :meth:`AutoGuideModel.fit_quantities` reports, so its contents
+    depend on the guide.
 
     Parameters
     ----------
@@ -46,31 +44,14 @@ def add_fit_to_inference_data(
         The provided tree, with the ``fit`` group added.
     """
     model = pm.modelcontext(model)
-    quantities = dict(guide.fit_quantities(params))
-    mean_vector = quantities.pop("mean_vector")
 
     value_names = [model.rvs_to_values[rv].name for rv in model.free_RVs]
-    rows = make_unpacked_variable_names(value_names, model)
+    labels = make_unpacked_variable_names(value_names, model)
 
-    covariance_dims = guide.covariance_dims
-    if undeclared := sorted(set(quantities) - set(covariance_dims)):
-        raise ValueError(
-            f"{type(guide).__name__} reported covariance quantities {undeclared} that it "
-            f"declares no dims for. Its covariance_dims names {sorted(covariance_dims)}."
-        )
+    fit = xr.Dataset(guide.fit_quantities(params))
+    fit = fit.assign_coords({dim: labels for dim in _PARAMETER_DIMS if dim in fit.dims})
 
-    coords: dict[str, list[str] | np.ndarray] = {"rows": rows}
-    data_vars = {"mean_vector": xr.DataArray(mean_vector, dims=["rows"])}
-
-    for name, values in quantities.items():
-        dims = covariance_dims[name]
-        for axis, dim in enumerate(dims):
-            coords.setdefault(
-                dim, rows if dim in _PARAMETER_DIMS else np.arange(values.shape[axis])
-            )
-        data_vars[name] = xr.DataArray(values, dims=list(dims))
-
-    idata["fit"] = DataTree(dataset=xr.Dataset(data_vars, coords=coords))
+    idata["fit"] = DataTree(dataset=fit)
 
     return idata
 
