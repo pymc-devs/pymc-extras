@@ -268,7 +268,8 @@ def model_to_float32(model: Model) -> Model:
     point) are as float32 as those of a model created under ``floatX="float32"``, e.g.
     the logp of `LKJCholeskyCov` still has float64 terms.
 
-    The logp of a float32 `ZeroSumNormal` is only correct with pymc-devs/pymc#8464.
+    The logp of a float32 `ZeroSumNormal` is only correct in PyMC releases that include
+    pymc-devs/pymc#8464.
 
     ``pm.set_data`` casts new values to ``floatX``, so it also needs ``floatX="float32"``.
 
