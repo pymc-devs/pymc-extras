@@ -11,12 +11,13 @@ import pytensor
 from arviz_base import dict_to_dataset
 from pymc import Model, modelcontext
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
+from pymc.model.core import _rng_detaching_linker
 from pymc.progress_bar import CustomProgress, default_progress_theme
-from pymc.pytensorf import resolve_backend_compile_kwargs
+from pymc.pytensorf import find_rng_nodes, reseed_rngs, resolve_backend_compile_kwargs
+from pymc.util import WithMemoization, locally_cachedmethod
 from pymc.variational.minibatch_rv import MinibatchRandomVariable
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import ancestors
-from pytensor.tensor.random.type import RandomType
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -32,37 +33,15 @@ from xarray import DataTree
 
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
 from pymc_extras.inference.advi.compile import (
+    SamplingFn,
     TrainingFn,
     compile_sampling_fn,
     compile_svi_step_fn,
+    shared_guide_params,
+    shared_optimizer_state,
 )
 from pymc_extras.inference.advi.optimizers import GradientTransformation, clipped_adam
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
-
-
-def _reseed_function_rngs(fn, random_seed) -> None:
-    """Reseed the RNG inputs of a compiled function.
-
-    Operates on the compiled function's input storage instead of its shared variables:
-    some backends (JAX) replace RNG shared variables with internal copies at compile
-    time, so reseeding the user-facing shared variables would have no effect.
-    """
-    rng_containers = [
-        container for container in fn.input_storage if isinstance(container.type, RandomType)
-    ]
-    if not rng_containers:
-        return
-
-    seed_seqs = np.random.SeedSequence(random_seed).spawn(len(rng_containers))
-    for container, seed_seq in zip(rng_containers, seed_seqs):
-        new_rng = np.random.Generator(np.random.PCG64(seed_seq))
-        if not isinstance(container.storage[0], np.random.Generator):
-            # The backend converted the rng into its own representation (e.g. JAX), and
-            # will not do so again for a raw Generator after compilation
-            from pytensor.link.jax.dispatch import jax_typify
-
-            new_rng = jax_typify(new_rng)
-        container.storage[0] = new_rng
 
 
 def compute_step_speed(elapsed: float, step: int) -> tuple[float, str]:
@@ -120,14 +99,14 @@ class SVIState:
     loss_history: np.ndarray
 
 
-class Trainer:
+class Trainer(WithMemoization):
     """
     Trainer for stochastic variational inference.
 
-    The trainer owns the training loop: the guide parameters and the optimizer state
-    live in shared variables inside the compiled step function. :meth:`fit` continues
-    from the current state, and resumes from a specific snapshot when passed a previous
-    :class:`SVIState`; the last state is kept on the trainer, where
+    The trainer owns the training state: the guide parameters and the optimizer state live
+    in shared variables it creates once and hands to every compiled step. :meth:`fit`
+    continues from the current state, and resumes from a specific snapshot when passed a
+    previous :class:`SVIState`. The last state is kept on the trainer, where
     :meth:`sample_posterior` picks it up.
 
     Configuration splits along the same line. Everything compiled into the step function
@@ -197,11 +176,8 @@ class Trainer:
         self._fit_model: Model | None = None
         self._stream_shareds: dict[str, SharedVariable] = {}
         self._logp_scalings: dict[str, float] = {}
-        self._step_fn: TrainingFn | None = None
-        self._shared_params: dict | None = None
-        self._shared_optimizer_state: dict | None = None
-        self._sampling_fn: TrainingFn | None = None
-        self._sampling_draws: int | None = None
+        self._shared_params: dict[str, SharedVariable] | None = None
+        self._shared_optimizer_state: dict[str, SharedVariable] | None = None
         self._loss_history: list[float] = []
         self._step = 0
         self.state: SVIState | None = None
@@ -235,10 +211,10 @@ class Trainer:
         """Read the current training state out of the shared variables."""
         return SVIState(
             params={
-                name: shared.get_value().copy() for name, shared in self._shared_params.items()
+                name: np.array(shared.get_value()) for name, shared in self._shared_params.items()
             },
             optimizer_state={
-                name: shared.get_value().copy()
+                name: np.array(shared.get_value())
                 for name, shared in self._shared_optimizer_state.items()
             },
             step=self._step,
@@ -263,26 +239,68 @@ class Trainer:
                 return self._guide_factory(model)
             return AutoDiagonalNormal(model, random_seed=self.random_seed)
 
-    def _compile_step_fn(
-        self, model: Model, guide: AutoGuideModel, optimizer: GradientTransformation
-    ) -> tuple[TrainingFn, dict[str, SharedVariable], dict[str, SharedVariable]]:
-        """Compile the step function, returning it and its shared variables."""
+    def _bind_guide(self, model: Model) -> None:
+        """Build the guide on first use, and the shared variables that hold the training state."""
+        if self._guide is None:
+            self._guide = self._build_guide(model)
+        if self._shared_params is None:
+            self._shared_params = shared_guide_params(self._guide)
+            self._shared_optimizer_state = shared_optimizer_state(
+                self._optimizer, self._guide, self._shared_params
+            )
+
+    def _step_fn(self, model: Model, random_seed) -> TrainingFn:
+        if random_seed is not None and self._linker_detaches_rngs:
+            return self._compile_step_fn(model, random_seed=random_seed)
+
+        step_fn = self._cached_step_fn(model)
+        if random_seed is not None:
+            reseed_rngs(find_rng_nodes(step_fn.maker.fgraph.outputs), random_seed)
+
+        return step_fn
+
+    def _sampling_fn(self, model: Model, draws: int, random_seed) -> SamplingFn:
+        if random_seed is not None and self._linker_detaches_rngs:
+            return self._compile_sampling_fn(model, draws, random_seed=random_seed)
+
+        sampling_fn = self._cached_sampling_fn(model, draws)
+        if random_seed is not None:
+            reseed_rngs(find_rng_nodes(sampling_fn.maker.fgraph.outputs), random_seed)
+
+        return sampling_fn
+
+    @property
+    def _linker_detaches_rngs(self) -> bool:
+        return _rng_detaching_linker(self.compile_kwargs.get("mode"))
+
+    @locally_cachedmethod
+    def _cached_step_fn(self, model: Model) -> TrainingFn:
+        return self._compile_step_fn(model, random_seed=None)
+
+    @locally_cachedmethod
+    def _cached_sampling_fn(self, model: Model, draws: int) -> SamplingFn:
+        return self._compile_sampling_fn(model, draws, random_seed=None)
+
+    def _compile_step_fn(self, model: Model, random_seed) -> TrainingFn:
         return compile_svi_step_fn(
             model,
-            guide,
-            optimizer,
+            self._guide,
+            self._optimizer,
+            shared_params=self._shared_params,
+            optimizer_state=self._shared_optimizer_state,
             draws=self._n_particles,
             path_derivative_gradient=self._path_derivative_gradient,
             logp_scalings=self._logp_scalings_for(model),
+            random_seed=random_seed,
             **self.compile_kwargs,
         )
 
-    def _compile_sampling_fn(self, model: Model, guide: AutoGuideModel, draws: int) -> TrainingFn:
-        """Compile the posterior sampling function."""
+    def _compile_sampling_fn(self, model: Model, draws: int, random_seed) -> SamplingFn:
         return compile_sampling_fn(
             model=model,
-            guide=guide,
+            guide=self._guide,
             draws=draws,
+            random_seed=random_seed,
             **self.compile_kwargs,
         )
 
@@ -399,11 +417,10 @@ class Trainer:
         """
         Run ``n`` optimization steps.
 
-        The guide parameters and the optimizer state live in shared variables updated in
-        place by the compiled step function, so nothing round-trips through Python per
-        step. Repeated calls continue from the current state; pass a previous
-        :class:`SVIState` to resume from a specific snapshot. The final state is stored
-        on the trainer.
+        The compiled step updates the guide parameters and the optimizer state in place, so
+        nothing round-trips through Python per step. Repeated calls continue from the current
+        state. Pass a previous :class:`SVIState` to resume from a specific snapshot. The final
+        state is stored on the trainer.
 
         Parameters
         ----------
@@ -484,20 +501,12 @@ class Trainer:
                 "on streaming, or use a new Trainer to fit the full dataset."
             )
 
-        if self._step_fn is None:
-            if self._guide is None:
-                self._guide = self._build_guide(model)
-            self._step_fn, self._shared_params, self._shared_optimizer_state = (
-                self._compile_step_fn(model, self._guide, self._optimizer)
-            )
+        self._bind_guide(model)
+        step_fn = self._step_fn(model, random_seed)
         if state is not None:
             self._restore(state)
 
-        if random_seed is not None:
-            _reseed_function_rngs(self._step_fn, random_seed)
-
         start_step = self._step
-        step_fn = self._step_fn
         losses: list = []
 
         progress = make_advi_progress_bar(theme=default_progress_theme)
@@ -602,17 +611,11 @@ class Trainer:
         # When a data stream was used, the guide and compiled functions belong to the
         # stream-observed model, whose observed RVs are excluded from the posterior.
         fit_model = self._fit_model if self._fit_model is not None else model
-        if self._sampling_fn is None or self._sampling_draws != draws:
-            if self._guide is None:
-                self._guide = self._build_guide(fit_model)
-            self._sampling_fn = self._compile_sampling_fn(fit_model, self._guide, draws)
-            self._sampling_draws = draws
-
-        if random_seed is not None:
-            _reseed_function_rngs(self._sampling_fn, random_seed)
+        self._bind_guide(fit_model)
+        sampling_fn = self._sampling_fn(fit_model, draws, random_seed)
 
         params = {name: np.asarray(value) for name, value in state.params.items()}
-        samples = self._sampling_fn(**params)
+        samples = sampling_fn(**params)
         # compile_sampling_fn emits draws in free_RVs order, so name them from that same
         # list rather than from a second one that only happens to agree with it.
         posterior = {

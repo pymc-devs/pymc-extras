@@ -70,19 +70,62 @@ def test_fit_with_schedule_optimizer(conjugate_model):
 
 
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
-def test_fit_advi_random_seed_jax(conjugate_model):
-    # The JAX linker replaces RNG shared variables with internal copies at compile time,
-    # so seeding must reach the compiled function's own storage
-    pytest.importorskip("jax")
+@pytest.mark.filterwarnings("ignore:MLX does not support float64")
+@pytest.mark.parametrize("backend", ["jax", "mlx"])
+def test_fit_advi_random_seed_detaching_backend(conjugate_model, backend):
+    """The JAX and MLX linkers copy the RNGs at compile time, so a seed means a fresh compile."""
+    pytest.importorskip(backend)
     model, *_ = conjugate_model
 
-    kwargs = dict(model=model, n_steps=50, draws=50, backend="jax")
-    draws_a = fit_advi(random_seed=42, **kwargs)["posterior"].dataset["theta"].values
-    draws_b = fit_advi(random_seed=42, **kwargs)["posterior"].dataset["theta"].values
-    draws_c = fit_advi(random_seed=13, **kwargs)["posterior"].dataset["theta"].values
+    with model:
+        trainer_a, trainer_b = Trainer(backend=backend), Trainer(backend=backend)
+        fit_a = trainer_a.fit(50, random_seed=42)
+        fit_b = trainer_b.fit(50, random_seed=42)
+        fit_c = trainer_b.fit(50, random_seed=13)
 
-    np.testing.assert_array_equal(draws_a, draws_b)
-    assert not np.array_equal(draws_a, draws_c)
+        draws_a = trainer_a.sample_posterior(50, random_seed=7)["posterior"].dataset["theta"]
+        draws_b = trainer_a.sample_posterior(50, random_seed=7)["posterior"].dataset["theta"]
+        draws_c = trainer_a.sample_posterior(50, random_seed=8)["posterior"].dataset["theta"]
+
+    # Training and posterior sampling are seeded separately, so each is checked on its own.
+    np.testing.assert_array_equal(fit_a.loss_history, fit_b.loss_history)
+    assert not np.array_equal(fit_b.loss_history[:50], fit_c.loss_history[50:])
+    np.testing.assert_array_equal(draws_a.values, draws_b.values)
+    assert not np.array_equal(draws_a.values, draws_c.values)
+
+
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+@pytest.mark.filterwarnings("ignore:MLX does not support float64")
+@pytest.mark.parametrize(
+    "backend",
+    [
+        "numba",
+        "jax",
+        pytest.param(
+            "mlx",
+            marks=pytest.mark.skip(
+                reason="the MLX linker stores float32 mx.arrays back into float64 shared "
+                "variables, so the second compile sees mismatched dtypes; pytensor PR 2378"
+            ),
+        ),
+    ],
+)
+def test_reseeding_a_continued_fit(conjugate_model, backend):
+    """A seed on a later fit must change the stream without restarting the optimization."""
+    pytest.importorskip(backend)
+    model, *_ = conjugate_model
+
+    with model:
+        trainer = Trainer(backend=backend)
+        first = trainer.fit(20, random_seed=1)
+        second = trainer.fit(20, random_seed=1)
+        third = trainer.fit(20, random_seed=2)
+
+    assert (first.step, second.step, third.step) == (20, 40, 60)
+    np.testing.assert_array_equal(second.loss_history[:20], first.loss_history)
+    assert not np.array_equal(third.loss_history[40:], second.loss_history[20:40])
+    # The optimizer's state continues too, even where a new seed meant a new compiled step.
+    assert third.optimizer_state["adam_t"] == 60
 
 
 def test_fit_continues(conjugate_model):
