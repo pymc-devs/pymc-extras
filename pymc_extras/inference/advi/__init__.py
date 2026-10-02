@@ -6,45 +6,16 @@ from pymc_extras.inference.advi.autoguide import (
     get_value_shapes_and_dims,
 )
 from pymc_extras.inference.advi.fit import fit_advi
-from pymc_extras.inference.advi.optimizers import (
-    GradientTransformation,
-    adam,
-    apply_updates,
-    chain,
-    clip_by_global_norm,
-    clipped_adam,
-    linear_onecycle_schedule,
-    rmsprop,
-    scale,
-    scale_by_adam,
-    scale_by_learning_rate,
-    scale_by_rmsprop,
-    scale_by_schedule,
-    sgd,
-)
-from pymc_extras.inference.advi.training import SVIState, Trainer
+from pymc_extras.inference.advi.training import SVIState, Trainer, default_optimizer
 
 __all__ = [
     "AutoDiagonalNormal",
     "AutoGuideModel",
     "AutoLowRankMultivariateNormal",
     "AutoMultivariateNormal",
-    "GradientTransformation",
     "SVIState",
     "Trainer",
-    "adam",
-    "apply_updates",
-    "chain",
-    "clip_by_global_norm",
-    "clipped_adam",
+    "default_optimizer",
     "fit_advi",
     "get_value_shapes_and_dims",
-    "linear_onecycle_schedule",
-    "rmsprop",
-    "scale",
-    "scale_by_adam",
-    "scale_by_learning_rate",
-    "scale_by_rmsprop",
-    "scale_by_schedule",
-    "sgd",
 ]

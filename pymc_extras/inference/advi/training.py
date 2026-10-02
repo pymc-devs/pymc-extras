@@ -1,4 +1,5 @@
 import time
+import warnings
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from pymc.util import WithMemoization, locally_cachedmethod
 from pymc.variational.minibatch_rv import MinibatchRandomVariable
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import ancestors
+from pytensor.tensor import TensorVariable
+from pytensor_ml.optim import Transform, Updates, adam, apply_if_finite, chain, clip_by_global_norm
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -35,12 +38,11 @@ from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideMo
 from pymc_extras.inference.advi.compile import (
     SamplingFn,
     TrainingFn,
+    build_svi_step,
     compile_sampling_fn,
     compile_svi_step_fn,
     shared_guide_params,
-    shared_optimizer_state,
 )
-from pymc_extras.inference.advi.optimizers import GradientTransformation, clipped_adam
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 
 
@@ -99,6 +101,21 @@ class SVIState:
     loss_history: np.ndarray
 
 
+# A fit whose last few ELBO estimates are all non-finite has most likely stopped moving.
+_STALLED_STEPS = 5
+
+
+def default_optimizer() -> Transform:
+    """
+    Adam at 0.01 on gradients clipped to a global norm of 10, skipping non-finite steps.
+
+    The guard skips without limit; :meth:`Trainer.fit` warns when a fit stalls instead.
+    """
+    # The guard's own give-up check is a runtime assertion, which JAX and MLX drop when they trace
+    # the step.
+    return apply_if_finite(chain(clip_by_global_norm(10.0), adam(0.01)), max_consecutive_skips=None)
+
+
 class Trainer(WithMemoization):
     """
     Trainer for stochastic variational inference.
@@ -123,9 +140,13 @@ class Trainer(WithMemoization):
         The guide to fit: an :class:`AutoGuideModel`, or a factory mapping the model
         to one. By default an :func:`AutoDiagonalNormal` guide is built from the
         model (mean-field ADVI).
-    optimizer : GradientTransformation, optional
-        An optax-like optimizer (actual optax optimizers are compatible). By default
-        a :func:`clipped_adam` optimizer is used.
+    optimizer : Transform, optional
+        A :mod:`pytensor_ml.optim` optimizer: an update rule such as ``adam(1e-2)``, optionally
+        chained with gradient clipping, a learning-rate schedule, or a guard such as
+        ``apply_if_finite`` or ``skip_if(..., large_step(...))``. By default the gradients are
+        clipped to a global norm of 10 and fed to Adam at a rate of 0.01, and a step that would
+        write a non-finite value is skipped, leaving the guide and the optimizer state as they
+        were.
     n_particles : int, optional
         Number of guide draws per step used to estimate the ELBO gradient, by
         default 1.
@@ -155,14 +176,14 @@ class Trainer(WithMemoization):
         self,
         *,
         guide: AutoGuideModel | Callable[[Model], AutoGuideModel] | None = None,
-        optimizer: GradientTransformation | None = None,
+        optimizer: Transform | None = None,
         n_particles: int = 1,
         path_derivative_gradient: bool = True,
         backend: str | None = None,
         compile_kwargs: dict | None = None,
         random_seed=None,
     ):
-        self._optimizer = optimizer if optimizer is not None else clipped_adam()
+        self._optimizer = optimizer if optimizer is not None else default_optimizer()
 
         self.compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
         self.random_seed = random_seed
@@ -188,7 +209,7 @@ class Trainer(WithMemoization):
         return self._guide
 
     @property
-    def optimizer(self) -> GradientTransformation:
+    def optimizer(self) -> Transform:
         """The optimizer driving the updates. Fixed at construction."""
         return self._optimizer
 
@@ -245,9 +266,6 @@ class Trainer(WithMemoization):
             self._guide = self._build_guide(model)
         if self._shared_params is None:
             self._shared_params = shared_guide_params(self._guide)
-            self._shared_optimizer_state = shared_optimizer_state(
-                self._optimizer, self._guide, self._shared_params
-            )
 
     def _step_fn(self, model: Model, random_seed) -> TrainingFn:
         if random_seed is not None and self._linker_detaches_rngs:
@@ -274,6 +292,20 @@ class Trainer(WithMemoization):
         return _rng_detaching_linker(self.compile_kwargs.get("mode"))
 
     @locally_cachedmethod
+    def _svi_step(self, model: Model) -> tuple[TensorVariable, Updates]:
+        """Call the optimizer once per model, so every compile of the step shares its state."""
+        negative_elbo, updates = build_svi_step(
+            model,
+            self._guide,
+            self._optimizer,
+            shared_params=self._shared_params,
+            draws=self._n_particles,
+            path_derivative_gradient=self._path_derivative_gradient,
+            logp_scalings=self._logp_scalings_for(model),
+        )
+        return negative_elbo, updates
+
+    @locally_cachedmethod
     def _cached_step_fn(self, model: Model) -> TrainingFn:
         return self._compile_step_fn(model, random_seed=None)
 
@@ -282,17 +314,9 @@ class Trainer(WithMemoization):
         return self._compile_sampling_fn(model, draws, random_seed=None)
 
     def _compile_step_fn(self, model: Model, random_seed) -> TrainingFn:
+        negative_elbo, updates = self._svi_step(model)
         return compile_svi_step_fn(
-            model,
-            self._guide,
-            self._optimizer,
-            shared_params=self._shared_params,
-            optimizer_state=self._shared_optimizer_state,
-            draws=self._n_particles,
-            path_derivative_gradient=self._path_derivative_gradient,
-            logp_scalings=self._logp_scalings_for(model),
-            random_seed=random_seed,
-            **self.compile_kwargs,
+            negative_elbo, updates, random_seed=random_seed, **self.compile_kwargs
         )
 
     def _compile_sampling_fn(self, model: Model, draws: int, random_seed) -> SamplingFn:
@@ -503,6 +527,11 @@ class Trainer(WithMemoization):
 
         self._bind_guide(model)
         step_fn = self._step_fn(model, random_seed)
+        _, updates = self._svi_step(model)
+        params = set(self._shared_params.values())
+        self._shared_optimizer_state = {
+            variable.name: variable for variable in updates if variable not in params
+        }
         if state is not None:
             self._restore(state)
 
@@ -569,6 +598,16 @@ class Trainer(WithMemoization):
             pass
 
         self._loss_history.extend(np.asarray(losses, dtype=float).tolist())
+        recent = np.asarray(self._loss_history[-_STALLED_STEPS:])
+        if recent.size == _STALLED_STEPS and not np.isfinite(recent).any():
+            warnings.warn(
+                f"The last {_STALLED_STEPS} ELBO estimates were not finite. A guarded optimizer "
+                "skips the steps that would write non-finite parameters, so the guide may have "
+                "stopped moving. Lower the learning rate, clip the gradients harder, or look for "
+                "a term in the model that can overflow.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         self._step += len(losses)
 
         self.state = self._snapshot()

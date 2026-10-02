@@ -40,6 +40,7 @@ dependencies = [
   "better-optimize>=0.4.2,<1.0",
   "pydantic>=2.0.0,<3.0",
   "preliz>=0.27.0,<0.29.0",
+  "pytensor-ml>0.2.2",
 ]
 
 [project.optional-dependencies]
