@@ -70,10 +70,7 @@ class TestGenExtremeClass:
 
     def test_logcdf(self):
         def ref_logcdf(value, mu, sigma, xi):
-            if 1 + xi * (value - mu) / sigma > 0:
-                return sp.genextreme.logcdf(value, c=-xi, loc=mu, scale=sigma)
-            else:
-                return -np.inf
+            return sp.genextreme.logcdf(value, c=-xi, loc=mu, scale=sigma)
 
         check_logcdf(
             GenExtreme,
@@ -85,6 +82,37 @@ class TestGenExtremeClass:
             },
             ref_logcdf,
             decimal=select_by_precision(float64=6, float32=2),
+        )
+
+    @pytest.mark.parametrize("mu, sigma", [(0.0, 1.0), (3.0, 2.0)])
+    @pytest.mark.parametrize(
+        "xi, offsets, expected",
+        [
+            (-0.5, [-0.1, 0.0, 0.1], [-0.0025, 0.0, 0.0]),
+            (0.5, [-0.1, 0.0, 0.1], [-np.inf, -np.inf, -400.0]),
+        ],
+    )
+    def test_logcdf_support_endpoints(self, mu, sigma, xi, offsets, expected):
+        endpoint = mu - sigma / xi
+        values = endpoint + sigma * np.array(offsets)
+        actual = pm.logcdf(GenExtreme.dist(mu=mu, sigma=sigma, xi=xi), values).eval()
+
+        np.testing.assert_allclose(
+            actual, expected, rtol=select_by_precision(float64=1e-10, float32=1e-4)
+        )
+
+    @pytest.mark.parametrize("scipy", [False, True])
+    def test_logcdf_vector_parameters(self, scipy):
+        mu = np.array([3.0, -4.0, 2.0])
+        sigma = np.array([2.0, 0.5, 3.0])
+        xi = np.array([-0.5, 0.25, 0.0])
+        values = np.array([[6.8, -6.1, -1.0], [7.0, -6.0, 2.0], [7.2, -5.9, 5.0]])
+        dist = GenExtreme.dist(mu=mu, sigma=sigma, xi=-xi if scipy else xi, scipy=scipy)
+        actual = pm.logcdf(dist, values).eval()
+        expected = sp.genextreme.logcdf(values, c=-xi, loc=mu, scale=sigma)
+
+        np.testing.assert_allclose(
+            actual, expected, rtol=select_by_precision(float64=1e-10, float32=1e-4)
         )
 
     @pytest.mark.parametrize(
