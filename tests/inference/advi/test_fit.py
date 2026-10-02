@@ -3,20 +3,17 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
-from pymc_extras.inference.advi import (
-    Trainer,
+from pytensor_ml.optim import (
     adam,
+    apply_if_finite,
     chain,
     clip_by_global_norm,
-    clipped_adam,
-    fit_advi,
     linear_onecycle_schedule,
     rmsprop,
-    scale_by_adam,
-    scale_by_learning_rate,
-    scale_by_schedule,
     sgd,
 )
+
+from pymc_extras.inference.advi import Trainer, default_optimizer, fit_advi
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
 
 
@@ -57,8 +54,8 @@ def test_fit_advi_random_seed(conjugate_model):
 def test_fit_with_schedule_optimizer(conjugate_model):
     # A learning-rate schedule must be usable through the compiled Trainer path
     model, post_mean, post_var = conjugate_model
-    schedule = linear_onecycle_schedule(transition_steps=2_000, peak_value=0.1)
-    optimizer = chain(clip_by_global_norm(10.0), scale_by_adam(), scale_by_learning_rate(schedule))
+    schedule = linear_onecycle_schedule(peak_value=0.1, total_steps=2_000)
+    optimizer = chain(clip_by_global_norm(10.0), adam(learning_rate=schedule))
     trainer = Trainer(optimizer=optimizer)
 
     with model:
@@ -125,7 +122,7 @@ def test_reseeding_a_continued_fit(conjugate_model, backend):
     np.testing.assert_array_equal(second.loss_history[:20], first.loss_history)
     assert not np.array_equal(third.loss_history[40:], second.loss_history[20:40])
     # The optimizer's state continues too, even where a new seed meant a new compiled step.
-    assert third.optimizer_state["adam_t"] == 60
+    assert third.optimizer_state["adam/step_count"] == 60
 
 
 def test_fit_continues(conjugate_model):
@@ -144,10 +141,13 @@ def test_fit_continues(conjugate_model):
     assert not np.allclose(first.params["theta_loc"], second.params["theta_loc"])
 
 
-@pytest.mark.parametrize("make_optimizer", [clipped_adam, sgd, rmsprop, adam])
-def test_snapshot_restore_is_optimizer_agnostic(conjugate_model, make_optimizer):
+@pytest.mark.parametrize(
+    "optimizer",
+    [default_optimizer(), sgd(0.01), rmsprop(0.01), adam(0.01)],
+    ids=["default", "sgd", "rmsprop", "adam"],
+)
+def test_snapshot_restore_is_optimizer_agnostic(conjugate_model, optimizer):
     model, *_ = conjugate_model
-    optimizer = make_optimizer(0.01)
 
     trainer = Trainer(optimizer=optimizer)
     with model:
@@ -169,16 +169,37 @@ def test_snapshot_restore_is_optimizer_agnostic(conjugate_model, make_optimizer)
 
 def test_duplicate_optimizer_state_names_are_refused(conjugate_model):
     model, *_ = conjugate_model
-    schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.01)
-
-    # both stages allocate a step counter named "lr_t", so keying the snapshot by name
-    # would keep one and resume the other from whatever it happened to hold
-    doubled = chain(scale_by_adam(), scale_by_schedule(schedule), scale_by_schedule(schedule))
+    # both guards allocate skip counters under the default "skip_if" namespace, so keying the
+    # snapshot by name would keep one and resume the other from whatever it happened to hold
+    doubled = apply_if_finite(apply_if_finite(adam(0.01)))
 
     # the collision is detected while compiling, before any step is taken
     trainer = Trainer(optimizer=doubled)
-    with model, pytest.raises(ValueError, match="more than one state variable named"):
+    with model, pytest.raises(ValueError, match="share the name"):
         trainer.fit(1)
+
+
+def test_default_optimizer_skips_non_finite_steps():
+    """A guide draw past theta = 2 gives a nan gradient, which must not poison the fit."""
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 1)
+        pm.Potential("nan_past_two", pt.sqrt(2.0 - theta))
+
+    trainer = Trainer(random_seed=0)
+    with model:
+        state = trainer.fit(300, random_seed=1)
+
+    assert state.optimizer_state["skip_if/total_skips"] > 0
+    assert all(np.isfinite(value).all() for value in state.params.values())
+
+
+def test_a_fit_that_never_leaves_nan_warns():
+    with pm.Model() as model:
+        theta = pm.Normal("theta", 0, 1)
+        pm.Potential("nan_everywhere", pt.log(-1.0 - theta**2))
+
+    with model, pytest.warns(RuntimeWarning, match="ELBO estimates were not finite"):
+        Trainer(random_seed=0).fit(20, random_seed=1)
 
 
 def test_posterior_draws_are_named_for_their_own_variable():
@@ -239,13 +260,15 @@ def test_trainer_state_is_complete_and_honest(conjugate_model):
         np.testing.assert_array_equal(value, state.params[name])
     assert set(state.params) == {"theta_loc", "theta_scale"}
     assert set(state.optimizer_state) == {
-        "adam_t",
-        "adam_m_theta_loc",
-        "adam_v_theta_loc",
-        "adam_m_theta_scale",
-        "adam_v_theta_scale",
+        "adam/step_count",
+        "theta_loc/adam/first_moment",
+        "theta_loc/adam/second_moment",
+        "theta_scale/adam/first_moment",
+        "theta_scale/adam/second_moment",
+        "skip_if/consecutive_skips",
+        "skip_if/total_skips",
     }
-    assert state.optimizer_state["adam_t"] == 50
+    assert state.optimizer_state["adam/step_count"] == 50
 
     # compile-time configuration is read-only rather than silently ignored
     with pytest.raises(AttributeError):
