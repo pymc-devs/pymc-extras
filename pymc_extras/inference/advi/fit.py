@@ -6,8 +6,8 @@ from pymc import Model, modelcontext
 from xarray import DataTree
 
 from pymc_extras.inference.advi.idata import (
+    add_fit_stats_to_inference_data,
     add_fit_to_inference_data,
-    add_optimizer_result_to_inference_data,
 )
 from pymc_extras.inference.advi.optimizers import GradientTransformation
 from pymc_extras.inference.advi.training import Trainer
@@ -61,8 +61,8 @@ def fit_advi(
     Returns
     -------
     DataTree
-        Posterior draws from the fitted guide, the guide's mean and covariance in the
-        ``fit`` group, and the ELBO trace and optimizer state in ``optimizer_result``.
+        Posterior draws from the fitted guide, the guide's mean and standard deviation in
+        the ``fit`` group, and the ELBO trace in ``fit_stats``.
     """
     model = modelcontext(model)
 
@@ -83,11 +83,5 @@ def fit_advi(
     state = trainer.fit(n_steps, model=model, random_seed=train_seed)
     idata = trainer.sample_posterior(draws, model=model, random_seed=sampling_seed)
     idata = add_fit_to_inference_data(idata, trainer.guide, state.params, model=model)
-    idata = add_optimizer_result_to_inference_data(
-        idata,
-        loss_history=state.loss_history,
-        step=state.step,
-        optimizer_state=state.optimizer_state,
-        parameter_names=list(state.params),
-    )
+    idata = add_fit_stats_to_inference_data(idata=idata, loss_history=state.loss_history)
     return idata

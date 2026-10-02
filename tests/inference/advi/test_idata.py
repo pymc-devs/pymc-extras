@@ -12,8 +12,8 @@ from pymc_extras.inference.advi.autoguide import (
     AutoMultivariateNormal,
 )
 from pymc_extras.inference.advi.idata import (
+    add_fit_stats_to_inference_data,
     add_fit_to_inference_data,
-    add_optimizer_result_to_inference_data,
 )
 
 
@@ -168,115 +168,11 @@ def test_fit_group_defaults_to_the_raw_parameters_of_a_custom_guide(model):
     assert "rows" not in fit.coords
 
 
-def test_optimizer_result_group_holds_the_trace_and_the_buffers():
+def test_fit_stats_group_holds_the_elbo_over_steps():
     loss_history = np.array([5.0, 4.0, 3.5])
-    optimizer_state = {
-        "adam_t": np.asarray(3),
-        "adam_m_theta_loc": np.zeros(2),
-        "adam_v_theta_loc": np.ones(2),
-        "adam_m_theta_scale": np.asarray(0.5),
-        "adam_v_theta_scale": np.asarray(1.5),
-    }
 
-    idata = add_optimizer_result_to_inference_data(
-        DataTree(),
-        loss_history=loss_history,
-        step=3,
-        optimizer_state=optimizer_state,
-        parameter_names=["theta_loc", "theta_scale"],
-    )
-    group = idata["optimizer_result"].dataset
+    fit_stats = add_fit_stats_to_inference_data(DataTree(), loss_history)["fit_stats"].dataset
 
     # the trace is reported as the ELBO, which is the negated loss the optimizer minimizes
-    np.testing.assert_allclose(group["elbo"].values, -loss_history)
-    assert group["elbo"].dims == ("step",)
-    assert group["step_count"].item() == 3
-
-    # one variable per buffer kind over a labelled parameter dim, not one per buffer, and
-    # the clock stays a scalar because it belongs to no parameter
-    assert set(group.data_vars) == {"elbo", "step_count", "adam_t", "adam_m", "adam_v"}
-    assert group["adam_t"].shape == ()
-    assert group["adam_m"].dims == ("parameter",)
-    assert list(group.coords["parameter"].values) == [
-        "theta_loc[0]",
-        "theta_loc[1]",
-        "theta_scale",
-    ]
-    np.testing.assert_allclose(group["adam_m"].values, [0.0, 0.0, 0.5])
-    np.testing.assert_allclose(group["adam_v"].values, [1.0, 1.0, 1.5])
-
-
-def test_optimizer_result_refuses_a_kind_that_covers_some_parameters():
-    with pytest.raises(ValueError, match="cover only some of the guide's parameters"):
-        add_optimizer_result_to_inference_data(
-            DataTree(),
-            loss_history=np.zeros(1),
-            step=1,
-            optimizer_state={"adam_m_theta_loc": np.zeros(2)},
-            parameter_names=["theta_loc", "theta_scale"],
-        )
-
-
-def test_optimizer_result_splits_a_parameter_whose_name_suffixes_another():
-    # a hierarchical model gives the guide both "beta_loc" and "mu_beta_loc", so
-    # "adam_m_mu_beta_loc" ends with two parameter names and only the longer one is right
-    idata = add_optimizer_result_to_inference_data(
-        DataTree(),
-        loss_history=np.zeros(1),
-        step=1,
-        optimizer_state={
-            "adam_m_beta_loc": np.full(2, 1.0),
-            "adam_m_mu_beta_loc": np.full(1, 2.0),
-        },
-        parameter_names=["beta_loc", "mu_beta_loc"],
-    )
-    group = idata["optimizer_result"].dataset
-
-    assert set(group.data_vars) == {"elbo", "step_count", "adam_m"}
-    assert list(group.coords["parameter"].values) == [
-        "beta_loc[0]",
-        "beta_loc[1]",
-        "mu_beta_loc[0]",
-    ]
-    np.testing.assert_allclose(group["adam_m"].values, [1.0, 1.0, 2.0])
-
-
-def test_optimizer_result_parameter_dim_follows_the_guide_order_and_labels_every_element():
-    # the buffers arrive in the optimizer's order, not the guide's, and a full-rank guide
-    # carries a matrix parameter whose elements must line up with their labels
-    idata = add_optimizer_result_to_inference_data(
-        DataTree(),
-        loss_history=np.zeros(1),
-        step=1,
-        optimizer_state={
-            "adam_m_theta_cholesky": np.array([[1.0, 2.0], [3.0, 4.0]]),
-            "adam_m_theta_loc": np.array([5.0, 6.0]),
-        },
-        parameter_names=["theta_loc", "theta_cholesky"],
-    )
-    group = idata["optimizer_result"].dataset
-
-    assert list(group.coords["parameter"].values) == [
-        "theta_loc[0]",
-        "theta_loc[1]",
-        "theta_cholesky[0,0]",
-        "theta_cholesky[0,1]",
-        "theta_cholesky[1,0]",
-        "theta_cholesky[1,1]",
-    ]
-    np.testing.assert_allclose(group["adam_m"].values, [5.0, 6.0, 1.0, 2.0, 3.0, 4.0])
-
-
-def test_optimizer_result_group_holds_only_arrays_every_backend_can_store():
-    idata = add_optimizer_result_to_inference_data(
-        DataTree(),
-        loss_history=np.array([1.0, 2.0]),
-        step=2,
-        optimizer_state={"adam_t": np.asarray(2), "adam_m_x": np.zeros(3)},
-        parameter_names=["x"],
-    )
-    group = idata["optimizer_result"].dataset
-
-    for name, array in group.data_vars.items():
-        assert array.dtype.kind in "fiu", f"{name} has non-numeric dtype {array.dtype}"
-    assert group.attrs == {}
+    np.testing.assert_allclose(fit_stats["elbo"].values, -loss_history)
+    assert all(array.dims == ("step",) for array in fit_stats.data_vars.values())
