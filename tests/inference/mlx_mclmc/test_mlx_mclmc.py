@@ -10,7 +10,9 @@ mx = pytest.importorskip("mlx.core", reason="MCLMC requires mlx, which needs App
 
 from pymc_extras.inference.mlx_mclmc import fit_mlx_mclmc
 from pymc_extras.inference.mlx_mclmc.kernel import (
+    INTEGRATOR_COEFFICIENTS,
     AdaptationSettings,
+    AdaptationState,
     Metric,
     TunedParameters,
     _accumulate,
@@ -18,6 +20,7 @@ from pymc_extras.inference.mlx_mclmc.kernel import (
     _ess_per_dim,
     _fit_metric,
     _low_rank_metric,
+    _make_adapt_step,
     _optimize_to_mode,
     _window_switch_steps,
     sample,
@@ -393,6 +396,48 @@ def test_non_finite_initial_logdensity_is_rejected(float32):
 
     with pytest.raises(ValueError, match="log-density is not finite"):
         fit_mlx_mclmc(draws=10, tune=100, chains=2, model=model)
+
+
+def test_step_size_cap_relaxes_after_finite_steps():
+    """A NaN step lowers the cap, and finite steps must raise it again or it only ratchets down."""
+    dim, chains = 3, 2
+
+    def logdensity_fn(x):
+        return -0.5 * mx.sum(x**2)
+
+    logp_and_grad = mx.vmap(mx.value_and_grad(logdensity_fn))
+    adapt_step = _make_adapt_step(
+        logp_and_grad=logp_and_grad,
+        coefficients=INTEGRATOR_COEFFICIENTS["mclachlan"],
+        settings=AdaptationSettings(),
+        dim=dim,
+        compile_step=False,
+    )
+
+    position = mx.random.normal(shape=(chains, dim), key=mx.random.key(0))
+    logdensity, grad = logp_and_grad(position)
+    momentum = mx.random.normal(shape=(chains, dim), key=mx.random.key(1))
+    capped = mx.full((chains,), 0.01, dtype=mx.float32)
+    state = AdaptationState(
+        position=position,
+        momentum=momentum / mx.linalg.norm(momentum, axis=-1, keepdims=True),
+        logdensity=logdensity,
+        grad=grad,
+        step_size=capped,
+        step_size_max=capped,
+        time=mx.zeros((chains,)),
+        x_average=mx.zeros((chains,)),
+        foreground=_empty_moments(dim),
+        background=_empty_moments(dim),
+    )
+
+    key = mx.random.key(2)
+    for _ in range(50):
+        key, *keys = mx.random.split(key, num=4)
+        state = adapt_step(state, Metric(scale=mx.ones((dim,))), mx.ones((1,)), tuple(keys))
+
+    # The controller wants a step near 1 on a unit Gaussian, so only the cap holds it back.
+    assert (np.asarray(state.step_size) > 0.02).all()
 
 
 def test_ascent_skips_non_finite_steps_instead_of_absorbing_them():
