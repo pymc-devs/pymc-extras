@@ -338,6 +338,33 @@ def _spd_mean(left: np.ndarray, right: np.ndarray) -> np.ndarray:
     return right_inv_sqrt @ middle @ right_inv_sqrt
 
 
+def metric_from_low_rank_covariance(diagonal_sd: np.ndarray, factor: np.ndarray) -> Metric:
+    r"""
+    The metric whose inverse mass matrix is :math:`W W^\top + \mathrm{diag}(d^2)`.
+
+    With :math:`V = \mathrm{diag}(d)^{-1} W = U S Q^\top`, the covariance is
+    :math:`\mathrm{diag}(d)(I + U S^2 U^\top)\mathrm{diag}(d)`, so :math:`\Lambda = 1 + S^2`
+    and every gain :math:`\sqrt{\Lambda} - 1` is non-negative.
+
+    Parameters
+    ----------
+    diagonal_sd : np.ndarray
+        :math:`d`, of shape ``(dim,)``.
+    factor : np.ndarray
+        :math:`W`, of shape ``(dim, rank)``.
+    """
+    vectors, singular_values, _ = np.linalg.svd(factor / diagonal_sd[:, None], full_matrices=False)
+    gains = np.sqrt(1.0 + singular_values**2) - 1.0
+
+    return Metric(
+        scale=mx.array(diagonal_sd.astype(np.float32)),
+        correction=LowRankCorrection(
+            vectors=mx.array(vectors.astype(np.float32)),
+            scales=mx.array(gains.astype(np.float32)),
+        ),
+    )
+
+
 def _low_rank_metric(
     draws: np.ndarray,
     grads: np.ndarray,
@@ -1159,83 +1186,6 @@ def _ess_per_dim(samples: np.ndarray) -> np.ndarray:
     return n_samples / autocorr_time
 
 
-def _optimize_to_mode(
-    logp_and_grad: Callable,
-    position: mx.array,
-    steps: int,
-    learning_rate: float,
-    tolerance: float = 1e-4,
-    max_consecutive_skips: int = 5,
-) -> mx.array:
-    """
-    Ascend the log-density with Adam, to concentrate the adapting chain near the mode.
-
-    A step whose gradient or proposal is not finite is skipped whole -- the position and both Adam
-    moments keep their previous values, as ``optax.apply_if_finite`` does -- because folding a nan
-    gradient into the moments would poison every later step. The ascent gives up once that many
-    steps in a row are skipped.
-
-    Stops early once a block of steps improves the log-density by less than ``tolerance``. A
-    log-density unbounded above, as a centered hierarchical model has, never triggers that stop,
-    so ``steps`` remains a hard cap.
-
-    Parameters
-    ----------
-    tolerance : float
-        Smallest log-density improvement over a block of steps that counts as progress. Default
-        is 1e-4.
-    max_consecutive_skips : int
-        How many consecutive non-finite steps to tolerate before giving up. The count is exact
-        but only inspected when the lazy graph is forced, so the ascent can overshoot it slightly.
-        Default is 5.
-    """
-    beta1, beta2 = 0.9, 0.999
-    mean = mx.zeros_like(position)
-    mean_sq = mx.zeros_like(position)
-    previous_logdensity = -mx.inf
-
-    # Both counters are MLX arrays so the loop body stays lazy between the periodic mx.eval.
-    updates = mx.zeros(())
-    consecutive_skips = mx.zeros(())
-
-    for step in range(1, steps + 1):
-        logdensity, grad = logp_and_grad(position)
-        usable = mx.all(mx.isfinite(grad))
-
-        # A skipped step must not advance the moments or their bias correction, so the optimizer
-        # resumes from exactly where it was rather than from a nan-contaminated state.
-        next_updates = updates + 1
-        next_mean = beta1 * mean + (1 - beta1) * grad
-        next_mean_sq = beta2 * mean_sq + (1 - beta2) * grad * grad
-        mean_hat = next_mean / (1 - mx.power(beta1, next_updates))
-        mean_sq_hat = next_mean_sq / (1 - mx.power(beta2, next_updates))
-        proposed = position + learning_rate * mean_hat / (mx.sqrt(mean_sq_hat) + 1e-8)
-
-        applied = usable & mx.all(mx.isfinite(proposed))
-        position = mx.where(applied, proposed, position)
-        mean = mx.where(applied, next_mean, mean)
-        mean_sq = mx.where(applied, next_mean_sq, mean_sq)
-        updates = mx.where(applied, next_updates, updates)
-        consecutive_skips = mx.where(applied, mx.zeros(()), consecutive_skips + 1)
-
-        if step % _EVAL_EVERY == 0:
-            mx.eval(position, mean, mean_sq, updates, consecutive_skips, logdensity)
-            if float(consecutive_skips) >= max_consecutive_skips:
-                _log.warning(
-                    "Adam ascent to the mode stopped after %d steps: the log-density gradient "
-                    "kept coming back non-finite.",
-                    step,
-                )
-                break
-            if float(mx.max(logdensity - previous_logdensity)) < tolerance:
-                break
-            previous_logdensity = logdensity
-
-    mx.eval(position)
-
-    return position
-
-
 class _WarmupContext(NamedTuple):
     """What every adaptation phase needs and none of them change."""
 
@@ -1316,18 +1266,16 @@ def _make_adapt_step(
     return mx.compile(adapt_step) if compile_step else adapt_step
 
 
-def _jittered_starts(
-    logp_and_grad: Callable, initial_position: mx.array, chains: int, width: float, key: mx.array
+def _scattered_starts(
+    logp_and_grad: Callable, initial_position: mx.array, offsets: mx.array
 ) -> mx.array:
     """
-    Scatter ``chains`` starting points around ``initial_position`` by ``Uniform(-width, width)``.
+    Start one chain at ``initial_position + offset`` for each row of ``offsets``.
 
-    A chain whose jittered start has a non-finite log-density or gradient falls back to the
-    unjittered point, so a start on the boundary of the support does not take the run down.
+    A chain whose start has a non-finite log-density or gradient falls back to the unscattered
+    point, so a start on the boundary of the support does not take the run down.
     """
-    shape = (chains, initial_position.shape[-1])
-    jitter = mx.random.uniform(low=-width, high=width, shape=shape, key=key)
-    proposed = initial_position + jitter
+    proposed = initial_position + offsets
     logdensity, grad = logp_and_grad(proposed)
     usable = mx.isfinite(logdensity) & mx.all(mx.isfinite(grad), axis=-1)
 
@@ -1335,24 +1283,30 @@ def _jittered_starts(
 
 
 def _initial_adaptation_state(
-    context: _WarmupContext, initial_position: np.ndarray, chains: int, key: mx.array
+    context: _WarmupContext,
+    initial_position: np.ndarray,
+    chains: int,
+    key: mx.array,
+    initial_metric: Metric | None,
 ) -> AdaptationState:
-    """Check the starting point, scatter the chains, optionally ascend, and seed the controller."""
+    r"""
+    Check the starting point, scatter the chains, and seed the controller.
+
+    The chains scatter by draws of :math:`\mathcal{N}(0, M^{-1})` under an initial metric, and by
+    ``Uniform(-initial_jitter, initial_jitter)`` without one.
+    """
     dim, settings = context.dim, context.settings
-    jitter_key, momentum_key = mx.random.split(key, num=2)
+    scatter_key, momentum_key = mx.random.split(key, num=2)
 
     position = mx.array(initial_position).reshape(1, dim)
     _check_initial_state(*context.logp_and_grad(position))
-    position = _jittered_starts(
-        context.logp_and_grad, position, chains, width=settings.initial_jitter, key=jitter_key
-    )
-
-    position = _optimize_to_mode(
-        logp_and_grad=context.logp_and_grad,
-        position=position,
-        steps=settings.optimize_steps,
-        learning_rate=settings.optimize_learning_rate,
-    )
+    if initial_metric is None:
+        width = settings.initial_jitter
+        offsets = mx.random.uniform(low=-width, high=width, shape=(chains, dim), key=scatter_key)
+    else:
+        noise = mx.random.normal(shape=(chains, dim), key=scatter_key)
+        offsets = _unwhiten_momentum(initial_metric, noise)
+    position = _scattered_starts(context.logp_and_grad, position, offsets)
     logdensity, grad = context.logp_and_grad(position)
 
     return AdaptationState(
@@ -1577,6 +1531,7 @@ def warmup(
     integrator: str = "mclachlan",
     seed: int = 0,
     compile_step: bool = True,
+    initial_metric: Metric | None = None,
     progress: ProgressCallback | None = None,
 ) -> TunedParameters:
     r"""
@@ -1614,6 +1569,11 @@ def warmup(
         Seed for the MLX random key. Default is 0.
     compile_step : bool
         Whether to fuse the adapting step with ``mx.compile``. Default is True.
+    initial_metric : Metric, optional
+        An inverse mass matrix to start from, such as the covariance of a fitted Gaussian
+        approximation centered on ``initial_position``. The chains then start from normal draws
+        around ``initial_position`` with covariance :math:`M^{-1}`, and warmup starts under this
+        metric instead of the identity.
     progress : callable, optional
         Called with a :class:`ProgressReport` each time the lazy graph is forced.
 
@@ -1654,9 +1614,13 @@ def warmup(
     key = mx.random.key(seed)
     key, subkey = mx.random.split(key, num=2)
     state = _initial_adaptation_state(
-        context, initial_position=initial_position, chains=chains, key=subkey
+        context,
+        initial_position=initial_position,
+        chains=chains,
+        key=subkey,
+        initial_metric=initial_metric,
     )
-    metric = Metric(scale=mx.ones((dim,)))
+    metric = Metric(scale=mx.ones((dim,))) if initial_metric is None else initial_metric
     L = np.full(chains, math.sqrt(dim))
 
     state, key = _run_adapt_steps(
@@ -1709,6 +1673,7 @@ def warmup_and_sample(
     integrator: str = "mclachlan",
     seed: int = 0,
     compile_step: bool = True,
+    initial_metric: Metric | None = None,
     progress: ProgressCallback | None = None,
 ) -> tuple[SamplerOutput, TunedParameters]:
     """
@@ -1724,6 +1689,8 @@ def warmup_and_sample(
         Number of chains to run.
     discard : int
         Number of leading sampling steps to drop. Default is 0.
+    initial_metric : Metric, optional
+        Passed to :func:`warmup`.
     progress : callable, optional
         Called with a :class:`ProgressReport` each time the lazy graph is forced, through
         warmup and sampling alike.
@@ -1745,6 +1712,7 @@ def warmup_and_sample(
         integrator=integrator,
         seed=seed,
         compile_step=compile_step,
+        initial_metric=initial_metric,
         progress=progress,
     )
 

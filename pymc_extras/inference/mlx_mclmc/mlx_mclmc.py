@@ -1,24 +1,34 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 import warnings
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pymc as pm
 
 from arviz_base import dict_to_dataset
+from pymc.blocking import DictToArrayBijection
+from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.progress_bar import ProgressBarOptions
 from pymc.util import RandomSeed, _get_seeds_per_chain
 from xarray import DataTree
 
+from pymc_extras.inference.advi import (
+    AutoDiagonalNormal,
+    AutoGuideModel,
+    AutoLowRankMultivariateNormal,
+    Trainer,
+)
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 from pymc_extras.inference.mlx_mclmc.progress import MCLMCProgressBarManager
 from pymc_extras.inference.mlx_mclmc.settings import AdaptationSettings
 
 if TYPE_CHECKING:
-    from pymc_extras.inference.mlx_mclmc.kernel import TunedParameters
+    from pymc_extras.inference.mlx_mclmc.kernel import Metric, TunedParameters
 
 _log = logging.getLogger(__name__)
 
@@ -32,6 +42,13 @@ _COLLAPSED_STEP_SIZE = 1e-11
 
 # Unadjusted MCLMC should not diverge at all on a well-behaved target, so the bar is low.
 _MAX_DIVERGING_FRACTION = 0.01
+
+_ADVI_GUIDES = ("mean_field", "low_rank")
+
+# Maps fitted guide parameters to the flat mean, scale, and low-rank factor (None for mean-field).
+ApproximationReader = Callable[
+    [dict[str, np.ndarray]], tuple[np.ndarray, np.ndarray, np.ndarray | None]
+]
 
 
 def fit_mlx_mclmc(
@@ -149,6 +166,14 @@ def fit_mlx_mclmc(
     else:
         start = np.asarray(initial_point, dtype="float32").ravel()
 
+    initial_metric = None
+    if adaptation.advi_steps:
+        approximation = _fit_approximation(
+            model, logdensity_fn, start, settings=adaptation, seed=seed
+        )
+        if approximation is not None:
+            start, initial_metric = approximation
+
     _log.info("Sampling %d chains of %d draws in %d dimensions", chains, draws, logdensity_fn.dim)
     sampler_kwargs = dict(
         num_tune=tune,
@@ -158,6 +183,7 @@ def fit_mlx_mclmc(
         settings=adaptation,
         integrator=integrator,
         seed=seed,
+        initial_metric=initial_metric,
     )
     schedule = warmup_schedule(tune, adaptation)
     sections = [schedule.step_size, schedule.metric + schedule.readjust, schedule.L, burn_in, draws]
@@ -229,6 +255,127 @@ def fit_mlx_mclmc(
     return add_data_to_inference_data(
         idata, progressbar=False, model=model, compile_kwargs=compile_kwargs
     )
+
+
+def _fit_approximation(
+    model: pm.Model, logdensity_fn, start: np.ndarray, settings: AdaptationSettings, seed: int
+) -> tuple[np.ndarray, Metric] | None:
+    """
+    Fit ADVI on MLX from ``start``.
+
+    Returns
+    -------
+    mean : np.ndarray
+        The approximation's mean, flat in the sampler's coordinate order.
+    metric : Metric
+        Its covariance, as an inverse mass matrix.
+
+    Returns None instead, with a warning, when the fit comes back non-finite.
+    """
+    import mlx.core as mx
+
+    from pymc_extras.inference.mlx_mclmc.kernel import Metric, metric_from_low_rank_covariance
+
+    if settings.advi_guide not in _ADVI_GUIDES:
+        raise ValueError(f"advi_guide must be one of {_ADVI_GUIDES}, got {settings.advi_guide!r}")
+
+    # The guide draws its noise with sizes taken from the model's dims, and a compiled MLX
+    # function can only take a shape from a constant.
+    frozen = freeze_dims_and_data(model)
+    if settings.advi_guide == "mean_field":
+        guide, read_approximation = _mean_field_guide(frozen, logdensity_fn, start)
+    else:
+        guide, read_approximation = _low_rank_guide(
+            frozen, logdensity_fn, start, rank=settings.advi_rank
+        )
+
+    trainer = Trainer(
+        guide=guide, optimizer=settings.advi_optimizer, backend="mlx", random_seed=seed
+    )
+    # The trainer seeds its functions before compiling, so the MLX linker's copy of each shared
+    # generator is the one that is meant to be used, and its warning about the copy is noise.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="The RandomType SharedVariables")
+        params = trainer.fit(settings.advi_steps, model=frozen, random_seed=seed + 1).params
+
+    mean, scale, factor = read_approximation(params)
+    parts = [mean, scale] if factor is None else [mean, scale, factor]
+    if not all(np.isfinite(part).all() for part in parts):
+        warnings.warn(
+            "ADVI returned a non-finite approximation, so MCLMC is starting from the initial "
+            "point instead. A non-finite gradient during the ADVI fit is the usual cause.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return None
+
+    if factor is None:
+        metric = Metric(scale=mx.array(scale.astype("float32")))
+    else:
+        metric = metric_from_low_rank_covariance(scale, factor)
+
+    return mean.astype("float32"), metric
+
+
+def _flat_slices(logdensity_fn) -> dict[str, slice]:
+    """Each value variable's slice of the sampler's flat vector."""
+    offsets = np.cumsum([0, *logdensity_fn.sizes])
+    return {
+        name: slice(begin, end)
+        for name, begin, end in zip(logdensity_fn.names, offsets[:-1], offsets[1:], strict=True)
+    }
+
+
+def _mean_field_guide(
+    frozen: pm.Model, logdensity_fn, start: np.ndarray
+) -> tuple[AutoGuideModel, ApproximationReader]:
+    """The mean-field guide centered on ``start``, and a reader for its fitted parameters."""
+    guide = AutoDiagonalNormal(frozen)
+    rv_names = {frozen.rvs_to_values[rv].name: rv.name for rv in frozen.free_RVs}
+    slices = _flat_slices(logdensity_fn)
+
+    init_values = dict(guide.params_init_values)
+    for name, shape in zip(logdensity_fn.names, logdensity_fn.shapes, strict=True):
+        loc = guide[f"{rv_names[name]}_loc"]
+        init_values[loc] = start[slices[name]].reshape(shape).astype(loc.dtype)
+
+    def read_approximation(params):
+        def flat(suffix):
+            return np.concatenate(
+                [np.ravel(params[f"{rv_names[name]}_{suffix}"]) for name in logdensity_fn.names]
+            )
+
+        return flat("loc"), np.exp(flat("scale")), None
+
+    return dataclasses.replace(guide, params_init_values=init_values), read_approximation
+
+
+def _low_rank_guide(
+    frozen: pm.Model, logdensity_fn, start: np.ndarray, rank: int | None
+) -> tuple[AutoGuideModel, ApproximationReader]:
+    """The low-rank guide centered on ``start``, and a reader for its fitted parameters."""
+    guide = AutoLowRankMultivariateNormal(frozen, rank=rank)
+    slices = _flat_slices(logdensity_fn)
+
+    # The guide packs its flat mean in initial-point order, which need not be the sampler's.
+    _, point_map_info = DictToArrayBijection.map(frozen.initial_point())
+    positions = np.arange(start.size)
+    guide_order = np.concatenate([positions[slices[name]] for name, *_ in point_map_info])
+    sampler_order = np.argsort(guide_order)
+
+    init_values = dict(guide.params_init_values)
+    loc = guide["loc"]
+    init_values[loc] = start[guide_order].astype(loc.dtype)
+
+    def read_approximation(params):
+        return (
+            np.asarray(params["loc"])[sampler_order],
+            np.exp(np.asarray(params["cov_diag_unconstrained"]))[sampler_order],
+            np.asarray(params["cov_factor"])[sampler_order],
+        )
+
+    # replace keeps the guide's class, which carries the low-rank guide's closed-form logq.
+    return dataclasses.replace(guide, params_init_values=init_values), read_approximation
 
 
 def _warn_if_adaptation_failed(tuned: TunedParameters, diverging: np.ndarray) -> None:

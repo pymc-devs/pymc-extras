@@ -1,4 +1,7 @@
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    from pytensor_ml.optim import Transform
 
 
 class AdaptationSettings(NamedTuple):
@@ -37,17 +40,28 @@ class AdaptationSettings(NamedTuple):
         Fractions of the step budget given to each adaptation phase.
     l_factor : float
         Multiplier on the autocorrelation-derived ``L`` in phase 3.
-    optimize_steps : int
-        Maximum Adam steps taken toward the mode before adaptation. Off by default. Turn it on
-        for a concentrated unimodal posterior far from the initial point. Leave it off for a
-        log-density unbounded above, such as a centered hierarchical model, where the ascent
-        runs into the funnel and the adaptation follows it there.
-    optimize_learning_rate : float
-        Adam learning rate for that ascent.
+    advi_steps : int
+        ADVI steps fitted before adaptation. 0, the default, skips ADVI. When set, the adapting
+        chains start from draws of the fitted approximation and the warmup metric starts at its
+        covariance, in place of the ``initial_jitter`` scatter and the identity.
+    advi_guide : str
+        ``"mean_field"`` for a diagonal Gaussian, or ``"low_rank"`` for a covariance of
+        :math:`W W^\top + \mathrm{diag}(d^2)`, which becomes a diagonal metric with a low-rank
+        correction. Phase 2 refits the metric, so the correction only lasts past it under
+        ``mass_matrix="low_rank"``.
+    advi_rank : int, optional
+        Rank of the ``"low_rank"`` guide. Defaults to the guide's own, the square root of the
+        dimension.
+    advi_optimizer : Transform, optional
+        A :mod:`pytensor_ml.optim` optimizer for the ADVI fit, such as
+        ``apply_if_finite(adam(cosine_schedule(1e-2, total_steps=advi_steps)))``. Defaults to
+        :func:`~pymc_extras.inference.advi.default_optimizer`. One given here replaces that whole
+        chain, including its guard against non-finite steps.
     initial_jitter : float
         Half-width of the uniform scatter of the adapting chains around the initial point, in the
         unconstrained space. 0 starts every chain at the initial point; 1 is pymc's scatter, which
-        displaces a tall model too far for the tuning budget to recover from.
+        displaces a tall model too far for the tuning budget to recover from. Unused when
+        ``advi_steps`` is set.
     """
 
     mass_matrix: str = "gradient"
@@ -65,6 +79,8 @@ class AdaptationSettings(NamedTuple):
     frac_tune2: float = 0.1
     frac_tune3: float = 0.1
     l_factor: float = 0.4
-    optimize_steps: int = 0
-    optimize_learning_rate: float = 0.05
+    advi_steps: int = 0
+    advi_guide: str = "mean_field"
+    advi_rank: int | None = None
+    advi_optimizer: "Transform | None" = None
     initial_jitter: float = 0.3
