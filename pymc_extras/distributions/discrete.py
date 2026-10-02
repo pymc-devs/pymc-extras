@@ -188,6 +188,10 @@ class BetaNegativeBinomial:
     R"""
     Beta Negative Binomial distribution.
 
+    This is a compound distribution: :math:`p \sim \mathrm{Beta}(\alpha, \beta)`
+    and :math:`X \mid p \sim \mathrm{NegativeBinomial}(n=r, p=p)`, where
+    :math:`X` counts failures before :math:`r` successes.
+
     The pmf of this distribution is
 
     .. math::
@@ -253,7 +257,7 @@ class BetaNegativeBinomial:
             alpha, beta, r = pt.broadcast_arrays(alpha, beta, r)
 
         p = pm.Beta.dist(alpha, beta, size=size)
-        return pm.NegativeBinomial.dist(p, r, size=size)
+        return pm.NegativeBinomial.dist(p=p, n=r, size=size)
 
     @staticmethod
     def beta_negative_binomial_logp(value, alpha, beta, r):

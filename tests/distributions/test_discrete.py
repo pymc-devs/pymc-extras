@@ -15,6 +15,7 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 import pytest
+import scipy.special
 import scipy.stats
 
 from pymc.logprob.utils import ParameterValueError
@@ -135,6 +136,70 @@ class TestBetaNegativeBinomial:
     Wrapper class so that tests of experimental additions can be dropped into
     PyMC directly on adoption.
     """
+
+    @pytest.mark.parametrize(
+        "alpha, beta, r, shape",
+        [
+            (4.0, 3.0, 2.0, ()),
+            ([4.0, 6.0], 3.0, [2.0, 1.5], (2,)),
+        ],
+    )
+    def test_random_matches_density_and_mean(self, alpha, beta, r, shape):
+        alpha, beta, r = np.broadcast_arrays(alpha, beta, r)
+        n_draws = 50_000
+        dist = BetaNegativeBinomial.dist(alpha, beta, r, size=(n_draws, *shape))
+        draws = pm.draw(dist, random_seed=1234)
+        assert draws.shape == (n_draws, *shape)
+
+        expected_mean = r * beta / (alpha - 1)
+        expected_variance = (
+            r * beta * (r + alpha - 1) * (beta + alpha - 1) / ((alpha - 2) * (alpha - 1) ** 2)
+        )
+        # Seven standard errors leave room for sampling variation while rejecting
+        # the old mu=p, alpha=r generator (mean about 0.57 rather than 2).
+        assert np.all(
+            np.abs(draws.mean(axis=0) - expected_mean) < 7 * np.sqrt(expected_variance / n_draws)
+        )
+
+        values = np.arange(5).reshape((5,) + (1,) * len(shape))
+        expected_pmf = np.exp(
+            scipy.special.gammaln(r + values)
+            - scipy.special.gammaln(r)
+            - scipy.special.gammaln(values + 1)
+            + scipy.special.betaln(alpha + r, beta + values)
+            - scipy.special.betaln(alpha, beta)
+        )
+        density = np.exp(pm.logp(BetaNegativeBinomial.dist(alpha, beta, r), values).eval())
+        np.testing.assert_allclose(
+            density, expected_pmf, rtol=1e-7 if config.floatX == "float64" else 1e-5
+        )
+        empirical_pmf = np.stack([(draws == value).mean(axis=0) for value in range(5)])
+        # Each frequency is a binomial proportion; in particular P(X=0)=5/14
+        # for alpha=4, beta=3, r=2, not about 0.61 as in the old generator.
+        assert np.all(
+            np.abs(empirical_pmf - expected_pmf)
+            < 7 * np.sqrt(expected_pmf * (1 - expected_pmf) / n_draws)
+        )
+
+    @pytest.mark.parametrize(
+        "alpha, beta, r, size, expected_shape",
+        [
+            (4.0, 3.0, 2.0, None, ()),
+            (4.0, 3.0, 2.0, (), ()),
+            (4.0, 3.0, 2.0, 0, (0,)),
+            (4.0, 3.0, 2.0, (2, 3), (2, 3)),
+            ([[4.0], [6.0]], [3.0, 2.0, 1.0], 2.0, None, (2, 3)),
+            (4.0, 3.0, [[2.0], [1.5]], None, (2, 1)),
+            ([[4.0], [6.0]], [3.0, 2.0, 1.0], 2.0, (5, 2, 3), (5, 2, 3)),
+            ([[4.0], [6.0]], [3.0, 2.0, 1.0], 2.0, (0, 2, 3), (0, 2, 3)),
+        ],
+    )
+    def test_random_size_and_broadcasting(self, alpha, beta, r, size, expected_shape):
+        dist = BetaNegativeBinomial.dist(alpha, beta, r, size=size)
+        draws = pm.draw(dist, random_seed=1234)
+        assert draws.shape == expected_shape
+        assert np.issubdtype(draws.dtype, np.integer)
+        assert np.all(draws >= 0)
 
     def test_logp(self):
         """
