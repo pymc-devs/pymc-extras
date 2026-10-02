@@ -268,9 +268,11 @@ def AutoMultivariateNormal(model: Model, random_seed=None) -> AutoGuideModel:
     L_packed_init[rows == cols] = 0.1
 
     with _empty_guide_model(model) as guide_model:
-        loc = pt.tensor("loc", shape=(None,))
-        L_packed = pt.tensor("L_packed", shape=(None,))
-        n = loc.shape[0]
+        # Static shapes, known here, keep the broadcasts and the arange constant, which the MLX
+        # backend needs.
+        loc = pt.tensor("loc", shape=(n_dim,))
+        L_packed = pt.tensor("L_packed", shape=(rows.size,))
+        n = n_dim
         idx = pt.arange(n)
 
         L = pt.zeros((n, n))[pt.tril_indices(n)].set(L_packed)
@@ -377,11 +379,12 @@ def AutoLowRankMultivariateNormal(
     d_unconstrained_init = np.full(n_dim, 0.1, dtype=loc_init.dtype)
 
     with _empty_guide_model(model) as guide_model:
-        loc = pt.tensor("loc", shape=(None,))
-        W = pt.tensor("cov_factor", shape=(None, rank))
-        d_unconstrained = pt.tensor("cov_diag_unconstrained", shape=(None,))
+        # Static shapes, known here, keep the broadcasts constant, which the MLX backend needs.
+        loc = pt.tensor("loc", shape=(n_dim,))
+        W = pt.tensor("cov_factor", shape=(n_dim, rank))
+        d_unconstrained = pt.tensor("cov_diag_unconstrained", shape=(n_dim,))
         d = pt.exp(d_unconstrained)
-        n = loc.shape[0]
+        n = n_dim
 
         eps_k = Normal("eps_k", mu=0.0, sigma=1.0, shape=(rank,))
         eps_d = Normal("eps_d", mu=0.0, sigma=1.0, shape=(n,))

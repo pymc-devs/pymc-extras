@@ -247,7 +247,8 @@ class TestAutoMultivariateNormal:
         # D = 1 + 3 + 2 = 6 ; lower-triangular Cholesky packs 6 * 7 / 2 = 21 entries
         assert isinstance(guide, AutoGuideModel)
         assert {p.name for p in guide.params} == {"loc", "L_packed"}
-        assert guide["loc"].type.shape == (None,)  # symbolic graph; size fixed by the init value
+        assert guide["loc"].type.shape == (6,)
+        assert guide["L_packed"].type.shape == (21,)
         assert guide.params_init_values[guide["loc"]].shape == (6,)
         assert guide.params_init_values[guide["L_packed"]].shape == (21,)
 
