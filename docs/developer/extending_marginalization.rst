@@ -61,6 +61,15 @@ it "marginal" is its logp implementation:
   :func:`~pymc_extras.marginal.conditional` and
   :func:`~pymc_extras.marginal.recover`.
 
+For ``MarginalLaplaceRV``, this reverse factor is a Gaussian approximation,
+not the exact conditional posterior. ``conditional`` and ``recover`` use
+the posterior mode as its mean and the precision
+``Q - Hessian(log_likelihood)`` evaluated at that mode. The mode and
+curvature condition on the supplied dependent values and current parent
+values, using the optimizer settings stored by ``marginalize``. Recovery
+is exact for Gaussian conditionals; for nonlinear likelihoods it retains
+the local Gaussian approximation's limitations.
+
 :func:`~pymc_extras.marginal.unmarginalize` is fully generic: it just inlines
 the ``OpFromGraph`` and restores the marginalized variable as a free RV, so
 new marginalizations get it for free.
