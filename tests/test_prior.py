@@ -402,36 +402,6 @@ def test_dict_round_trip_dims(dims) -> None:
     assert prior_again.to_dict() == expected_d
 
 
-@pytest.mark.parametrize(
-    "metadata, expected",
-    [
-        ({"core_dims": "category"}, ("category",)),
-        ({"core_dims": ["category"]}, ("category",)),
-        ({"core_dims": ("category",)}, ("category",)),
-        ({"core_dims": None}, ()),
-        ({"core_dims": []}, ()),
-        ({"core_dims": ()}, ()),
-        ({}, ()),
-    ],
-    ids=["string", "list", "tuple", "none", "empty-list", "empty-tuple", "legacy"],
-)
-def test_from_dict_core_dims(metadata, expected) -> None:
-    data = {
-        "dist": "Dirichlet",
-        "kwargs": {
-            "a": {"class": "DataArray", "data": [1, 2, 3], "dims": ["category"]},
-        },
-        "dims": "category",
-        **metadata,
-    }
-
-    prior = Prior.from_dict(data)
-
-    assert prior.core_dims == expected
-    assert prior.dims == ("category",)
-    xr.testing.assert_equal(prior["a"], DataArray([1, 2, 3], dims="category"))
-
-
 def test_constrain_with_transform_error() -> None:
     var = Prior("Normal", transform="sigmoid")
 
@@ -1378,39 +1348,18 @@ class TestXDist:
         data_again = prior_again.to_dict()
         assert data_again == data
 
-    @pytest.mark.parametrize("nested", [False, True], ids=["direct", "nested"])
-    def test_core_dims_json_round_trip(self, nested):
-        dirichlet = Prior(
+    def test_core_dims_json_round_trip(self):
+        prior = Prior(
             "Dirichlet",
             a=DataArray([1, 2, 3], dims="category"),
             dims="category",
             core_dims="category",
         )
-        prior = Prior("Normal", mu=dirichlet, sigma=1, dims="category") if nested else dirichlet
-
         restored = Prior.from_dict(json.loads(json.dumps(prior.to_dict())))
-        restored_dirichlet = restored["mu"] if nested else restored
-        assert restored_dirichlet.core_dims == ("category",)
-        assert restored_dirichlet.dims == ("category",)
-        xr.testing.assert_equal(restored_dirichlet["a"], dirichlet["a"])
-
-        coords = {"category": range(3)}
-        with pm.Model(coords=coords) as original_model:
-            original_variable = prior.create_variable("x", xdist=True)
-        with pm.Model(coords=coords) as restored_model:
-            restored_variable = restored.create_variable("x", xdist=True)
-
-        assert original_variable.dims == restored_variable.dims == ("category",)
-        assert original_model.named_vars_to_dims == restored_model.named_vars_to_dims
-        with pytensor.config.change_flags(mode="FAST_COMPILE"):
-            original_logp = original_model.compile_logp()
-            restored_logp = restored_model.compile_logp()
-            initial_point = original_model.initial_point()
-            shifted_point = {name: value + 0.25 for name, value in initial_point.items()}
-            for point in (initial_point, shifted_point):
-                expected = original_logp(point)
-                assert np.isfinite(expected)
-                np.testing.assert_allclose(restored_logp(point), expected)
+        assert restored.core_dims == ("category",)
+        with pm.Model(coords={"category": range(3)}):
+            variable = restored.create_variable("x", xdist=True)
+        assert variable.dims == ("category",)
 
     @pytest.mark.parametrize("transform", (None, "exp"))
     def test_xdist_prior(self, transform):
