@@ -83,6 +83,23 @@ class TestAutoDiagonalNormal:
         assert guide.model.named_vars_to_dims["mu"] == ("city",)
 
 
+@pytest.mark.parametrize(
+    "make_guide",
+    [AutoDiagonalNormal, AutoMultivariateNormal, AutoLowRankMultivariateNormal],
+)
+def test_guide_accepts_a_dim_declared_by_length_alone(make_guide):
+    """pm.Data with dims and no coords declares a dim with a length but no coordinate values."""
+    with pm.Model() as model:
+        x = pm.Data("x", np.arange(4.0), dims="obs_id")
+        beta = pm.Normal("beta", 0, 1)
+        pm.Normal("y", beta * x, 1, observed=np.ones(4), dims="obs_id")
+
+    guide = make_guide(model)
+
+    assert guide.model.coords["obs_id"] is None
+    assert guide.model.dim_lengths["obs_id"].eval() == 4
+
+
 class TestTransformedRVs:
     def test_shape_changing_transform(self):
         # https://github.com/pymc-devs/pymc-extras/issues/646
