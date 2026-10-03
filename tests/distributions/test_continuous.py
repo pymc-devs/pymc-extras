@@ -50,6 +50,10 @@ class TestGenExtremeClass:
     pm.logp(GenExtreme.dist(mu=0.,sigma=1.,xi=0.5),value=-0.01)
     """
 
+    @staticmethod
+    def ref_logcdf(value, mu, sigma, xi):
+        return sp.genextreme.logcdf(value, c=-xi, loc=mu, scale=sigma)
+
     def test_logp(self):
         def ref_logp(value, mu, sigma, xi):
             if 1 + xi * (value - mu) / sigma > 0:
@@ -69,9 +73,6 @@ class TestGenExtremeClass:
         )
 
     def test_logcdf(self):
-        def ref_logcdf(value, mu, sigma, xi):
-            return sp.genextreme.logcdf(value, c=-xi, loc=mu, scale=sigma)
-
         check_logcdf(
             GenExtreme,
             R,
@@ -80,13 +81,36 @@ class TestGenExtremeClass:
                 "sigma": Rplusbig,
                 "xi": Domain([-1, -0.99, -0.5, 0, 0.5, 0.99, 1]),
             },
-            ref_logcdf,
+            self.ref_logcdf,
             decimal=select_by_precision(float64=6, float32=2),
         )
 
     def test_logcdf_support_endpoints(self):
-        actual = pm.logcdf(GenExtreme.dist(mu=0, sigma=1, xi=-0.5), [1.9, 2.0, 2.1]).eval()
-        np.testing.assert_allclose(actual, [-0.0025, 0.0, 0.0], rtol=1e-4)
+        upper_values = [1.9, 2.0, 2.1]
+        upper_expected = [-0.0025, 0.0, 0.0]
+        upper = pm.logcdf(GenExtreme.dist(mu=0, sigma=1, xi=-0.5), upper_values).eval()
+        np.testing.assert_allclose(
+            self.ref_logcdf(value=upper_values, mu=0, sigma=1, xi=-0.5), upper_expected, rtol=1e-4
+        )
+        np.testing.assert_allclose(upper, upper_expected, rtol=1e-4)
+
+        lower_values = [-2.1, -2.0, -1.9]
+        lower_expected = [-np.inf, -np.inf, -400.0]
+        lower = pm.logcdf(GenExtreme.dist(mu=0, sigma=1, xi=0.5), lower_values).eval()
+        np.testing.assert_allclose(
+            self.ref_logcdf(value=lower_values, mu=0, sigma=1, xi=0.5), lower_expected, rtol=1e-4
+        )
+        np.testing.assert_allclose(lower, lower_expected, rtol=1e-4)
+
+        unbounded_values = [-2.1, 2.1]
+        unbounded_expected = [-np.exp(2.1), -np.exp(-2.1)]
+        unbounded = pm.logcdf(GenExtreme.dist(mu=0, sigma=1, xi=0), unbounded_values).eval()
+        np.testing.assert_allclose(
+            self.ref_logcdf(value=unbounded_values, mu=0, sigma=1, xi=0),
+            unbounded_expected,
+            rtol=1e-4,
+        )
+        np.testing.assert_allclose(unbounded, unbounded_expected, rtol=1e-4)
 
     @pytest.mark.parametrize(
         "mu, sigma, xi, size, expected",
