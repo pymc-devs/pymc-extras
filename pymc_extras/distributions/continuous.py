@@ -86,6 +86,12 @@ class GenExtreme(Continuous):
 
         \left\{x: 1 + \xi\left(\frac{x-\mu}{\sigma}\right) > 0 \right\}.
 
+    For :math:`\xi < 0`, the CDF is 1 (log CDF is 0) at and above the upper
+    endpoint :math:`\mu - \sigma/\xi`. For :math:`\xi > 0`, the CDF is 0
+    (log CDF is :math:`-\infty`) at and below the lower endpoint
+    :math:`\mu - \sigma/\xi`. When :math:`\xi = 0`, the CDF is the Gumbel CDF
+    on the whole real line.
+
     Note that this parametrization is per Coles (2001) [1]_, and differs from that of
     Scipy in the sign of the shape parameter, :math:`\xi`.
 
@@ -208,7 +214,7 @@ class GenExtreme(Continuous):
             pt.isclose(xi, 0), -pt.exp(-scaled), -pt.pow(1 + xi * scaled, -1 / xi)
         )
 
-        logc = pt.switch(1 + xi * (value - mu) / sigma > 0, logc_expression, -np.inf)
+        logc = pt.switch(1 + xi * scaled > 0, logc_expression, pt.switch(xi < 0, 0.0, -np.inf))
 
         return check_parameters(
             logc, sigma > 0, pt.and_(xi > -1, xi < 1), msg="sigma > 0 or -1 < xi < 1"
