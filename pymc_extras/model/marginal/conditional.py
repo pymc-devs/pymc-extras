@@ -22,6 +22,7 @@ from pymc_extras.model.marginal.distributions.core import (
     marginalized_conditional,
 )
 from pymc_extras.model.marginal.marginalize import (
+    _require_exact_marginalization,
     _resolve_marginalized_names,
     _walk_marginal_ops,
     marginalize_fgraph,
@@ -172,6 +173,9 @@ def conditional(
     ``p(x|y, mu)``, while the unqualified ``model.compile_logp()`` is the full
     joint ``p(mu, x, y)``.
 
+    Models containing approximate marginalizations are rejected. Use
+    :func:`approximate_conditional` for their approximate conditionals.
+
     Parameters
     ----------
     model : Model
@@ -265,16 +269,39 @@ def conditional(
         cond_full = conditional(partial_m, "idx")
         # User must provide sub_idx values when evaluating
     """
+    return _conditional(model, rvs_to_recover, exact=True)
+
+
+def approximate_conditional(
+    model: Model,
+    rvs_to_recover: str | Sequence[str] | None = None,
+) -> Model:
+    """Build explicitly approximate conditional distributions for marginalized variables.
+
+    Arguments and variable selection follow :func:`conditional`, but approximate
+    marginalizations are allowed. Laplace-marginalized variables are recovered
+    with a Gaussian centered at the posterior mode and precision given by the
+    curvature at that mode. This is not generally the exact conditional posterior.
+    Exact marginalizations in the same model retain their exact recovery rules.
+    """
+    return _conditional(model, rvs_to_recover, exact=False)
+
+
+def _conditional(
+    model, rvs_to_recover, *, exact: bool, approximate_api: str = "approximate_conditional"
+):
     fg, _memo = fgraph_from_model(model)
+    if exact:
+        _require_exact_marginalization(fg, approximate_api)
     marginalized_rv_names = [op.marginalized_name for op in _walk_marginal_ops(fg)]
     var_names_to_recover = _resolve_marginalized_names(
         rvs_to_recover, marginalized_rv_names, "rvs_to_recover"
     )
-
     if not var_names_to_recover:
         return model
-
     conditional_fgraph(fg, var_names_to_recover)
+    if exact:
+        _require_exact_marginalization(fg, approximate_api)
     return model_from_fgraph(fg, mutate_fgraph=True)
 
 
@@ -293,6 +320,9 @@ def recover(
     Builds the chain-rule factorization of the joint posterior via
     :func:`conditional` and forward-samples all recovered variables
     together.  For more control, use :func:`conditional` directly.
+
+    Models containing approximate marginalizations are rejected. Use
+    :func:`approximate_recover` to opt into approximate posterior recovery.
 
     Parameters
     ----------
@@ -334,6 +364,58 @@ def recover(
         idata = pm.sample(model=marginal_m)
         recover(idata, model=marginal_m)
     """
+    return _recover(
+        idata,
+        model=model,
+        var_names=var_names,
+        extend_inferencedata=extend_inferencedata,
+        random_seed=random_seed,
+        backend=backend,
+        compile_kwargs=compile_kwargs,
+        exact=True,
+    )
+
+
+def approximate_recover(
+    idata: DataTree,
+    *,
+    model: Model | None = None,
+    var_names: Sequence[str] | None = None,
+    extend_inferencedata: bool = True,
+    random_seed: RandomState = None,
+    backend: str | None = None,
+    compile_kwargs: dict | None = None,
+):
+    """Sample marginalized variables from explicitly approximate conditional posteriors.
+
+    Parameters and return values follow :func:`recover`. This function uses
+    :func:`approximate_conditional`, allowing Laplace-marginalized variables.
+    Their samples follow local Gaussian approximations, not generally the exact
+    posterior. Exact marginalizations in the same model use exact conditionals.
+    """
+    return _recover(
+        idata,
+        model=model,
+        var_names=var_names,
+        extend_inferencedata=extend_inferencedata,
+        random_seed=random_seed,
+        backend=backend,
+        compile_kwargs=compile_kwargs,
+        exact=False,
+    )
+
+
+def _recover(
+    idata,
+    *,
+    model,
+    var_names,
+    extend_inferencedata,
+    random_seed,
+    backend,
+    compile_kwargs,
+    exact: bool,
+):
     if isinstance(idata, Model):
         raise TypeError(
             "The order of arguments of `recover` changed. The first input must be an idata"
@@ -347,7 +429,7 @@ def recover(
     # integrates out the not-yet-recovered ones).  Sample all recovered
     # variables together so the chain-rule dependencies are satisfied
     # (e.g. sub_idx's conditional uses idx's sampled value).
-    cond_model = conditional(model, var_names)
+    cond_model = _conditional(model, var_names, exact=exact, approximate_api="approximate_recover")
 
     # The recovered variables are the free RVs that weren't free before
     base_names = {rv.name for rv in model.free_RVs}
