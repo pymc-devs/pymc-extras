@@ -599,13 +599,19 @@ def test_create_likelihood_variable() -> None:
     assert "data_sigma" in model
 
 
-def test_create_likelihood_variable_keeps_data_parameter() -> None:
+@pytest.mark.parametrize("xdist", [False, True])
+def test_create_likelihood_variable_keeps_data_parameter(xdist) -> None:
     """A pm.Data parameter has to stay wired, so pm.set_data reaches the likelihood."""
+    mu, observed = np.zeros(3), np.ones(3)
+    if xdist:
+        mu, observed = pmd.as_xtensor(mu, dims=("T",)), pmd.as_xtensor(observed, dims=("T",))
+
     with pm.Model(coords={"T": range(3)}) as model:
         sigma = pm.Data("sigma", 2.0)
-        Prior("Normal", sigma=sigma, dims="T").create_likelihood_variable(
-            "y", mu=np.zeros(3), observed=np.ones(3)
-        )
+        prior = Prior("Normal", sigma=sigma, dims="T")
+        prior.create_likelihood_variable("y", mu=mu, observed=observed, xdist=xdist)
+
+    assert list(prior.parameters) == ["sigma"]
 
     logp = model.compile_logp()
     point = {}
@@ -1207,14 +1213,21 @@ class TestCensored:
         point = {}
         np.testing.assert_allclose(logp(point), expected_logp(point))
 
-    def test_censored_likelihood_keeps_data_parameter(self) -> None:
+    @pytest.mark.parametrize("xdist", [False, True])
+    def test_censored_likelihood_keeps_data_parameter(self, xdist) -> None:
         """A pm.Data parameter has to stay wired, so pm.set_data reaches the likelihood."""
+        mu, observed = np.zeros(3), np.ones(3)
+        if xdist:
+            mu, observed = pmd.as_xtensor(mu, dims=("T",)), pmd.as_xtensor(observed, dims=("T",))
+
         with pm.Model(coords={"T": range(3)}) as model:
             sigma = pm.Data("sigma", 2.0)
             normal = Prior("Normal", sigma=sigma, dims="T")
             Censored(normal, lower=0).create_likelihood_variable(
-                "y", mu=np.zeros(3), observed=np.ones(3)
+                "y", mu=mu, observed=observed, xdist=xdist
             )
+
+        assert list(normal.parameters) == ["sigma"]
 
         logp = model.compile_logp()
         point = {}
