@@ -607,8 +607,8 @@ def test_create_likelihood_variable_keeps_data_parameter() -> None:
             "y", mu=np.zeros(3), observed=np.ones(3)
         )
 
-    logp = model.compile_fn(model.logp(vars=[model["y"]], sum=True))
-    point = model.initial_point()
+    logp = model.compile_logp()
+    point = {}
 
     before = logp(point)
     with model:
@@ -1216,8 +1216,8 @@ class TestCensored:
                 "y", mu=np.zeros(3), observed=np.ones(3)
             )
 
-        logp = model.compile_fn(model.logp(vars=[model["y"]], sum=True))
-        point = model.initial_point()
+        logp = model.compile_logp()
+        point = {}
 
         before = logp(point)
         with model:
