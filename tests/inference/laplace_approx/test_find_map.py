@@ -3,6 +3,8 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
+from xarray import DataTree
+
 from pymc_extras.inference.laplace_approx.find_map import (
     find_MAP,
     get_nearest_psd,
@@ -201,6 +203,7 @@ def test_find_map_outside_model_context():
         y_hat = pm.Normal("y_hat", mu=mu, sigma=sigma, observed=np.random.normal(size=10))
 
     idata = find_MAP(model=m, method="L-BFGS-B", use_grad=True, progressbar=False)
+    assert isinstance(idata, DataTree)
 
     assert hasattr(idata, "posterior")
     assert hasattr(idata, "fit")
