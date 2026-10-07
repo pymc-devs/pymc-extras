@@ -21,19 +21,34 @@ class GradientTransformation:
         Function ``(updates, state, params=None) -> (new_updates, new_state)`` that
         applies the transformation to a dictionary of numpy gradient updates.
     pytensor :
-        Optional function ``(grads, shared_params) -> (new_grads, updates_dict)``
+        Optional function ``(grads, shared_params, state) -> (new_grads, updates_dict)``
         that applies the transformation in a PyTensor graph.  ``grads`` is a list
-        of symbolic gradient variables and ``shared_params`` the corresponding
-        shared parameter variables.  Returns transformed gradients and a
+        of symbolic gradient variables, ``shared_params`` the corresponding
+        shared parameter variables, and ``state`` the dictionary of shared state
+        variables from ``pytensor_init``.  Returns transformed gradients and a
         dictionary of ``{shared_var: new_value}`` updates for
         :func:`pytensor.compile`.  ``None`` means the transformation has no
         compiled path and can only be used through the Python update path.
+    pytensor_init :
+        Optional function ``(shared_params) -> dict[str, SharedVariable]`` that creates
+        the transformation's state buffers, keyed by a name unique within the
+        transformation. The caller owns them and passes them to every ``pytensor``
+        call. Default is a function returning no state.
     """
 
-    def __init__(self, init, update, pytensor=None):
+    def __init__(self, init, update, pytensor=None, pytensor_init=None):
         self.init = init
         self.update = update
         self.pytensor = pytensor
+        self.pytensor_init = pytensor_init if pytensor_init is not None else _no_state
+
+
+def _no_state(shared_params) -> dict:
+    return {}
+
+
+def _zeros_like_shared(shared: pytensor.compile.SharedVariable) -> np.ndarray:
+    return np.zeros_like(shared.get_value(borrow=True))
 
 
 def apply_updates(
@@ -46,12 +61,31 @@ def apply_updates(
 def _chain_pt(*fns):
     """Compose PyTensor update functions."""
 
-    def composed(grads, shared_params):
+    def composed(grads, shared_params, state):
         all_updates = {}
         for fn in fns:
-            grads, updates = fn(grads, shared_params)
+            grads, updates = fn(grads, shared_params, state)
             all_updates.update(updates)
         return grads, all_updates
+
+    return composed
+
+
+def _chain_pt_init(*inits):
+    """Compose state constructors into one dictionary, refusing a name two stages share."""
+
+    def composed(shared_params):
+        state = {}
+        for init in inits:
+            stage_state = init(shared_params)
+            if duplicates := sorted(set(stage_state) & set(state)):
+                raise ValueError(
+                    f"The optimizer has more than one state variable named {duplicates}, so its "
+                    "state cannot be snapshotted or restored unambiguously. Give each transform "
+                    "in the chain state variables with distinct names."
+                )
+            state.update(stage_state)
+        return state
 
     return composed
 
@@ -71,8 +105,9 @@ def chain(*transforms: GradientTransformation) -> GradientTransformation:
 
     pytensor_fns = [t.pytensor for t in transforms if t.pytensor is not None]
     pytensor = _chain_pt(*pytensor_fns) if len(pytensor_fns) == len(transforms) else None
+    pytensor_init = _chain_pt_init(*(t.pytensor_init for t in transforms))
 
-    return GradientTransformation(init, update, pytensor)
+    return GradientTransformation(init, update, pytensor, pytensor_init)
 
 
 def clip_by_global_norm(max_norm: float) -> GradientTransformation:
@@ -86,7 +121,7 @@ def clip_by_global_norm(max_norm: float) -> GradientTransformation:
         scale = np.minimum(1.0, max_norm / (global_norm + 1e-12))
         return {name: g * scale for name, g in updates.items()}, state
 
-    def _pytensor_impl(grads, shared_params):
+    def _pytensor_impl(grads, shared_params, state):
         global_norm = pt.sqrt(pt.sum([pt.sum(pt.square(g)) for g in grads]))
         scale = pt.minimum(1.0, max_norm / (global_norm + 1e-12))
         return [g * scale for g in grads], {}
@@ -116,16 +151,23 @@ def scale_by_adam(b1: float = 0.9, b2: float = 0.999, eps: float = 1e-8) -> Grad
             new_updates[name] = mu_hat / (np.sqrt(nu_hat) + eps)
         return new_updates, {"mu": mu, "nu": nu, "count": count}
 
-    def _pytensor_impl(grads, shared_params):
-        t = pytensor.shared(np.zeros((), dtype="int64"), name="adam_t")
+    def _pytensor_init(shared_params):
+        state = {"adam_t": pytensor.shared(np.zeros((), dtype="int64"), name="adam_t")}
+        for param in shared_params:
+            for moment in ("m", "v"):
+                name = f"adam_{moment}_{param.name}"
+                state[name] = pytensor.shared(_zeros_like_shared(param), name=name)
+        return state
+
+    def _pytensor_impl(grads, shared_params, state):
+        t = state["adam_t"]
         t_new = t + 1
         t_new_float = t_new.astype(config.floatX)
         updates = {t: t_new}
         new_grads = []
         for param, grad in zip(shared_params, grads):
-            value = param.get_value(borrow=True)
-            m = pytensor.shared(np.zeros_like(value), name=f"adam_m_{param.name}")
-            v = pytensor.shared(np.zeros_like(value), name=f"adam_v_{param.name}")
+            m = state[f"adam_m_{param.name}"]
+            v = state[f"adam_v_{param.name}"]
             m_new = b1 * m + (1 - b1) * grad
             v_new = b2 * v + (1 - b2) * pt.square(grad)
             m_hat = m_new / (1 - b1**t_new_float)
@@ -134,7 +176,7 @@ def scale_by_adam(b1: float = 0.9, b2: float = 0.999, eps: float = 1e-8) -> Grad
             updates.update({m: m_new, v: v_new})
         return new_grads, updates
 
-    return GradientTransformation(init, update, _pytensor_impl)
+    return GradientTransformation(init, update, _pytensor_impl, _pytensor_init)
 
 
 def scale(step_size: float) -> GradientTransformation:
@@ -146,7 +188,7 @@ def scale(step_size: float) -> GradientTransformation:
     def update(updates, state, params=None):
         return {name: -step_size * g for name, g in updates.items()}, state
 
-    def _pytensor_impl(grads, shared_params):
+    def _pytensor_impl(grads, shared_params, state):
         return [g * (-step_size) for g in grads], {}
 
     return GradientTransformation(init, update, _pytensor_impl)
@@ -163,13 +205,16 @@ def scale_by_schedule(step_size_fn: Schedule) -> GradientTransformation:
         lr = step_size_fn(pt.constant(count, dtype="int64")).eval()
         return {name: -lr * g for name, g in updates.items()}, {"count": count + 1}
 
-    def _pytensor_impl(grads, shared_params):
-        t = pytensor.shared(np.zeros((), dtype="int64"), name="lr_t")
+    def _pytensor_init(shared_params):
+        return {"lr_t": pytensor.shared(np.zeros((), dtype="int64"), name="lr_t")}
+
+    def _pytensor_impl(grads, shared_params, state):
+        t = state["lr_t"]
         lr = step_size_fn(t)
         t_new = t + 1
         return [g * (-lr) for g in grads], {t: t_new}
 
-    return GradientTransformation(init, update, _pytensor_impl)
+    return GradientTransformation(init, update, _pytensor_impl, _pytensor_init)
 
 
 def scale_by_learning_rate(learning_rate: float | Schedule) -> GradientTransformation:
@@ -218,18 +263,25 @@ def scale_by_rmsprop(decay: float = 0.9, eps: float = 1e-8) -> GradientTransform
             new_updates[k] = g / (np.sqrt(v_new) + eps)
         return new_updates, {"avg_sq": new_avg_sq}
 
-    def _pytensor_impl(grads, shared_params):
+    def _pytensor_init(shared_params):
+        return {
+            f"rmsprop_v_{param.name}": pytensor.shared(
+                _zeros_like_shared(param), name=f"rmsprop_v_{param.name}"
+            )
+            for param in shared_params
+        }
+
+    def _pytensor_impl(grads, shared_params, state):
         updates = {}
         new_grads = []
         for param, grad in zip(shared_params, grads):
-            value = param.get_value(borrow=True)
-            v = pytensor.shared(np.zeros_like(value), name=f"rmsprop_v_{param.name}")
+            v = state[f"rmsprop_v_{param.name}"]
             v_new = decay * v + (1.0 - decay) * pt.square(grad)
             new_grads.append(grad / (pt.sqrt(v_new) + eps))
             updates[v] = v_new
         return new_grads, updates
 
-    return GradientTransformation(init, update, _pytensor_impl)
+    return GradientTransformation(init, update, _pytensor_impl, _pytensor_init)
 
 
 def rmsprop(
