@@ -56,7 +56,12 @@ def get_nearest_psd(A: np.ndarray) -> np.ndarray:
 
 
 def _make_initial_point(model, initvals=None, random_seed=None, jitter_rvs=None):
-    jitter_rvs = [] if jitter_rvs is None else jitter_rvs
+    if jitter_rvs is None:
+        jitter_rvs = model.free_RVs
+    else:
+        # The model can be a frozen copy of the one the variables were taken from, so match them by name
+        jitter_names = {rv.name for rv in jitter_rvs}
+        jitter_rvs = [rv for rv in model.free_RVs if rv.name in jitter_names]
 
     ipfn = make_initial_point_fn(
         model=model,

@@ -353,3 +353,36 @@ def test_map_nonscalar_rv_without_dims():
         "x[1,1]",
         "x[1,2]",
     ]
+
+
+@pytest.mark.parametrize("freeze_model", [True, False], ids=["frozen", "not_frozen"])
+@pytest.mark.parametrize("jitter_rvs", [None, "all", "w"], ids=str)
+def test_find_MAP_jitter_rvs(jitter_rvs, freeze_model):
+    # Without jitter, the optimizer starts at w = z = 0, a stationary point it never leaves
+    with pm.Model() as model:
+        w = pm.Normal("w")
+        z = pm.Normal("z")
+        pm.Normal("y", mu=w * z, sigma=0.1, observed=1.0)
+
+    jitter_rvs = {None: None, "all": [w, z], "w": [w]}[jitter_rvs]
+    idata = find_MAP(
+        model=model,
+        jitter_rvs=jitter_rvs,
+        freeze_model=freeze_model,
+        random_seed=11,
+        progressbar=False,
+    )
+    w_hat = idata.posterior["w"].item()
+    z_hat = idata.posterior["z"].item()
+    assert w_hat * z_hat == pytest.approx(0.99, abs=1e-3)
+
+
+def test_find_MAP_no_jitter():
+    with pm.Model() as model:
+        w = pm.Normal("w")
+        z = pm.Normal("z")
+        pm.Normal("y", mu=w * z, sigma=0.1, observed=1.0)
+
+    idata = find_MAP(model=model, jitter_rvs=[], random_seed=11, progressbar=False)
+    assert idata.posterior["w"].item() == 0.0
+    assert idata.posterior["z"].item() == 0.0
