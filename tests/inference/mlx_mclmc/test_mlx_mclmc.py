@@ -811,23 +811,46 @@ def test_unpreconditioned_L_is_the_root_summed_position_variance():
     np.testing.assert_allclose(tuned.L, np.sqrt(dim * quartic_variance), rtol=0.04)
 
 
-def test_fused_momentum_update_matches_the_mlx_path():
-    """The Metal kernel must reproduce the MLX ops it replaces, including the per-chain step."""
-    from pymc_extras.inference.mlx_mclmc.kernel import _momentum_update, _momentum_update_fused
+@pytest.mark.parametrize("fused", [True, False], ids=["metal", "mlx"])
+def test_momentum_update_matches_blackjax_in_float64(fused, monkeypatch):
+    """Both the Metal kernel and the MLX ops must reproduce blackjax's ESH update."""
+    import pymc_extras.inference.mlx_mclmc.kernel as kernel
 
+    monkeypatch.setattr(kernel, "_use_fused_momentum", lambda: fused)
     dim, chains = 200, 4
     rng = np.random.default_rng(0)
-    momentum = rng.normal(size=(chains, dim)).astype("float32")
+    momentum = rng.normal(size=(chains, dim))
     momentum /= np.linalg.norm(momentum, axis=1, keepdims=True)
-    grad = (3.0 * rng.normal(size=(chains, dim))).astype("float32")
-    metric = Metric(scale=mx.array(rng.uniform(0.5, 2.0, dim).astype("float32")))
-
+    grad = 3.0 * rng.normal(size=(chains, dim))
+    scale = rng.uniform(0.5, 2.0, dim)
     # A per-chain step spanning the small-delta branch, where the kernel uses a series for
     # expm1, and the large-delta branch.
-    step = mx.array([1e-3, 0.05, 0.5, 5.0], dtype=mx.float32).reshape(-1, 1)
-    reference = _momentum_update(mx.array(momentum), mx.array(grad), step, metric, dim)
-    fused = _momentum_update_fused(mx.array(momentum), mx.array(grad), step, metric.scale, dim)
-    mx.eval(*reference, *fused)
+    step = np.array([1e-3, 0.05, 0.5, 5.0])[:, None]
 
-    for left, right in zip(reference, fused, strict=True):
-        np.testing.assert_allclose(np.asarray(left), np.asarray(right), rtol=1e-4, atol=1e-6)
+    whitened = grad * scale
+    grad_norm = np.linalg.norm(whitened, axis=1, keepdims=True)
+    direction = whitened / grad_norm
+    projection = np.sum(momentum * direction, axis=1, keepdims=True)
+    delta = step * grad_norm / (dim - 1)
+    zeta = np.exp(-delta)
+    expected_momentum = (
+        direction * (1 - zeta) * (1 + zeta + projection * (1 - zeta)) + 2 * zeta * momentum
+    )
+    expected_momentum /= np.linalg.norm(expected_momentum, axis=1, keepdims=True)
+    expected_kinetic = (delta - np.log(2) + np.log(1 + projection + (1 - projection) * zeta**2)) * (
+        dim - 1
+    )
+
+    new_momentum, velocity, kinetic = kernel._momentum_update(
+        mx.array(momentum.astype("float32")),
+        mx.array(grad.astype("float32")),
+        mx.array(step.astype("float32")),
+        Metric(scale=mx.array(scale.astype("float32"))),
+        dim,
+    )
+
+    np.testing.assert_allclose(np.asarray(new_momentum), expected_momentum, rtol=1e-4, atol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(velocity), expected_momentum * scale, rtol=1e-4, atol=1e-6
+    )
+    np.testing.assert_allclose(np.asarray(kinetic), expected_kinetic.ravel(), rtol=1e-4, atol=1e-6)
