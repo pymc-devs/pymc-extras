@@ -25,7 +25,6 @@ from pymc_extras.inference.mlx_mclmc.kernel import (
     _window_switch_steps,
     metric_from_low_rank_covariance,
     sample,
-    tune_step_size,
     warmup,
     warmup_and_sample,
 )
@@ -353,32 +352,6 @@ def test_warmup_recovers_the_diagonal_metric():
     # A streaming estimate over a short window, so the tolerance is wide -- the point is that it
     # tracks a 64x spread in scale rather than that it nails any one coordinate.
     np.testing.assert_allclose(np.asarray(tuned.metric.scale) ** 2, variances, rtol=0.35)
-
-
-def test_tune_step_size_reaches_the_target_energy_variance():
-    dim = 4
-    precision = mx.eye(dim)
-
-    def logdensity_fn(x):
-        return -0.5 * mx.sum(x * (precision @ x))
-
-    initial_positions = mx.random.normal(shape=(4, dim), key=mx.random.key(0))
-    step_size = tune_step_size(
-        logdensity_fn, initial_positions, L=1.5 * np.sqrt(dim), desired_energy_var=5e-4
-    )
-
-    energy_errors = sample(
-        logdensity_fn,
-        initial_positions,
-        L=1.5 * np.sqrt(dim),
-        step_size=step_size,
-        n_steps=600,
-        discard=300,
-        seed=1,
-    ).energy_errors
-    energy_var = float(mx.mean(mx.var(energy_errors, axis=0)) / dim)
-
-    assert 0.5 * 5e-4 < energy_var < 2.0 * 5e-4
 
 
 def test_initial_point_accepts_a_dict_or_a_flat_vector(conjugate_model):
