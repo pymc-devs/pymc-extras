@@ -117,6 +117,18 @@ class AutoGuideModel:
         return logq
 
 
+def _empty_guide_model(model: Model) -> Model:
+    """A model carrying ``model``'s dims, detached from any model context the caller is inside.
+
+    A dim declared by length alone has no coordinate values, so the lengths are passed along
+    with the values. ``model=None`` keeps an enclosing context from adopting the guide as a
+    nested submodel.
+    """
+    guide_model = Model(model=None)
+    guide_model.add_coords(model.coords, lengths=model.dim_lengths)
+    return guide_model
+
+
 def _check_continuous_rvs(model: Model, free_rvs: list[Variable]) -> None:
     if discrete_rvs := [
         rv.name for rv in free_rvs if not model.rvs_to_values[rv].type.dtype.startswith("float")
@@ -158,7 +170,6 @@ def AutoDiagonalNormal(model: Model, random_seed=None) -> AutoGuideModel:
     .. [1] Alp Kucukelbir, Dustin Tran, Rajesh Ranganath, Andrew Gelman, and David M. Blei. Automatic Differentiation
            Variational Inference. Journal of Machine Learning Research, 18(14):1–45, 2017.
     """
-    coords = model.coords
     free_rvs = model.free_RVs
     _check_continuous_rvs(model, free_rvs)
 
@@ -168,9 +179,7 @@ def AutoDiagonalNormal(model: Model, random_seed=None) -> AutoGuideModel:
     initial_point = model.initial_point(random_seed=random_seed)
     params_init_values = {}
 
-    # model=None detaches the guide from any model context the user may be inside,
-    # which would otherwise register the guide as a nested submodel
-    with Model(coords=coords, model=None) as guide_model:
+    with _empty_guide_model(model) as guide_model:
         for rv in free_rvs:
             value_var = model.rvs_to_values[rv]
             loc = pt.tensor(f"{rv.name}_loc", shape=value_var.type.shape)
@@ -258,10 +267,12 @@ def AutoMultivariateNormal(model: Model, random_seed=None) -> AutoGuideModel:
     L_packed_init = np.zeros(rows.size, dtype=loc_init.dtype)
     L_packed_init[rows == cols] = 0.1
 
-    with Model(coords=model.coords, model=None) as guide_model:
-        loc = pt.tensor("loc", shape=(None,))
-        L_packed = pt.tensor("L_packed", shape=(None,))
-        n = loc.shape[0]
+    with _empty_guide_model(model) as guide_model:
+        # Static shapes, known here, keep the broadcasts and the arange constant, which the MLX
+        # backend needs.
+        loc = pt.tensor("loc", shape=(n_dim,))
+        L_packed = pt.tensor("L_packed", shape=(rows.size,))
+        n = n_dim
         idx = pt.arange(n)
 
         L = pt.zeros((n, n))[pt.tril_indices(n)].set(L_packed)
@@ -367,12 +378,13 @@ def AutoLowRankMultivariateNormal(
     W_init = np.zeros((n_dim, rank), dtype=loc_init.dtype)
     d_unconstrained_init = np.full(n_dim, 0.1, dtype=loc_init.dtype)
 
-    with Model(coords=model.coords, model=None) as guide_model:
-        loc = pt.tensor("loc", shape=(None,))
-        W = pt.tensor("cov_factor", shape=(None, rank))
-        d_unconstrained = pt.tensor("cov_diag_unconstrained", shape=(None,))
+    with _empty_guide_model(model) as guide_model:
+        # Static shapes, known here, keep the broadcasts constant, which the MLX backend needs.
+        loc = pt.tensor("loc", shape=(n_dim,))
+        W = pt.tensor("cov_factor", shape=(n_dim, rank))
+        d_unconstrained = pt.tensor("cov_diag_unconstrained", shape=(n_dim,))
         d = pt.exp(d_unconstrained)
-        n = loc.shape[0]
+        n = n_dim
 
         eps_k = Normal("eps_k", mu=0.0, sigma=1.0, shape=(rank,))
         eps_d = Normal("eps_d", mu=0.0, sigma=1.0, shape=(n,))

@@ -35,11 +35,12 @@ license = {file = "LICENSE"}
 dynamic = ["version"]  # specify the version in the __init__.py file
 dependencies = [
   "pymc>=6.3.0,<6.4",
-  "pytensor>=3.3.0,<3.4",
+  "pytensor>=3.3.3,<3.4",
   "arviz>=1.2,<2.0",
   "better-optimize>=0.4.2,<1.0",
   "pydantic>=2.0.0,<3.0",
   "preliz>=0.27.0,<0.29.0",
+  "pytensor-ml>=0.3.0,<0.4",
 ]
 
 [project.optional-dependencies]
@@ -64,6 +65,9 @@ dask_histogram = [
 ]
 histogram = [
   "xhistogram",
+]
+mlx_mclmc = [
+  "mlx>=0.32; platform_machine == 'arm64' and sys_platform == 'darwin'",
 ]
 
 [project.urls]
