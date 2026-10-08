@@ -17,8 +17,10 @@ from pymc.progress_bar import CustomProgress, default_progress_theme
 from pymc.pytensorf import find_rng_nodes, reseed_rngs, resolve_backend_compile_kwargs
 from pymc.util import WithMemoization, locally_cachedmethod
 from pymc.variational.minibatch_rv import MinibatchRandomVariable
+from pytensor.compile.mode import get_mode
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import ancestors
+from pytensor.link.mlx.linker import MLXLinker
 from pytensor.tensor import TensorVariable
 from pytensor_ml.optim import Transform, Updates, adam, apply_if_finite, chain, clip_by_global_norm
 from rich.console import Console
@@ -110,10 +112,19 @@ _STALLED_STEPS = 5
 _EVAL_EVERY = 64
 
 
-def _evaluate_steps(losses: list, carried: list[SharedVariable]) -> list[float]:
-    """Evaluate a batch of steps and every shared variable they write, returning the losses."""
-    if not losses or not type(losses[0]).__module__.startswith("mlx"):
-        return [float(loss) for loss in losses]
+# Progress-bar refreshes per fit on an eager backend, whose losses are ready as each step returns.
+_PROGRESS_UPDATES = 1000
+
+
+def _read_eager_losses(losses: list, carried: list[SharedVariable]) -> list[float]:
+    """Return the losses of steps an eager backend has already evaluated."""
+    return [float(loss) for loss in losses]
+
+
+def _evaluate_lazy_steps(losses: list, carried: list[SharedVariable]) -> list[float]:
+    """Evaluate a batch of MLX steps and every shared variable they write, returning the losses."""
+    if not losses:
+        return []
 
     import mlx.core as mx
 
@@ -309,6 +320,10 @@ class Trainer(WithMemoization):
     @property
     def _linker_detaches_rngs(self) -> bool:
         return _rng_detaching_linker(self.compile_kwargs.get("mode"))
+
+    @property
+    def _linker_is_lazy(self) -> bool:
+        return isinstance(get_mode(self.compile_kwargs.get("mode")).linker, MLXLinker)
 
     @locally_cachedmethod
     def _svi_step(self, model: Model) -> tuple[TensorVariable, Updates]:
@@ -555,6 +570,11 @@ class Trainer(WithMemoization):
         if state is not None:
             self._restore(state)
 
+        if self._linker_is_lazy:
+            evaluate, batch_size = _evaluate_lazy_steps, _EVAL_EVERY
+        else:
+            evaluate, batch_size = _read_eager_losses, max(1, n // _PROGRESS_UPDATES)
+
         start_step = self._step
         losses: list[float] = []
         pending: list = []
@@ -590,8 +610,8 @@ class Trainer(WithMemoization):
                     if start_time is None:
                         start_time = time.perf_counter()
 
-                    if len(pending) == _EVAL_EVERY:
-                        losses += _evaluate_steps(pending, carried)
+                    if len(pending) == batch_size:
+                        losses += evaluate(pending, carried)
                         pending = []
                         loss = losses[-1]
                         elapsed = time.perf_counter() - start_time
@@ -605,7 +625,7 @@ class Trainer(WithMemoization):
                             speed_unit=unit,
                         )
 
-                losses += _evaluate_steps(pending, carried)
+                losses += evaluate(pending, carried)
                 pending = []
                 if losses:
                     loss = losses[-1]
@@ -620,8 +640,12 @@ class Trainer(WithMemoization):
                 )
         except KeyboardInterrupt:
             # The interrupted batch's steps have already moved the parameters, so their losses
-            # belong in the history and its length stays the step count.
-            losses += _evaluate_steps(pending, carried)
+            # belong in the history and its length stays the step count. A second interrupt
+            # during that evaluation forfeits the losses but still counts the steps.
+            try:
+                losses += evaluate(pending, carried)
+            except KeyboardInterrupt:
+                losses += [np.nan] * len(pending)
 
         self._loss_history.extend(losses)
         recent = np.asarray(self._loss_history[-_STALLED_STEPS:])
