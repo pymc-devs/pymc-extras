@@ -52,6 +52,8 @@ class AdaptationSettings(NamedTuple):
     advi_rank : int, optional
         Rank of the ``"low_rank"`` guide. Defaults to the guide's own, the square root of the
         dimension.
+    advi_particles : int
+        Number of guide draws per ADVI step used to estimate the ELBO gradient. Default is 1.
     advi_optimizer : Transform, optional
         A :mod:`pytensor_ml.optim` optimizer for the ADVI fit, such as
         ``apply_if_finite(adam(cosine_schedule(1e-2, total_steps=advi_steps)))``. Defaults to
@@ -82,5 +84,6 @@ class AdaptationSettings(NamedTuple):
     advi_steps: int = 0
     advi_guide: str = "mean_field"
     advi_rank: int | None = None
+    advi_particles: int = 1
     advi_optimizer: "Transform | None" = None
     initial_jitter: float = 0.3

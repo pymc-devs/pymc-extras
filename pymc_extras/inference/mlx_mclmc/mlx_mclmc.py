@@ -290,7 +290,11 @@ def _fit_approximation(
         )
 
     trainer = Trainer(
-        guide=guide, optimizer=settings.advi_optimizer, backend="mlx", random_seed=seed
+        guide=guide,
+        optimizer=settings.advi_optimizer,
+        n_particles=settings.advi_particles,
+        backend="mlx",
+        random_seed=seed,
     )
     # The trainer seeds its functions before compiling, so the MLX linker's copy of each shared
     # generator is the one that is meant to be used, and its warning about the copy is noise.
