@@ -125,6 +125,42 @@ def test_reseeding_a_continued_fit(conjugate_model, backend):
     assert third.optimizer_state["adam/step_count"] == 60
 
 
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+@pytest.mark.filterwarnings("ignore:MLX does not support float64")
+def test_lazy_fit_counts_a_partial_last_batch(conjugate_model):
+    pytest.importorskip("mlx")
+    model, *_ = conjugate_model
+
+    with model:
+        state = Trainer(backend="mlx").fit(100, random_seed=1)
+
+    assert state.step == 100
+    assert state.loss_history.shape == (100,)
+    assert np.isfinite(state.loss_history).all()
+
+
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+@pytest.mark.filterwarnings("ignore:MLX does not support float64")
+@pytest.mark.filterwarnings("ignore:The last 5 ELBO estimates")
+def test_second_interrupt_still_counts_the_dispatched_steps(conjugate_model, monkeypatch):
+    """Steps already dispatched have moved the parameters, so they count even unread."""
+    pytest.importorskip("mlx")
+    import pymc_extras.inference.advi.training as training
+
+    def interrupted(losses, carried):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(training, "_evaluate_lazy_steps", interrupted)
+    model, *_ = conjugate_model
+
+    with model:
+        state = Trainer(backend="mlx").fit(100, random_seed=1)
+
+    assert state.step == 64
+    assert state.loss_history.shape == (64,)
+    assert state.optimizer_state["adam/step_count"] == 64
+
+
 def test_fit_continues(conjugate_model):
     model, *_ = conjugate_model
 
