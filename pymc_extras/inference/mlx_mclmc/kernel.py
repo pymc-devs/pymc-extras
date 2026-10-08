@@ -1506,9 +1506,9 @@ def warmup(
 
     The adapting chains, scattered around ``initial_position``, both tune the parameters and
     move into the typical set, so the result cold-starts sampling without a hand-supplied metric.
-    One step size serves every chain, and the moments the metric is fitted from pool every
-    chain's draws. Adaptation runs in three phases, sized by the ``frac_tune`` fractions of
-    ``num_steps``:
+    Every chain tunes its own step size and ``L``, while the moments the metric is fitted from
+    pool every chain's draws. Adaptation runs in three phases, sized by the ``frac_tune``
+    fractions of ``num_steps``:
 
     1. Tune the step size alone, with a controller that drives
        :math:`\mathrm{Var}[E]` per dimension to ``settings.desired_energy_var``.

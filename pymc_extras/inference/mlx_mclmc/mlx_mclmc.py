@@ -115,6 +115,7 @@ def fit_mlx_mclmc(
         argument-buffer limit is retried unfused, so this is a way to skip that first attempt
         rather than a requirement. Default is True.
     random_seed : int, optional
+        Seed for the ADVI fit, the scatter of the adapting chains, and the sampler's noise.
     compile_kwargs : dict, optional
         Extra keyword arguments for the PyTensor function that maps draws back to model space.
     progressbar : bool or str
