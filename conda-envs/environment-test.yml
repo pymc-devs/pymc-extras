@@ -24,4 +24,4 @@ dependencies:
   - pip:
       - jax
       - blackjax
-      - pytensor-ml>0.2.2
+      - pytensor-ml>=0.3.0,<0.4
