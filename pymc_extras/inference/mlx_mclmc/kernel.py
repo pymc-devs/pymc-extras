@@ -1102,66 +1102,6 @@ def _drain_to_host(positions: list[mx.array], buffer: np.ndarray, start: int) ->
     return end
 
 
-def tune_step_size(
-    logdensity_fn: Callable[[mx.array], mx.array],
-    initial_positions: ArrayLike,
-    *,
-    L: float,
-    integrator: str = "mclachlan",
-    inverse_mass_matrix: ArrayLike | Metric = 1.0,
-    desired_energy_var: float = 5e-4,
-    rounds: int = 25,
-    steps: int = 600,
-    seed: int = 0,
-) -> float:
-    """
-    Find a step size that hits a target energy variance per dimension.
-
-    A cheap stand-in for :func:`warmup` when the metric and ``L`` are already known. Each round
-    rescales the step by the minimal-norm integrator's :math:`\\mathrm{Var}[E] = O(\\epsilon^6)`
-    law and stops once the measured variance is within a factor of two of the target.
-
-    Parameters
-    ----------
-    desired_energy_var : float
-        Target energy variance per dimension. Default is 5e-4.
-    rounds : int
-        Maximum number of rescaling rounds. Default is 25.
-    steps : int
-        Number of sampler steps used to measure the variance each round, half of them discarded.
-        Default is 600.
-    """
-    dim = np.shape(initial_positions)[1]
-    step_size = 0.5 * math.sqrt(dim)
-
-    for round_index in range(rounds):
-        energy_errors = sample(
-            logdensity_fn,
-            initial_positions,
-            L=L,
-            step_size=step_size,
-            n_steps=steps,
-            discard=steps // 2,
-            integrator=integrator,
-            inverse_mass_matrix=inverse_mass_matrix,
-            seed=seed + round_index,
-        ).energy_errors
-        energy_var = (mx.mean(mx.var(energy_errors, axis=0)) / dim).item()
-        _log.debug(
-            "tune round %d: step_size=%.4f energy_var/dim=%.2e", round_index, step_size, energy_var
-        )
-
-        if not math.isfinite(energy_var) or energy_var <= 0.0:
-            step_size *= 0.2
-            continue
-        if 0.5 * desired_energy_var < energy_var < 2.0 * desired_energy_var:
-            break
-
-        step_size *= min(3.0, max(0.2, (desired_energy_var / energy_var) ** (1.0 / 6.0)))
-
-    return step_size
-
-
 def _ess_per_dim(samples: np.ndarray) -> np.ndarray:
     """
     Estimate the single-chain effective sample size of each column of ``samples``.
