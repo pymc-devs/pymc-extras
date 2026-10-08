@@ -141,12 +141,20 @@ def fit_mlx_mclmc(
     """
     # Both modules import mlx at load time, and mlx only installs on Apple Silicon. Importing
     # them here keeps this module, and its docstring, importable everywhere else.
-    from pymc_extras.inference.mlx_mclmc.kernel import warmup_and_sample, warmup_schedule
+    from pymc_extras.inference.mlx_mclmc.kernel import (
+        check_settings,
+        warmup_and_sample,
+        warmup_schedule,
+    )
     from pymc_extras.inference.mlx_mclmc.logp import (
         MLXLogp,
         check_model_is_sampleable,
         draws_to_datasets,
     )
+
+    check_settings(integrator, adaptation)
+    if adaptation.advi_guide not in _ADVI_GUIDES:
+        raise ValueError(f"advi_guide must be one of {_ADVI_GUIDES}, got {adaptation.advi_guide!r}")
 
     model = pm.modelcontext(model)
     check_model_is_sampleable(model)
@@ -275,9 +283,6 @@ def _fit_approximation(
     import mlx.core as mx
 
     from pymc_extras.inference.mlx_mclmc.kernel import Metric, metric_from_low_rank_covariance
-
-    if settings.advi_guide not in _ADVI_GUIDES:
-        raise ValueError(f"advi_guide must be one of {_ADVI_GUIDES}, got {settings.advi_guide!r}")
 
     # The guide draws its noise with sizes taken from the model's dims, and a compiled MLX
     # function can only take a shape from a constant.

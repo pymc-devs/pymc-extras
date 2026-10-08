@@ -532,6 +532,18 @@ def _window_switch_steps(
 _MASS_MATRIX_METHODS = ("variance", "gradient", "low_rank")
 
 
+def check_settings(integrator: str, settings: AdaptationSettings) -> None:
+    """Raise ValueError if ``integrator`` or ``settings.mass_matrix`` names no known method."""
+    if integrator not in INTEGRATOR_COEFFICIENTS:
+        raise ValueError(
+            f"integrator must be one of {tuple(INTEGRATOR_COEFFICIENTS)}, got {integrator!r}"
+        )
+    if settings.mass_matrix not in _MASS_MATRIX_METHODS:
+        raise ValueError(
+            f"mass_matrix must be one of {_MASS_MATRIX_METHODS}, got {settings.mass_matrix!r}"
+        )
+
+
 def _diagonal_from_moments(
     moments: WindowedMoments, dim: int, method: str, eps: float = 1e-12
 ) -> np.ndarray:
@@ -1584,10 +1596,7 @@ def warmup(
         sampling chains directly, along with the adapted ``L``, ``step_size``, and ``metric``, and
         the ``num_tuning_steps`` spent.
     """
-    if settings.mass_matrix not in _MASS_MATRIX_METHODS:
-        raise ValueError(
-            f"mass_matrix must be one of {_MASS_MATRIX_METHODS}, got {settings.mass_matrix!r}"
-        )
+    check_settings(integrator, settings)
 
     coefficients = INTEGRATOR_COEFFICIENTS[integrator]
     initial_position = np.asarray(initial_position, dtype=np.float32).ravel()

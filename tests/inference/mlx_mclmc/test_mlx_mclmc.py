@@ -594,6 +594,27 @@ def test_advi_steps_move_the_adapting_chains_to_the_posterior(float32):
     )
 
 
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        (
+            {"integrator": "leapfrog", "adaptation": AdaptationSettings(advi_steps=10)},
+            "integrator",
+        ),
+        ({"adaptation": AdaptationSettings(advi_steps=10, mass_matrix="dense")}, "mass_matrix"),
+        ({"adaptation": AdaptationSettings(advi_steps=10, advi_guide="full_rank")}, "advi_guide"),
+    ],
+)
+def test_bad_settings_are_rejected_before_advi_runs(conjugate_model, monkeypatch, kwargs, match):
+    import pymc_extras.inference.mlx_mclmc.mlx_mclmc as mlx_mclmc
+
+    model, *_ = conjugate_model
+    monkeypatch.setattr(mlx_mclmc, "_fit_approximation", lambda *args, **kwargs: pytest.fail())
+
+    with pytest.raises(ValueError, match=match):
+        fit_mlx_mclmc(draws=10, tune=100, chains=1, model=model, **kwargs)
+
+
 def test_fit_falls_back_to_an_unfused_step_past_the_metal_limit(conjugate_model, monkeypatch):
     """A graph too large for mx.compile must retry unfused, not fail."""
     import pymc_extras.inference.mlx_mclmc.kernel as kernel
