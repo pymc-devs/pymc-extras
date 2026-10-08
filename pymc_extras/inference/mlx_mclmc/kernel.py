@@ -1462,7 +1462,7 @@ def _install_metric(
     readjust_steps: int,
 ) -> tuple[AdaptationState, Metric, np.ndarray, mx.array]:
     r"""
-    Fit the metric from phase 2, then either install it or set ``L`` from the position variance.
+    Install the metric fitted from phase 2, or set ``L`` from the position variance instead.
 
     With ``diagonal_preconditioning`` the fitted metric replaces the working one, the step-size
     controller is re-seeded, and ``readjust_steps`` further steps re-tune the step size under it,
@@ -1471,6 +1471,11 @@ def _install_metric(
     """
     settings, dim = context.settings, context.dim
 
+    chains = state.step_size.shape[0]
+    if not settings.diagonal_preconditioning:
+        variances = _diagonal_from_moments(state.foreground, dim=dim, method="variance")
+        return state, metric, np.full(chains, np.sqrt(variances.sum())), key
+
     fitted = _fit_metric(
         moments=state.foreground,
         retained=retained,
@@ -1478,11 +1483,6 @@ def _install_metric(
         mass_matrix=settings.mass_matrix,
         allow_low_rank=True,
     )
-    chains = state.step_size.shape[0]
-    if not settings.diagonal_preconditioning:
-        variances = _diagonal_from_moments(state.foreground, dim=dim, method="variance")
-        return state, metric, np.full(chains, np.sqrt(variances.sum())), key
-
     state = _reset_step_size_controller(state)
     state, key = _run_adapt_steps(
         context,
