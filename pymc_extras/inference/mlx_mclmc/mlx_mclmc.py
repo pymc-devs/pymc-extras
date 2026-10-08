@@ -196,13 +196,12 @@ def fit_mlx_mclmc(
     schedule = warmup_schedule(tune, adaptation)
     sections = [schedule.step_size, schedule.metric + schedule.readjust, schedule.L, burn_in, draws]
 
-    # The fused attempt fails when its step is first forced, before any progress is reported, so
-    # one bar carries over to the unfused retry.
-    with MCLMCProgressBarManager(
-        chains=chains, sections=sections, progressbar=progressbar
-    ) as progress:
-
-        def run(compile_step):
+    def run(compile_step):
+        # The fused step can retrace, and so hit the fusion limit, after warmup has reported
+        # progress, so a retry restarts from scratch under a bar of its own.
+        with MCLMCProgressBarManager(
+            chains=chains, sections=sections, progressbar=progressbar
+        ) as progress:
             return warmup_and_sample(
                 logdensity_fn,
                 start,
@@ -211,19 +210,19 @@ def fit_mlx_mclmc(
                 **sampler_kwargs,
             )
 
-        try:
-            output, tuned = run(compile_step)
-        except RuntimeError as exc:
-            if not (compile_step and _METAL_FUSION_LIMIT in str(exc)):
-                raise
-            warnings.warn(
-                "The fused sampler step exceeded Metal's argument-buffer limit, so MCLMC is "
-                "falling back to an unfused step, which is slower. Pass compile_step=False to skip "
-                "this attempt.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            output, tuned = run(compile_step=False)
+    try:
+        output, tuned = run(compile_step)
+    except RuntimeError as exc:
+        if not (compile_step and _METAL_FUSION_LIMIT in str(exc)):
+            raise
+        warnings.warn(
+            "The fused sampler step exceeded Metal's argument-buffer limit, so MCLMC is "
+            "falling back to an unfused step, which is slower. Pass compile_step=False to skip "
+            "this attempt.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        output, tuned = run(compile_step=False)
 
     # The kernel stacks draws first; InferenceData wants chains first.
     flat_draws = np.asarray(output.samples, dtype="float32").transpose(1, 0, 2)

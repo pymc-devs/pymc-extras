@@ -616,26 +616,37 @@ def test_bad_settings_are_rejected_before_advi_runs(conjugate_model, monkeypatch
 
 
 def test_fit_falls_back_to_an_unfused_step_past_the_metal_limit(conjugate_model, monkeypatch):
-    """A graph too large for mx.compile must retry unfused, not fail."""
+    """A graph too large for mx.compile must retry unfused, under a bar that starts over."""
     import pymc_extras.inference.mlx_mclmc.kernel as kernel
 
-    model, *_ = conjugate_model
-    attempted = []
-    real = kernel.warmup_and_sample
+    from pymc_extras.inference.mlx_mclmc.progress import MCLMCProgressBarManager
 
-    def fail_once_when_fused(*args, compile_step, **kwargs):
+    model, *_ = conjugate_model
+    attempted, bar_positions = [], []
+    real = kernel.warmup_and_sample
+    real_update = MCLMCProgressBarManager.update
+
+    def fail_once_when_fused(*args, compile_step, progress, **kwargs):
         attempted.append(compile_step)
         if compile_step:
+            # A retrace mid-warmup fails after progress has already been reported.
+            progress(kernel.ProgressReport("metric", 64, np.ones(1), 0))
             raise RuntimeError("[compile] Too many inputs/outputs fused in the Metal Compiled")
-        return real(*args, compile_step=False, **kwargs)
+        return real(*args, compile_step=False, progress=progress, **kwargs)
+
+    def recording_update(self, report):
+        real_update(self, report)
+        bar_positions.append((self.completed_steps, self.total_steps))
 
     monkeypatch.setattr(kernel, "warmup_and_sample", fail_once_when_fused)
+    monkeypatch.setattr(MCLMCProgressBarManager, "update", recording_update)
 
     with pytest.warns(RuntimeWarning, match="unfused"):
         idata = fit_mlx_mclmc(draws=100, tune=200, chains=1, model=model, random_seed=0)
 
     assert attempted == [True, False]
     assert idata["posterior"]["mu"].shape == (1, 100, 3)
+    assert bar_positions[-1][0] == bar_positions[-1][1]
 
 
 def test_logp_leaves_the_model_unfrozen_and_follows_set_data(float32):
