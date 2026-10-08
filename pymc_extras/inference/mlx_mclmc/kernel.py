@@ -175,7 +175,7 @@ class AdaptationState(NamedTuple):
 class SamplerOutput(NamedTuple):
     """Draws and per-step diagnostics returned by :func:`sample`."""
 
-    samples: mx.array
+    samples: np.ndarray
     energy_errors: mx.array
     diverging: mx.array
 
@@ -1019,7 +1019,7 @@ def sample(
     Returns
     -------
     SamplerOutput
-        The ``samples`` of shape ``(n_steps - discard, chains, dim)``, the per-step
+        The ``samples`` as a host array of shape ``(n_steps - discard, chains, dim)``, the per-step
         ``energy_errors`` of shape ``(n_steps, chains)`` that the step-size adaptation steers by,
         and a ``diverging`` flag of the same shape marking the steps that were reverted.
     """
@@ -1059,8 +1059,11 @@ def sample(
 
     # MLX has no scan primitive, so the trajectory is a Python loop over a single compiled step.
     # Lazy evaluation batches the graph between the periodic mx.eval, which hides the dispatch
-    # cost of that loop.
-    kept, energy_errors, diverging = [], [], []
+    # cost of that loop. Kept draws move to a preallocated host buffer at every forced batch, so
+    # device memory holds one batch of them and the full trace is never stacked a second time.
+    samples = np.empty((n_steps - discard, n_chains, dim), dtype=np.float32)
+    kept, written = [], 0
+    energy_errors, diverging = [], []
     step_size_per_chain = np.broadcast_to(np.asarray(step_size, dtype=np.float64), (n_chains,))
     nan_steps = mx.zeros((), dtype=mx.int32)
     for t in range(n_steps):
@@ -1074,17 +1077,29 @@ def sample(
             kept.append(state.position)
         if (t + 1) % _EVAL_EVERY == 0:
             mx.eval(state, nan_steps)
+            written = _drain_to_host(kept, samples, written)
             nan_steps = _report(progress, "sampling", _EVAL_EVERY, step_size_per_chain, nan_steps)
+    _drain_to_host(kept, samples, written)
     _report(progress, "sampling", n_steps % _EVAL_EVERY, step_size_per_chain, nan_steps)
 
     output = SamplerOutput(
-        samples=mx.stack(kept, axis=0),
+        samples=samples,
         energy_errors=mx.stack(energy_errors, axis=0),
         diverging=mx.stack(diverging, axis=0),
     )
-    mx.eval(output)
+    mx.eval(output.energy_errors, output.diverging)
 
     return output
+
+
+def _drain_to_host(positions: list[mx.array], buffer: np.ndarray, start: int) -> int:
+    """Copy ``positions`` into ``buffer`` from row ``start``, empty the list, and return the end."""
+    end = start + len(positions)
+    if positions:
+        buffer[start:end] = np.asarray(mx.stack(positions, axis=0))
+    positions.clear()
+
+    return end
 
 
 def tune_step_size(
