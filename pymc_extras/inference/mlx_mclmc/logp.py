@@ -69,7 +69,8 @@ class MLXLogp:
     meets ``mx.vmap``, which cannot batch the backend's Metal kernels.
 
     Dim lengths and ``pm.Data`` containers stay as shared variables of the compiled graph, so
-    the model is used as given and a later ``pm.set_data`` is picked up on the next call. Freeze
+    the model is used as given and a later ``pm.set_data`` that keeps the free variables' shapes
+    is picked up on the next call. The flat layout is fixed at construction. Freeze
     the model yourself with :func:`~pymc.model.transform.optimization.freeze_dims_and_data` to
     fold them in as constants, which lets more of the graph constant-fold.
 
