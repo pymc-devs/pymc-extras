@@ -225,7 +225,7 @@ def fit_mlx_mclmc(
         output, tuned = run(compile_step=False)
 
     # The kernel stacks draws first; InferenceData wants chains first.
-    flat_draws = np.asarray(output.samples, dtype="float32").transpose(1, 0, 2)
+    flat_draws = output.samples.transpose(1, 0, 2)
     # The kernel reports diagnostics for the burn-in steps too; drop those so sample_stats lines
     # up with the posterior's draw axis.
     energy_errors = np.asarray(output.energy_errors, dtype="float32").T[:, burn_in:]
