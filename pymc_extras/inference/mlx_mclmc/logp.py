@@ -15,6 +15,7 @@ from pytensor.graph.fg import FunctionGraph
 from pytensor.graph.rewriting.basic import in2out
 from pytensor.graph.traversal import graph_inputs
 from pytensor.link.mlx.dispatch import mlx_funcify
+from pytensor.tensor.type import float_dtypes
 from xarray import Dataset
 
 from pymc_extras.inference.laplace_approx.laplace import unpack_last_axis
@@ -205,7 +206,7 @@ def check_model_is_sampleable(model: pm.Model) -> None:
     CPU stream.
     """
     discrete = [
-        value_var.name for value_var in model.value_vars if value_var.dtype.startswith("int")
+        value_var.name for value_var in model.value_vars if value_var.dtype not in float_dtypes
     ]
     if discrete:
         raise ValueError(
