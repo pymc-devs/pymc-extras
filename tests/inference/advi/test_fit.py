@@ -98,13 +98,7 @@ def test_fit_advi_random_seed_detaching_backend(conjugate_model, backend):
     [
         "numba",
         "jax",
-        pytest.param(
-            "mlx",
-            marks=pytest.mark.skip(
-                reason="the MLX linker stores float32 mx.arrays back into float64 shared "
-                "variables, so the second compile sees mismatched dtypes; pytensor PR 2378"
-            ),
-        ),
+        "mlx",
     ],
 )
 def test_reseeding_a_continued_fit(conjugate_model, backend):
