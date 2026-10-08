@@ -108,6 +108,31 @@ def test_logp_matches_pymc(conjugate_model):
     np.testing.assert_allclose(np.asarray(logdensity_fn(point)), expected, rtol=1e-5)
 
 
+def test_invalid_parameter_gives_minus_inf_for_that_chain_only(float32):
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha", mu=1.0, sigma=1.0, shape=2)
+        pm.Beta("y", alpha=alpha, beta=2.0, observed=[0.5, 0.5])
+    logdensity_fn = MLXLogp(model)
+    points = np.array([[-0.5, 2.0], [1.5, 2.0]], dtype="float32")
+
+    logdensity, _ = logdensity_fn.value_and_grad(mx.array(points))
+
+    expected = model.compile_logp()({"alpha": points[1]})
+    assert np.asarray(logdensity)[0] == -np.inf
+    np.testing.assert_allclose(np.asarray(logdensity)[1], expected, rtol=1e-5)
+
+
+def test_draws_stay_inside_a_parameter_constraint(float32):
+    """A constraint enforced only by the likelihood's parameter check must bound the draws."""
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha", mu=0.5, sigma=1.0, shape=2)
+        pm.Beta("y", alpha=alpha, beta=2.0, observed=[0.3, 0.6])
+
+    idata = fit_mlx_mclmc(draws=500, tune=500, chains=4, model=model, random_seed=0)
+
+    assert (idata["posterior"]["alpha"].values > 0).all()
+
+
 def test_check_model_is_sampleable():
     with pm.Model() as model:
         pm.Normal("x", dtype="float64")

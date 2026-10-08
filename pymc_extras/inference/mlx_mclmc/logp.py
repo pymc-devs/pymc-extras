@@ -6,11 +6,13 @@ import pytensor.tensor as pt
 
 from arviz_base import dict_to_dataset
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
+from pymc.logprob.utils import local_check_parameter_to_ninf_switch
 from pymc.util import get_untransformed_name, is_transformed_name
 from pytensor.compile import mode
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import graph_replace, vectorize_graph
 from pytensor.graph.fg import FunctionGraph
+from pytensor.graph.rewriting.basic import in2out
 from pytensor.graph.traversal import graph_inputs
 from pytensor.link.mlx.dispatch import mlx_funcify
 from xarray import Dataset
@@ -30,15 +32,28 @@ _log = logging.getLogger(__name__)
 
 def _mlxify(inputs, outputs):
     """Rewrite a PyTensor graph under the MLX mode and funcify it to a raw MLX callable."""
-    # Parameter checks are dropped rather than turned into a -inf switch: MLX tracing cannot keep
-    # the assertion anyway, and unadjusted MCLMC has no accept step to reject the -inf region, so
-    # the resulting nan gradient would poison the chain instead of bouncing it back.
+    # MLX tracing cannot keep an assertion. The checks that can become a -inf switch already have,
+    # in _parameter_checks_to_ninf, so this only drops the ones that cannot.
     mlx_mode = mode.MLX.including("local_remove_check_parameter")
 
     fgraph = FunctionGraph(inputs=list(inputs), outputs=list(outputs), clone=True)
     mlx_mode.optimizer.rewrite(fgraph)
 
     return mlx_funcify(fgraph)
+
+
+def _parameter_checks_to_ninf(outputs):
+    """
+    Turn the parameter checks in single-chain ``outputs`` into a -inf switch.
+
+    An invalid parameter then gives a -inf density, which the kernel reverts like any other
+    non-finite step. The rewrite has to precede vectorization, which would reduce the condition
+    across chains and send every chain to -inf when one of them strays.
+    """
+    fgraph = FunctionGraph(outputs=outputs, clone=True, copy_inputs=False)
+    in2out(local_check_parameter_to_ninf_switch).rewrite(fgraph)
+
+    return fgraph.outputs
 
 
 class MLXLogp:
@@ -94,6 +109,7 @@ class MLXLogp:
         if negative:
             logp = -logp
         grad, _ = pt.pack(*pt.grad(logp, value_vars))
+        logp, grad = _parameter_checks_to_ninf([logp, grad])
 
         batched = pt.matrix("batched_flat_value", shape=(None, self.dim), dtype=dtype)
 
