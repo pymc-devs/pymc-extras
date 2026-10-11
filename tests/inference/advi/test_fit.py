@@ -344,6 +344,57 @@ def test_trainer_state_is_complete_and_honest(conjugate_model):
         trainer.n_particles = 32
 
 
+def test_learning_rate_is_a_live_shared_value(conjugate_model):
+    model, *_ = conjugate_model
+
+    trainer = Trainer(random_seed=0)
+    with model:
+        frozen = trainer.fit(50, learning_rate=0.0, random_seed=1)
+
+    # a zero rate leaves Adam's moments moving but the parameters untouched
+    init_loc = trainer.guide.params_init_values[trainer.guide["theta_loc"]]
+    np.testing.assert_allclose(frozen.params["theta_loc"], init_loc)
+    assert trainer.learning_rate == 0.0
+
+    # and fit can change it without rebuilding the step function
+    step_fn = trainer._cached_step_fn(model)
+    with model:
+        moved = trainer.fit(50, learning_rate=0.05, random_seed=1)
+    assert trainer.learning_rate == 0.05
+    assert trainer._cached_step_fn(model) is step_fn
+    assert not np.allclose(moved.params["theta_loc"], frozen.params["theta_loc"])
+
+
+def test_a_supplied_optimizer_owns_its_own_rate(conjugate_model):
+    model, *_ = conjugate_model
+
+    supplied = Trainer(optimizer=rmsprop(1e-3), random_seed=0)
+    with model:
+        supplied.fit(10, random_seed=1)
+    assert supplied.learning_rate is None
+
+    # _shared_params is the probe for "was bound"; the fitted trainer confirms fit sets it
+    assert supplied._shared_params is not None
+
+    # the bad learning_rate is refused before the step function is built, so the error
+    # does not cost a compilation
+    fresh = Trainer(optimizer=rmsprop(1e-3), random_seed=0)
+    with model, pytest.raises(ValueError, match="belongs to the optimizer"):
+        fresh.fit(10, learning_rate=0.01)
+    assert fresh._shared_params is None
+
+
+def test_fit_rejects_invalid_n_and_learning_rate(conjugate_model):
+    model, *_ = conjugate_model
+
+    with model:
+        with pytest.raises(ValueError, match="positive integer"):
+            Trainer().fit(0)
+
+        with pytest.raises(ValueError, match="non-negative"):
+            Trainer().fit(10, learning_rate=-1.0)
+
+
 def test_guide_initialized_at_initial_point():
     with pm.Model() as model:
         pm.LogNormal("x", mu=np.log(4.5), sigma=0.5)

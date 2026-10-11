@@ -22,7 +22,16 @@ from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import ancestors
 from pytensor.link.mlx.linker import MLXLinker
 from pytensor.tensor import TensorVariable
-from pytensor_ml.optim import Transform, Updates, adam, apply_if_finite, chain, clip_by_global_norm
+from pytensor_ml.optim import (
+    LearningRate,
+    Transform,
+    Updates,
+    adam,
+    apply_if_finite,
+    chain,
+    clip_by_global_norm,
+    scalar_state,
+)
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -139,15 +148,20 @@ def _evaluate_lazy_steps(losses: list, carried: list[SharedVariable]) -> list[fl
     return batch.tolist()
 
 
-def default_optimizer() -> Transform:
+DEFAULT_LEARNING_RATE = 0.01
+
+
+def default_optimizer(learning_rate: LearningRate = DEFAULT_LEARNING_RATE) -> Transform:
     """
-    Adam at 0.01 on gradients clipped to a global norm of 10, skipping non-finite steps.
+    Adam at ``learning_rate`` on gradients clipped to global norm 10, skipping non-finite steps.
 
     The guard skips without limit; :meth:`Trainer.fit` warns when a fit stalls instead.
     """
     # The guard's own give-up check is a runtime assertion, which JAX and MLX drop when they trace
     # the step.
-    return apply_if_finite(chain(clip_by_global_norm(10.0), adam(0.01)), max_consecutive_skips=None)
+    return apply_if_finite(
+        chain(clip_by_global_norm(10.0), adam(learning_rate)), max_consecutive_skips=None
+    )
 
 
 class Trainer(WithMemoization):
@@ -162,7 +176,9 @@ class Trainer(WithMemoization):
 
     Configuration splits along the same line. Everything compiled into the step function
     (``guide``, ``optimizer``, ``n_particles``, ``path_derivative_gradient``) is fixed at
-    construction and exposed read-only.
+    construction and exposed read-only. The default optimizer's learning rate is the
+    exception, staying a single shared value :meth:`fit` can change. An optimizer built
+    by the caller keeps its rate wherever the caller put it.
 
     There is no convergence-based early stopping. ``fit(n)`` runs ``n`` steps. To spend
     less, ask for fewer steps. To decide as you go, fit in chunks and look at
@@ -180,7 +196,7 @@ class Trainer(WithMemoization):
         ``apply_if_finite`` or ``skip_if(..., large_step(...))``. By default the gradients are
         clipped to a global norm of 10 and fed to Adam at a rate of 0.01, and a step that would
         write a non-finite value is skipped, leaving the guide and the optimizer state as they
-        were.
+        were. :meth:`fit` can change the default optimizer's learning rate.
     n_particles : int, optional
         Number of guide draws per step used to estimate the ELBO gradient, by
         default 1.
@@ -217,7 +233,13 @@ class Trainer(WithMemoization):
         compile_kwargs: dict | None = None,
         random_seed=None,
     ):
-        self._optimizer = optimizer if optimizer is not None else default_optimizer()
+        self._shared_learning_rate: SharedVariable | None = None
+        if optimizer is None:
+            self._shared_learning_rate = scalar_state(
+                "learning_rate", fill_value=DEFAULT_LEARNING_RATE
+            )
+            optimizer = default_optimizer(learning_rate=self._shared_learning_rate)
+        self._optimizer = optimizer
 
         self.compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
         self.random_seed = random_seed
@@ -241,6 +263,13 @@ class Trainer(WithMemoization):
     def guide(self) -> AutoGuideModel | None:
         """The guide being fit. Resolved against the model on the first fit, then fixed."""
         return self._guide
+
+    @property
+    def learning_rate(self) -> float | None:
+        """The current base rate, or None when the optimizer carries its own."""
+        if self._shared_learning_rate is None:
+            return None
+        return float(self._shared_learning_rate.get_value())
 
     @property
     def optimizer(self) -> Transform:
@@ -474,6 +503,7 @@ class Trainer(WithMemoization):
         state: SVIState | None = None,
         model: Model | None = None,
         observeds: list | None = None,
+        learning_rate: float | None = None,
         random_seed=None,
     ) -> SVIState:
         """
@@ -515,6 +545,10 @@ class Trainer(WithMemoization):
             of the full-data one; without it batches are treated as the full
             dataset and the posterior will be too wide. Variables that already
             carry a ``total_size`` in the model are left alone.
+        learning_rate : float, optional
+            Change the default rule's base rate before running, leaving it there for
+            later calls too. A rule given to the constructor carries its own rate, so
+            there is nothing here to change in that case.
         random_seed : optional
             Seed for the guide draws used to estimate the gradients.
 
@@ -525,6 +559,14 @@ class Trainer(WithMemoization):
         """
         if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
             raise ValueError(f"n must be a positive integer (the number of fit steps), got {n!r}")
+        if learning_rate is not None:
+            if learning_rate < 0:
+                raise ValueError(f"learning_rate must be non-negative, got {learning_rate!r}")
+            if self._shared_learning_rate is None:
+                raise ValueError(
+                    "This trainer's rate belongs to the optimizer given to its constructor, "
+                    "so there is nothing here to change. Give the rate to the optimizer."
+                )
 
         model = modelcontext(model)
 
@@ -571,6 +613,12 @@ class Trainer(WithMemoization):
         self._shared_optimizer_state = {
             variable.name: variable for variable in carried if variable not in params
         }
+
+        if learning_rate is not None:
+            self._shared_learning_rate.set_value(
+                np.asarray(learning_rate, dtype=self._shared_learning_rate.dtype)
+            )
+
         if state is not None:
             self._restore(state)
 
