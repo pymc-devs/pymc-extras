@@ -10,5 +10,6 @@ API Reference
    api/inference
    api/distributions
    api/statespace
+   api/terms
    api/prior
    api/utils
