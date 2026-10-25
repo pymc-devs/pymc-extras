@@ -5,6 +5,7 @@ import pymc as pm
 from pytensor.tensor import TensorLike, TensorVariable, as_tensor
 from xarray import DataTree
 
+from pymc_extras.model.marginal.conditional import recover
 from pymc_extras.model.marginal.marginalize import marginalize
 
 
@@ -41,15 +42,21 @@ def fit_INLA(
         PyMC model.
     minimizer_kwargs:
         Kwargs to pass to pytensor.optimize.minimize during the optimization step maximizing logp(x | y, params).
-    returned_latent_posteriors:
-        If True, also return posteriors for the latent Gaussian field (currently unsupported).
+    return_latent_posteriors: bool
+        If True, add draws of the latent Gaussian field to the ``posterior``
+        group, alongside the sampled hyperparameters. For each hyperparameter
+        draw, recovery uses a Gaussian centered at the conditional posterior
+        mode, with precision given by curvature at that mode. This is exact for
+        Gaussian conditionals and approximate otherwise.
     sampler_kwargs:
-        Kwargs to pass to pm.sample.
+        Kwargs to pass to pm.sample. The ``random_seed`` also seeds latent
+        posterior recovery.
 
     Returns
     -------
     DataTree
-        The inference data containing the results of the INLA algorithm.
+        The inference data containing the sampled hyperparameters and, if
+        requested, the recovered latent field.
 
     Examples
     --------
@@ -100,11 +107,12 @@ def fit_INLA(
     )
 
     # Sample over the hyperparameters
-    if not return_latent_posteriors:
-        idata = pm.sample(model=marginal_model, **sampler_kwargs)
-        return idata
-
-    # Unmarginalize stuff
-    raise NotImplementedError(
-        "Inference over the latent field with INLA is currently unsupported. Set return_latent_posteriors to False"
-    )
+    idata = pm.sample(model=marginal_model, **sampler_kwargs)
+    if return_latent_posteriors:
+        recover(
+            idata,
+            model=marginal_model,
+            var_names=[x.name],
+            random_seed=sampler_kwargs.get("random_seed"),
+        )
+    return idata

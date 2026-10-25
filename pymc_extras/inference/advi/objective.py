@@ -13,7 +13,7 @@ def get_logp_logq(
     model: Model,
     guide: AutoGuideModel,
     path_derivative_gradient: bool = True,
-    logp_scalings: dict[TensorVariable, float] | None = None,
+    logp_scalings: dict[TensorVariable, float | TensorVariable] | None = None,
 ):
     """
     Compute the log probability of the model and the guide, evaluated under draws from the guide.
@@ -31,7 +31,7 @@ def get_logp_logq(
         expectation, is dropped, yielding the lower-variance path-derivative gradient
         estimator of _[1] (also known as "sticking the landing").
     logp_scalings : dict, optional
-        Maps model variables to a factor multiplying their logp term, e.g. the
+        Maps model variables to a scalar or symbolic factor multiplying their logp term, e.g. the
         ``total_size / batch_size`` rescaling that makes a minibatch log-likelihood an
         unbiased estimate of the full-data one.
 

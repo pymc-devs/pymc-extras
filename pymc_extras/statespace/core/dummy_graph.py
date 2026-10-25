@@ -142,11 +142,7 @@ def kalman_filter_outputs_from_dummy_graph(
     filtered_covariances, predicted_covariances, _ = covariances
 
     [smoothed_states, smoothed_covariances] = kalman_smoother.build_graph(
-        T,
-        R,
-        Q,
-        filtered_states,
-        filtered_covariances,
+        data, (x0, P0, c, d, T, Z, R, H, Q), filter_outputs
     )
 
     grouped_outputs = [

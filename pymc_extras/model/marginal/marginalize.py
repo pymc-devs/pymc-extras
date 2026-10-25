@@ -285,6 +285,8 @@ def marginalize(
     """Marginalize a subset of variables in a PyMC model.
 
     This creates a new `Model`, with the specified variables marginalized.
+    Variables specified in ``laplace_approx`` use an approximate marginal
+    likelihood; their conditionals and recovered posteriors are also approximate.
 
     Notes
     -----
@@ -309,13 +311,12 @@ def marginalize(
     model : Model
         PyMC model to marginalize. Original variables will be cloned.
     rvs_to_marginalize : Sequence[TensorVariable]
-        Variables to marginalize exactly in the returned model.
+        Variables to marginalize in the returned model.
     laplace_approx : dict, optional
-        Variables to marginalize via Laplace approximation, mapped to their
-        precision matrix ``Q``. These need not be repeated in
-        ``rvs_to_marginalize``.
+        Latent Gaussian variables or names mapped to their precision matrices
+        ``Q`` for Laplace approximation, as used by ``fit_INLA``.
     minimizer_kwargs : dict, optional
-        Options forwarded to the minimizer of Laplace-marginalized variables.
+        Optimizer options used to locate each conditional posterior mode.
 
     Returns
     -------

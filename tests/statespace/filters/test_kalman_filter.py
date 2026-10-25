@@ -9,7 +9,8 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_less
 
 from pymc_extras.statespace.filters import (
-    KalmanSmoother,
+    DisturbanceSmoother,
+    RTSSmoother,
     SquareRootFilter,
     StandardFilter,
     UnivariateFilter,
@@ -29,6 +30,7 @@ from tests.statespace.test_utilities import (
     initialize_filter,
     make_test_inputs,
     nile_test_test_helper,
+    statsmodels_loglike_obs,
 )
 
 floatX = pytensor.config.floatX
@@ -125,7 +127,7 @@ def test_output_shapes_when_some_states_are_deterministic(filter_name, rng):
 @pytest.fixture
 def f_standard_nd():
     time_varying_names = ("transition", "design", "selection", "obs_cov", "state_cov")
-    ksmoother = KalmanSmoother(time_varying_names=time_varying_names)
+    ksmoother = RTSSmoother(time_varying_names=time_varying_names)
     data = pt.tensor(name="data", dtype=floatX, shape=(None, None))
     a0 = pt.vector(name="a0", dtype=floatX)
     P0 = pt.matrix(name="P0", dtype=floatX)
@@ -147,9 +149,11 @@ def f_standard_nd():
         predicted_covs,
         observed_covs,
         ll_obs,
-    ) = StandardFilter(time_varying_names=time_varying_names).build_graph(*inputs)
+    ) = filter_outputs = StandardFilter(time_varying_names=time_varying_names).build_graph(*inputs)
 
-    smoothed_states, smoothed_covs = ksmoother.build_graph(T, R, Q, filtered_states, filtered_covs)
+    smoothed_states, smoothed_covs = ksmoother.build_graph(
+        data, (a0, P0, c, d, T, Z, R, H, Q), filter_outputs
+    )
 
     outputs = [
         filtered_states,
@@ -316,6 +320,136 @@ def test_missing_value_with_nondiagonal_obs_cov(filter_name, rng):
         )
 
 
+LOGLIKE_TEST_K_ENDOG = 3
+
+
+def loglike_test_matrices(obs_cov: str):
+    """
+    Build the model filtered by :func:`test_loglike_matches_statsmodels`. A dense ``Z`` makes every
+    series load on every state, so a masked row of ``F`` carries cross-covariances that the update
+    has to clear -- the identity default of :func:`make_test_inputs` would hide a regression there.
+    """
+    p = m = r = LOGLIKE_TEST_K_ENDOG
+    _, a0, P0, c, d, T, _, R, _, Q = make_test_inputs(p, m, r, 1, rng=None)
+
+    Z = np.eye(p, m, dtype=floatX) + 0.3
+    H = np.eye(p, dtype=floatX) + (0.4 if obs_cov == "dense" else 0.0)
+
+    return [a0, P0, c, d, T, Z, R, H, Q]
+
+
+@cache
+def get_loglike_function(filter_name: str, obs_cov: str) -> Callable:
+    """Compile the per-timestep log-likelihood alone, which ``get_filter_function`` does not expose."""
+    filter_cls = {
+        "StandardFilter": StandardFilter,
+        "CholeskyFilter": SquareRootFilter,
+        "UnivariateFilter": UnivariateFilter,
+    }[filter_name]
+
+    a0, P0, c, d, T, Z, R, H, Q = loglike_test_matrices(obs_cov)
+
+    data = pt.tensor(name="data", dtype=floatX, shape=(None, LOGLIKE_TEST_K_ENDOG))
+    matrices = [pt.as_tensor_variable(x) for x in [a0, P0, c, d, T, Z, R, H, Q]]
+    ll_obs = filter_cls().build_graph(data, *matrices)[-1]
+
+    return pytensor.function([data], ll_obs)
+
+
+@pytest.mark.parametrize(
+    ("filter_name", "obs_cov"),
+    [
+        ("StandardFilter", "dense"),
+        ("UnivariateFilter", "diagonal"),
+        ("CholeskyFilter", "dense"),
+    ],
+)
+def test_loglike_matches_statsmodels(filter_name, obs_cov, rng):
+    """
+    Each timestep scores the observed components of ``y_t``, so the per-timestep log-likelihood must
+    match statsmodels -- normalizing constant included -- however much of the observation is missing.
+    The statespace core hands the filter the fill sentinel in place of ``NaN``, so both encodings
+    must score identically.
+    """
+    n = 20
+    data = rng.normal(size=(n, LOGLIKE_TEST_K_ENDOG)).astype(floatX)
+    data[3, 0] = np.nan
+    data[7, [0, 2]] = np.nan
+    data[11, :] = np.nan
+
+    loglike = get_loglike_function(filter_name, obs_cov)
+    expected = statsmodels_loglike_obs(data, *loglike_test_matrices(obs_cov))
+
+    assert_allclose(loglike(data), expected, atol=ATOL, rtol=RTOL)
+    assert_allclose(loglike(np.nan_to_num(data, nan=MISSING_FILL)), expected, atol=ATOL, rtol=RTOL)
+
+
+def test_square_root_filter_takes_a_covariance_for_P0(rng):
+    """
+    Every filter takes ``P0`` as a covariance; the square-root filter factors it itself.
+
+    The shared inputs use ``P0 = I``, where a factor and a covariance coincide, so only a
+    non-identity ``P0`` separates the two.
+    """
+    p, m, r, n = 1, 3, 1, 20
+    data, a0, _, c, d, T, Z, R, H, Q = make_test_inputs(p, m, r, n, rng)
+    P0 = np.diag([2.0, 3.0, 4.0]).astype(floatX)
+
+    standard = get_filter_function("StandardFilter")(data, a0, P0, c, d, T, Z, R, H, Q)
+    square_root = get_filter_function("CholeskyFilter")(data, a0, P0, c, d, T, Z, R, H, Q)
+
+    for name, expected, actual in zip(output_names, standard, square_root, strict=True):
+        assert_allclose(actual, expected, atol=ATOL, rtol=RTOL, err_msg=name)
+
+
+class TestDisturbanceSmootherMatchesRTS:
+    """Compare the disturbance smoother with the RTS smoother through one compiled function."""
+
+    @classmethod
+    def setup_class(cls):
+        inputs, _ = initialize_filter(StandardFilter(cov_jitter=0.0))
+        data, *matrices = inputs
+        filter_outputs = StandardFilter(cov_jitter=0.0).build_graph(data, *matrices)
+        rts_states, rts_covs = RTSSmoother(cov_jitter=0.0).build_graph(
+            data, matrices, filter_outputs
+        )
+        dk_states, dk_covs = DisturbanceSmoother(cov_jitter=0.0).build_graph(
+            data, matrices, filter_outputs
+        )
+        cls.smoother_fn = pytensor.function(
+            inputs, [filter_outputs[4][-1], dk_states, rts_states, dk_covs, rts_covs]
+        )
+
+    @pytest.mark.parametrize("stochastic_states", [4, 1], ids=["full_rank_P", "singular_P"])
+    @pytest.mark.parametrize("n_missing", [0, 5], ids=["complete", "missing"])
+    def test_matches_rts(self, stochastic_states, n_missing, rng):
+        """
+        The disturbance smoother never inverts ``P``, so it must agree with the RTS form even where
+        ``P`` is singular. A diagonal transition keeps process noise out of the noiseless states, so
+        ``P`` stays rank-deficient at every step rather than filling in.
+        """
+        m, p, n = 4, 1, 30
+        T = np.diag(np.linspace(0.5, 0.9, m)).astype(floatX)
+        R = np.eye(m, dtype=floatX)[:, :stochastic_states]
+        Q = np.eye(stochastic_states, dtype=floatX) * 0.3
+        Z = (rng.normal(size=(p, m)) * 0.5).astype(floatX)
+        H = np.eye(p, dtype=floatX) * 0.4
+        a0, d = np.zeros(m, dtype=floatX), np.zeros(p, dtype=floatX)
+        c = rng.normal(size=m).astype(floatX)
+        P0 = (R @ Q @ R.T).astype(floatX)
+
+        y = rng.normal(size=(n, p)).astype(floatX)
+        y[rng.choice(n, n_missing, replace=False), 0] = np.nan
+
+        P_last, dk_states, rts_states, dk_covs, rts_covs = self.smoother_fn(
+            y, a0, P0, c, d, T, Z, R, H, Q
+        )
+
+        assert np.linalg.matrix_rank(P_last) == stochastic_states
+        assert_allclose(dk_states, rts_states, atol=1e-6)
+        assert_allclose(dk_covs, rts_covs, atol=1e-6)
+
+
 @pytest.mark.parametrize("filter_name", filter_names)
 @pytest.mark.parametrize("output_idx", [(0, 2), (3, 5)], ids=["smoothed_states", "smoothed_covs"])
 def test_last_smoother_is_last_filtered(filter_name, output_idx, rng):
@@ -334,8 +468,6 @@ def test_last_smoother_is_last_filtered(filter_name, output_idx, rng):
 @pytest.mark.skipif(floatX == "float32", reason="Tests are too sensitive for float32")
 def test_filters_match_statsmodel_output(filter_name, n_missing, rng):
     fit_sm_mod, [data, a0, P0, c, d, T, Z, R, H, Q] = nile_test_test_helper(rng, n_missing)
-    if filter_name == "CholeskyFilter":
-        P0 = np.linalg.cholesky(P0)
     inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
     outputs = get_filter_function(filter_name)(*inputs)
 
@@ -381,8 +513,6 @@ def test_all_covariance_matrices_are_PSD(filter_name, n_missing, obs_noise, rng)
         pytest.skip("Univariate filter not stable at half precision without measurement error")
 
     fit_sm_mod, [data, a0, P0, c, d, T, Z, R, H, Q] = nile_test_test_helper(rng, n_missing)
-    if filter_name == "CholeskyFilter":
-        P0 = np.linalg.cholesky(P0)
 
     H *= int(obs_noise)
     inputs = [data, a0, P0, c, d, T, Z, R, H, Q]
@@ -480,63 +610,139 @@ SYMMETRIC_GRADS = {"d_P0", "d_H", "d_Q"}
 
 
 def assert_results_match(out_std, out_conv, names, err_prefix=""):
+    """Compare each output to its reference at ``ATOL`` times the reference's largest entry."""
     for name, std, conv in zip(names, out_std, out_conv, strict=True):
         std, conv = np.asarray(std, float), np.asarray(conv, float)
         if name in SYMMETRIC_GRADS:
             std, conv = 0.5 * (std + std.T), 0.5 * (conv + conv.T)
-        assert_allclose(conv, std, atol=ATOL, rtol=RTOL, err_msg=f"{err_prefix}{name} mismatch")
+        scale = max(1.0, np.abs(std).max())
+        assert_allclose(conv, std, atol=ATOL * scale, err_msg=f"{err_prefix}{name} mismatch")
 
 
-@pytest.mark.parametrize(
-    "m,p,n_shocks,n",
-    [(5, 2, 5, 100), (10, 3, 10, 200)],
-    ids=["small", "medium"],
-)
-def test_convergent_filter_forward_matches_standard(m, p, n_shocks, n, rng):
-    """ConvergentFilter forward outputs should match StandardFilter to numerical precision."""
-    vals = _make_stationary_system(m, p, n_shocks, n, rng)
-
-    def build(filter_cls):
-        inputs, outputs = initialize_filter(filter_cls(), p=p, m=m, r=n_shocks, n=n)
-        return pytensor.function(inputs, outputs, on_unused_input="ignore")
-
-    fn_std = build(StandardFilter)
-    fn_conv = build(ConvergentFilter)
-    out_std = fn_std(*vals)
-    out_conv = fn_conv(*vals)
-
-    # The tail path only runs once the Riccati recursion converges. Without this the comparison
-    # could pass vacuously, with ConvergentFilter having degenerated into StandardFilter.
-    predicted_covs = out_conv[output_names.index("predicted_covs")]
-    assert_allclose(predicted_covs[-1], predicted_covs[n // 2], atol=ATOL, rtol=RTOL)
-
-    assert_results_match(out_std, out_conv, output_names, err_prefix="ConvergentFilter ")
+def _make_local_level_system(n, rng):
+    """A unit-root (non-stationary) but observable and controllable local level. Its Riccati
+    recursion still converges to a steady-state gain, so ConvergentFilter applies -- convergence
+    requires detectability and stabilizability, not stationarity."""
+    sigma_level, sigma_obs = 0.4, 0.7
+    T_np = np.array([[1.0]], dtype=floatX)
+    Z_np = np.array([[1.0]], dtype=floatX)
+    R_np = np.array([[1.0]], dtype=floatX)
+    Q_np = np.array([[sigma_level**2]], dtype=floatX)
+    H_np = np.array([[sigma_obs**2]], dtype=floatX)
+    c_np = np.zeros(1, dtype=floatX)
+    d_np = np.zeros(1, dtype=floatX)
+    a0_np = np.zeros(1, dtype=floatX)
+    P0_np = np.array([[1.0]], dtype=floatX)
+    level = rng.standard_normal()
+    data_np = np.empty((n, 1), dtype=floatX)
+    for t in range(n):
+        level = level + sigma_level * rng.standard_normal()
+        data_np[t] = level + sigma_obs * rng.standard_normal()
+    return [data_np, a0_np, P0_np, c_np, d_np, T_np, Z_np, R_np, H_np, Q_np]
 
 
-@pytest.mark.parametrize(
-    "m,p,n_shocks,n",
-    [(5, 2, 5, 100), (10, 3, 10, 200)],
-    ids=["small", "medium"],
-)
-def test_convergent_filter_gradient_matches_standard(m, p, n_shocks, n, rng):
-    """ConvergentFilter's analytic gradients should match StandardFilter's autodiff gradients for
-    every model parameter."""
-    vals = _make_stationary_system(m, p, n_shocks, n, rng)
+N_FORWARD_OUTPUTS = len(output_names)
 
-    def build(filter_cls):
-        inputs, outputs = initialize_filter(filter_cls(), p=p, m=m, r=n_shocks, n=n)
-        data_, a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = inputs
-        ll_obs = outputs[-1]
-        loss = ll_obs.sum()
-        grads = pt.grad(loss, [a0_, P0_, c_, d_, T_, Z_, R_, H_, Q_])
-        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
 
-    fn_std = build(StandardFilter)
-    fn_conv = build(ConvergentFilter)
-    out_std = fn_std(*vals)
-    out_conv = fn_conv(*vals)
+class TestConvergentFilter:
+    """Compare ConvergentFilter with StandardFilter through one compiled function per filter."""
 
-    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="ConvergentFilter ")
+    @classmethod
+    def setup_class(cls):
+        cls.standard = cls._compile(StandardFilter())
+        cls.convergent = cls._compile(ConvergentFilter())
+        cls.convergent_never_converging = cls._compile(ConvergentFilter(tol=0.0))
+
+    @staticmethod
+    def _compile(kfilter) -> Callable:
+        """Compile with unknown shapes, returning every forward output, the loss, and its gradients."""
+        inputs, outputs = initialize_filter(kfilter)
+        loss = outputs[-1].sum()
+        grads = pt.grad(loss, inputs[1:])
+        return pytensor.function(inputs, [*outputs, loss, *grads], on_unused_input="ignore")
+
+    @staticmethod
+    def _forward_and_gradients(fn, vals):
+        results = fn(*vals)
+        return results[:N_FORWARD_OUTPUTS], results[N_FORWARD_OUTPUTS:]
+
+    @pytest.mark.parametrize(
+        "m,p,n_shocks,n",
+        [(5, 2, 5, 100), (10, 3, 10, 200)],
+        ids=["small", "medium"],
+    )
+    def test_forward_matches_standard(self, m, p, n_shocks, n, rng):
+        """ConvergentFilter forward outputs should match StandardFilter to numerical precision."""
+        vals = _make_stationary_system(m, p, n_shocks, n, rng)
+        out_std, _ = self._forward_and_gradients(self.standard, vals)
+        out_conv, _ = self._forward_and_gradients(self.convergent, vals)
+
+        # The tail path only runs once the Riccati recursion converges. Without this the comparison
+        # could pass vacuously, with ConvergentFilter having degenerated into StandardFilter.
+        predicted_covs = out_conv[output_names.index("predicted_covs")]
+        assert_allclose(predicted_covs[-1], predicted_covs[n // 2], atol=ATOL, rtol=RTOL)
+
+        assert_results_match(out_std, out_conv, output_names, err_prefix="ConvergentFilter ")
+
+    @pytest.mark.parametrize(
+        "m,p,n_shocks,n",
+        [(5, 2, 5, 100), (10, 3, 10, 200)],
+        ids=["small", "medium"],
+    )
+    def test_gradient_matches_standard(self, m, p, n_shocks, n, rng):
+        """ConvergentFilter's analytic gradients should match StandardFilter's autodiff gradients
+        for every model parameter."""
+        vals = _make_stationary_system(m, p, n_shocks, n, rng)
+        _, grads_std = self._forward_and_gradients(self.standard, vals)
+        _, grads_conv = self._forward_and_gradients(self.convergent, vals)
+
+        assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="ConvergentFilter ")
+
+    def test_asserts_nan_symbolic_data(self, rng):
+        """For fully symbolic data, NaN should be caught by a runtime Assert op."""
+        m, p, n_shocks, n = 3, 2, 3, 30
+        vals = _make_stationary_system(m, p, n_shocks, n, rng)
+        # Inject NaN at runtime
+        vals[0][5, 0] = np.nan
+
+        with pytest.raises(AssertionError, match="missing data"):
+            self.convergent(*vals)
+
+    def test_singular_H_gradient_matches_standard(self, rng):
+        """A measurement-error-free model has singular H. The tail backward routes its one
+        H-coupled term through F^{-1}, so every gradient -- d_H included -- matches StandardFilter
+        even when H is singular."""
+        m, p, n_shocks, n = 4, 3, 4, 120
+        vals = _make_stationary_system(m, p, n_shocks, n, rng)
+        # Perfectly observe one series: zero its measurement-noise row and column.
+        vals[8][0, :] = 0.0
+        vals[8][:, 0] = 0.0
+
+        _, grads_std = self._forward_and_gradients(self.standard, vals)
+        _, grads_conv = self._forward_and_gradients(self.convergent, vals)
+        assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="singular H: ")
+
+    def test_local_level_matches_standard(self, rng):
+        """A unit-root local level converges to a steady-state gain. ConvergentFilter forward
+        outputs and gradients should match StandardFilter even though the system is
+        non-stationary."""
+        vals = _make_local_level_system(250, rng)
+
+        out_std = self.standard(*vals)
+        out_conv = self.convergent(*vals)
+        for std, conv in zip(out_std, out_conv, strict=True):
+            assert_allclose(np.asarray(conv), np.asarray(std), atol=ATOL, rtol=RTOL)
+
+    def test_k_equals_n_gradient_matches_standard(self, rng):
+        """With tol=0 the until clause never fires, so the Riccati never converges. The split is
+        then capped at n-1 (a one-step tail -- a single tail step is exactly the Kalman step), and
+        the gradient of this degenerate no-convergence case must still match StandardFilter."""
+        m, p, n_shocks, n = 4, 2, 4, 40
+        vals = _make_stationary_system(m, p, n_shocks, n, rng)
+
+        _, grads_std = self._forward_and_gradients(self.standard, vals)
+        _, grads_conv = self._forward_and_gradients(self.convergent_never_converging, vals)
+        assert_results_match(grads_std, grads_conv, GRAD_NAMES, err_prefix="tol=0: ")
 
 
 def test_convergent_filter_rejects_time_varying_params():
@@ -574,20 +780,6 @@ def test_convergent_filter_rejects_nan_constant_data():
         ConvergentFilter().build_graph(data, a0, P0, c, d, T, Z, R, H, Q)
 
 
-def test_convergent_filter_asserts_nan_symbolic_data(rng):
-    """For fully symbolic data, NaN should be caught by a runtime Assert op."""
-    m, p, n_shocks, n = 3, 2, 3, 30
-    vals = _make_stationary_system(m, p, n_shocks, n, rng)
-    # Inject NaN at runtime
-    vals[0][5, 0] = np.nan
-
-    inputs, outputs = initialize_filter(ConvergentFilter(), p=p, m=m, r=n_shocks, n=n)
-    fn = pytensor.function(inputs, outputs, on_unused_input="ignore")
-
-    with pytest.raises(AssertionError, match="missing data"):
-        fn(*vals)
-
-
 def test_convergent_filter_rejects_missing_fill_sentinel(rng):
     """The statespace core replaces NaN with missing_fill_value before the filter runs, so the
     sentinel -- not just NaN -- must be rejected. This mirrors the real PyMC path, where data is a
@@ -603,85 +795,6 @@ def test_convergent_filter_rejects_missing_fill_sentinel(rng):
         ConvergentFilter().build_graph(
             pt.as_tensor_variable(shared_data), a0, P0, c, d, T, Z, R, H, Q
         )
-
-
-def test_convergent_filter_singular_H_gradient_matches_standard(rng):
-    """A measurement-error-free model has singular H. The tail backward routes its one H-coupled
-    term through F^{-1}, so every gradient -- d_H included -- matches StandardFilter even when H is
-    singular."""
-    m, p, n_shocks, n = 4, 3, 4, 120
-    vals = _make_stationary_system(m, p, n_shocks, n, rng)
-    # Perfectly observe one series: zero its measurement-noise row and column.
-    vals[8][0, :] = 0.0
-    vals[8][:, 0] = 0.0
-
-    def build(kfilter):
-        inputs, outputs = initialize_filter(kfilter, p=p, m=m, r=n_shocks, n=n)
-        loss = outputs[-1].sum()
-        grads = pt.grad(loss, inputs[1:])
-        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
-
-    out_std = build(StandardFilter())(*vals)
-    out_conv = build(ConvergentFilter())(*vals)
-    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="singular H: ")
-
-
-def _make_local_level_system(n, rng):
-    """A unit-root (non-stationary) but observable and controllable local level. Its Riccati
-    recursion still converges to a steady-state gain, so ConvergentFilter applies -- convergence
-    requires detectability and stabilizability, not stationarity."""
-    sigma_level, sigma_obs = 0.4, 0.7
-    T_np = np.array([[1.0]], dtype=floatX)
-    Z_np = np.array([[1.0]], dtype=floatX)
-    R_np = np.array([[1.0]], dtype=floatX)
-    Q_np = np.array([[sigma_level**2]], dtype=floatX)
-    H_np = np.array([[sigma_obs**2]], dtype=floatX)
-    c_np = np.zeros(1, dtype=floatX)
-    d_np = np.zeros(1, dtype=floatX)
-    a0_np = np.zeros(1, dtype=floatX)
-    P0_np = np.array([[1.0]], dtype=floatX)
-    level = rng.standard_normal()
-    data_np = np.empty((n, 1), dtype=floatX)
-    for t in range(n):
-        level = level + sigma_level * rng.standard_normal()
-        data_np[t] = level + sigma_obs * rng.standard_normal()
-    return [data_np, a0_np, P0_np, c_np, d_np, T_np, Z_np, R_np, H_np, Q_np]
-
-
-def test_convergent_filter_local_level_matches_standard(rng):
-    """A unit-root local level converges to a steady-state gain. ConvergentFilter forward outputs
-    and gradients should match StandardFilter even though the system is non-stationary."""
-    n = 250
-    vals = _make_local_level_system(n, rng)
-
-    def build(filter_cls):
-        inputs, outputs = initialize_filter(filter_cls(), p=1, m=1, r=1, n=n)
-        ll_obs = outputs[-1]
-        grads = pt.grad(ll_obs.sum(), inputs[1:])
-        return pytensor.function(inputs, [*outputs, *grads], on_unused_input="ignore")
-
-    out_std = build(StandardFilter)(*vals)
-    out_conv = build(ConvergentFilter)(*vals)
-    for std, conv in zip(out_std, out_conv, strict=True):
-        assert_allclose(np.asarray(conv), np.asarray(std), atol=ATOL, rtol=RTOL)
-
-
-def test_convergent_filter_k_equals_n_gradient_matches_standard(rng):
-    """With tol=0 the until clause never fires, so the Riccati never converges. The split is then
-    capped at n-1 (a one-step tail -- a single tail step is exactly the Kalman step), and the
-    gradient of this degenerate no-convergence case must still match StandardFilter."""
-    m, p, n_shocks, n = 4, 2, 4, 40
-    vals = _make_stationary_system(m, p, n_shocks, n, rng)
-
-    def build(kfilter):
-        inputs, outputs = initialize_filter(kfilter, p=p, m=m, r=n_shocks, n=n)
-        loss = outputs[-1].sum()
-        grads = pt.grad(loss, inputs[1:])
-        return pytensor.function(inputs, [loss, *grads], on_unused_input="ignore")
-
-    out_std = build(StandardFilter())(*vals)
-    out_conv = build(ConvergentFilter(tol=0.0))(*vals)
-    assert_results_match(out_std, out_conv, GRAD_NAMES, err_prefix="tol=0: ")
 
 
 def test_convergent_filter_builds_and_runs_at_float32(rng):

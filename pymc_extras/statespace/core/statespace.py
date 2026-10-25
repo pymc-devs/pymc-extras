@@ -40,14 +40,17 @@ from pymc_extras.statespace.core.properties import (
 from pymc_extras.statespace.core.representation import PytensorRepresentation
 from pymc_extras.statespace.filters import (
     ConvergentFilter,
-    KalmanSmoother,
+    DisturbanceSmoother,
+    RTSSmoother,
     SquareRootFilter,
     StandardFilter,
     UnivariateFilter,
 )
 from pymc_extras.statespace.filters.distributions import (
+    InnovationsStateSpaceRV,
     KalmanFilterRV,
     SequenceMvNormal,
+    StationaryVARRV,
 )
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter
 from pymc_extras.statespace.utils.constants import (
@@ -57,6 +60,7 @@ from pymc_extras.statespace.utils.constants import (
     OBS_STATE_DIM,
     OBSERVED_DATA_NAME,
     OBSERVED_LIKELIHOOD_NAME,
+    SMOOTHER_OUTPUT_NAMES,
     TIME_DIM,
 )
 from pymc_extras.statespace.utils.data_tools import (
@@ -75,6 +79,11 @@ FILTER_FACTORY = {
     "convergent": ConvergentFilter,
 }
 
+SMOOTHER_FACTORY = {
+    "disturbance": DisturbanceSmoother,
+    "rts": RTSSmoother,
+}
+
 
 def _validate_property(props, property_name, expected_type):
     if isinstance(props, expected_type) or props is None:
@@ -90,6 +99,11 @@ def _validate_property(props, property_name, expected_type):
             f"All elements of the {property_name} property must be instances of "
             f"{expected_type.__name__}."
         )
+
+
+# Every op a statespace model registers as its observation likelihood. A variable named ``obs``
+# is only ours if one of these produced it, so a user's own variable is never mistaken for it.
+LIKELIHOOD_OPS = (KalmanFilterRV, StationaryVARRV, InnovationsStateSpaceRV)
 
 
 def _has_statespace_graph(model: Model) -> bool:
@@ -112,7 +126,7 @@ def _has_statespace_graph(model: Model) -> bool:
     likelihood = model.named_vars.get(OBSERVED_LIKELIHOOD_NAME, None)
     if likelihood is None or likelihood.owner is None:
         return False
-    return isinstance(likelihood.owner.op, KalmanFilterRV)
+    return isinstance(likelihood.owner.op, LIKELIHOOD_OPS)
 
 
 class PyMCStateSpace:
@@ -136,6 +150,17 @@ class PyMCStateSpace:
     filter_type : str, optional
         The type of Kalman filter to use. Valid options are "standard", "univariate", "single", "cholesky", and
         "steady_state". For more information, see the docs for each filter. Default is "standard".
+
+    smoother_type : str, optional
+        The type of Kalman smoother to use. Valid options are "disturbance" and "rts". Both return the same
+        smoothed moments; "rts" inverts a ``k_states`` matrix at every step and is retained for cross-checking.
+        Default is "disturbance".
+    joint_smoothed_draws : bool, optional
+        If True, ``sample_conditional_prior`` and ``sample_conditional_posterior`` draw the smoothed states as a
+        single trajectory from the simulation smoother, carrying their cross-time posterior covariance. If False,
+        each timestep is drawn from its own marginal, reproducing the smoothed means and per-step covariances but
+        not the correlation between timesteps. Marginal draws are also slower, because each timestep's covariance
+        must be factored; set this to False to compare against the marginals, not to save time. Default is True.
 
     verbose : bool, optional
         If True, displays information about the initialized model. Defaults to True.
@@ -282,6 +307,8 @@ class PyMCStateSpace:
         k_states: int,
         k_posdef: int,
         filter_type: str = "standard",
+        smoother_type: str = "disturbance",
+        joint_smoothed_draws: bool = True,
         verbose: bool = True,
         measurement_error: bool = False,
         mode: str | None = None,
@@ -316,7 +343,15 @@ class PyMCStateSpace:
         if filter_type == "single" and self.k_endog > 1:
             raise ValueError('Cannot use filter_type = "single" with multiple observed time series')
 
+        if smoother_type.lower() not in SMOOTHER_FACTORY.keys():
+            raise NotImplementedError(
+                "The following are valid smoother types: "
+                + ", ".join(list(SMOOTHER_FACTORY.keys()))
+            )
+
         self.filter_type = filter_type.lower()
+        self.smoother_type = smoother_type.lower()
+        self.joint_smoothed_draws = joint_smoothed_draws
         self.make_symbolic_graph()
 
         self.requirement_table = None
@@ -565,7 +600,7 @@ class PyMCStateSpace:
         observed = [
             variable
             for variable in pymc_model.observed_RVs
-            if isinstance(variable.owner.op, KalmanFilterRV)
+            if isinstance(variable.owner.op, LIKELIHOOD_OPS)
         ]
         if not observed:
             raise ValueError(
@@ -986,7 +1021,7 @@ class PyMCStateSpace:
         pm_mod = modelcontext(None)
 
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
-        filled_values, index, _ = prepare_data_for_pymc(
+        filled_values, index, missing = prepare_data_for_pymc(
             data,
             n_obs=self.ssm.k_endog,
             obs_coords=obs_coords,
@@ -994,7 +1029,7 @@ class PyMCStateSpace:
         )
 
         if _has_statespace_graph(pm_mod):
-            self._reenter_statespace_graph(filled_values, index)
+            self._reenter_statespace_graph(filled_values, index, missing)
             return
 
         for name in (OBSERVED_DATA_NAME, OBSERVED_LIKELIHOOD_NAME):
@@ -1013,29 +1048,62 @@ class PyMCStateSpace:
         # Order is important here: only call _insert_data_shape_into_n_timesteps after data has been registered.
         matrices = self._insert_data_shape_into_n_timesteps(matrices, data_variable)
 
+        obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_states"]
+        obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
+
+        self.make_likelihood(data_variable, matrices, obs_dims, missing)
+        self._register_additional_statespace_variables()
+
+    def make_likelihood(
+        self,
+        data: pt.TensorVariable,
+        matrices: list[pt.TensorVariable],
+        dims: tuple[str, ...] | None,
+        missing: np.ndarray,
+    ) -> pt.TensorVariable:
+        """
+        Register the observation likelihood into the active model and return it.
+
+        The default runs this model's Kalman filter over ``data``. A subclass whose observation
+        density has a closed form overrides this to register that instead, deferring to
+        ``super()`` for the configurations its closed form does not cover.
+
+        Parameters
+        ----------
+        data : TensorVariable
+            Observed data, already registered in the active model.
+        matrices : list of TensorVariable
+            The state space matrices, with the model's variables and data substituted in.
+        dims : tuple of str, optional
+            Dims for the likelihood, or None when the model declares no matching coords.
+        missing : numpy array
+            Boolean mask over ``data``, true where an observation was missing. The Kalman filter
+            marginalizes those; a closed form generally cannot, so this is part of what decides
+            whether one applies.
+
+        Returns
+        -------
+        likelihood : TensorVariable
+            The registered observed variable.
+        """
         kalman_filter, _ = self.make_filters()
-        filter_outputs = kalman_filter.build_graph(pt.as_tensor_variable(data_variable), *matrices)
+        filter_outputs = kalman_filter.build_graph(pt.as_tensor_variable(data), *matrices)
 
         logp = filter_outputs.pop(-1)
         *_, observed_states = filter_outputs[:3]
         *_, observed_covariances = filter_outputs[3:]
 
-        obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_states"]
-        obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
-
-        SequenceMvNormal(
+        return SequenceMvNormal(
             OBSERVED_LIKELIHOOD_NAME,
             mus=observed_states,
             covs=observed_covariances,
             logp=logp,
-            observed=data_variable,
-            dims=obs_dims,
+            observed=data,
+            dims=dims,
         )
 
-        self._register_additional_statespace_variables()
-
     def _reenter_statespace_graph(
-        self, filled_values: np.ndarray, index: pd.Index | np.ndarray
+        self, filled_values: np.ndarray, index: pd.Index | np.ndarray, missing: np.ndarray
     ) -> None:
         """
         Point an already-built model at new data.
@@ -1049,14 +1117,44 @@ class PyMCStateSpace:
             New data, with missing values already filled.
         index : pandas Index or numpy array
             Time index of the new data.
+        missing : numpy array
+            Boolean mask over the new data, true where an observation is missing.
         """
         # Raises unless the model holds this template's parameters, so a template whose
         # specification has changed cannot silently inherit the graph another one built.
         self._insert_random_variables()
 
         self._verify_exogenous_data_spans(len(filled_values))
+        self._verify_likelihood_accepts_missing(missing)
 
         update_data_in_active_model(filled_values, index)
+
+    def _verify_likelihood_accepts_missing(self, missing: np.ndarray) -> None:
+        """
+        Raise if the built likelihood cannot represent missing values the new data holds.
+
+        Re-entry repoints an existing graph at new data rather than rebuilding it, so a model
+        whose likelihood was chosen against complete data keeps that likelihood however the data
+        changes. Only the Kalman filter marginalizes missing observations; anything else would
+        score the fill sentinel as if it were real.
+
+        Parameters
+        ----------
+        missing : numpy array
+            Boolean mask over the new data, true where an observation is missing.
+        """
+        if not missing.any():
+            return
+
+        likelihood = modelcontext(None)[OBSERVED_LIKELIHOOD_NAME]
+        if isinstance(likelihood.owner.op, KalmanFilterRV):
+            return
+
+        raise ValueError(
+            "The new observed data has missing values, but this model was built against complete "
+            "data and uses a likelihood that cannot marginalize them. Build the model into a "
+            "fresh pm.Model to have the likelihood chosen against the new data."
+        )
 
     def _verify_exogenous_data_spans(self, n_timesteps: int) -> None:
         """
@@ -1097,7 +1195,7 @@ class PyMCStateSpace:
             f"passing new {TIME_DIM!r} coords, before rebuilding."
         )
 
-    def make_filters(self) -> tuple[BaseFilter, KalmanSmoother]:
+    def make_filters(self) -> tuple[BaseFilter, DisturbanceSmoother | RTSSmoother]:
         """
         Return a Kalman filter and smoother configured for this model.
 
@@ -1105,7 +1203,7 @@ class PyMCStateSpace:
         -------
         kalman_filter : BaseFilter
             Filter of the type this model was constructed with.
-        kalman_smoother : KalmanSmoother
+        kalman_smoother : DisturbanceSmoother or RTSSmoother
             Smoother carrying the same time-varying names and jitter.
         """
         kalman_filter = FILTER_FACTORY[self.filter_type](
@@ -1113,10 +1211,94 @@ class PyMCStateSpace:
             cov_jitter=self.cov_jitter,
             missing_fill_value=self.missing_fill_value,
         )
-        kalman_smoother = KalmanSmoother(
+        smoother_class = SMOOTHER_FACTORY[self.smoother_type]
+        smoother_kwargs = dict(
             time_varying_names=self.ssm.time_varying_names, cov_jitter=self.cov_jitter
         )
+        if smoother_class is DisturbanceSmoother:
+            smoother_kwargs["missing_fill_value"] = self.missing_fill_value
+
+        kalman_smoother = smoother_class(**smoother_kwargs)
         return kalman_filter, kalman_smoother
+
+    def make_filter_outputs(
+        self,
+        names: str | Sequence[str] | None = None,
+        data: np.ndarray | pt.TensorVariable | None = None,
+    ) -> dict[str, pt.TensorVariable]:
+        r"""
+        Return the Kalman filter and smoother output sequences as symbolic graphs.
+
+        Call inside the model context :meth:`build_statespace_graph` was called in, to derive
+        further quantities from the inferred states -- a steady-state Kalman gain, an index built
+        from a filtered factor, and so on:
+
+        .. code:: python
+
+            with pm.Model() as model:
+                ...
+                ss_mod.build_statespace_graph(data)
+                outputs = ss_mod.make_filter_outputs(names="smoothed_states")
+                pm.Deterministic("total_state", outputs["smoothed_states"].sum(axis=-1))
+
+        Each call builds the graph afresh, so the returned sequences are new nodes rather than the
+        ones the likelihood was built from. They evaluate identically. To draw values over an
+        existing set of parameter draws instead, use :meth:`sample_filter_outputs`.
+
+        Parameters
+        ----------
+        names : str or sequence of str, optional
+            Which outputs to build: ``filtered_states``, ``predicted_states``, ``smoothed_states``,
+            each of their ``_covariances`` counterparts, and ``predicted_observed_states`` with
+            ``predicted_observed_covariances``. Default None, which builds all of them.
+        data : numpy array or TensorVariable, optional
+            Observations to filter. Default None, which uses the observations
+            :meth:`build_statespace_graph` registered on the active model.
+
+        Returns
+        -------
+        filter_outputs : dict mapping str to TensorVariable
+            The requested sequences, keyed by name.
+        """
+        if isinstance(names, str):
+            names = [names]
+        if names is None:
+            names = list(FILTER_OUTPUT_DIMS)
+        else:
+            unknown_names = set(names).difference(FILTER_OUTPUT_DIMS)
+            if unknown_names:
+                raise ValueError(
+                    f"{sorted(unknown_names)} are not filter outputs. Valid names are "
+                    f"{sorted(FILTER_OUTPUT_DIMS)}."
+                )
+
+        pymc_model = modelcontext(None)
+
+        if data is None:
+            if OBSERVED_DATA_NAME not in pymc_model.named_vars:
+                raise ValueError(
+                    f"The active model holds no {OBSERVED_DATA_NAME!r} variable to filter. Call "
+                    f"build_statespace_graph first, or pass data directly."
+                )
+            data = pymc_model[OBSERVED_DATA_NAME]
+
+        x0, P0, c, d, T, Z, R, H, Q = self.unpack_statespace()
+        kalman_filter, kalman_smoother = self.make_filters()
+
+        # The last output is the pointwise log-likelihood, which the likelihood term owns; every
+        # other output carries its canonical name, so key them by it rather than by position.
+        data = pt.as_tensor_variable(data)
+        *filter_outputs, _ = kalman_filter.build_graph(data, x0, P0, c, d, T, Z, R, H, Q)
+        outputs = {output.name: output for output in filter_outputs}
+
+        if not set(SMOOTHER_OUTPUT_NAMES).isdisjoint(names):
+            smoothed_states, smoothed_covariances = kalman_smoother.build_graph(
+                data, (x0, P0, c, d, T, Z, R, H, Q), filter_outputs
+            )
+            outputs[smoothed_states.name] = smoothed_states
+            outputs[smoothed_covariances.name] = smoothed_covariances
+
+        return {name: outputs[name] for name in names}
 
     def _register_additional_statespace_variables(self) -> None:
         """
@@ -1645,7 +1827,7 @@ class PyMCStateSpace:
     def impulse_response_function(
         self,
         idata,
-        n_steps: int = 40,
+        n_steps: int | None = None,
         use_posterior_cov: bool = True,
         shock_size: float | np.ndarray | None = None,
         shock_cov: np.ndarray | None = None,
@@ -1669,90 +1851,100 @@ class PyMCStateSpace:
         idata : DataTree
             A DataTree object containing the posterior distribution over model parameters.
 
-        n_steps: int
-            The number of time steps to calculate the impulse response. Default is 40.
+        n_steps : int, optional
+            The number of time steps to calculate the impulse response. If ``shock_trajectory`` is
+            provided its length is used instead, and passing a conflicting ``n_steps`` logs a
+            warning. Default 40.
 
-            If `shock_trajectory` is provided, the length of the shock trajectory will override this value.
+        use_posterior_cov : bool, optional
+            Whether to use the covariance matrix of the posterior distribution to generate the
+            impulse response.
 
-        use_posterior_cov: bool, default=True
-            Whether to use the covariance matrix of the posterior distribution to generate the impulse response.
+            Only one of ``use_posterior_cov``, ``shock_cov``, ``shock_size``, or
+            ``shock_trajectory`` can be specified. Default True.
 
-            Only one of `use_posterior_cov`, `shock_cov`, `shock_size`, or `shock_trajectory` can be specified.
-
-        shock_size : Optional[Union[float, np.ndarray]], default=None
-            The size of the shock applied to the system. If specified, it will create a covariance
-            matrix for the shock with diagonal elements equal to `shock_size`. If float, the diagonal will be filled
-            with `shock_size`. If an array, `shock_size` must match the number of shocks in the state space model.
-
-            Only one of `use_posterior_cov`, `shock_cov`, `shock_size`, or `shock_trajectory` can be specified.
-
-        shock_cov : Optional[np.ndarray], default=None
-            A user-specified covariance matrix for the shocks. It should be a 2D numpy array with
-            dimensions (n_shocks, n_shocks), where n_shocks is the number of shocks in the state space model.
-
-            Only one of `use_posterior_cov`, `shock_cov`, `shock_size`, or `shock_trajectory` can be specified.
-
-        shock_trajectory : Optional[np.ndarray], default=None
-            A pre-defined trajectory of shocks applied to the system. It should be a 2D numpy array
-            with dimensions (n, n_shocks), where n is the number of time steps and k_posdef is the
+        shock_size : float or ndarray, optional
+            The size of the shock applied to the system. If specified, it creates a covariance
+            matrix for the shock with diagonal elements equal to ``shock_size``. If float, the
+            diagonal is filled with ``shock_size``. If an array, ``shock_size`` must match the
             number of shocks in the state space model.
 
-            Only one of `use_posterior_cov`, `shock_cov`, `shock_size`, or `shock_trajectory` can be specified.
+            Only one of ``use_posterior_cov``, ``shock_cov``, ``shock_size``, or
+            ``shock_trajectory`` can be specified. Default None.
 
-        orthogonalize_shocks : bool, default=False
-            If True, identify structural shocks by a recursive (Cholesky) scheme and return one impulse
-            response per structural shock. See Notes. Incompatible with `shock_size` and
-            `shock_trajectory`, which each describe a single impulse.
+        shock_cov : ndarray, optional
+            A user-specified covariance matrix for the shocks, with shape (n_shocks, n_shocks),
+            where n_shocks is the number of shocks in the state space model.
+
+            Only one of ``use_posterior_cov``, ``shock_cov``, ``shock_size``, or
+            ``shock_trajectory`` can be specified. Default None.
+
+        shock_trajectory : ndarray, optional
+            A pre-defined trajectory of shocks applied to the system, with shape (n, n_shocks),
+            where n is the number of time steps and n_shocks is the number of shocks in the state
+            space model.
+
+            Only one of ``use_posterior_cov``, ``shock_cov``, ``shock_size``, or
+            ``shock_trajectory`` can be specified. Default None.
+
+        orthogonalize_shocks : bool, optional
+            If True, identify structural shocks by a recursive (Cholesky) scheme and return one
+            impulse response per structural shock. See Notes. Incompatible with ``shock_size`` and
+            ``shock_trajectory``, which each describe a single impulse. Default False.
 
         shock_order : list of str or ellipsis, optional
             Recursive ordering imposed by the Cholesky identification, given as shock names. Earlier
             shocks are the ones allowed to move later shocks contemporaneously. A single ``...``
             entry stands for every shock not named elsewhere, kept in the model's own order, so
             ``["realinv", ...]`` orders investment first and leaves the rest alone. Without an
-            ``...``, every shock must be named. Only valid when `orthogonalize_shocks` is True.
+            ``...``, every shock must be named. Only valid when ``orthogonalize_shocks`` is True.
             Defaults to the model's own shock order.
 
         random_seed : int, RandomState or Generator, optional
             Seed for the random number generator.
 
-        mvn_method: str, default "svd"
-            Method used to invert the covariance matrix when calculating the pdf of a multivariate normal
-            (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is fastest, but least robust
-            to ill-conditioned matrices, while "svd" is slow but extremely robust.
+        mvn_method : str, optional
+            Method used to invert the covariance matrix when calculating the pdf of a multivariate
+            normal (or when generating samples). One of "cholesky", "eigh", or "svd". "cholesky" is
+            fastest, but least robust to ill-conditioned matrices, while "svd" is slow but extremely
+            robust.
 
-            In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
-            recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+            In general, if your model has measurement error, "cholesky" will be safe to use.
+            Otherwise, "svd" is recommended. "eigh" can also be tried if sampling with "svd" is very
+            slow, but it is not as robust as "svd". Default "svd".
 
-        kwargs:
-            Additional keyword arguments are passed to pymc.sample_posterior_predictive
+        **kwargs
+            Additional keyword arguments are passed to :func:`~pymc.sample_posterior_predictive`.
 
         Returns
         -------
         DataTree
-            A DataTree object containing impulse response function in a variable named "irf", with dims
-            ``(time, state)``, or ``(structural_shock, time, state)`` when `orthogonalize_shocks` is True.
+            A DataTree object containing the impulse response function in a variable named "irf",
+            with dims ``(time, state)``, or ``(structural_shock, time, state)`` when
+            ``orthogonalize_shocks`` is True.
 
         Notes
         -----
-        For models with time-varying transition matrices, the IRF is computed starting at phase 0 of the
-        time-varying cycle. This means the response represents the effect of a shock occurring at the first
-        modeled state, T(0).
+        For models with time-varying transition matrices, the IRF is computed starting at phase 0
+        of the time-varying cycle. This means the response represents the effect of a shock
+        occurring at the first modeled state, :math:`T(0)`.
 
         Reduced-form shocks are correlated whenever the shock covariance :math:`Q` has off-diagonal
         entries, so shocking one of them in isolation describes an event the model itself considers
         unlikely. Setting ``orthogonalize_shocks=True`` instead factors :math:`Q = B B^\top` with
         :math:`B` lower triangular, which imposes a recursive contemporaneous ordering: the first
-        shock in `shock_order` moves every variable within the period, the second moves all but the
-        first, and so on. Column :math:`j` of :math:`B` is the impact of a one-standard-deviation
-        innovation to structural shock :math:`j`, and the returned IRF carries a
-        ``structural_shock`` axis holding one response per shock.
+        shock in ``shock_order`` moves every variable within the period, the second moves all but
+        the first, and so on. Column :math:`j` of :math:`B` is the impact of a
+        one-standard-deviation innovation to structural shock :math:`j`, and the returned IRF
+        carries a ``structural_shock`` axis holding one response per shock.
 
-        The ordering is an identifying assumption, not a detail: permuting `shock_order` yields
+        The ordering is an identifying assumption, not a detail: permuting ``shock_order`` yields
         different impulse responses from the same posterior. A diagonal :math:`Q` is the exception,
         where the factorization only rescales each shock to unit standard deviation.
 
-        An orthogonalized IRF is deterministic given the parameters, so its posterior spread reflects
-        parameter uncertainty alone. The default draws a random impulse per posterior draw instead.
+        An orthogonalized IRF is deterministic given the parameters, so its posterior spread
+        reflects parameter uncertainty alone. The default draws a random impulse per posterior draw
+        instead.
         """
         return irf.impulse_response_function(
             self,

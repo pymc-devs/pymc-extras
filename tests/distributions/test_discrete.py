@@ -15,6 +15,7 @@ import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 import pytest
+import scipy.special
 import scipy.stats
 
 from pymc.logprob.utils import ParameterValueError
@@ -61,13 +62,22 @@ class TestGeneralizedPoisson:
         def test_random_lam_expected_moments(self, mu):
             lam = np.array([-0.9, -0.7, -0.2, 0, 0.2, 0.7, 0.9])
             dist = self.pymc_dist.dist(mu=mu, lam=lam, size=(10_000, len(lam)))
-            draws = dist.eval()
+            draws = pm.draw(dist, random_seed=1234)
 
             expected_mean = mu / (1 - lam)
             np.testing.assert_allclose(draws.mean(0), expected_mean, rtol=1e-1)
 
             expected_std = np.sqrt(mu / (1 - lam) ** 3)
             np.testing.assert_allclose(draws.std(0), expected_std, rtol=1e-1)
+
+        def test_scalar_params(self):
+            # Test both branches (positive and negative lam) for scalar implicit size
+            # Regression test for https://github.com/pymc-devs/pymc-extras/issues/783
+            draws = pm.draw(self.pymc_dist.dist(mu=5.0, lam=0.5))
+            assert draws.shape == ()
+
+            draws = pm.draw(self.pymc_dist.dist(mu=5.0, lam=-0.5))
+            assert draws.shape == ()
 
     def test_logp_matches_poisson(self):
         # We are only checking this distribution for lambda=0 where it's equivalent to Poisson.
@@ -135,6 +145,12 @@ class TestBetaNegativeBinomial:
     Wrapper class so that tests of experimental additions can be dropped into
     PyMC directly on adoption.
     """
+
+    def test_random_matches_logp(self):
+        draws = pm.draw(BetaNegativeBinomial.dist(4, 3, 2, size=10_000), random_seed=1234)
+        expected_p0 = np.exp(pm.logp(BetaNegativeBinomial.dist(4, 3, 2), 0).eval())
+        # The old positional call generated P(X=0) about 0.61 instead of 5/14.
+        np.testing.assert_allclose((draws == 0).mean(), expected_p0, atol=0.03)
 
     def test_logp(self):
         """

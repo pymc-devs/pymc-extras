@@ -18,6 +18,7 @@ ERROR_AR_PARAM_DIM = "error_lag_ar"
 EXOG_STATE_DIM = "exogenous"
 EXOG_COEF_STATE_DIM = "exogenous_coefficient"
 NON_EXOG_STATE_DIM = "non_exogenous_state"
+TREND_DIM = "trend"
 
 OBSERVED_DATA_NAME = "data"
 OBSERVED_LIKELIHOOD_NAME = "obs"

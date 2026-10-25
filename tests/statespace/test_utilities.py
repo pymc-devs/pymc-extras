@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import statsmodels.api as sm
@@ -19,7 +20,8 @@ from pytensor.graph.replace import graph_replace
 from pytensor.graph.traversal import explicit_graph_inputs
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
-from pymc_extras.statespace.filters.kalman_smoother import KalmanSmoother
+from pymc_extras.statespace.filters import StandardFilter
+from pymc_extras.statespace.filters.kalman_smoother import RTSSmoother
 from pymc_extras.statespace.utils.constants import (
     MATRIX_NAMES,
     SHORT_NAME_TO_LONG,
@@ -47,7 +49,7 @@ def load_nile_test_data():
 
 
 def initialize_filter(kfilter, p=None, m=None, r=None, n=None):
-    ksmoother = KalmanSmoother()
+    ksmoother = RTSSmoother()
     data = pt.tensor(name="data", dtype=floatX, shape=(n, p))
     a0 = pt.tensor(name="x0", dtype=floatX, shape=(m,))
     P0 = pt.tensor(name="P0", dtype=floatX, shape=(m, m))
@@ -69,9 +71,11 @@ def initialize_filter(kfilter, p=None, m=None, r=None, n=None):
         predicted_covs,
         observed_covs,
         ll_obs,
-    ) = kfilter.build_graph(*inputs)
+    ) = filter_outputs = kfilter.build_graph(*inputs)
 
-    smoothed_states, smoothed_covs = ksmoother.build_graph(T, R, Q, filtered_states, filtered_covs)
+    smoothed_states, smoothed_covs = ksmoother.build_graph(
+        data, (a0, P0, c, d, T, Z, R, H, Q), filter_outputs
+    )
 
     outputs = [
         filtered_states,
@@ -145,6 +149,24 @@ def get_sm_state_from_output_name(res, name):
         m = res.filter_results.k_states
         # remove the "s" from "covs"
         return getattr(sm_states, name[:-1]).reshape(-1, m, m)
+
+
+def statsmodels_loglike_obs(data, a0, P0, c, d, T, Z, R, H, Q):
+    """
+    Filter ``data`` through statsmodels with the given matrices and return its per-timestep
+    log-likelihood, for use as a reference. Missing entries of ``data`` are marked with ``NaN``.
+    """
+    mod = sm.tsa.statespace.MLEModel(data, k_states=T.shape[0], k_posdef=Q.shape[0])
+    mod.ssm["obs_intercept"] = np.expand_dims(d, -1)
+    mod.ssm["design"] = Z
+    mod.ssm["obs_cov"] = H
+    mod.ssm["state_intercept"] = np.expand_dims(c, -1)
+    mod.ssm["transition"] = T
+    mod.ssm["selection"] = R
+    mod.ssm["state_cov"] = Q
+    mod.ssm.initialize_known(a0, P0)
+
+    return mod.ssm.filter().llf_obs
 
 
 def nile_test_test_helper(rng, n_missing=0):
@@ -256,6 +278,41 @@ def unpack_symbolic_matrices_with_params(
     return x0, P0, c, d, T, Z, R, H, Q
 
 
+def build_model_with_flat_priors(mod, data, data_dict=None):
+    """Build ``mod`` into a model whose parameters are flat, so its logp is the likelihood."""
+    with pm.Model() as pymc_model:
+        for name, value in (data_dict or {}).items():
+            pm.Data(name, value)
+        for name, info in mod.param_info.items():
+            pm.Flat(name, shape=info["shape"])
+        mod.build_statespace_graph(data)
+
+    return pymc_model
+
+
+def compare_likelihood_to_filter(mod, param_dict, data, data_dict=None):
+    """Return the built model, the log-density it builds, and its filter's, at the same values.
+
+    The model comes back so a caller can assert which likelihood was dispatched. Without that the
+    comparison passes vacuously whenever the model falls back, because both sides are the filter.
+    """
+    pymc_model = build_model_with_flat_priors(mod, data, data_dict)
+    point = {name: np.asarray(param_dict[name], dtype=floatX) for name in mod.param_info}
+    built = pymc_model.compile_logp()(point)
+
+    x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(
+        mod, param_dict, steps=len(data), data_dict=data_dict
+    )
+    *_, ll = StandardFilter(
+        time_varying_names=mod.ssm.time_varying_names, cov_jitter=0.0
+    ).build_graph(
+        pt.specify_shape(pt.as_tensor_variable(data), data.shape),
+        *[pt.as_tensor_variable(m) for m in (x0, P0, c, d, T, Z, R, H, Q)],
+    )
+
+    return pymc_model, built, ll.sum().eval()
+
+
 def simulate_from_numpy_model(mod, rng, param_dict, data_dict=None, steps=100):
     """
     Helper function to visualize the components outside of a PyMC model context
@@ -342,7 +399,9 @@ def make_stationary_params(data, p, d, q, P, D, Q, S):
     return param_dict
 
 
-def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False, data_info=None):
+def make_statespace_mod(
+    k_endog, k_states, k_posdef, filter_type, verbose=False, data_info=None, **kwargs
+):
     class StateSpace(PyMCStateSpace):
         def make_symbolic_graph(self):
             pass
@@ -361,6 +420,7 @@ def make_statespace_mod(k_endog, k_states, k_posdef, filter_type, verbose=False,
         k_posdef=k_posdef,
         filter_type=filter_type,
         verbose=verbose,
+        **kwargs,
     )
     ss._needs_exog_data = data_info is not None
 

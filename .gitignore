@@ -46,3 +46,6 @@ pytestdebug.log
 # Codespaces
 pythonenv*
 env/
+
+# Cached datasets downloaded by the example notebooks
+notebooks/data/

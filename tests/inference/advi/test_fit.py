@@ -274,7 +274,8 @@ def test_fit_streams_batches_into_data():
 
     trainer = Trainer()
     with model:
-        trainer.fit(1_000, batches(), random_seed=1)
+        with pytest.warns(UserWarning, match="No total_size"):
+            trainer.fit(1_000, batches(), random_seed=1)
         idata = trainer.sample_posterior(1_000, random_seed=2)
 
     theta_draws = idata["posterior"].dataset["theta"].values.ravel()
@@ -296,7 +297,8 @@ def test_fit_streams_observations_into_free_rv():
 
     trainer = Trainer()
     with model:
-        trainer.fit(1_000, batches(), observeds=["y"], random_seed=1)
+        with pytest.warns(UserWarning, match="No total_size"):
+            trainer.fit(1_000, batches(), observeds=["y"], random_seed=1)
         idata = trainer.sample_posterior(1_000, random_seed=2)
 
     # y was observed, so the posterior contains only theta
@@ -320,7 +322,8 @@ def test_fit_after_streaming_refuses_to_reuse_the_last_batch():
 
     trainer = Trainer()
     with model:
-        streamed = trainer.fit(10, batches(), observeds=["y"], random_seed=1)
+        with pytest.warns(UserWarning, match="No total_size"):
+            streamed = trainer.fit(10, batches(), observeds=["y"], random_seed=1)
 
         # the stream shareds still hold the last batch, so a bare fit would train on it
         with pytest.raises(ValueError, match="keep training on the last batch"):
@@ -387,7 +390,8 @@ def test_fit_stops_when_stream_runs_out():
     data = ({"y": np.ones(4)} for _ in range(5))
     trainer = Trainer()
     with model:
-        state = trainer.fit(1_000, data, observeds=["y"], random_seed=1)
+        with pytest.warns(UserWarning, match="No total_size"):
+            state = trainer.fit(1_000, data, observeds=["y"], random_seed=1)
 
     assert state.step == 5
 
@@ -416,7 +420,8 @@ def test_sample_posterior_with_explicit_model_after_streaming():
 
     trainer = Trainer()
     with model:
-        trainer.fit(500, batches(), observeds=["y"], random_seed=1)
+        with pytest.warns(UserWarning, match="No total_size"):
+            trainer.fit(500, batches(), observeds=["y"], random_seed=1)
 
     with model:
         idata = trainer.sample_posterior(500, random_seed=2)
@@ -441,7 +446,8 @@ def test_fit_ignores_len_as_a_row_count():
         pm.Normal("y_obs", mu, 1.0, observed=data)
 
     trainer = Trainer()
-    trainer.fit(30, data=batches, model=model, random_seed=1)
+    with pytest.warns(UserWarning, match="No total_size"):
+        trainer.fit(30, data=batches, model=model, random_seed=1)
     assert trainer._logp_scalings == {}
 
     trainer = Trainer()

@@ -66,7 +66,17 @@ def test_AR1(rng):
         y = pm.Poisson("y", mu=pm.math.exp(x), observed=y_obs)
 
         # Use INLA
-        idata = pmx.fit(method="INLA", x=x, Q=tau, return_latent_posteriors=False, random_seed=123)
+        # cores=1 samples the chains in this process. Spawned chain workers, which Windows uses,
+        # would each recompile the marginal model and its inner minimize.
+        idata = pmx.fit(
+            method="INLA",
+            x=x,
+            Q=tau,
+            return_latent_posteriors=False,
+            random_seed=123,
+            chains=2,
+            cores=1,
+        )
 
     theta_inla = idata.posterior.theta.mean(axis=(0, 1))
     tau_inla = idata.posterior.tau.mean(axis=(0, 1))
@@ -120,6 +130,8 @@ def test_3_layer_normal(rng):
             Q=tau,
             return_latent_posteriors=False,
             random_seed=123,
+            chains=2,
+            cores=1,
         )
 
     posterior_mean_inla = idata.posterior.mu.mean(axis=(0, 1))
@@ -127,3 +139,51 @@ def test_3_layer_normal(rng):
 
     np.testing.assert_allclose(posterior_mean_inla, posterior_mean_true, atol=0.1)
     np.testing.assert_allclose(posterior_var_inla, posterior_var_true, atol=0.2)
+
+
+@pytest.mark.filterwarnings(
+    r"ignore:INLA is currently experimental",
+    r"ignore:Numba will use object mode to run",
+)
+def test_return_latent_posteriors():
+    precision = np.array([[2.0, 0.5], [0.5, 1.5]])
+    observed = np.array([1.0, -0.5])
+    # Explicit sizes keep dimension-length inputs out of MinimizeOp's gradient.
+    with pm.Model(coords={"field": ["a", "b"]}) as model:
+        theta = pm.Normal("theta")
+        x = pm.MvNormal("x", mu=theta * np.ones(2), tau=precision, shape=(2,), dims="field")
+        pm.Normal("y", mu=x, sigma=1, observed=observed, shape=(2,), dims="field")
+
+    idata = pmx.fit(
+        method="INLA",
+        model=model,
+        x=x,
+        Q=precision,
+        return_latent_posteriors=True,
+        random_seed=123,
+        draws=1000,
+        tune=500,
+        chains=2,
+        cores=1,
+        progressbar=False,
+        compute_convergence_checks=False,
+    )
+    posterior = idata.posterior
+    assert posterior.x.dims == ("chain", "draw", "field")
+    np.testing.assert_array_equal(posterior.field, ["a", "b"])
+    np.testing.assert_array_equal(idata.observed_data.y, observed)
+
+    # The retained hyperparameter posterior is analytically Gaussian.
+    marginal_precision = np.linalg.inv(np.linalg.inv(precision) + np.eye(2))
+    theta_variance = 1 / (1 + marginal_precision.sum())
+    theta_mean = theta_variance * (marginal_precision @ observed).sum()
+    np.testing.assert_allclose(posterior.theta.mean(), theta_mean, atol=0.08)
+    np.testing.assert_allclose(posterior.theta.var(), theta_variance, atol=0.08)
+
+    # Subtract the exact conditional mean for each hyperparameter draw.
+    # The residuals must have the conditional covariance, not the prior covariance.
+    covariance = np.linalg.inv(precision + np.eye(2))
+    means = (posterior.theta.values[..., None] * precision.sum(axis=1) + observed) @ covariance
+    residuals = (posterior.x.values - means).reshape(-1, 2)
+    np.testing.assert_allclose(residuals.mean(axis=0), np.zeros(2), atol=0.06)
+    np.testing.assert_allclose(np.cov(residuals, rowvar=False), covariance, atol=0.06)

@@ -202,7 +202,8 @@ def test_pipeline_integration(toy_X, toy_y):
             ),
         ]
     )
-    model.fit(toy_X, toy_y)
+    model.fit(toy_X, toy_y, linear_model__random_seed=312)
 
-    X_pred = pd.DataFrame({"input": np.random.uniform(low=0, high=1, size=100)})
-    model.predict(X_pred)
+    rng = np.random.default_rng(423)
+    X_pred = pd.DataFrame({"input": rng.uniform(low=0, high=1, size=100)})
+    model.predict(X_pred, random_seed=423)

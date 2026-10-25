@@ -28,8 +28,8 @@ jobs:
   pre-commit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
       # no-commit-to-branch fails on push to main since HEAD is main. CI lints,
@@ -45,13 +45,15 @@ jobs:
         os: [ubuntu-latest]
         linker: [cvm, numba]
         python-version: ["3.12"]
+        # Shards are balanced by measured runtime under numba, about 12-14 minutes each.
         test-subset:
           - tests/model
-          - tests/statespace/core/test_statespace.py
-          - tests/statespace/filters/test_kalman_filter.py
-          - tests/statespace --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py
-          - tests/distributions
+          - tests/distributions tests/statespace/core/test_forward_sampling.py
           - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions --ignore tests/inference/pathfinder
+          - tests/statespace/models/test_VARMAX.py tests/statespace/models/test_SARIMAX.py
+          - tests/statespace/models tests/statespace/core/test_statespace.py --ignore tests/statespace/models/test_VARMAX.py --ignore tests/statespace/models/test_SARIMAX.py
+          - tests/statespace/filters/test_kalman_filter.py
+          - tests/statespace --ignore tests/statespace/models --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py --ignore tests/statespace/core/test_forward_sampling.py
       fail-fast: false
     runs-on: ${{ matrix.os }}
     env:
@@ -61,8 +63,8 @@ jobs:
       run:
         shell: bash -leo pipefail {0}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: mamba-org/setup-micromamba@d7c9bd84e824b79d2af72a2d4196c7f4300d3476  # v3.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39  # v3.2.1
         with:
           environment-file: conda-envs/environment-test.yml
           create-args: >-
@@ -95,11 +97,18 @@ jobs:
         python-version: ["3.12"]
         test-subset:
           - tests/model
-          - tests/statespace/core/test_statespace.py
-          - tests/statespace/filters/test_kalman_filter.py
-          - tests/statespace --ignore tests/statespace/core/test_statespace.py --ignore tests/statespace/filters/test_kalman_filter.py
+          # Windows runs one end-to-end statespace workflow per model class; the full statespace
+          # suite runs on Ubuntu.
+          - >-
+            tests/statespace/models/test_ETS.py::test_ets_workflow
+            tests/statespace/models/test_VARMAX.py::test_varmax_workflow
+            tests/statespace/models/test_SARIMAX.py::test_sarimax_workflow
+            tests/statespace/models/test_DFM.py::test_dfm_workflow
           - tests/distributions
-          - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions
+          # Pathfinder spawns workers on Windows, which rebuild their compiled functions, so it
+          # takes as long as the rest of this shard combined.
+          - tests/inference/pathfinder
+          - tests --ignore tests/model --ignore tests/statespace --ignore tests/distributions --ignore tests/inference/pathfinder
       fail-fast: false
     runs-on: ${{ matrix.os }}
     env:
@@ -109,15 +118,15 @@ jobs:
       run:
         shell: cmd /C call {0}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: mamba-org/setup-micromamba@d7c9bd84e824b79d2af72a2d4196c7f4300d3476  # v3.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39  # v3.2.1
         with:
           environment-file: conda-envs/environment-test.yml
-          # Pinned: micromamba 2.6.1-0 ships a Windows binary with a missing DLL
-          # dependency that breaks GitHub-hosted runners (STATUS_DLL_NOT_FOUND).
-          micromamba-version: "2.6.0-0"
+          # gxx 16.2.0 on conda-forge win-64 cannot link (ld cannot find dllcrt2.o);
+          # see conda-forge/ctng-compilers-feedstock#229 and m2w64-sysroot-feedstock#23.
           create-args: >-
             python=${{matrix.python-version}}
+            gxx_win-64=16.1
           environment-name: pymc-extras-test
           init-shell: cmd.exe
           cache-environment: true

@@ -160,7 +160,8 @@ def conditional(
     to draw conditional posterior samples, or with ``model.compile_logp``
     to evaluate conditional log-probabilities.
 
-    The input is a marginalized model. Starting from an original model
+    For exact marginalization, the input is a marginalized model. Starting
+    from an original model
     factored as ``p(mu) * p(x|mu) * p(y|x)``, marginalizing ``x`` yields
     ``p(mu) * p(y|mu)``. ``conditional`` adds ``x`` back as its conditional
     distribution, giving ``p(mu) * p(y|mu) * p(x|y, mu)`` -- a re-factorization
@@ -171,6 +172,11 @@ def conditional(
     ``model.compile_logp(vars=[model["x"]])`` gives the conditional
     ``p(x|y, mu)``, while the unqualified ``model.compile_logp()`` is the full
     joint ``p(mu, x, y)``.
+
+    Laplace-marginalized variables use Gaussian approximations centered at the
+    conditional posterior mode, with precision given by curvature at that mode.
+    These are not generally exact conditional posteriors or exact
+    re-factorizations of the original joint distribution.
 
     Parameters
     ----------
@@ -293,6 +299,9 @@ def recover(
     Builds the chain-rule factorization of the joint posterior via
     :func:`conditional` and forward-samples all recovered variables
     together.  For more control, use :func:`conditional` directly.
+
+    Laplace-marginalized variables are sampled from local Gaussian approximations
+    to their conditional posteriors, not generally from the exact posterior.
 
     Parameters
     ----------

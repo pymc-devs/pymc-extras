@@ -1,4 +1,5 @@
 import time
+import warnings
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -212,6 +213,8 @@ class Trainer:
         self._guide: AutoGuideModel | None = guide if isinstance(guide, AutoGuideModel) else None
         self._fit_model: Model | None = None
         self._stream_shareds: dict[str, SharedVariable] = {}
+        self._stream_scale_names: set[str] = set()
+        self._stream_total_size: int | None = None
         self._logp_scalings: dict[str, Any] = {}
         self._step_fn: TrainingFn | None = None
         self._shared_params: dict | None = None
@@ -335,18 +338,8 @@ class Trainer:
             name = var if isinstance(var, str) else var.name
             var = model[name]
             if isinstance(var, SharedVariable):
-                # A pm.Data placeholder: rescale the observed RVs it is the
-                # observation of
-                if total_size is not None and name in first_batch:
-                    for rv in model.observed_RVs:
-                        if isinstance(rv.owner.op, MinibatchRandomVariable):
-                            # The model already rescales this likelihood: a total_size
-                            # passed to the observed RV wraps it in a
-                            # MinibatchRandomVariable whose logp carries the
-                            # N / batch_size factor, so adding ours would scale twice
-                            continue
-                        if var in ancestors([model.rvs_to_values[rv]]):
-                            to_scale.add(rv.name)
+                # Streamed pm.Data observations are collected below, whether or
+                # not the placeholder is explicitly listed in observeds.
                 continue
             if name not in first_batch:
                 raise ValueError(
@@ -355,34 +348,53 @@ class Trainer:
                 )
             value = np.asarray(first_batch[name], dtype=var.dtype)
             to_observe[name] = stream_shareds[name] = pytensor.shared(value, name=f"{name}_data")
-            if total_size is not None:
-                to_scale.add(name)
+            to_scale.add(name)
         if to_observe:
             model = pm.observe(model, to_observe)
+            # Rebinding an already-observed RV also preserves its own total_size.
+            to_scale = {
+                name
+                for name in to_scale
+                if not isinstance(model[name].owner.op, MinibatchRandomVariable)
+            }
 
-        # When total_size is known, also rescale any pm.Data variables that appear
-        # in the batch but were not explicitly listed in observeds.  Without this,
-        # a torch-style DataLoader with __len__ would trigger no rescaling unless
-        # the user also passed observeds, which is surprising when the model already
-        # declares the observations via pm.Data.
-        if total_size is not None:
-            for name in first_batch:
-                var = model[name]
-                if not isinstance(var, SharedVariable):
+        # Find streamed likelihoods even when N is unknown, so missing scaling can
+        # be reported without warning about fixed observations or covariates.
+        for name in first_batch:
+            var = model[name]
+            if not isinstance(var, SharedVariable):
+                continue
+            for rv in model.observed_RVs:
+                if rv.name in to_scale:
                     continue
-                for rv in model.observed_RVs:
-                    if rv.name in to_scale:
-                        continue  # already handled via observeds or a free RV above
-                    if isinstance(rv.owner.op, MinibatchRandomVariable):
-                        continue
-                    if var in ancestors([model.rvs_to_values[rv]]):
-                        to_scale.add(rv.name)
+                if isinstance(rv.owner.op, MinibatchRandomVariable):
+                    # The model already owns this likelihood's per-RV scaling.
+                    continue
+                if var in ancestors([model.rvs_to_values[rv]]):
+                    to_scale.add(rv.name)
+
+        if self._step_fn is not None and (to_observe or (to_scale and total_size is not None)):
+            raise ValueError(
+                "observeds and total_size cannot change an already compiled training step. "
+                "Use a new Trainer to bind the data stream before fitting."
+            )
+        if to_scale and total_size is None:
+            warnings.warn(
+                f"No total_size was provided for streamed observations {sorted(to_scale)}. "
+                "Their likelihoods will not be rescaled to a full dataset. Pass "
+                "total_size= to fit or provide data.total_size to enable automatic scaling.",
+                UserWarning,
+                stacklevel=3,
+            )
 
         # Build the scale from the observation's own shape, so a ragged batch is
         # weighted by the rows it actually carries rather than by the first batch's.
-        logp_scalings = {
-            name: total_size / model.rvs_to_values[model[name]].shape[0] for name in to_scale
-        }
+        logp_scalings = {}
+        if total_size is not None:
+            for name in to_scale:
+                value = model.rvs_to_values[model[name]]
+                logp_scalings[name] = total_size / (value.shape[0] if value.ndim else 1)
+        self._stream_scale_names = to_scale
 
         return model, stream_shareds, logp_scalings
 
@@ -438,13 +450,18 @@ class Trainer:
             batches.
         state : SVIState, optional
             Previous state to resume training from. If None, continues from the
-            current state.
+            current state. A new Trainer must bind the data stream and its
+            ``total_size`` again before restoring a streamed fit's numerical state.
         model : Model, optional
             The PyMC model to fit. If None, the model is taken from the context
             stack.
         total_size : int, optional
-            The dataset row count ``N``. Overrides a ``total_size`` attribute on
-            ``data``, and raises if the two disagree.
+            The dataset row count ``N`` for automatic likelihood scaling. If omitted,
+            it is read from ``data.total_size``; if both are supplied, they must agree.
+            Once streaming training has been bound, omitting both values continues
+            with the original ``N``. Changing it (including adding it after an
+            unscaled fit) requires a new Trainer. Observations that already declare
+            per-RV ``total_size`` retain their model-defined scaling.
         observeds : list of str or variable, optional
             Variables whose entry in the ``data`` dictionaries is an observation.
             A variable that is a ``pm.Data`` placeholder is streamed into as usual;
@@ -453,10 +470,13 @@ class Trainer:
             stream through a shared variable). Requires ``data``. When ``N`` is
             known, each observation's log-likelihood is rescaled by
             ``N / batch_rows``, making the minibatch ELBO an unbiased estimate of
-            the full-data one; without it batches are treated as the full dataset
-            and the posterior will be too wide. The row count is read from the
-            batch each step, so batches need not all be the same size. Variables
-            that already carry a ``total_size`` in the model are left alone.
+            the full-data one under uniform minibatch sampling. If ``N`` is missing
+            when the stream is first bound, a warning is issued for observations
+            needing automatic scaling and their likelihoods are left unscaled.
+            The row count is read from the batch each step, so batches need not
+            all be the same size. Variables that already carry a ``total_size``
+            in the model are left alone. New observation bindings or automatic
+            scaling cannot be added after the first training step is compiled.
         random_seed : optional
             Seed for the guide draws used to estimate the gradients.
 
@@ -464,6 +484,12 @@ class Trainer:
         -------
         SVIState
             The final training state, also stored on the trainer.
+
+        Notes
+        -----
+        An array-valued DataLoader can be adapted to the dictionary stream with
+        ``({"y": batch} for batch in loader)``. Such a generator does not carry the
+        loader's metadata, so pass ``total_size=loader.total_size`` explicitly.
         """
         if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
             raise ValueError(f"n must be a positive integer (the number of fit steps), got {n!r}")
@@ -473,6 +499,17 @@ class Trainer:
         stream = None
         if data is not None:
             total_size = _resolve_total_size(data, total_size)
+            if (
+                self._fit_model is not None
+                and self._stream_scale_names
+                and total_size is not None
+                and total_size != self._stream_total_size
+            ):
+                raise ValueError(
+                    f"total_size is fixed by the first streamed fit "
+                    f"({self._stream_total_size!r}), but this call provides {total_size!r}. "
+                    "Use a new Trainer to change the likelihood scaling."
+                )
             stream = iter(data)
             first_batch = next(stream, None)
             if first_batch is None:
@@ -481,6 +518,7 @@ class Trainer:
                 model, self._stream_shareds, self._logp_scalings = self._prepare_data_stream(
                     model, first_batch, observeds, total_size
                 )
+                self._stream_total_size = total_size
                 self._fit_model = model
             else:
                 if observeds:

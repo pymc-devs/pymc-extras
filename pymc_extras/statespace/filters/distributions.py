@@ -8,7 +8,10 @@ from pymc.distributions.shape_utils import get_support_shape_1d
 from pymc.logprob.abstract import _logprob
 from pymc.pytensorf import intX, normalize_rng_param
 from pytensor.graph.basic import Node
+from pytensor.tensor.linalg import solve_discrete_lyapunov
 from pytensor.tensor.random import multivariate_normal
+
+from pymc_extras.statespace.filters.utilities import missing_mask
 
 floatX = pytensor.config.floatX
 COV_ZERO_TOL = 0
@@ -494,11 +497,11 @@ def sequence_mvnormal_logp(op, values, mus, covs, logp, rng, **kwargs):
 def _simulation_smoother_signature(sequence_names):
     """Extended gufunc signature for :class:`SimulationSmootherRV`.
 
-    Adds a leading ``a_smooth`` input to the state-space core shapes and outputs the
+    Adds a leading ``data`` input to the state-space core shapes and outputs the
     sampled latent trajectory.
     """
     return _build_signature(
-        {"a_smooth": (TIME, STATES), **STATESPACE_CORE_SHAPES},
+        {"data": (TIME, OBS), **STATESPACE_CORE_SHAPES},
         sequence_names,
         output_shape=(TIME, STATES),
     )
@@ -521,24 +524,27 @@ class SimulationSmoother(Continuous):
 
     1. Forward-simulate :math:`(\alpha^+, y^+)` from the prior at the current
        parameters.
-    2. Filter and smooth :math:`y^+` to obtain :math:`\hat\alpha^+`.
-    3. Return :math:`\alpha^{\text{sample}} = \alpha^+ - \hat\alpha^+ + \hat\alpha`,
-       where :math:`\hat\alpha` is the smoothed mean of the real data.
+    2. Filter and smooth :math:`y - y^+` to obtain :math:`\hat\alpha^{\Delta}`.
+    3. Return :math:`\alpha^{\text{sample}} = \alpha^+ + \hat\alpha^{\Delta}`.
 
-    Draws have marginal mean ``a_smooth`` and the full joint posterior covariance,
+    Step 2 runs one smoother pass rather than two. The filter and smoother are affine in the
+    data, so :math:`\hat\alpha(y) - \hat\alpha(y^+)` equals a single pass over the difference
+    with the state and observation intercepts set to zero.
+
+    Draws have marginal mean :math:`\hat\alpha(y)` and the full joint posterior covariance,
     including cross-time correlations. Sampling each step's marginal independently with
     :class:`SequenceMvNormal` reproduces the former but not the latter.
 
     Parameters
     ----------
-    a_smooth : TensorVariable
-        Real-data smoothed state mean, shape ``(T, k_states)``.
+    data : TensorVariable
+        Observed series, shape ``(T, k_endog)``.
     x0, P0, c, d, T, Z, R, H, Q : TensorVariable
         State-space matrices defining the model.
     kalman_filter : BaseFilter
-        Filter object exposing ``build_graph``, called once while building the sampling
-        graph. A Python-side graph builder, not a random-variable input.
-    kalman_smoother : KalmanSmoother
+        Filter object exposing ``build_graph`` and ``missing_fill_value``, called once while
+        building the sampling graph. A Python-side graph builder, not a random-variable input.
+    kalman_smoother : DisturbanceSmoother
         Smoother object exposing ``build_graph``, used the same way as ``kalman_filter``.
     sequence_names : iterable of str, optional
         Short names of time-varying matrices, mirroring
@@ -558,7 +564,7 @@ class SimulationSmoother(Continuous):
     @classmethod
     def dist(
         cls,
-        a_smooth,
+        data,
         x0,
         P0,
         c,
@@ -576,7 +582,7 @@ class SimulationSmoother(Continuous):
         **kwargs,
     ):
         return super().dist(
-            [a_smooth, x0, P0, c, d, T, Z, R, H, Q],
+            [data, x0, P0, c, d, T, Z, R, H, Q],
             kalman_filter=kalman_filter,
             kalman_smoother=kalman_smoother,
             sequence_names=tuple(sequence_names),
@@ -587,7 +593,7 @@ class SimulationSmoother(Continuous):
     @classmethod
     def rv_op(
         cls,
-        a_smooth,
+        data,
         x0,
         P0,
         c,
@@ -606,11 +612,11 @@ class SimulationSmoother(Continuous):
         rng=None,
     ):
         sequence_names = tuple(sequence_names)
-        a_smooth_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = (
-            x.type() for x in (a_smooth, x0, P0, c, d, T, Z, R, H, Q)
+        data_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_ = (
+            x.type() for x in (data, x0, P0, c, d, T, Z, R, H, Q)
         )
 
-        a_smooth_.name = "a_smooth"
+        data_.name = "data"
         c_.name = "c"
         d_.name = "d"
         T_.name = "T"
@@ -624,8 +630,8 @@ class SimulationSmoother(Continuous):
         # Prefer the static type-shape so the inner scan sequence length is a
         # Python int (JAX requires static lengths for ``lax.scan``); fall back to
         # the symbolic shape only if the model didn't pin it.
-        T_static = a_smooth_.type.shape[0]
-        steps = T_static if T_static is not None else a_smooth_.shape[0]
+        T_static = data_.type.shape[0]
+        steps = T_static if T_static is not None else data_.shape[0]
 
         # 1. Forward sim of (alpha_plus, y_plus). The Kalman filter uses the
         # Durbin-Koopman convention where (a0, P0) is the prediction for alpha_1
@@ -653,42 +659,38 @@ class SimulationSmoother(Continuous):
             y_plus = pt.specify_shape(y_plus, (T_static, *y_plus.type.shape[1:]))
             alpha_plus = pt.specify_shape(alpha_plus, (T_static, *alpha_plus.type.shape[1:]))
 
-        # 2. Filter + smooth y_plus under the same theta.
-        a_filt_plus, _, _, P_filt_plus, *_ = kalman_filter.build_graph(
-            y_plus,
-            x0_,
-            P0_,
-            c_,
-            d_,
-            T_,
-            Z_,
-            R_,
-            H_,
-            Q_,
-        )
+        # 2. Filter + smooth the difference under the same theta. The filter and smoother are
+        # affine in the data, so smooth(y) - smooth(y_plus) is one pass over y - y_plus with the
+        # intercepts zeroed, rather than one pass over each. A missing entry arrives as the fill
+        # sentinel, and sentinel - y_plus is no longer recognized as missing, so the sentinel is
+        # written back into the difference to keep those periods masked.
+        zero_state, zero_obs = pt.zeros_like(x0_), pt.zeros_like(d_)
+        sentinel = kalman_filter.missing_fill_value
+        delta = pt.where(missing_mask(data_, sentinel), sentinel, data_ - y_plus)
+        delta_matrices = (zero_state, P0_, zero_state, zero_obs, T_, Z_, R_, H_, Q_)
+        filter_outputs = kalman_filter.build_graph(delta, *delta_matrices)
 
-        a_smooth_plus, _ = kalman_smoother.build_graph(T_, R_, Q_, a_filt_plus, P_filt_plus)
+        a_smooth_delta, _ = kalman_smoother.build_graph(delta, delta_matrices, filter_outputs)
 
         if T_static is not None:
-            a_smooth_plus = pt.specify_shape(
-                a_smooth_plus, (T_static, *a_smooth_plus.type.shape[1:])
+            a_smooth_delta = pt.specify_shape(
+                a_smooth_delta, (T_static, *a_smooth_delta.type.shape[1:])
             )
 
-        # 3. DK identity. The c-term and d-term cancel because alpha_plus and
-        # a_smooth_plus are produced under the same parameters.
-        alpha_sample = alpha_plus - a_smooth_plus + a_smooth_
+        # 3. DK identity, with the two smoother passes folded into the one above.
+        alpha_sample = alpha_plus + a_smooth_delta
 
         # ``inline=True`` splices the inner scans into the parent fgraph at compile
         # time, so shape inference reaches through them. The JAX backend needs the
         # resulting static ``n_steps`` to dispatch its scan.
         op = SimulationSmootherRV(
-            inputs=[a_smooth_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_, rng],
+            inputs=[data_, x0_, P0_, c_, d_, T_, Z_, R_, H_, Q_, rng],
             outputs=[mid_rng, alpha_sample],
             extended_signature=_simulation_smoother_signature(sequence_names),
             inline=True,
         )
 
-        return op(a_smooth, x0, P0, c, d, T, Z, R, H, Q, rng)
+        return op(data, x0, P0, c, d, T, Z, R, H, Q, rng)
 
 
 @_logprob.register(SimulationSmootherRV)
@@ -697,3 +699,552 @@ def simulation_smoother_logp(op, values, *inputs, **kwargs):
     # never scored. Return a zero matching the output's shape so PyMC's logp
     # introspection succeeds.
     return pt.zeros_like(values[0])
+
+
+def _lag_matrix(series, *, lags, order, n_rows):
+    """
+    Stack ``series`` at each of ``lags``, one block of columns per lag.
+
+    Row ``i`` holds the lags of timestep ``order + i``, so blocks taken from different series
+    line up even when they run over different lags.
+    """
+    index = pt.sub.outer(order + pt.arange(n_rows), pt.as_tensor_variable(list(lags)))
+
+    return series[index].reshape((n_rows, -1))
+
+
+def _stacked_regressors(series, exog, *, order, n_rows, exog_in_observation):
+    """Design matrix ``W``, holding the regressors for every timestep from ``order`` onward.
+
+    The density and the predictive moments both contract against this, so they read it from one
+    place. Built differently in each, they would describe different models and nothing would say
+    so.
+    """
+    lagged = _lag_matrix(series, lags=range(1, order + 1), order=order, n_rows=n_rows)
+
+    if exog_in_observation:
+        exog_block = _lag_matrix(exog, lags=range(0, order + 1), order=order, n_rows=n_rows)
+    else:
+        exog_block = exog[order:]
+
+    return pt.concatenate([lagged, exog_block], axis=1)
+
+
+def _effective_coefficients(
+    coefficients, exog_coefficients, *, order, k_endog, exog_in_observation
+):
+    r"""
+    Assemble the coefficients against the stacked regressors.
+
+    With the regressors in the state equation this is :math:`C = [A_1 \ldots A_p, B]`. With them
+    in the observation equation, :math:`\tilde{y}_t = y_t - B x_t` follows the autoregression, so
+    :math:`C = [A_1 \ldots A_p, B, -A_1 B \ldots -A_p B]` against the regressors and their lags.
+
+    With no regressors :math:`C` is :math:`A` and is returned as such: the zero-width blocks are
+    equivalent, but their gradient trips a PyTensor reshape rewrite that then logs a traceback
+    per compile.
+    """
+    if exog_coefficients.type.shape[-1] == 0:
+        return coefficients
+
+    if not exog_in_observation:
+        return pt.concatenate([coefficients, exog_coefficients], axis=1)
+
+    by_lag = coefficients.reshape((k_endog, order, k_endog)) @ exog_coefficients
+
+    return pt.concatenate([coefficients, exog_coefficients, -by_lag.reshape((k_endog, -1))], axis=1)
+
+
+def _initial_mean(coefficients, exog_coefficients, exog, *, order, k_endog, exog_in_observation):
+    r"""
+    Mean of the first ``order`` observations, of shape ``(order, k_endog)``.
+
+    In the observation equation the regressors shift each row by :math:`B x_t`. In the state
+    equation the initial state is the fixed point of the dynamics under the first intercept the
+    filter applies, :math:`\mu = (I - \sum_l A_l)^{-1} B x_1`, which is where a stationary
+    initialization puts it. Later rows follow the recursion from there with their own
+    regressors, so the mean path depends on ``exog[1:order]`` and not on ``exog[0]``.
+    """
+    if exog_coefficients.type.shape[-1] == 0:
+        return pt.zeros((order, k_endog), dtype=coefficients.dtype)
+
+    if exog_in_observation:
+        return exog[:order] @ exog_coefficients.T
+
+    by_lag = coefficients.reshape((k_endog, order, k_endog))
+    intercepts = exog[1 : order + 1] @ exog_coefficients.T
+    initial = pt.linalg.solve(pt.eye(k_endog) - by_lag.sum(axis=1), intercepts[0], b_ndim=1)
+
+    if order == 1:
+        return initial[None]
+
+    def step(intercept, history, by_lag):
+        """Advance the recursion one row. ``history`` holds the previous ``order`` means, newest first."""
+        current = pt.einsum("ilj,lj->i", by_lag, history) + intercept
+        return pt.concatenate([current[None], history[:-1]], axis=0)
+
+    # Passing ``by_lag`` explicitly keeps its upstream graph out of the inner function. An
+    # implicit closure would copy it in, and pymc's logp rewrites do not reach inside a scan.
+    history = pytensor.scan(
+        step,
+        sequences=[intercepts[: order - 1]],
+        outputs_info=[pt.tile(initial[None], (order, 1))],
+        non_sequences=[by_lag],
+        strict=True,
+        return_updates=False,
+    )
+
+    return pt.concatenate([initial[None], history[:, 0]], axis=0)
+
+
+def _stationary_cholesky(coefficients, state_cov, *, order, k_endog):
+    """Lower Cholesky factor of the stationary covariance of ``[y_1, ..., y_order]``."""
+    k_states = k_endog * order
+
+    transition = pt.concatenate(
+        [coefficients, pt.pad(pt.eye(k_states - k_endog), [(0, 0), (0, k_endog)])], axis=0
+    )
+    noise = pt.pad(state_cov, [(0, k_states - k_endog)] * 2)
+    covariance = solve_discrete_lyapunov(transition, noise, method="bilinear")
+
+    # The solve gives the covariance of ``[y_t, ..., y_{t-order+1}]``, whose blocks run backwards
+    # in time; the forward stack needs them the other way round.
+    blocked = covariance.reshape((order, k_endog, order, k_endog))
+    forward = pt.flip(blocked, axis=(0, 2)).reshape((k_states, k_states))
+
+    return pt.linalg.cholesky(forward)
+
+
+def _initial_logp(cholesky_factor, residuals, *, order, k_endog):
+    """Log-density of the first ``order`` observations under the stationary distribution."""
+    stacked = residuals.reshape((order * k_endog,))
+    whitened = pt.linalg.solve_triangular(cholesky_factor, stacked, lower=True, b_ndim=1)
+
+    return (
+        -0.5 * order * k_endog * pt.log(2 * pt.pi)
+        - pt.log(pt.diag(cholesky_factor)).sum()
+        - 0.5 * (whitened**2).sum()
+    )
+
+
+def _conditional_logp(
+    effective, state_cov, *, endog_gram, cross_gram, regressor_gram, n_rows, k_endog
+):
+    """Log-density of the observations after the first ``order``, from cross-products alone."""
+    residual_gram = (
+        endog_gram
+        - effective @ cross_gram
+        - cross_gram.T @ effective.T
+        + pt.linalg.matrix_dot(effective, regressor_gram, effective.T)
+    )
+
+    cov_cholesky = pt.linalg.cholesky(state_cov)
+    whitened_gram = pt.linalg.cho_solve((cov_cholesky, True), residual_gram, b_ndim=2)
+
+    return (
+        -0.5 * n_rows * k_endog * pt.log(2 * pt.pi)
+        - n_rows * pt.log(pt.diag(cov_cholesky)).sum()
+        - 0.5 * pt.trace(whitened_gram)
+    )
+
+
+def _predictive_moments(
+    coefficients,
+    exog_coefficients,
+    state_cov,
+    exog,
+    endog,
+    *,
+    order,
+    k_endog,
+    exog_in_observation=False,
+):
+    """
+    One-step-ahead predictive moments, conditional on ``endog``.
+
+    These equal a Kalman filter's predicted observed states and covariances for the same model.
+
+    Returns
+    -------
+    means : TensorVariable
+        Of shape ``(T, k_endog)``.
+    covariances : TensorVariable
+        Of shape ``(T, k_endog, k_endog)``.
+    """
+    n_rows = endog.shape[0] - order
+    regressors = _stacked_regressors(
+        endog, exog, order=order, n_rows=n_rows, exog_in_observation=exog_in_observation
+    )
+    effective = _effective_coefficients(
+        coefficients,
+        exog_coefficients,
+        order=order,
+        k_endog=k_endog,
+        exog_in_observation=exog_in_observation,
+    )
+
+    factor = _stationary_cholesky(coefficients, state_cov, order=order, k_endog=k_endog)
+    residuals = endog[:order] - _initial_mean(
+        coefficients,
+        exog_coefficients,
+        exog,
+        order=order,
+        k_endog=k_endog,
+        exog_in_observation=exog_in_observation,
+    )
+    whitened = pt.linalg.solve_triangular(
+        factor, residuals.reshape((order * k_endog,)), lower=True, b_ndim=1
+    )
+    blocked = factor.reshape((order, k_endog, order, k_endog))
+    diagonal = pt.diagonal(blocked, axis1=0, axis2=2).transpose(2, 0, 1)
+
+    means = pt.concatenate(
+        [
+            endog[:order] - (diagonal @ whitened.reshape((order, k_endog, 1))).squeeze(-1),
+            regressors @ effective.T,
+        ],
+        axis=0,
+    )
+    covariances = pt.concatenate(
+        [diagonal @ diagonal.mT, pt.broadcast_to(state_cov, (n_rows, k_endog, k_endog))], axis=0
+    )
+
+    return means, covariances
+
+
+def _var_order(coefficients):
+    """Recover the lag order from the coefficient matrix, which must be statically shaped."""
+    k_endog, width = coefficients.type.shape
+    if k_endog is None or width is None:
+        raise ValueError(
+            "StationaryVAR needs the shape of its coefficient matrix to be known statically, "
+            f"but found {coefficients.type.shape}. Give the variable an explicit shape."
+        )
+    if width % k_endog:
+        raise ValueError(
+            f"StationaryVAR coefficients of shape {coefficients.type.shape} are not a whole "
+            f"number of {k_endog}-column lag blocks."
+        )
+
+    return width // k_endog, k_endog
+
+
+class StationaryVARRV(SymbolicRandomVariable):
+    default_output = 1
+    _print_name = ("StationaryVAR", "\\operatorname{StationaryVAR}")
+    extended_signature = "(k,l),(k,m),(k,k),(t,m),(t,k),[rng]->[rng],(t,k)"
+
+    def __init__(self, *args, exog_in_observation=False, **kwargs):
+        self.exog_in_observation = exog_in_observation
+        super().__init__(*args, **kwargs)
+
+    def update(self, node: Node):
+        return {node.inputs[-1]: node.outputs[0]}
+
+
+class StationaryVAR(Continuous):
+    r"""
+    A stationary vector autoregression observed without measurement error.
+
+    The joint density factors exactly as
+
+    .. math::
+        p(y_1 \ldots y_T) = p(y_1 \ldots y_p) \prod_{t > p} p(y_t \mid y_{t-1} \ldots y_{t-p})
+
+    The leading factor is the stationary distribution of the companion state. The product has a
+    banded precision matrix, so it collapses onto cross-products of the data against its own
+    lags, whose size depends on the lag structure and not on the number of timesteps.
+
+    Exogenous regressors enter the autoregression itself, :math:`y_t = \sum_l A_l y_{t-l} + B x_t
+    + \varepsilon_t`, so :math:`B` is an impact coefficient and the regressors join the lags in
+    the cross-products. The banding, and so the density, requires observations free of
+    measurement error, moving average terms, and missing values.
+
+    Parameters
+    ----------
+    coefficients : tensor_like
+        ``A``, of shape ``(k_endog, k_endog * order)``, blocks running lag 1 through ``order``.
+        Its shape must be known statically, since the lag order is read from it.
+    state_cov : tensor_like
+        ``Q``, the innovation covariance, of shape ``(k_endog, k_endog)``.
+    exog : tensor_like, optional
+        Exogenous regressors, of shape ``(steps, k_exog)``.
+    exog_coefficients : tensor_like, optional
+        ``B``, of shape ``(k_endog, k_exog)``. Required when ``exog`` is given.
+    exog_in_observation : bool, default False
+        Whether the regressors shift the level of the observations rather than entering the
+        autoregression.
+    steps : int, optional
+        Number of timesteps to draw. Taken from ``exog`` when that is given.
+    """
+
+    rv_type = StationaryVARRV
+
+    @classmethod
+    def dist(
+        cls,
+        coefficients,
+        state_cov,
+        endog,
+        exog=None,
+        exog_coefficients=None,
+        *,
+        exog_in_observation=False,
+        method="svd",
+        **kwargs,
+    ):
+        coefficients = pt.as_tensor_variable(coefficients)
+        state_cov = pt.as_tensor_variable(state_cov)
+        endog = pt.as_tensor_variable(endog)
+
+        if (exog is None) != (exog_coefficients is None):
+            raise ValueError(
+                "StationaryVAR needs either both or neither of exog and exog_coefficients, "
+                f"but exog is {'absent' if exog is None else 'present'} and exog_coefficients "
+                f"is {'absent' if exog_coefficients is None else 'present'}."
+            )
+
+        _, k_endog = _var_order(coefficients)
+
+        if exog is None:
+            exog = pt.zeros((endog.shape[0], 0), dtype=coefficients.dtype)
+            exog_coefficients = pt.zeros((k_endog, 0), dtype=coefficients.dtype)
+        else:
+            exog = pt.as_tensor_variable(exog)
+            exog_coefficients = pt.as_tensor_variable(exog_coefficients)
+
+        return super().dist(
+            [coefficients, exog_coefficients, state_cov, exog, endog],
+            exog_in_observation=exog_in_observation,
+            method=method,
+            **kwargs,
+        )
+
+    @classmethod
+    def rv_op(
+        cls,
+        coefficients,
+        exog_coefficients,
+        state_cov,
+        exog,
+        endog,
+        exog_in_observation=False,
+        method="svd",
+        size=None,
+        rng=None,
+    ):
+        rng = normalize_rng_param(rng)
+        order, k_endog = _var_order(coefficients)
+
+        coefficients_, exog_coefficients_ = coefficients.type(), exog_coefficients.type()
+        state_cov_, exog_, endog_ = state_cov.type(), exog.type(), endog.type()
+        rng_ = rng.type()
+
+        means, covariances = _predictive_moments(
+            coefficients_,
+            exog_coefficients_,
+            state_cov_,
+            exog_,
+            endog_,
+            order=order,
+            k_endog=k_endog,
+            exog_in_observation=exog_in_observation,
+        )
+        next_rng, draws = multivariate_normal(
+            mean=means, cov=covariances, rng=rng_, method=method, return_next_rng=True
+        )
+
+        op = StationaryVARRV(
+            inputs=[coefficients_, exog_coefficients_, state_cov_, exog_, endog_, rng_],
+            outputs=[next_rng, draws],
+            ndim_supp=2,
+            exog_in_observation=exog_in_observation,
+        )
+
+        return op(coefficients, exog_coefficients, state_cov, exog, endog, rng)
+
+
+@_logprob.register(StationaryVARRV)
+def stationary_var_logp(
+    op, values, coefficients, exog_coefficients, state_cov, exog, endog, rng, **kwargs
+):
+    """Exact log-density of a stationary VAR, condensed onto cross-products of the value."""
+    (value,) = values
+    order, k_endog = _var_order(coefficients)
+    exog_in_observation = op.exog_in_observation
+
+    n_rows = value.shape[0] - order
+    regressors = _stacked_regressors(
+        value, exog, order=order, n_rows=n_rows, exog_in_observation=exog_in_observation
+    )
+    response = value[order:]
+
+    factor = _stationary_cholesky(coefficients, state_cov, order=order, k_endog=k_endog)
+    residuals = value[:order] - _initial_mean(
+        coefficients,
+        exog_coefficients,
+        exog,
+        order=order,
+        k_endog=k_endog,
+        exog_in_observation=exog_in_observation,
+    )
+    initial = _initial_logp(factor, residuals, order=order, k_endog=k_endog)
+
+    effective = _effective_coefficients(
+        coefficients,
+        exog_coefficients,
+        order=order,
+        k_endog=k_endog,
+        exog_in_observation=exog_in_observation,
+    )
+    conditional = _conditional_logp(
+        effective,
+        state_cov,
+        endog_gram=response.T @ response,
+        cross_gram=regressors.T @ response,
+        regressor_gram=regressors.T @ regressors,
+        n_rows=n_rows,
+        k_endog=k_endog,
+    )
+
+    return check_parameters(
+        initial + conditional,
+        pt.eq(value.shape[0], exog.shape[0]),
+        pt.gt(value.shape[0], order),
+        msg="Observed data and exogenous data must span the same number of timesteps, and the "
+        "series must be longer than the lag order",
+    )
+
+
+def _innovations_moments(x0, transition, design, selection, endog):
+    """
+    One-step-ahead predictive means, conditional on ``endog``.
+
+    The predictive covariance of a single-source-of-error model is constant at its innovation
+    covariance, so only the means vary and only they are returned.
+
+    Returns
+    -------
+    means : TensorVariable
+        Of shape ``(T, k_endog)``.
+    """
+
+    def step(observation, state, transition, design, selection):
+        error = observation - design @ state
+
+        return transition @ (state + selection @ error)
+
+    states = pytensor.scan(
+        fn=step,
+        sequences=[endog],
+        outputs_info=[x0],
+        non_sequences=[transition, design, selection],
+        strict=True,
+        return_updates=False,
+    )
+    predicted = pt.concatenate([x0[None], states[:-1]], axis=0)
+
+    return predicted @ design.T
+
+
+class InnovationsStateSpaceRV(SymbolicRandomVariable):
+    default_output = 1
+    _print_name = ("InnovationsStateSpace", "\\operatorname{InnovationsStateSpace}")
+    extended_signature = "(s),(s,s),(p,s),(s,p),(p,p),(t,p),[rng]->[rng],(t,p)"
+
+    def update(self, node: Node):
+        return {node.inputs[-1]: node.outputs[0]}
+
+
+class InnovationsStateSpace(Continuous):
+    r"""
+    A linear state space model whose observation and transition share one shock.
+
+    .. math::
+        \begin{align}
+        y_t &= Z \alpha_t \\
+        \alpha_{t+1} &= T \alpha_t + R \varepsilon_t
+        \end{align}
+
+    The density requires :math:`Z R = I`, no observation noise, and an initial state covariance
+    of :math:`R Q R^T`. Under those conditions the state is exactly determined by the
+    observations, and exponential smoothing with additive errors is such a model.
+
+    Parameters
+    ----------
+    x0 : tensor_like
+        Predicted state for the first timestep, of shape ``(k_states,)``.
+    transition : tensor_like
+        ``T``, of shape ``(k_states, k_states)``.
+    design : tensor_like
+        ``Z``, of shape ``(k_endog, k_states)``.
+    selection : tensor_like
+        ``R``, of shape ``(k_states, k_endog)``. ``Z @ R`` must be the identity.
+    state_cov : tensor_like
+        ``Q``, the innovation covariance, of shape ``(k_endog, k_endog)``.
+    endog : tensor_like
+        The observed series, of shape ``(T, k_endog)``.
+    """
+
+    rv_type = InnovationsStateSpaceRV
+
+    @classmethod
+    def dist(cls, x0, transition, design, selection, state_cov, endog, *, method="svd", **kwargs):
+        x0, transition, design, selection, state_cov, endog = map(
+            pt.as_tensor_variable, (x0, transition, design, selection, state_cov, endog)
+        )
+
+        return super().dist(
+            [x0, transition, design, selection, state_cov, endog], method=method, **kwargs
+        )
+
+    @classmethod
+    def rv_op(
+        cls, x0, transition, design, selection, state_cov, endog, method="svd", size=None, rng=None
+    ):
+        rng = normalize_rng_param(rng)
+        x0_, transition_, design_ = x0.type(), transition.type(), design.type()
+        selection_, state_cov_, endog_ = selection.type(), state_cov.type(), endog.type()
+        rng_ = rng.type()
+
+        means = _innovations_moments(x0_, transition_, design_, selection_, endog_)
+        covariances = pt.broadcast_to(state_cov_, (endog_.shape[0], *state_cov_.shape))
+        next_rng, draws = multivariate_normal(
+            mean=means, cov=covariances, rng=rng_, method=method, return_next_rng=True
+        )
+
+        op = InnovationsStateSpaceRV(
+            inputs=[x0_, transition_, design_, selection_, state_cov_, endog_, rng_],
+            outputs=[next_rng, draws],
+            ndim_supp=2,
+        )
+
+        return op(x0, transition, design, selection, state_cov, endog, rng)
+
+
+@_logprob.register(InnovationsStateSpaceRV)
+def innovations_state_space_logp(
+    op, values, x0, transition, design, selection, state_cov, endog, rng, **kwargs
+):
+    """Exact log-density, from the one-step-ahead errors rather than from a Kalman filter."""
+    (value,) = values
+    residuals = value - _innovations_moments(x0, transition, design, selection, value)
+
+    n_timesteps, k_endog = value.shape
+    cov_cholesky = pt.linalg.cholesky(state_cov)
+    whitened = pt.linalg.cho_solve((cov_cholesky, True), residuals.T @ residuals, b_ndim=2)
+
+    logp = (
+        -0.5 * n_timesteps * k_endog * pt.log(2 * pt.pi)
+        - n_timesteps * pt.log(pt.diag(cov_cholesky)).sum()
+        - 0.5 * pt.trace(whitened)
+    )
+
+    return check_parameters(
+        logp,
+        pt.allclose(design @ selection, pt.eye(k_endog)),
+        pt.eq(value.shape[0], endog.shape[0]),
+        msg="An innovations state space model needs design @ selection to be the identity, so "
+        "that the innovation is recoverable from the one-step-ahead error, and needs the observed "
+        "data to span the same number of timesteps as the series it was built with",
+    )

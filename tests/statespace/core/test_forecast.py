@@ -137,6 +137,50 @@ def test_forecast_index(use_datetime_index):
     assert forecast_idx.equals(scenario["a"].index)
 
 
+def _trading_day_index():
+    """Business days with one holiday removed, so pandas cannot infer a frequency."""
+    index = pd.bdate_range("2024-01-01", periods=30).drop(pd.Timestamp("2024-01-15"))
+    assert index.freq is None and index.inferred_freq is None
+    return index
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"periods": 3},
+        {"end": pd.Timestamp("2024-02-16")},
+        {"scenario": np.zeros((3, 1)), "use_scenario_index": True},
+        {
+            "scenario": pd.DataFrame(
+                np.zeros((3, 1)), index=pd.bdate_range("2024-02-12", periods=3)
+            ),
+            "use_scenario_index": True,
+        },
+    ],
+    ids=["periods", "end", "array_scenario", "frame_scenario"],
+)
+def test_forecast_index_without_freq_raises(kwargs):
+    ss_mod = make_statespace_mod(
+        k_endog=1, k_posdef=1, k_states=2, filter_type="standard", verbose=False
+    )
+    time_idx = _trading_day_index()
+
+    with pytest.raises(ValueError, match="fit on has no frequency"):
+        ss_mod._build_forecast_index(time_idx, start=time_idx[-1], **kwargs)
+
+
+def test_scenario_index_without_freq_raises():
+    ss_mod = make_statespace_mod(
+        k_endog=1, k_posdef=1, k_states=2, filter_type="standard", verbose=False
+    )
+    time_idx, _ = _make_time_idx(use_datetime_index=True)
+    irregular_index = pd.DatetimeIndex(["2024-02-12", "2024-02-13", "2024-02-15"])
+    scenario = pd.DataFrame(np.zeros((3, 1)), index=irregular_index)
+
+    with pytest.raises(ValueError, match="scenario's DatetimeIndex has no frequency"):
+        ss_mod._build_forecast_index(time_idx, scenario=scenario, use_scenario_index=True)
+
+
 @pytest.mark.parametrize("use_datetime_index", [True, False])
 def test_end_is_inclusive_for_both_index_types(use_datetime_index):
     """`end` names the last forecast period, whichever index the model was fit on."""
@@ -435,8 +479,18 @@ def test_forecast_defaults_start_regardless_of_verbosity(
     assert announced == verbose
 
 
+def _expected_first_forecast_step(time_idx, start):
+    if isinstance(start, str):
+        t0 = pd.Timestamp(start)
+    elif isinstance(start, int):
+        t0 = time_idx[start]
+    else:
+        t0 = time_idx[-1]
+    delta = time_idx.freq if isinstance(time_idx, pd.DatetimeIndex) else 1
+    return t0 + delta
+
+
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
-@pytest.mark.parametrize("filter_output", ["predicted", "filtered", "smoothed"])
 @pytest.mark.parametrize(
     "mod_name, idata_name, start, end, periods",
     [
@@ -484,23 +538,42 @@ def test_forecast_defaults_start_regardless_of_verbosity(
         "multivariate_datetime_datetime",
     ],
 )
-def test_forecast(filter_output, mod_name, idata_name, start, end, periods, rng, request):
+def test_forecast_index(mod_name, idata_name, start, end, periods, request):
+    """The forecast index starts one step after ``start`` and covers the requested horizon, for
+    every way of naming the horizon on both index types."""
+    mod = request.getfixturevalue(mod_name)
+    idata = request.getfixturevalue(idata_name)
+    time_idx = mod._get_fit_time_index(idata)
+    if start is None:  # forecast() substitutes the last fitted step before building the index
+        start = time_idx[-1]
+
+    _, forecast_idx = mod._build_forecast_index(time_idx, start=start, end=end, periods=periods)
+
+    assert forecast_idx.shape == (10,)
+    assert forecast_idx[0] == _expected_first_forecast_step(time_idx, start)
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+@pytest.mark.parametrize("filter_output", ["predicted", "filtered", "smoothed"])
+@pytest.mark.parametrize(
+    "mod_name, idata_name",
+    [
+        ("ss_mod_no_exog", "idata_no_exog"),
+        ("ss_mod_no_exog_dt", "idata_no_exog_dt"),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv"),
+        ("ss_mod_no_exog_mv", "idata_no_exog_mv_dt"),
+    ],
+    ids=["range", "datetime", "multivariate", "multivariate_datetime"],
+)
+def test_forecast(filter_output, mod_name, idata_name, rng, request):
     mod = request.getfixturevalue(mod_name)
     idata = request.getfixturevalue(idata_name)
     time_idx = mod._get_fit_time_index(idata)
     is_datetime = isinstance(time_idx, pd.DatetimeIndex)
-
-    if isinstance(start, str):
-        t0 = pd.Timestamp(start)
-    elif isinstance(start, int):
-        t0 = time_idx[start]
-    else:
-        t0 = time_idx[-1]
-
-    delta = time_idx.freq if is_datetime else 1
+    start = 10
 
     forecast_idata = mod.forecast(
-        idata, start=start, end=end, periods=periods, filter_output=filter_output, random_seed=rng
+        idata, start=start, periods=10, filter_output=filter_output, random_seed=rng
     )
 
     forecast_idx = forecast_idata.coords["time"].values
@@ -513,15 +586,15 @@ def test_forecast(filter_output, mod_name, idata_name, start, end, periods, rng,
     assert not np.any(np.isnan(forecast_idata.forecast_latent.values))
     assert not np.any(np.isnan(forecast_idata.forecast_observed.values))
 
-    assert forecast_idx[0] == (t0 + delta)
+    assert forecast_idx[0] == _expected_first_forecast_step(time_idx, start)
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
-@pytest.mark.parametrize("start", [None, -1, 5])
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
+@pytest.mark.parametrize("start", [None, 5], ids=["last_fitted_step", "explicit"])
 def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
     scenario = pd.DataFrame(np.zeros((10, 1)), columns=["x1"])
     scenario.iloc[5, 0] = 1e9
@@ -552,8 +625,8 @@ def test_forecast_with_exog_data(rng, exog_ss_mod, idata_exog, start):
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
-@pytest.mark.parametrize("start", [None, -1, 5])
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
+@pytest.mark.parametrize("start", [None, 5], ids=["last_fitted_step", "explicit"])
 def test_forecast_with_exog_data_mv(rng, exog_ss_mod_mv, idata_exog_mv, start):
     scenario = pd.DataFrame(np.zeros((10, 1)), columns=["x1"])
     scenario.iloc[5, 0] = 1e9
@@ -597,7 +670,7 @@ def test_forecast_with_exog_data_mv(rng, exog_ss_mod_mv, idata_exog_mv, start):
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
 def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_exog):
     data_before_build_forecast_model = {d.name: d.get_value() for d in exog_pymc_mod.data_vars}
 
@@ -693,7 +766,7 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
-@pytest.mark.filterwarnings("ignore:No frequency was specific on the data's DateTimeIndex.")
+@pytest.mark.filterwarnings("ignore:No frequency was specified on the data's DatetimeIndex.")
 def test_forecast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
     # Regression test for issue reported at  https://github.com/pymc-devs/pymc-extras/issues/424
     with exog_pymc_mod:

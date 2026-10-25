@@ -24,3 +24,13 @@ repos:
   hooks:
     - id: no-print-statements
       files: ^pymc_extras/
+
+- repo: local
+  hooks:
+    - id: check-no-tests-are-ignored
+      name: Check every test file is in the CI matrix
+      entry: python scripts/check_all_tests_are_covered.py
+      language: python
+      additional_dependencies: [pyyaml]
+      files: ^(\.github/workflows/test\.yml|tests/.*\.py)$
+      pass_filenames: false

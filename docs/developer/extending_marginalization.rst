@@ -1,16 +1,15 @@
 Extending marginalization
 =========================
 
-:func:`~pymc_extras.marginal.marginalize` is built on a small set of
-composable pieces, so new kinds of marginalization (a new conjugate pair, a
-new approximation) can be added without touching the core machinery. This
-page explains how the pipeline works and what you need to implement.
+:func:`~pymc_extras.marginal.marginalize` is implemented with a small set of
+composable pieces, so new conjugate pairs and approximations can be added
+without changing the graph machinery.
 
 All code lives under ``pymc_extras/model/marginal/``, organized along two
 seams. By *operation*: ``marginalize.py`` holds
-:func:`~pymc_extras.marginal.marginalize` / ``unmarginalize`` and
-``conditional.py`` holds :func:`~pymc_extras.marginal.conditional` /
-``recover``. By *strategy*: each kind of marginalization is one module under
+:func:`~pymc_extras.marginal.marginalize` and ``unmarginalize``;
+``conditional.py`` holds ``conditional`` and ``recover``. By *strategy*:
+each kind of marginalization is one module under
 ``distributions/`` (``enumerable.py``, ``laplace.py``, ``normal.py``)
 containing its ``MarginalRV`` subclass, the rewrite that recognizes it, its
 logp, and (optionally) its conditional. ``rewrites.py`` holds only the
@@ -60,6 +59,15 @@ it "marginal" is its logp implementation:
   ``p(marginalized | dependents)``. This is what powers
   :func:`~pymc_extras.marginal.conditional` and
   :func:`~pymc_extras.marginal.recover`.
+
+For ``MarginalLaplaceRV``, this reverse factor is a Gaussian approximation,
+not generally the exact conditional posterior. ``conditional`` and ``recover``
+use the posterior mode as its mean and precision
+``Q - Hessian(log_likelihood)`` evaluated at that mode. The mode and curvature
+condition on supplied dependent and current parent values, using optimizer
+settings stored by ``marginalize``. Recovery is exact for Gaussian conditionals;
+nonlinear likelihoods retain the local Gaussian approximation's limitations.
+``fit_INLA`` uses this recovery when ``return_latent_posteriors=True``.
 
 :func:`~pymc_extras.marginal.unmarginalize` is fully generic: it just inlines
 the ``OpFromGraph`` and restores the marginalized variable as a free RV, so

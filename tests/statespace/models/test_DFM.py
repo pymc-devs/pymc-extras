@@ -244,9 +244,9 @@ def simulate_from_matrices(matrices, rng, steps=100):
     return x, y.squeeze()
 
 
-@pytest.mark.parametrize("n_obs,n_runs", [(100, 200)])
-def test_exog_coefficient_random_walk_variance_grows_linearly(n_obs, n_runs):
-    """With exog_innovations the coefficients random walk, so Var(beta_t) = t * diag(Q)."""
+def test_exog_coefficients_random_walk_with_beta_sigma_innovations():
+    """With exog_innovations each coefficient is a random walk driven by its own shock."""
+    n_obs = 100
     rng = np.random.default_rng(123)
     dfm_mod = BayesianDynamicFactor(
         k_factors=1,
@@ -273,20 +273,18 @@ def test_exog_coefficient_random_walk_variance_grows_linearly(n_obs, n_runs):
         "beta": np.array([0.3, 0.5, 1.0, 2.0]),
         "beta_sigma": beta_variances,
     }
-    matrices = unpack_symbolic_matrices_with_params(
+    *_, T, _, R, _, Q = unpack_symbolic_matrices_with_params(
         dfm_mod, param_dict, {"exog_data": rng.normal(size=(n_obs, 2))}
     )
 
     first_exog_state = dfm_mod.k_states - dfm_mod.k_exog_states
-    coefficient_paths = np.array(
-        [
-            simulate_from_matrices(matrices, rng, steps=n_obs)[0][:, first_exog_state:]
-            for _ in range(n_runs)
-        ]
-    )
+    exog_states = slice(first_exog_state, dfm_mod.k_states)
+    shock_cov = R @ Q @ R.T
 
-    assert_allclose(coefficient_paths[:, 1].var(axis=0), beta_variances, rtol=0.3)
-    assert_allclose(coefficient_paths[:, -1].var(axis=0), (n_obs - 1) * beta_variances, rtol=0.3)
+    assert_allclose(T[exog_states, exog_states], np.eye(dfm_mod.k_exog_states))
+    assert_allclose(T[exog_states, :first_exog_state], 0.0)
+    assert_allclose(shock_cov[exog_states, exog_states], np.diag(beta_variances))
+    assert_allclose(shock_cov[exog_states, :first_exog_state], 0.0)
 
 
 @pytest.mark.parametrize("shared", [True, False], ids=["shared", "per_series"])

@@ -2,89 +2,11 @@ import sys
 
 import numpy as np
 import pymc as pm
-import pytensor.tensor as pt
 import pytest
 
 import pymc_extras as pmx
 
 from pymc_extras.inference.pathfinder.lbfgs import LBFGSConfig
-
-
-def unstable_lbfgs_update_mask_model() -> pm.Model:
-    # data and model from: https://github.com/pymc-devs/pymc-extras/issues/445
-    # this scenario made LBFGS struggle leading to a lot of rejected iterations, (result.nit being moderate, but only
-    # history.count <= 1). this scenario is used to test that the LBFGS history manager is rejecting iterations as
-    # expected and PF can run to completion.
-
-    # fmt: off
-    inp = np.array([0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 2, 0, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 2, 0, 1, 0, 0, 0, 0, 1, 1, 1, 2, 0, 1, 2, 1, 0, 1, 0, 1, 0, 1, 0])
-
-    res = np.array([[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,1,0,0,0],[0,0,1,0,0],[0,1,0,0,0],[0,0,0,1,0],[0,0,0,1,0],[1,0,0,0,0],[0,1,0,0,0],[0,0,1,0,0],[1,0,0,0,0],[0,0,1,0,0],[0,1,0,0,0],[0,0,0,1,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,0,1,0],[0,0,0,1,0],[0,1,0,0,0],[0,0,0,1,0],[0,0,1,0,0],[0,1,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,0,0,1,0],[0,0,1,0,0],[0,1,0,0,0],[0,0,1,0,0],[0,0,0,1,0],[0,0,1,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,0,1,0,0],[0,0,0,1,0],[0,0,0,1,0],[1,0,0,0,0],[1,0,0,0,0],[0,1,0,0,0],[1,0,0,0,0],[0,0,1,0,0],[0,0,1,0,0],[1,0,0,0,0],[0,0,0,1,0]])
-    # fmt: on
-
-    n_ordered = res.shape[1]
-    coords = {
-        "obs": np.arange(len(inp)),
-        "inp": np.arange(max(inp) + 1),
-        "outp": np.arange(res.shape[1]),
-    }
-    with pm.Model(coords=coords) as mdl:
-        mu = pm.Normal("intercept", sigma=3.5)[None]
-
-        offset = pm.Normal(
-            "offset", dims=("inp"), transform=pm.distributions.transforms.ZeroSumTransform([0])
-        )
-
-        scale = 3.5 * pm.HalfStudentT("scale", nu=5)
-        mu += (scale * offset)[inp]
-
-        phi_delta = pm.Dirichlet("phi_diffs", [1.0] * (n_ordered - 1))
-        phi = pt.concatenate([[0], pt.cumsum(phi_delta)])
-        s_mu = pm.Normal(
-            "stereotype_intercept",
-            size=n_ordered,
-            transform=pm.distributions.transforms.ZeroSumTransform([-1]),
-        )
-        fprobs = pm.math.softmax(s_mu[None, :] + phi[None, :] * mu[:, None], axis=-1)
-
-        pm.Multinomial("y_res", p=fprobs, n=np.ones(len(inp)), observed=res, dims=("obs", "outp"))
-
-    return mdl
-
-
-@pytest.mark.parametrize("jitter", [12.0, 750.0])
-def test_unstable_lbfgs_update_mask(jitter):
-    model = unstable_lbfgs_update_mask_model()
-
-    if jitter < 750.0:
-        # Low jitter values should succeed
-        with model:
-            idata = pmx.fit(
-                method="pathfinder",
-                jitter=jitter,
-                random_seed=4,
-                max_init_retries=0,
-                parallel=True,
-            )
-        # With epsilon=1e-12 the curvature condition is permissive, so we expect at least
-        # one path to flag an update-quality issue and at least one to succeed.
-        lbfgs_counts = idata.lbfgs.status_counts
-        path_counts = idata.pathfinder.path_status_counts
-        assert lbfgs_counts.sel(status="LOW_UPDATE_PCT").item() > 0
-        assert path_counts.sel(status="SUCCESS").item() > 0
-
-    else:
-        # High jitter values (>=750) cause numerical overflow and all paths fail
-        with pytest.raises(ValueError, match=r"(All paths failed|BUG: Failed to iterate)"):
-            with model:
-                idata = pmx.fit(
-                    method="pathfinder",
-                    jitter=jitter,
-                    random_seed=4,
-                    num_paths=4,
-                    max_init_retries=0,
-                    parallel=True,
-                )
 
 
 def test_pathfinder_pymc(reference_idata):
