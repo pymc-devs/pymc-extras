@@ -9,15 +9,16 @@ from pymc.pytensorf import rewrite_pregrad
 from pytensor import tensor as pt
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.replace import graph_replace
+from pytensor_ml.optim import Transform
+from pytensor_ml.pytensorf import collect_clock_updates
 
 from pymc_extras.inference.advi.autoguide import AutoGuideModel
 from pymc_extras.inference.advi.objective import advi_objective, get_logp_logq
-from pymc_extras.inference.advi.optimizers import GradientTransformation
 from pymc_extras.inference.advi.pytensorf import vectorize_random_graph
 
 
 class TrainingFn(Protocol):
-    def __call__(self, *params: np.ndarray) -> tuple[np.ndarray, ...]: ...
+    def __call__(self) -> np.ndarray: ...
 
 
 class SamplingFn(Protocol):
@@ -27,21 +28,39 @@ class SamplingFn(Protocol):
 def compile_svi_step_fn(
     model: Model,
     guide: AutoGuideModel,
-    optimizer: GradientTransformation,
+    optimizer: Transform,
     draws: int = 1,
     path_derivative_gradient: bool = True,
     logp_scalings: dict | None = None,
     **compile_kwargs,
 ) -> tuple[TrainingFn, dict[str, SharedVariable], dict[str, SharedVariable]]:
-    """Compile one full SVI step, with optimizer updates applied in-graph.
+    """Compile one full SVI step, with the optimizer updates applied in-graph.
 
     The guide parameters and the optimizer state live in shared variables that the
-    compiled function updates in place. It takes no inputs and returns only the
-    negative ELBO estimate, so no parameters or gradients round-trip through Python
-    during training.
+    compiled function updates in place. It takes no inputs and returns only the negative
+    ELBO estimate, so no parameters, gradients or learning rates round-trip through
+    Python during training.
 
-    Together the two returned dicts hold the whole training state: reading their values
+    Together the returned dicts hold the whole training state: reading their values
     snapshots a run, writing them resumes one exactly.
+
+    Parameters
+    ----------
+    model : Model
+        The PyMC model to fit.
+    guide : AutoGuideModel
+        The variational guide whose parameters are optimized.
+    optimizer : Transform
+        A configured :mod:`pytensor_ml.optim` rule, ``(loss_or_gradients, parameters) ->
+        updates``, carrying its own rate, schedule and clipping.
+    draws : int, optional
+        Number of guide draws per step used to estimate the ELBO gradient. Default 1.
+    path_derivative_gradient : bool, optional
+        Whether to use the path-derivative ("sticking the landing") gradient estimator.
+        Default True.
+    logp_scalings : dict, optional
+        Per-variable likelihood scalings, mapping model variables to the factor their
+        logp is multiplied by (for unbiased minibatch estimates). Default None.
 
     Returns
     -------
@@ -50,15 +69,9 @@ def compile_svi_step_fn(
     shared_params : dict
         Maps each guide parameter name to the shared variable holding its value.
     shared_optimizer_state : dict
-        Maps each optimizer state variable name to the shared variable holding its
-        value. Empty for stateless optimizers such as ``sgd``.
+        Maps the name of every other shared variable the optimizer writes -- its moment
+        estimates and the training clocks -- to that variable.
     """
-    if optimizer.pytensor is None:
-        raise ValueError(
-            f"The optimizer {optimizer} does not have a PyTensor implementation "
-            "and cannot be compiled into the step function."
-        )
-
     logp, logq = get_logp_logq(
         model,
         guide,
@@ -78,7 +91,8 @@ def compile_svi_step_fn(
 
     grads = pt.grad(rewrite_pregrad(negative_elbo), wrt=shared_params)
 
-    new_grads, updates = optimizer.pytensor(grads, shared_params)
+    updates = optimizer(grads, shared_params)
+    updates |= collect_clock_updates(list(updates.values()), already_written=updates)
 
     # The optimizer's own state variables are the update keys that are not the guide
     # parameters themselves. Snapshotting and restoring them keys on the name, so a
@@ -91,12 +105,9 @@ def compile_svi_step_fn(
         raise ValueError(
             f"The optimizer has more than one state variable named {duplicate_names}, so its "
             "state cannot be snapshotted or restored unambiguously. Give each transform in the "
-            "chain state variables with distinct names."
+            "chain state variables with distinct names (e.g. via their namespace argument)."
         )
     shared_optimizer_state = {var.name: var for var in state_variables}
-
-    for param, grad in zip(shared_params, new_grads):
-        updates[param] = param + grad
 
     compile_kwargs.setdefault("trust_input", True)
 

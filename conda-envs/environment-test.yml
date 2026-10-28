@@ -22,5 +22,6 @@ dependencies:
   - preliz>=0.27,<0.29
   - pip
   - pip:
+      - pytensor-ml>=0.2.2,<0.3
       - jax
       - blackjax

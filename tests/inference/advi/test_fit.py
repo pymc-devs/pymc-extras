@@ -1,22 +1,12 @@
 import numpy as np
 import pymc as pm
+import pytensor
 import pytensor.tensor as pt
 import pytest
 
-from pymc_extras.inference.advi import (
-    Trainer,
-    adam,
-    chain,
-    clip_by_global_norm,
-    clipped_adam,
-    fit_advi,
-    linear_onecycle_schedule,
-    rmsprop,
-    scale_by_adam,
-    scale_by_learning_rate,
-    scale_by_schedule,
-    sgd,
-)
+from pytensor_ml.optim import adam, chain, clip_by_global_norm, rmsprop, scale_by_schedule, sgd
+
+from pymc_extras.inference.advi import Trainer, fit_advi, linear_onecycle_shape
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
 
 
@@ -54,21 +44,6 @@ def test_fit_advi_random_seed(conjugate_model):
     assert not np.array_equal(draws_a, draws_c)
 
 
-def test_fit_with_schedule_optimizer(conjugate_model):
-    # A learning-rate schedule must be usable through the compiled Trainer path
-    model, post_mean, post_var = conjugate_model
-    schedule = linear_onecycle_schedule(transition_steps=2_000, peak_value=0.1)
-    optimizer = chain(clip_by_global_norm(10.0), scale_by_adam(), scale_by_learning_rate(schedule))
-    trainer = Trainer(optimizer=optimizer)
-
-    with model:
-        trainer.fit(2_000, random_seed=1)
-        idata = trainer.sample_posterior(1_000, random_seed=2)
-
-    theta = idata["posterior"].dataset["theta"].values.ravel()
-    np.testing.assert_allclose(theta.mean(), post_mean, atol=0.1)
-
-
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 def test_fit_advi_random_seed_jax(conjugate_model):
     # The JAX linker replaces RNG shared variables with internal copies at compile time,
@@ -101,7 +76,20 @@ def test_fit_continues(conjugate_model):
     assert not np.allclose(first.params["theta_loc"], second.params["theta_loc"])
 
 
-@pytest.mark.parametrize("make_optimizer", [clipped_adam, sgd, rmsprop, adam])
+@pytest.mark.parametrize(
+    "make_optimizer",
+    [
+        sgd,
+        rmsprop,
+        adam,
+        # a schedule keeps its clock outside the rule's own updates, so this case fails
+        # if collect_clock_updates stops routing schedule clocks into the saved state
+        pytest.param(
+            lambda lr: chain(adam(lr), scale_by_schedule(linear_onecycle_shape(200))),
+            id="scheduled_adam",
+        ),
+    ],
+)
 def test_snapshot_restore_is_optimizer_agnostic(conjugate_model, make_optimizer):
     model, *_ = conjugate_model
     optimizer = make_optimizer(0.01)
@@ -126,11 +114,12 @@ def test_snapshot_restore_is_optimizer_agnostic(conjugate_model, make_optimizer)
 
 def test_duplicate_optimizer_state_names_are_refused(conjugate_model):
     model, *_ = conjugate_model
-    schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.01)
+    schedule = linear_onecycle_shape(100)
 
-    # both stages allocate a step counter named "lr_t", so keying the snapshot by name
-    # would keep one and resume the other from whatever it happened to hold
-    doubled = chain(scale_by_adam(), scale_by_schedule(schedule), scale_by_schedule(schedule))
+    # both stages allocate a clock named "scale_by_schedule/step_count", so keying the
+    # snapshot by name would keep one and resume the other from whatever it happened
+    # to hold
+    doubled = chain(adam(0.01), scale_by_schedule(schedule), scale_by_schedule(schedule))
 
     # the collision is detected while compiling, before any step is taken
     trainer = Trainer(optimizer=doubled)
@@ -196,17 +185,153 @@ def test_trainer_state_is_complete_and_honest(conjugate_model):
         np.testing.assert_array_equal(value, state.params[name])
     assert set(state.params) == {"theta_loc", "theta_scale"}
     assert set(state.optimizer_state) == {
-        "adam_t",
-        "adam_m_theta_loc",
-        "adam_v_theta_loc",
-        "adam_m_theta_scale",
-        "adam_v_theta_scale",
+        "adam/step_count",
+        "theta_loc/adam/first_moment",
+        "theta_loc/adam/second_moment",
+        "theta_scale/adam/first_moment",
+        "theta_scale/adam/second_moment",
     }
-    assert state.optimizer_state["adam_t"] == 50
+    # the clock the bias correction reads travels with the state, so a resumed run picks
+    # up where it left off rather than replaying the earliest, most heavily corrected steps
+    assert state.optimizer_state["adam/step_count"] == 50
 
     # compile-time configuration is read-only rather than silently ignored
     with pytest.raises(AttributeError):
         trainer.n_particles = 32
+
+
+def test_learning_rate_is_a_live_shared_value(conjugate_model):
+    model, *_ = conjugate_model
+
+    trainer = Trainer(random_seed=0)
+    with model:
+        frozen = trainer.fit(50, learning_rate=0.0, random_seed=1)
+
+    # a zero rate leaves Adam's moments moving but the parameters untouched
+    init_loc = trainer.guide.params_init_values[trainer.guide["theta_loc"]]
+    np.testing.assert_allclose(frozen.params["theta_loc"], init_loc)
+    assert trainer.learning_rate == 0.0
+
+    # and fit can change it without rebuilding the step function, schedule and all
+    step_fn = trainer._step_fn
+    with model:
+        moved = trainer.fit(50, learning_rate=0.05, random_seed=1)
+    assert trainer.learning_rate == 0.05
+    assert trainer._step_fn is step_fn
+    assert not np.allclose(moved.params["theta_loc"], frozen.params["theta_loc"])
+
+
+def test_a_supplied_optimizer_owns_its_own_rate(conjugate_model):
+    model, *_ = conjugate_model
+
+    supplied = Trainer(optimizer=rmsprop(1e-3), random_seed=0)
+    with model:
+        supplied.fit(10, random_seed=1)
+    assert supplied.learning_rate is None
+
+    # _step_fn is the probe for "was compiled"; the fitted trainer confirms fit sets it
+    assert supplied._step_fn is not None
+
+    # the bad learning_rate is refused before the step function is built, so the error
+    # does not cost a compilation
+    fresh = Trainer(optimizer=rmsprop(1e-3), random_seed=0)
+    with model, pytest.raises(ValueError, match="belongs to the optimizer"):
+        fresh.fit(10, learning_rate=0.01)
+    assert fresh._step_fn is None
+
+
+def test_fit_rejects_invalid_n_and_learning_rate(conjugate_model):
+    model, *_ = conjugate_model
+
+    with model:
+        with pytest.raises(ValueError, match="positive integer"):
+            Trainer().fit(0)
+
+        with pytest.raises(ValueError, match="non-negative"):
+            Trainer().fit(10, learning_rate=-1.0)
+
+
+def test_a_composed_rule_shapes_the_rate_it_is_given(conjugate_model):
+    model, *_ = conjugate_model
+    rate = 0.05
+
+    with model:
+        flat = Trainer(optimizer=adam(rate), random_seed=0).fit(200, random_seed=1)
+
+        # scale_by_schedule multiplies a unit-peak shape onto the step, so an annealing
+        # shape has to move the parameters somewhere a bare rule does not reach
+        annealed = Trainer(
+            optimizer=chain(adam(rate), scale_by_schedule(linear_onecycle_shape(200))),
+            random_seed=0,
+        ).fit(200, random_seed=1)
+    assert not np.allclose(annealed.params["theta_loc"], flat.params["theta_loc"])
+
+
+def test_clipping_binds_only_on_large_gradients(conjugate_model):
+    model, *_ = conjugate_model
+    rate = 0.05
+
+    with model:
+        unclipped = Trainer(optimizer=adam(rate), random_seed=0).fit(100, random_seed=1)
+
+        # a bound no gradient reaches is a no-op, so it must not perturb the run at all
+        slack_rule = chain(clip_by_global_norm(1e12), adam(rate))
+        slack = Trainer(optimizer=slack_rule, random_seed=0).fit(100, random_seed=1)
+        np.testing.assert_allclose(slack.params["theta_loc"], unclipped.params["theta_loc"])
+        np.testing.assert_allclose(slack.loss_history, unclipped.loss_history)
+
+        # a bound that does bind changes the trajectory, since it enters Adam's moments
+        tight_rule = chain(clip_by_global_norm(1e-4), adam(rate))
+        tight = Trainer(optimizer=tight_rule, random_seed=0).fit(100, random_seed=1)
+    assert not np.allclose(tight.params["theta_loc"], unclipped.params["theta_loc"])
+
+
+def test_linear_onecycle_shape_matches_the_reference_curve():
+    pct_start, pct_final, div_factor, final_div_factor = 0.2, 0.85, 25.0, 1e4
+    transition_steps = 1_000
+
+    # the three phases interpolated directly, as optax and torch define 1cycle
+    breakpoints = np.array([0.0, pct_start, pct_final, 1.0]) * transition_steps
+    values = np.array([1 / div_factor, 1.0, 1 / div_factor, 1 / div_factor / final_div_factor])
+
+    step = pt.iscalar("step")
+    shape = pytensor.function([step], linear_onecycle_shape(transition_steps)(step))
+
+    probes = np.array([0, 1, 199, 200, 201, 500, 849, 850, 999, 1_000, 1_500])
+    np.testing.assert_allclose(
+        [shape(s) for s in probes], np.interp(probes, breakpoints, values), atol=1e-12
+    )
+
+
+def test_linear_onecycle_shape_accepts_a_symbolic_horizon():
+    step = pt.iscalar("step")
+    horizon = pytensor.shared(np.asarray(1_000, dtype="int64"), name="horizon")
+    shape = pytensor.function([step], linear_onecycle_shape(horizon)(step))
+
+    np.testing.assert_allclose(shape(200), 1.0)  # peaks at pct_start of the horizon
+    horizon.set_value(np.asarray(500, dtype="int64"))
+    np.testing.assert_allclose(shape(100), 1.0)  # and the peak moves with it
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param(dict(pct_start=0.0), id="empty_ramp"),
+        pytest.param(dict(pct_final=1.0), id="empty_decay"),
+        pytest.param(dict(pct_start=0.5, pct_final=0.5), id="empty_anneal"),
+        pytest.param(dict(pct_start=0.9, pct_final=0.5), id="inverted_phases"),
+    ],
+)
+def test_linear_onecycle_shape_rejects_degenerate_phases(kwargs):
+    # a phase of zero or negative length divides by zero and yields a plausible-looking
+    # but wrong curve, so it has to be refused rather than built
+    with pytest.raises(ValueError, match="0 < pct_start < pct_final < 1"):
+        linear_onecycle_shape(1_000, **kwargs)
+
+
+def test_linear_onecycle_shape_rejects_a_horizon_with_no_room():
+    with pytest.raises(ValueError, match="at least 1"):
+        linear_onecycle_shape(0)
 
 
 def test_guide_initialized_at_initial_point():

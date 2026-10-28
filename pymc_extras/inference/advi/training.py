@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import pymc as pm
 import pytensor
+import pytensor.tensor as pt
 
 from arviz_base import dict_to_dataset
 from pymc import Model, modelcontext
@@ -14,9 +15,20 @@ from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.progress_bar import CustomProgress, default_progress_theme
 from pymc.pytensorf import resolve_backend_compile_kwargs
 from pymc.variational.minibatch_rv import MinibatchRandomVariable
+from pytensor import config as pytensor_config
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph import ancestors
+from pytensor.tensor import TensorVariable
 from pytensor.tensor.random.type import RandomType
+from pytensor_ml.optim import (
+    Schedule,
+    Transform,
+    adam,
+    chain,
+    clip_by_global_norm,
+    join_schedules,
+    linear_schedule,
+)
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -32,12 +44,90 @@ from xarray import DataTree
 
 from pymc_extras.inference.advi.autoguide import AutoDiagonalNormal, AutoGuideModel
 from pymc_extras.inference.advi.compile import (
+    SamplingFn,
     TrainingFn,
     compile_sampling_fn,
     compile_svi_step_fn,
 )
-from pymc_extras.inference.advi.optimizers import GradientTransformation, clipped_adam
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
+
+DEFAULT_LEARNING_RATE = 0.01
+DEFAULT_CLIP_NORM = 10.0
+
+
+def _default_optimizer() -> tuple[Transform, SharedVariable]:
+    """Build the gradient-clipped Adam used when no optimizer is given.
+
+    Returns
+    -------
+    optimizer : Transform
+        Adam at :data:`DEFAULT_LEARNING_RATE`, behind a global-norm gradient clip at
+        :data:`DEFAULT_CLIP_NORM`.
+    shared_learning_rate : SharedVariable
+        The rate the rule reads, writable so :meth:`Trainer.fit` can change it.
+    """
+    shared_learning_rate = pytensor.shared(
+        np.asarray(DEFAULT_LEARNING_RATE, dtype=pytensor_config.floatX), name="learning_rate"
+    )
+    # The clip goes ahead of the rule so it bounds the gradients, as optax, torch, pyro
+    # and numpyro all do; behind the rule it would see a step Adam had already computed
+    # from the spike it was meant to stop.
+    optimizer = chain(clip_by_global_norm(DEFAULT_CLIP_NORM), adam(shared_learning_rate))
+    return optimizer, shared_learning_rate
+
+
+def linear_onecycle_shape(
+    transition_steps: int | TensorVariable,
+    pct_start: float = 0.2,
+    pct_final: float = 0.85,
+    div_factor: float = 25.0,
+    final_div_factor: float = 1e4,
+) -> Schedule:
+    """Build the linear 1cycle schedule of Smith & Topin (2018), normalized to peak at 1.
+
+    The multiplier ramps from ``1 / div_factor`` up to 1 over the first ``pct_start`` of
+    ``transition_steps``, anneals linearly back down by ``pct_final``, then decays to
+    ``1 / div_factor / final_div_factor`` over what remains, holding there past the
+    horizon.
+
+    Parameters
+    ----------
+    transition_steps : int or TensorVariable
+        Number of steps the whole cycle spans. Breakpoints are fractions of it, so a
+        symbolic horizon can be resized between runs without rebuilding the graph.
+    pct_start : float, optional
+        Fraction of the cycle spent ramping up to the peak. Default 0.2.
+    pct_final : float, optional
+        Fraction of the cycle spent ramping up and then back down again. Default 0.85.
+    div_factor : float, optional
+        Sets the starting multiplier, ``1 / div_factor``. Default 25.
+    final_div_factor : float, optional
+        Sets the final multiplier, ``1 / div_factor / final_div_factor``. Default 1e4.
+
+    Returns
+    -------
+    schedule : Schedule
+        Maps a step count to a multiplier on the base learning rate.
+    """
+    if not 0 < pct_start < pct_final < 1:
+        raise ValueError(
+            "pct_start and pct_final must satisfy 0 < pct_start < pct_final < 1, got "
+            f"pct_start={pct_start!r}, pct_final={pct_final!r}."
+        )
+
+    init_value = 1.0 / div_factor
+    total_steps = pt.as_tensor(transition_steps).astype("int64")
+    ramp_steps = (total_steps * pct_start).astype("int64")
+    anneal_steps = (total_steps * pct_final).astype("int64")
+
+    return join_schedules(
+        [
+            linear_schedule(init_value, ramp_steps, 1.0),
+            linear_schedule(1.0, anneal_steps - ramp_steps, init_value),
+            linear_schedule(init_value, total_steps - anneal_steps, init_value / final_div_factor),
+        ],
+        boundaries=[ramp_steps, anneal_steps],
+    )
 
 
 def _reseed_function_rngs(fn, random_seed) -> None:
@@ -130,9 +220,10 @@ class Trainer:
     :class:`SVIState`; the last state is kept on the trainer, where
     :meth:`sample_posterior` picks it up.
 
-    Configuration splits along the same line. Everything compiled into the step function
-    (``guide``, ``optimizer``, ``n_particles``, ``path_derivative_gradient``) is fixed at
-    construction and exposed read-only.
+    Configuration splits along the same line: the optimizer, the guide and the remaining
+    compile-time settings are fixed at construction and exposed read-only. The default
+    rule's learning rate is the exception, staying a single shared value :meth:`fit` can
+    change; a rule built by the caller keeps its rate wherever the caller put it.
 
     There is no convergence-based early stopping. ``fit(n)`` runs ``n`` steps. To spend
     less, ask for fewer steps. To decide as you go, fit in chunks and look at
@@ -144,9 +235,10 @@ class Trainer:
         The guide to fit: an :class:`AutoGuideModel`, or a factory mapping the model
         to one. By default an :func:`AutoDiagonalNormal` guide is built from the
         model (mean-field ADVI).
-    optimizer : GradientTransformation, optional
-        An optax-like optimizer (actual optax optimizers are compatible). By default
-        a :func:`clipped_adam` optimizer is used.
+    optimizer : Transform, optional
+        The rule driving the updates: any :mod:`pytensor_ml.optim` transform, carrying
+        its own rate, schedule and clipping. By default Adam at 0.01 behind a global-norm
+        gradient clip at 10, whose rate :meth:`fit` can change.
     n_particles : int, optional
         Number of guide draws per step used to estimate the ELBO gradient, by
         default 1.
@@ -162,28 +254,70 @@ class Trainer:
         Seed for the default guide's initialization. Seeds for the training and
         posterior draws are passed to :meth:`fit` and :meth:`sample_posterior`.
 
-    Example
-    -------
-    >>> with pm.Model() as model:
-    ...     mu = pm.Normal("mu", 0, 1)
-    ...     pm.Normal("y", mu, 1, observed=[0.5, 1.5])
-    ...     trainer = Trainer()
-    ...     trainer.fit(10_000)
-    ...     idata = trainer.sample_posterior(1_000)
+    Examples
+    --------
+    Fit the default mean-field guide, then draw from it:
+
+    .. code-block:: python
+
+        with pm.Model() as model:
+            mu = pm.Normal("mu", 0, 1)
+            pm.Normal("y", mu, 1, observed=[0.5, 1.5])
+
+            trainer = Trainer()
+            trainer.fit(10_000)
+            idata = trainer.sample_posterior(1_000)
+
+    Fit in chunks, inspecting the loss between them, then continue at a rate you pick:
+
+    .. code-block:: python
+
+        with model:
+            trainer = Trainer()
+            for _ in range(5):
+                state = trainer.fit(2_000)
+                print(state.loss_history[-1])
+
+            trainer.fit(1_000, learning_rate=1e-4)
+
+    Drive it with any :mod:`pytensor_ml.optim` rule instead of the default, composing the
+    rate, the schedule and the clipping yourself. A clip placed ahead of the rule bounds
+    the gradients; behind it, it bounds the step the rule already chose:
+
+    .. code-block:: python
+
+        from pytensor_ml.optim import adam, chain, clip_by_global_norm, scale_by_schedule
+
+        from pymc_extras.inference.advi import linear_onecycle_shape
+
+        with model:
+            trainer = Trainer(
+                optimizer=chain(
+                    clip_by_global_norm(10.0),
+                    adam(0.05),
+                    scale_by_schedule(linear_onecycle_shape(5_000)),
+                ),
+            )
+            trainer.fit(5_000)
     """
 
     def __init__(
         self,
         *,
         guide: AutoGuideModel | Callable[[Model], AutoGuideModel] | None = None,
-        optimizer: GradientTransformation | None = None,
+        optimizer: Transform | None = None,
         n_particles: int = 1,
         path_derivative_gradient: bool = True,
         backend: str | None = None,
         compile_kwargs: dict | None = None,
         random_seed=None,
     ):
-        self._optimizer = optimizer if optimizer is not None else clipped_adam()
+        self._shared_learning_rate: SharedVariable | None
+        if optimizer is None:
+            self._optimizer, self._shared_learning_rate = _default_optimizer()
+        else:
+            self._optimizer = optimizer
+            self._shared_learning_rate = None
 
         self.compile_kwargs = resolve_backend_compile_kwargs(backend, compile_kwargs)
         self.random_seed = random_seed
@@ -200,7 +334,7 @@ class Trainer:
         self._step_fn: TrainingFn | None = None
         self._shared_params: dict | None = None
         self._shared_optimizer_state: dict | None = None
-        self._sampling_fn: TrainingFn | None = None
+        self._sampling_fn: SamplingFn | None = None
         self._sampling_draws: int | None = None
         self._loss_history: list[float] = []
         self._step = 0
@@ -212,8 +346,15 @@ class Trainer:
         return self._guide
 
     @property
-    def optimizer(self) -> GradientTransformation:
-        """The optimizer driving the updates. Fixed at construction."""
+    def learning_rate(self) -> float | None:
+        """The current base rate, or None when the optimizer carries its own."""
+        if self._shared_learning_rate is None:
+            return None
+        return float(self._shared_learning_rate.get_value())
+
+    @property
+    def optimizer(self) -> Transform:
+        """The rule driving the updates. Fixed at construction."""
         return self._optimizer
 
     @property
@@ -264,7 +405,7 @@ class Trainer:
             return AutoDiagonalNormal(model, random_seed=self.random_seed)
 
     def _compile_step_fn(
-        self, model: Model, guide: AutoGuideModel, optimizer: GradientTransformation
+        self, model: Model, guide: AutoGuideModel, optimizer: Transform
     ) -> tuple[TrainingFn, dict[str, SharedVariable], dict[str, SharedVariable]]:
         """Compile the step function, returning it and its shared variables."""
         return compile_svi_step_fn(
@@ -277,7 +418,7 @@ class Trainer:
             **self.compile_kwargs,
         )
 
-    def _compile_sampling_fn(self, model: Model, guide: AutoGuideModel, draws: int) -> TrainingFn:
+    def _compile_sampling_fn(self, model: Model, guide: AutoGuideModel, draws: int) -> SamplingFn:
         """Compile the posterior sampling function."""
         return compile_sampling_fn(
             model=model,
@@ -394,6 +535,7 @@ class Trainer:
         state: SVIState | None = None,
         model: Model | None = None,
         observeds: list | None = None,
+        learning_rate: float | None = None,
         random_seed=None,
     ) -> SVIState:
         """
@@ -436,6 +578,10 @@ class Trainer:
             of the full-data one; without it batches are treated as the full
             dataset and the posterior will be too wide. Variables that already
             carry a ``total_size`` in the model are left alone.
+        learning_rate : float, optional
+            Change the default rule's base rate before running, leaving it there for
+            later calls too. A rule given to the constructor carries its own rate, so
+            there is nothing here to change in that case.
         random_seed : optional
             Seed for the guide draws used to estimate the gradients.
 
@@ -446,6 +592,14 @@ class Trainer:
         """
         if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
             raise ValueError(f"n must be a positive integer (the number of fit steps), got {n!r}")
+        if learning_rate is not None:
+            if learning_rate < 0:
+                raise ValueError(f"learning_rate must be non-negative, got {learning_rate!r}")
+            if self._shared_learning_rate is None:
+                raise ValueError(
+                    "This trainer's rate belongs to the optimizer given to its constructor, "
+                    "so there is nothing here to change. Give the rate to the optimizer."
+                )
 
         model = modelcontext(model)
 
@@ -490,6 +644,12 @@ class Trainer:
             self._step_fn, self._shared_params, self._shared_optimizer_state = (
                 self._compile_step_fn(model, self._guide, self._optimizer)
             )
+
+        if learning_rate is not None:
+            self._shared_learning_rate.set_value(
+                np.asarray(learning_rate, dtype=pytensor_config.floatX)
+            )
+
         if state is not None:
             self._restore(state)
 

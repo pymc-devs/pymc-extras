@@ -1,12 +1,10 @@
-from __future__ import annotations
-
 import numpy as np
 import xarray as xr
 
 from pymc import Model, modelcontext
+from pytensor_ml.optim import Transform
 from xarray import DataTree
 
-from pymc_extras.inference.advi.optimizers import GradientTransformation
 from pymc_extras.inference.advi.training import Trainer
 
 
@@ -16,7 +14,7 @@ def fit_advi(
     n_steps: int = 10_000,
     n_particles: int = 1,
     draws: int = 1_000,
-    optimizer: GradientTransformation | None = None,
+    optimizer: Transform | None = None,
     path_derivative_gradient: bool = True,
     random_seed=None,
     backend: str | None = None,
@@ -40,9 +38,10 @@ def fit_advi(
         Number of guide draws per step used to estimate the ELBO gradient, by default 1.
     draws : int, optional
         Number of posterior draws to sample from the fitted guide, by default 1_000.
-    optimizer : GradientTransformation, optional
-        An optax-like optimizer (actual optax optimizers are compatible). By default,
-        :func:`clipped_adam` is used.
+    optimizer : Transform, optional
+        The rule driving the updates: any :mod:`pytensor_ml.optim` transform, carrying
+        its own rate, schedule and clipping. By default Adam at 0.01 behind a global-norm
+        gradient clip at 10.
     path_derivative_gradient : bool, optional
         Whether to use the lower-variance path-derivative ("sticking the landing")
         gradient estimator, by default True. It is an unbiased variance reduction (it changes
