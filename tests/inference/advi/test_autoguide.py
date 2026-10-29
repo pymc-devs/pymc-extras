@@ -4,6 +4,7 @@ import pytensor.tensor as pt
 import pytest
 
 from pytensor import function as pytensor_function
+from scipy import stats
 
 from pymc_extras.inference.advi.autoguide import (
     AutoDiagonalNormal,
@@ -257,6 +258,27 @@ class TestAutoMultivariateNormal:
         *_, p_draws = f_sample(*vals)
         assert p_draws.shape == (100, 3)
         np.testing.assert_allclose(p_draws.sum(axis=-1), 1.0)
+
+    @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+    def test_full_rank_guide_compiles_to_jax(self, multi_rv_model):
+        # Packing the Cholesky factor with tril_indices of a symbolic size produces a Nonzero,
+        # which JAX cannot compile
+        pytest.importorskip("jax")
+        guide = AutoMultivariateNormal(multi_rv_model, random_seed=0)
+        _, logq = get_logp_logq(multi_rv_model, guide, path_derivative_gradient=False)
+
+        rng = np.random.default_rng(0)
+        loc = rng.normal(size=4)
+        # Nonzero off-diagonal entries make the packing order matter
+        L_packed = rng.normal(scale=0.3, size=10)
+        f = pytensor_function([guide["loc"], guide["L_packed"]], [guide.latent, logq], mode="JAX")
+        latent, got = f(loc, L_packed)
+
+        chol = np.zeros((4, 4))
+        chol[np.tril_indices(4)] = L_packed
+        np.fill_diagonal(chol, np.exp(np.diag(chol)))
+        want = stats.multivariate_normal(mean=loc, cov=chol @ chol.T).logpdf(latent)
+        np.testing.assert_allclose(got, want)
 
 
 class TestAutoLowRankMultivariateNormal:

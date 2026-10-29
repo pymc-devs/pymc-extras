@@ -261,16 +261,15 @@ def AutoMultivariateNormal(model: Model, random_seed=None) -> AutoGuideModel:
     with Model(coords=model.coords, model=None) as guide_model:
         loc = pt.tensor("loc", shape=(None,))
         L_packed = pt.tensor("L_packed", shape=(None,))
-        n = loc.shape[0]
-        idx = pt.arange(n)
+        idx = np.arange(n_dim)
 
-        L = pt.zeros((n, n))[pt.tril_indices(n)].set(L_packed)
+        L = pt.zeros((n_dim, n_dim))[rows, cols].set(L_packed)
         L = L[idx, idx].set(pt.exp(pt.diagonal(L)))  # positive diagonal
         # Promise the structure so the MeasurableMatMul logq's solve(L, .) / slogdet(L) lower
         # to the triangular routines instead of a general LU.
         L = assume(L, lower_triangular=True)
 
-        z = Normal("z", mu=0.0, sigma=1.0, shape=(n,))
+        z = Normal("z", mu=0.0, sigma=1.0, shape=(n_dim,))
         latent = loc + L @ z
         latent.name = "latent"
         guide_model.add_named_variable(latent)
