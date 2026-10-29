@@ -8,7 +8,9 @@ dependencies:
   - dask<2025.1.1
   - xhistogram
   - statsmodels
-  - numba
+  # numba 0.67 types pytensor's Cholesky output as readonly for readonly inputs, so the in-place
+  # zeroing fails to compile. Fixed in pymc-devs/pytensor#2558, which no release contains yet.
+  - numba<0.67
   # conda-forge's scipy 1.18.1 is built with Cython 3.3, whose fused-function names no longer
   # match the __pyx_capi__ keys pytensor's numba backend looks up (KeyError in _available_impls).
   - scipy<1.18.1
