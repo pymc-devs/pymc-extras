@@ -239,6 +239,11 @@ def impulse_response_function(
         x0 = pt.zeros((ss_mod.k_states, n_impulse))
         time_varying_T = "transition" in ss_mod.ssm.time_varying_names
 
+        # A time-varying state intercept comes from exogenous data, whose deterministic path the
+        # impulse response is invariant to, so it is dropped rather than threaded through the scan.
+        if "state_intercept" in ss_mod.ssm.time_varying_names:
+            c = pt.zeros((ss_mod.k_states,))
+
         def irf_step(*args):
             if time_varying_T:
                 shock, T, x, c, R = args

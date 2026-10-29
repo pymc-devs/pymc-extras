@@ -784,6 +784,48 @@ class TestVARMAXWithExogenous:
         assert np.isfinite(forecast.forecast_latent.values).all()
         assert np.isfinite(forecast.forecast_observed.values).all()
 
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    def test_impulse_response_with_exog(self, rng):
+        """Exogenous regressors make the state intercept time-varying; the IRF must still build."""
+        endog_names = ["y1", "y2", "y3"]
+        n_obs = 50
+        time_idx = pd.date_range(start="2020-01-01", periods=n_obs, freq="D")
+
+        y = rng.normal(size=(n_obs, len(endog_names)))
+        df = pd.DataFrame(y, columns=endog_names, index=time_idx).astype(floatX)
+
+        mod, m = self._build_varmax(
+            df,
+            exog_state_names=["exogenous_0", "exogenous_1"],
+            exog_data={
+                "exogenous_data": pd.DataFrame(
+                    rng.normal(size=(n_obs, 2)).astype(floatX),
+                    columns=["exogenous_0", "exogenous_1"],
+                    index=time_idx,
+                )
+            },
+        )
+
+        with freeze_dims_and_data(m):
+            prior = pm.sample_prior_predictive(
+                draws=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
+            )
+
+        shock = np.zeros(mod.k_posdef)
+        shock[0] = 1.0
+        irf = mod.impulse_response_function(
+            prior, n_steps=5, shock_size=shock, group="prior", random_seed=rng
+        )
+
+        # The exogenous intercept is dropped from the IRF, so the impact period is exactly the
+        # routed shock for every draw.
+        expected_impact = mod.ssm["selection"].eval() @ shock
+        impact = irf.irf.isel(time=0).values
+        np.testing.assert_allclose(
+            impact, np.broadcast_to(expected_impact, impact.shape), atol=1e-12
+        )
+        assert np.isfinite(irf.irf.values).all()
+
 
 @pytest.mark.parametrize(
     "kwargs, expected_op",
