@@ -213,16 +213,20 @@ def add_pathfinder_to_inference_data(
 def _transform_draws_vectorized(model, vars_to_sample, trace, compile_kwargs: dict) -> list:
     # Add a (chain, draw) batch dim across the Deterministic subgraph in one shot.
     new_shapes = [v.ndim * (None,) for v in trace.values()]
-    replace = {
+    # The trace is float64, and a float32 model's value vars won't accept it uncast.
+    batched_draws = {
         var: pt.tensor(dtype="float64", shape=new_shapes[i])
         for i, var in enumerate(model.value_vars)
     }
-    outputs = vectorize_graph(vars_to_sample, replace=replace)
+    outputs = vectorize_graph(
+        vars_to_sample,
+        replace={var: draws.astype(var.dtype) for var, draws in batched_draws.items()},
+    )
     # The transform graph is compiled once and run once, so skip the rewrite phase (FAST_COMPILE)
     # by default — full FAST_RUN rewrites cost far more than they save on a single-use graph. A
     # caller-supplied ``mode`` in compile_kwargs overrides this.
     fn = pytensor.function(
-        inputs=list(replace.values()),
+        inputs=list(batched_draws.values()),
         outputs=outputs,
         **{"mode": FAST_COMPILE, "on_unused_input": "ignore", **compile_kwargs},
     )
@@ -233,12 +237,15 @@ def _transform_draws_vectorized(model, vars_to_sample, trace, compile_kwargs: di
 
 def _transform_draws_scan(model, vars_to_sample, trace, compile_kwargs: dict) -> list:
     batched_inputs = [
-        pt.tensor(name=f"{v.name}_samples", dtype=v.dtype, shape=(None, *v.type.shape))
+        pt.tensor(name=f"{v.name}_samples", dtype="float64", shape=(None, *v.type.shape))
         for v in model.value_vars
     ]
 
     def step(*single_sample_values):
-        replace = dict(zip(model.value_vars, single_sample_values, strict=True))
+        replace = {
+            var: value.astype(var.dtype)
+            for var, value in zip(model.value_vars, single_sample_values, strict=True)
+        }
         return clone_replace(vars_to_sample, replace=replace)
 
     scan_outputs = pytensor.scan(fn=step, sequences=batched_inputs, return_updates=False)
