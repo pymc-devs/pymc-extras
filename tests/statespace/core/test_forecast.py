@@ -779,7 +779,7 @@ def test_forecast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
     scenario = {
         "data_exog": pd.DataFrame(
             exog_data[["x1"]].loc[start_date:].iloc[:n_periods], columns=exog_data[["x1"]].columns
-        )
+        ).asfreq("D")
     }
 
     # Generate the forecast
