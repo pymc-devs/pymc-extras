@@ -197,7 +197,7 @@ def impulse_response_function(
         matrices = ss_mod._insert_random_variables()
 
         matrices = ss_mod._insert_constant_timestep(matrices, step=n_steps)
-        P0, _, c, d, T, Z, R, H, post_Q = matrices
+        *_, T, _, R, _, post_Q = matrices
 
         if use_posterior_cov:
             Q = post_Q
@@ -239,22 +239,18 @@ def impulse_response_function(
         x0 = pt.zeros((ss_mod.k_states, n_impulse))
         time_varying_T = "transition" in ss_mod.ssm.time_varying_names
 
-        # A time-varying state intercept comes from exogenous data, whose deterministic path the
-        # impulse response is invariant to, so it is dropped rather than threaded through the scan.
-        if "state_intercept" in ss_mod.ssm.time_varying_names:
-            c = pt.zeros((ss_mod.k_states,))
-
+        # The response to a shock is a deviation from the no-shock path, which the state intercept
+        # shifts equally, so the recursion omits it.
         def irf_step(*args):
             if time_varying_T:
-                shock, T, x, c, R = args
+                shock, T, x, R = args
             else:
-                shock, x, c, T, R = args
+                shock, x, T, R = args
 
-            next_x = pt.expand_dims(c, -1) + T @ x + R @ shock
-            return next_x
+            return T @ x + R @ shock
 
         sequences = [shock_trajectory, T] if time_varying_T else [shock_trajectory]
-        non_sequences = [c, R] if time_varying_T else [c, T, R]
+        non_sequences = [R] if time_varying_T else [T, R]
 
         irf = pytensor.scan(
             irf_step,

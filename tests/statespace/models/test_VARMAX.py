@@ -269,6 +269,60 @@ def test_impulse_response_respects_shock_trajectory_timing(varma_mod, idata, rng
     assert_allclose(impact, expected, atol=1e-8)
 
 
+@pytest.mark.parametrize(
+    "trend, exog", [("c", False), ("c", True), ("ct", False)], ids=["const", "const_exog", "ct"]
+)
+def test_impulse_response_ignores_state_intercept(trend, exog, rng):
+    """A static intercept (constant) and a time-varying one (exog, linear trend) both drop out."""
+    n_obs, n_steps = 20, 4
+    time_idx = pd.date_range(start="2020-01-01", periods=n_obs, freq="D")
+    df = pd.DataFrame(rng.normal(size=(n_obs, 2)), columns=["a", "b"], index=time_idx).astype(
+        floatX
+    )
+    A = np.array([[0.5, 0.1], [0.2, 0.3]], dtype=floatX)
+
+    mod = BayesianVARMAX(
+        endog_names=["a", "b"],
+        order=(1, 0),
+        trend=trend,
+        exog_state_names=["x"] if exog else None,
+        stationary_initialization=False,
+        measurement_error=False,
+        verbose=False,
+    )
+    with pm.Model(coords=mod.coords) as m:
+        if exog:
+            exog_data = pd.DataFrame(
+                rng.normal(size=(n_obs, 1)), columns=["x"], index=time_idx
+            ).astype(floatX)
+            pm.Data("exogenous_data", exog_data, dims=mod.data_info["exogenous_data"]["dims"])
+            pm.Deterministic(
+                "beta_exog", pt.full((2, 1), 3.0, dtype=floatX), dims=mod.param_dims["beta_exog"]
+            )
+
+        pm.Deterministic("x0", pt.zeros(mod.k_states), dims=mod.param_dims["x0"])
+        pm.Deterministic("P0", pt.eye(mod.k_states), dims=mod.param_dims["P0"])
+        pm.Deterministic("ar_params", pt.as_tensor(A[:, None, :]), dims=mod.param_dims["ar_params"])
+        pm.Deterministic("state_cov", pt.eye(2, dtype=floatX), dims=mod.param_dims["state_cov"])
+        pm.Deterministic(
+            "trend_params",
+            pt.full((2, len(trend)), 10.0, dtype=floatX),
+            dims=mod.param_dims["trend_params"],
+        )
+        mod.build_statespace_graph(df)
+
+    with freeze_dims_and_data(m):
+        prior = pm.sample_prior_predictive(draws=1, random_seed=rng)
+
+    shock = np.array([1.0, 0.0], dtype=floatX)
+    irf = mod.impulse_response_function(
+        prior, n_steps=n_steps, shock_size=shock, group="prior", random_seed=rng
+    )
+
+    expected = np.stack([np.linalg.matrix_power(A, h) @ shock for h in range(n_steps)])
+    assert_allclose(irf.irf.isel(chain=0, draw=0).values, expected, atol=1e-6)
+
+
 @pytest.mark.skipif(floatX == "float32", reason="Cholesky factor not accurate enough in float32")
 class TestOrthogonalizedImpulseResponse:
     """Recursive (Cholesky) identification of the reduced-form VAR shocks.
@@ -783,48 +837,6 @@ class TestVARMAXWithExogenous:
 
         assert np.isfinite(forecast.forecast_latent.values).all()
         assert np.isfinite(forecast.forecast_observed.values).all()
-
-    @pytest.mark.filterwarnings("ignore::UserWarning")
-    def test_impulse_response_with_exog(self, rng):
-        """Exogenous regressors make the state intercept time-varying; the IRF must still build."""
-        endog_names = ["y1", "y2", "y3"]
-        n_obs = 50
-        time_idx = pd.date_range(start="2020-01-01", periods=n_obs, freq="D")
-
-        y = rng.normal(size=(n_obs, len(endog_names)))
-        df = pd.DataFrame(y, columns=endog_names, index=time_idx).astype(floatX)
-
-        mod, m = self._build_varmax(
-            df,
-            exog_state_names=["exogenous_0", "exogenous_1"],
-            exog_data={
-                "exogenous_data": pd.DataFrame(
-                    rng.normal(size=(n_obs, 2)).astype(floatX),
-                    columns=["exogenous_0", "exogenous_1"],
-                    index=time_idx,
-                )
-            },
-        )
-
-        with freeze_dims_and_data(m):
-            prior = pm.sample_prior_predictive(
-                draws=10, random_seed=rng, compile_kwargs={"mode": "JAX"}
-            )
-
-        shock = np.zeros(mod.k_posdef)
-        shock[0] = 1.0
-        irf = mod.impulse_response_function(
-            prior, n_steps=5, shock_size=shock, group="prior", random_seed=rng
-        )
-
-        # The exogenous intercept is dropped from the IRF, so the impact period is exactly the
-        # routed shock for every draw.
-        expected_impact = mod.ssm["selection"].eval() @ shock
-        impact = irf.irf.isel(time=0).values
-        np.testing.assert_allclose(
-            impact, np.broadcast_to(expected_impact, impact.shape), atol=1e-12
-        )
-        assert np.isfinite(irf.irf.values).all()
 
 
 @pytest.mark.parametrize(
