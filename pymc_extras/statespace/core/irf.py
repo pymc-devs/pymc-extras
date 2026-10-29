@@ -18,6 +18,7 @@ from pymc_extras.statespace.core.fit_recovery import (
 )
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_DIM,
+    LONG_NAME_TO_SHORT,
     SHOCK_DIM,
     STRUCTURAL_SHOCK_DIM,
     TIME_DIM,
@@ -237,20 +238,21 @@ def impulse_response_function(
             shock_trajectory = pt.as_tensor_variable(shock_trajectory)[..., None]
 
         x0 = pt.zeros((ss_mod.k_states, n_impulse))
-        time_varying_T = "transition" in ss_mod.ssm.time_varying_names
+        params = {"T": T, "R": R}
+        time_varying_short = {LONG_NAME_TO_SHORT[name] for name in ss_mod.ssm.time_varying_names}
+        seq_names = [name for name in params if name in time_varying_short]
+        non_seq_names = [name for name in params if name not in time_varying_short]
 
         # The response to a shock is a deviation from the no-shock path, which the state intercept
-        # shifts equally, so the recursion omits it.
-        def irf_step(*args):
-            if time_varying_T:
-                shock, T, x, R = args
-            else:
-                shock, x, T, R = args
+        # shifts equally, so the recursion omits it. Scan passes the shock, then the time-varying
+        # matrices, then the carried state, then the static matrices.
+        def irf_step(shock, *args):
+            names = [*seq_names, "x", *non_seq_names]
+            inputs = dict(zip(names, args, strict=True))
+            return inputs["T"] @ inputs["x"] + inputs["R"] @ shock
 
-            return T @ x + R @ shock
-
-        sequences = [shock_trajectory, T] if time_varying_T else [shock_trajectory]
-        non_sequences = [R] if time_varying_T else [T, R]
+        sequences = [shock_trajectory, *(params[name] for name in seq_names)]
+        non_sequences = [params[name] for name in non_seq_names]
 
         irf = pytensor.scan(
             irf_step,
