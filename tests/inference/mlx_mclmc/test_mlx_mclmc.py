@@ -121,6 +121,18 @@ def test_invalid_parameter_gives_minus_inf_for_that_chain_only(float32):
     np.testing.assert_allclose(np.asarray(logdensity)[1], expected, rtol=1e-5)
 
 
+def test_check_bounds_false_drops_parameter_checks(float32):
+    """ZeroSumNormal's atol=1e-9 zero-sum check fails at any nonzero float32 point."""
+    with pm.Model(check_bounds=False) as model:
+        pm.ZeroSumNormal("z", sigma=1.0, shape=4)
+    logdensity_fn = MLXLogp(model)
+    point = np.array([0.3, -1.2, 0.8], dtype="float32")
+
+    expected = model.compile_logp()({"z_zerosum__": point})
+
+    np.testing.assert_allclose(np.asarray(logdensity_fn(mx.array(point))), expected, rtol=1e-5)
+
+
 def test_draws_stay_inside_a_parameter_constraint(float32):
     """A constraint enforced only by the likelihood's parameter check must bound the draws."""
     with pm.Model() as model:

@@ -33,8 +33,9 @@ _log = logging.getLogger(__name__)
 
 def _mlxify(inputs, outputs):
     """Rewrite a PyTensor graph under the MLX mode and funcify it to a raw MLX callable."""
-    # MLX tracing cannot keep an assertion. The checks that can become a -inf switch already have,
-    # in _parameter_checks_to_ninf, so this only drops the ones that cannot.
+    # MLX tracing cannot keep an assertion. Unless the model set check_bounds=False, the checks that
+    # can become a -inf switch already have, in _parameter_checks_to_ninf, so this only drops the
+    # ones that cannot.
     mlx_mode = mode.MLX.including("local_remove_check_parameter")
 
     fgraph = FunctionGraph(inputs=list(inputs), outputs=list(outputs), clone=True)
@@ -111,7 +112,8 @@ class MLXLogp:
         if negative:
             logp = -logp
         grad, _ = pt.pack(*pt.grad(logp, value_vars))
-        logp, grad = _parameter_checks_to_ninf([logp, grad])
+        if model.check_bounds:
+            logp, grad = _parameter_checks_to_ninf([logp, grad])
 
         batched = pt.matrix("batched_flat_value", shape=(None, self.dim), dtype=dtype)
 
