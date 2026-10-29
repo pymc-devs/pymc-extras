@@ -41,7 +41,7 @@ def load_nile_test_data():
     else:
         freq_str = "AS-JAN"
     nile.index = pd.date_range(start="1871-01-01", end="1970-01-01", freq=freq_str)
-    nile.rename(columns={"x": "height"}, inplace=True)
+    nile = nile.rename(columns={"x": "height"})
     nile = (nile - nile.mean()) / nile.std()
     nile = nile.astype(floatX)
 
