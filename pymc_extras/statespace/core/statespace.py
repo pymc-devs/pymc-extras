@@ -315,7 +315,7 @@ class PyMCStateSpace:
         cov_jitter: float = JITTER_DEFAULT,
         missing_fill_value: float = MISSING_FILL,
     ):
-        self._needs_exog_data = None
+        self._needs_exog_data = False
         self._tensor_variable_info = SymbolicVariableInfo()
         self._tensor_data_info = SymbolicDataInfo()
 
@@ -456,6 +456,7 @@ class PyMCStateSpace:
         if isinstance(data_info, Data):
             data_info = (data_info,)
         self._data_info = DataInfo(data=data_info)
+        self._needs_exog_data = self._data_info.needs_exogenous_data
 
     def _populate_prior_requirements(self) -> None:
         """

@@ -12,6 +12,7 @@ from pytensor.graph.traversal import ancestors
 from pytensor.scan.op import Scan
 
 from pymc_extras.statespace import BayesianETS, BayesianSARIMAX, BayesianVARMAX
+from pymc_extras.statespace.core.properties import Data
 from pymc_extras.statespace.core.statespace import FILTER_FACTORY, SMOOTHER_FACTORY, PyMCStateSpace
 from pymc_extras.statespace.filters import DisturbanceSmoother, RTSSmoother
 from pymc_extras.statespace.filters.distributions import KalmanFilterRV
@@ -116,6 +117,27 @@ def test_registering_a_placeholder_twice_reports_the_existing_shape(registrar, i
     # The message reads the shape off the registered placeholder, not off the info wrapper.
     with pytest.raises(ValueError, match=r"\(3,\)"):
         register("rho", (3,))
+
+
+def test_exogenous_data_info_sets_needs_exog_data():
+    """A subclass declaring exogenous data via set_data_info must be seen by forecast's exog path."""
+
+    class ExogStateSpace(PyMCStateSpace):
+        def make_symbolic_graph(self):
+            pass
+
+        def set_data_info(self):
+            return Data(name="exog", shape=(None, 2), is_exogenous=True)
+
+    class NoExogStateSpace(PyMCStateSpace):
+        def make_symbolic_graph(self):
+            pass
+
+    with_exog = ExogStateSpace(k_endog=1, k_states=1, k_posdef=1, verbose=False)
+    without_exog = NoExogStateSpace(k_endog=1, k_states=1, k_posdef=1, verbose=False)
+
+    assert with_exog._needs_exog_data
+    assert not without_exog._needs_exog_data
 
 
 def test_update_raises_if_missing_variables(ss_mod):

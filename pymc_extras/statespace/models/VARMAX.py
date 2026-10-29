@@ -206,8 +206,6 @@ class BayesianVARMAX(PyMCStateSpace):
         validate_names(endog_names, var_name="endog_names", optional=False)
         k_endog = len(endog_names)
 
-        needs_exog_data = False
-
         if exog_state_names is not None and not isinstance(exog_state_names, list | dict):
             raise ValueError("If not None, exog_state_names must be either a list or a dict")
 
@@ -216,7 +214,6 @@ class BayesianVARMAX(PyMCStateSpace):
                 k_exog = len(exog_state_names)
             elif isinstance(exog_state_names, dict):
                 k_exog = {name: len(names) for name, names in exog_state_names.items()}
-            needs_exog_data = True
         else:
             k_exog = None
 
@@ -257,8 +254,6 @@ class BayesianVARMAX(PyMCStateSpace):
             cov_jitter=cov_jitter,
             missing_fill_value=missing_fill_value,
         )
-
-        self._needs_exog_data = needs_exog_data
 
         # Save counts of the number of parameters in each category
         self.param_counts = {

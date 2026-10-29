@@ -359,7 +359,6 @@ class BayesianSARIMAX(PyMCStateSpace):
             cov_jitter=cov_jitter,
             missing_fill_value=missing_fill_value,
         )
-        self._needs_exog_data = self.k_exog > 0
 
     def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
         k_states = self.k_states
