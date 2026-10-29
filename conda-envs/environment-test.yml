@@ -4,7 +4,7 @@ channels:
 - nodefaults
 dependencies:
   - scikit-learn
-  - better-optimize>=0.4.2,<1.0
+  - better-optimize>=0.4.3,<1.0
   - dask<2025.1.1
   - xhistogram
   - statsmodels
