@@ -1,4 +1,3 @@
-from collections import Counter
 from typing import Protocol
 
 import numpy as np
@@ -6,13 +5,15 @@ import pytensor
 
 from pymc import Model, compile
 from pymc.pytensorf import rewrite_pregrad
-from pytensor import tensor as pt
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.replace import graph_replace
+from pytensor.tensor import TensorVariable
+from pytensor_ml.optim import Gradients, Steps, Transform, Updates
+from pytensor_ml.optim.base import require_unique_state_names
+from pytensor_ml.pytensorf import collect_clock_updates
 
 from pymc_extras.inference.advi.autoguide import AutoGuideModel
 from pymc_extras.inference.advi.objective import advi_objective, get_logp_logq
-from pymc_extras.inference.advi.optimizers import GradientTransformation
 from pymc_extras.inference.advi.pytensorf import vectorize_random_graph
 
 
@@ -24,41 +25,38 @@ class SamplingFn(Protocol):
     def __call__(self, *params: np.ndarray) -> tuple[np.ndarray, ...]: ...
 
 
-def compile_svi_step_fn(
+def shared_guide_params(guide: AutoGuideModel) -> dict[str, SharedVariable]:
+    """A shared variable for each guide parameter at its initial value, keyed by parameter name."""
+    return {
+        param.name: pytensor.shared(np.asarray(value), name=param.name)
+        for param, value in guide.params_init_values.items()
+    }
+
+
+def build_svi_step(
     model: Model,
     guide: AutoGuideModel,
-    optimizer: GradientTransformation,
+    optimizer: Transform,
+    shared_params: dict[str, SharedVariable],
     draws: int = 1,
     path_derivative_gradient: bool = True,
     logp_scalings: dict | None = None,
-    **compile_kwargs,
-) -> tuple[TrainingFn, dict[str, SharedVariable], dict[str, SharedVariable]]:
-    """Compile one full SVI step, with optimizer updates applied in-graph.
+) -> tuple[TensorVariable, Updates]:
+    """Build one SVI step, calling ``optimizer`` once so every compile of it shares that state.
 
-    The guide parameters and the optimizer state live in shared variables that the
-    compiled function updates in place. It takes no inputs and returns only the
-    negative ELBO estimate, so no parameters or gradients round-trip through Python
-    during training.
-
-    Together the two returned dicts hold the whole training state: reading their values
-    snapshots a run, writing them resumes one exactly.
+    Parameters
+    ----------
+    shared_params : dict
+        The guide parameters, keyed by name, from :func:`shared_guide_params`.
 
     Returns
     -------
-    step_fn :
-        Compiled function ``step_fn() -> negative_elbo``.
-    shared_params : dict
-        Maps each guide parameter name to the shared variable holding its value.
-    shared_optimizer_state : dict
-        Maps each optimizer state variable name to the shared variable holding its
-        value. Empty for stateless optimizers such as ``sgd``.
+    negative_elbo : TensorVariable
+        The step's negative ELBO estimate.
+    updates : Updates
+        The optimizer's updates, plus the advance of every training clock a schedule reads, as
+        :func:`pytensor_ml.optim.compile_train` adds them.
     """
-    if optimizer.pytensor is None:
-        raise ValueError(
-            f"The optimizer {optimizer} does not have a PyTensor implementation "
-            "and cannot be compiled into the step function."
-        )
-
     logp, logq = get_logp_logq(
         model,
         guide,
@@ -69,46 +67,54 @@ def compile_svi_step_fn(
     [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
     negative_elbo = negative_elbo_draws.mean(axis=0)
 
-    params_to_shared = {
-        param: pytensor.shared(np.asarray(value), name=param.name)
-        for param, value in guide.params_init_values.items()
-    }
+    params_to_shared = {param: shared_params[param.name] for param in guide.params}
     [negative_elbo] = graph_replace([negative_elbo], replace=params_to_shared)
-    shared_params = list(params_to_shared.values())
+    shared_param_list = list(params_to_shared.values())
 
-    grads = pt.grad(rewrite_pregrad(negative_elbo), wrt=shared_params)
-
-    new_grads, updates = optimizer.pytensor(grads, shared_params)
-
-    # The optimizer's own state variables are the update keys that are not the guide
-    # parameters themselves. Snapshotting and restoring them keys on the name, so a
-    # duplicate would quietly drop one buffer and resume it from whatever it held.
-    guide_params = set(shared_params)
-    state_variables = [var for var in updates if var not in guide_params]
-    name_counts = Counter(var.name for var in state_variables)
-    duplicate_names = sorted(name for name, count in name_counts.items() if count > 1)
-    if duplicate_names:
+    result = optimizer(rewrite_pregrad(negative_elbo), shared_param_list)
+    if isinstance(result, Gradients):
         raise ValueError(
-            f"The optimizer has more than one state variable named {duplicate_names}, so its "
-            "state cannot be snapshotted or restored unambiguously. Give each transform in the "
-            "chain state variables with distinct names."
+            "The optimizer returned gradients rather than the steps to take, so the guide "
+            "parameters would move uphill. Put an update rule such as `adam(1e-3)` in the chain."
         )
-    shared_optimizer_state = {var.name: var for var in state_variables}
+    updates = Steps(result)
+    if unwritten := [param.name for param in shared_param_list if param not in updates]:
+        raise ValueError(f"The optimizer writes no update for the guide parameters {unwritten}.")
 
-    for param, grad in zip(shared_params, new_grads):
-        updates[param] = param + grad
+    for clock, next_count in collect_clock_updates(
+        [negative_elbo, *updates.values()], already_written=updates
+    ).items():
+        updates[clock] = next_count
+    require_unique_state_names(updates)
 
+    return negative_elbo, updates
+
+
+def compile_svi_step_fn(
+    negative_elbo: TensorVariable, updates: Updates, random_seed=None, **compile_kwargs
+) -> TrainingFn:
+    """Compile a step from :func:`build_svi_step`, applying its updates in place.
+
+    The step takes no inputs and returns the negative ELBO estimate.
+
+    Parameters
+    ----------
+    random_seed : optional
+        Seeds the guide's RNGs before compilation, through :func:`pymc.pytensorf.compile`.
+    """
     compile_kwargs.setdefault("trust_input", True)
 
-    step_fn = compile(inputs=[], outputs=negative_elbo, updates=updates, **compile_kwargs)
-
-    shared_params_by_name = {param.name: shared for param, shared in params_to_shared.items()}
-
-    return step_fn, shared_params_by_name, shared_optimizer_state
+    return compile(
+        inputs=[],
+        outputs=negative_elbo,
+        updates=updates,
+        random_seed=random_seed,
+        **compile_kwargs,
+    )
 
 
 def compile_sampling_fn(
-    model: Model, guide: AutoGuideModel, draws: int, **compile_kwargs
+    model: Model, guide: AutoGuideModel, draws: int, random_seed=None, **compile_kwargs
 ) -> SamplingFn:
     params = guide.params
 
@@ -125,6 +131,8 @@ def compile_sampling_fn(
 
     compile_kwargs.setdefault("trust_input", True)
 
-    f_sample = compile(inputs=list(params), outputs=sampled_rvs_draws, **compile_kwargs)
+    f_sample = compile(
+        inputs=list(params), outputs=sampled_rvs_draws, random_seed=random_seed, **compile_kwargs
+    )
 
     return f_sample
