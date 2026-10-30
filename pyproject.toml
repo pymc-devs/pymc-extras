@@ -112,7 +112,10 @@ filterwarnings =[
     'ignore:.*Cannot cache compiled function.*:numba.core.errors.NumbaWarning',
 
     # PyMC use of cachetools raises this warning: https://github.com/pymc-devs/pymc/issues/8106
-    'ignore:decorating class methods with @cachedmethod is deprecated:DeprecationWarning'
+    'ignore:decorating class methods with @cachedmethod is deprecated:DeprecationWarning',
+
+    # PyMC imports IfElse from the deprecated pytensor.ifelse module
+    "ignore:Importing .* from 'pytensor.ifelse' is deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.report]
