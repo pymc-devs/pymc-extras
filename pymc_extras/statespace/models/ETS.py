@@ -482,7 +482,7 @@ class BayesianETS(PyMCStateSpace):
         R = self.ssm["selection"]
         Q = self.ssm["state_cov"]
 
-        return pt.linalg.matrix_dot(R, Q, R.T)
+        return R @ Q @ R.T
 
     def make_likelihood(self, data, matrices, dims, missing):
         """
