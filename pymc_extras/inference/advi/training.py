@@ -36,6 +36,10 @@ from pymc_extras.inference.advi.compile import (
     compile_sampling_fn,
     compile_svi_step_fn,
 )
+from pymc_extras.inference.advi.idata import (
+    add_fit_stats_to_inference_data,
+    add_fit_to_inference_data,
+)
 from pymc_extras.inference.advi.optimizers import GradientTransformation, clipped_adam
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 
@@ -591,7 +595,9 @@ class Trainer:
         Returns
         -------
         DataTree
-            Samples from the guide posterior for each latent variable.
+            Samples from the guide posterior for each latent variable, the guide's summary
+            in the ``fit`` group, and the per-step diagnostics in ``fit_stats``. All three
+            describe ``state``.
         """
         model = modelcontext(model)
         if state is None:
@@ -602,10 +608,11 @@ class Trainer:
         # When a data stream was used, the guide and compiled functions belong to the
         # stream-observed model, whose observed RVs are excluded from the posterior.
         fit_model = self._fit_model if self._fit_model is not None else model
+        if self._guide is None:
+            self._guide = self._build_guide(fit_model)
+        guide = self._guide
         if self._sampling_fn is None or self._sampling_draws != draws:
-            if self._guide is None:
-                self._guide = self._build_guide(fit_model)
-            self._sampling_fn = self._compile_sampling_fn(fit_model, self._guide, draws)
+            self._sampling_fn = self._compile_sampling_fn(fit_model, guide, draws)
             self._sampling_draws = draws
 
         if random_seed is not None:
@@ -631,5 +638,7 @@ class Trainer:
         idata = add_data_to_inference_data(
             idata=idata, progressbar=False, model=model, compile_kwargs=self.compile_kwargs
         )
+        idata = add_fit_to_inference_data(idata=idata, guide=guide, params=params, model=fit_model)
+        idata = add_fit_stats_to_inference_data(idata=idata, loss_history=state.loss_history)
 
         return idata

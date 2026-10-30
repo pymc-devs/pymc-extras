@@ -42,6 +42,45 @@ def test_fit_advi_recovers_conjugate_posterior(conjugate_model):
     np.testing.assert_allclose(theta.std(), np.sqrt(post_var), rtol=0.25)
 
 
+def test_fit_advi_returns_fit_and_fit_stats_groups(conjugate_model):
+    model, post_mean, _ = conjugate_model
+    n_steps = 200
+
+    idata = fit_advi(model=model, n_steps=n_steps, draws=100, random_seed=1)
+
+    assert {"/posterior", "/fit", "/fit_stats"} <= set(idata.groups)
+
+    fit = idata["fit"].dataset
+    assert set(fit.data_vars) == {"mean_vector", "standard_deviation"}
+    assert list(fit.coords["rows"].values) == ["theta"]
+    # the default guide is mean-field, so the fit group carries the converged mean
+    np.testing.assert_allclose(fit["mean_vector"].values, [post_mean], atol=0.1)
+
+    # the trace ends higher than it starts, since the ELBO is what training maximizes
+    elbo = idata["fit_stats"].dataset["elbo"].values
+    assert elbo.shape == (n_steps,)
+    assert elbo[-20:].mean() > elbo[:20].mean()
+
+
+def test_sample_posterior_groups_describe_the_sampled_state(conjugate_model):
+    model, *_ = conjugate_model
+    trainer = Trainer(random_seed=0)
+    early = trainer.fit(10, model=model, random_seed=1)
+    trainer.fit(20, model=model, random_seed=2)
+
+    latest = trainer.sample_posterior(10, model=model, random_seed=3)
+    snapshot = trainer.sample_posterior(10, state=early, model=model, random_seed=3)
+
+    # chunked fits accumulate one trace, and an older snapshot reports its own
+    latest_elbo = latest["fit_stats"].dataset["elbo"].values
+    snapshot_elbo = snapshot["fit_stats"].dataset["elbo"].values
+    assert latest_elbo.shape == (30,)
+    np.testing.assert_array_equal(latest_elbo[:10], snapshot_elbo)
+    np.testing.assert_allclose(
+        snapshot["fit"].dataset["mean_vector"].values, early.params["theta_loc"].ravel()
+    )
+
+
 def test_fit_advi_random_seed(conjugate_model):
     model, *_ = conjugate_model
 
