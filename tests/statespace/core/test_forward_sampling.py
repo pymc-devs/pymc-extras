@@ -3,6 +3,7 @@ import re
 import numpy as np
 import pandas as pd
 import pymc as pm
+import pytensor
 import pytensor.tensor as pt
 import pytest
 
@@ -189,6 +190,59 @@ def test_sample_conditional_with_time_varying():
         assert name in conditional
         assert conditional[name].sizes["time"] == n_time
         assert np.all(np.isfinite(conditional[name].values))
+
+
+def test_impulse_response_with_time_varying_transition_and_selection(rng):
+    class TVDynamics(PyMCStateSpace):
+        def __init__(self):
+            super().__init__(k_states=1, k_endog=1, k_posdef=1, verbose=False)
+
+        def make_symbolic_graph(self) -> None:
+            self.ssm["design", 0, 0] = 1.0
+            self.ssm["state_cov", 0, 0] = 1.0
+
+            rho = self.make_and_register_variable("rho", ())
+            t = pt.arange(self.n_timesteps)
+            self.ssm["transition"] = (rho + 0.1 * t)[:, None, None]
+            self.ssm["selection"] = (1.0 + t)[:, None, None]
+            self.ssm.declare_time_varying("transition", "selection")
+
+        @property
+        def param_names(self) -> list[str]:
+            return ["rho"]
+
+        @property
+        def state_names(self) -> list[str]:
+            return ["level"]
+
+        @property
+        def observed_states(self) -> list[str]:
+            return ["level"]
+
+        @property
+        def shock_names(self) -> list[str]:
+            return ["level"]
+
+    ss_mod = TVDynamics()
+    data = pd.DataFrame(
+        rng.normal(size=(10, 1)),
+        index=pd.date_range("2020-01-01", periods=10, freq="D"),
+        columns=["data"],
+    )
+
+    with pm.Model(coords=ss_mod.coords):
+        pm.Deterministic("rho", pt.constant(0.5, dtype=pytensor.config.floatX))
+        ss_mod.build_statespace_graph(data=data)
+        prior = pm.sample_prior_predictive(draws=1, random_seed=rng)
+
+    irf = ss_mod.impulse_response_function(
+        prior, shock_trajectory=np.ones((4, 1)), group="prior", random_seed=rng
+    )
+
+    # A unit shock every step pins the time index of both matrices: x_t = T_t x_{t-1} + R_t with
+    # T_t = 0.5 + 0.1 t and R_t = 1 + t.
+    expected = [1.0, 2.6, 4.82, 7.856]
+    assert_allclose(irf.irf.isel(chain=0, draw=0).values[:, 0], expected, rtol=1e-6)
 
 
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
