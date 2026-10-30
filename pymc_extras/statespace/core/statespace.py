@@ -1351,6 +1351,7 @@ class PyMCStateSpace:
         idata: DataTree,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        include_measurement_error: bool = True,
         **kwargs,
     ) -> DataTree:
         """
@@ -1375,6 +1376,13 @@ class PyMCStateSpace:
             In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
             recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
+        include_measurement_error: bool, default True
+            If True, the ``*_observed`` trajectories include measurement error, so their covariance is
+            ``Z P Z' + H``. If False, measurement error is omitted and they are draws of the signal ``d + Z x``
+            alone, with covariance ``Z P Z'``. With ``joint_smoothed_draws=True``, ``smoothed_prior_observed`` is
+            then exactly ``d + Z x`` for the jointly drawn ``smoothed_prior``. ``Z P Z'`` can be rank-deficient,
+            so "svd" is the safe ``mvn_method`` in this case, even if the model has measurement error.
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1387,7 +1395,12 @@ class PyMCStateSpace:
         """
 
         return forward_sampling.sample_conditional_prior(
-            self, idata=idata, random_seed=random_seed, mvn_method=mvn_method, **kwargs
+            self,
+            idata=idata,
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            include_measurement_error=include_measurement_error,
+            **kwargs,
         )
 
     def sample_conditional_posterior(
@@ -1395,6 +1408,7 @@ class PyMCStateSpace:
         idata: DataTree,
         random_seed: RandomState | None = None,
         mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        include_measurement_error: bool = True,
         **kwargs,
     ):
         """
@@ -1418,6 +1432,13 @@ class PyMCStateSpace:
             In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
             recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
 
+        include_measurement_error: bool, default True
+            If True, the ``*_observed`` trajectories include measurement error, so their covariance is
+            ``Z P Z' + H``. If False, measurement error is omitted and they are draws of the signal ``d + Z x``
+            alone, with covariance ``Z P Z'``. With ``joint_smoothed_draws=True``, ``smoothed_posterior_observed`` is
+            then exactly ``d + Z x`` for the jointly drawn ``smoothed_posterior``. ``Z P Z'`` can be rank-deficient,
+            so "svd" is the safe ``mvn_method`` in this case, even if the model has measurement error.
+
         kwargs:
             Additional keyword arguments are passed to pymc.sample_posterior_predictive
 
@@ -1430,7 +1451,12 @@ class PyMCStateSpace:
         """
 
         return forward_sampling.sample_conditional_posterior(
-            self, idata=idata, random_seed=random_seed, mvn_method=mvn_method, **kwargs
+            self,
+            idata=idata,
+            random_seed=random_seed,
+            mvn_method=mvn_method,
+            include_measurement_error=include_measurement_error,
+            **kwargs,
         )
 
     def sample_unconditional_prior(

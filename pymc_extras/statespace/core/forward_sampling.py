@@ -47,6 +47,7 @@ def _sample_conditional(
     random_seed: RandomState | None = None,
     data: pt.TensorLike | None = None,
     mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+    include_measurement_error: bool = True,
     **kwargs,
 ):
     """
@@ -75,6 +76,10 @@ def _sample_conditional(
 
         In general, if your model has measurement error, "cholesky" will be safe to use. Otherwise, "svd" is
         recommended. "eigh" can also be tried if sampling with "svd" is very slow, but it is not as robust as "svd".
+
+    include_measurement_error: bool, default True
+        If False, the ``*_observed`` trajectories omit the observation noise ``H`` and are draws of the
+        signal ``d + Z x`` alone.
 
     kwargs:
         Additional keyword arguments are passed to pymc.sample_posterior_predictive
@@ -149,6 +154,10 @@ def _sample_conditional(
                 # ``(n),(n,n)->(n)`` gufunc from collapsing to a length-1 scan when H is
                 # rank-3 but time-broadcastable.
                 obs_mu = d + (Z @ latent_states[..., None]).squeeze(-1)
+                if not include_measurement_error:
+                    # Without H the observed path is a deterministic function of the latent draw.
+                    pm.Deterministic(f"{name}_{group}_observed", obs_mu, dims=obs_dims)
+                    continue
                 obs_cov = pt.zeros((obs_mu.shape[0], 1, 1), dtype=H.dtype) + H
                 obs_logp = pt.zeros_like(obs_mu)
             else:
@@ -162,7 +171,9 @@ def _sample_conditional(
                 )
 
                 obs_mu = d + (Z @ mu[..., None]).squeeze(-1)
-                obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1) + H
+                obs_cov = Z @ cov @ pt.swapaxes(Z, -2, -1)
+                if include_measurement_error:
+                    obs_cov = obs_cov + H
                 obs_logp = pt.zeros_like(obs_mu)
 
             SequenceMvNormal(
