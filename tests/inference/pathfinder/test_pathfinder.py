@@ -2,6 +2,7 @@ import sys
 
 import numpy as np
 import pymc as pm
+import pytensor
 import pytest
 
 import pymc_extras as pmx
@@ -72,6 +73,26 @@ def test_pathfinder_initvals():
     assert np.all(
         idata.posterior["ordered"][..., 1:].values > idata.posterior["ordered"][..., :-1].values
     )
+
+
+@pytest.mark.parametrize("vectorize", [True, False], ids=["vectorized", "scan"])
+def test_pathfinder_float32(vectorize):
+    observed = np.random.default_rng(0).normal(loc=3.0, scale=2.0, size=200)
+
+    with pytensor.config.change_flags(floatX="float32"):
+        with pm.Model():
+            mu = pm.Normal("mu", sigma=10)
+            sigma = pm.HalfNormal("sigma", sigma=5)
+            pm.Normal("y", mu=mu, sigma=sigma, observed=observed)
+            idata = pmx.fit_pathfinder(
+                num_paths=2,
+                random_seed=0,
+                vectorize_logp=vectorize,
+                vectorize_postprocessing=vectorize,
+            )
+
+    np.testing.assert_allclose(idata.posterior["mu"].mean(), observed.mean(), atol=0.1)
+    np.testing.assert_allclose(idata.posterior["sigma"].mean(), observed.std(), atol=0.1)
 
 
 @pytest.mark.filterwarnings("ignore:JAXopt is no longer maintained.:DeprecationWarning")
