@@ -670,7 +670,7 @@ class SimulationSmoother(Continuous):
         delta_matrices = (zero_state, P0_, zero_state, zero_obs, T_, Z_, R_, H_, Q_)
         filter_outputs = kalman_filter.build_graph(delta, *delta_matrices)
 
-        a_smooth_delta, _ = kalman_smoother.build_graph(delta, delta_matrices, filter_outputs)
+        a_smooth_delta, *_ = kalman_smoother.build_graph(delta, delta_matrices, filter_outputs)
 
         if T_static is not None:
             a_smooth_delta = pt.specify_shape(

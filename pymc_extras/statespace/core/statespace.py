@@ -60,6 +60,7 @@ from pymc_extras.statespace.utils.constants import (
     OBS_STATE_DIM,
     OBSERVED_DATA_NAME,
     OBSERVED_LIKELIHOOD_NAME,
+    SHOCK_OUTPUT_NAMES,
     SMOOTHER_OUTPUT_NAMES,
     TIME_DIM,
 )
@@ -1250,8 +1251,10 @@ class PyMCStateSpace:
         ----------
         names : str or sequence of str, optional
             Which outputs to build: ``filtered_states``, ``predicted_states``, ``smoothed_states``,
-            each of their ``_covariances`` counterparts, and ``predicted_observed_states`` with
-            ``predicted_observed_covariances``. Default None, which builds all of them.
+            each of their ``_covariances`` counterparts, ``predicted_observed_states`` with
+            ``predicted_observed_covariances``, and ``smoothed_shocks`` with
+            ``smoothed_shock_covariances``. Default None, which builds all of them. The shock
+            outputs need ``smoother_type="disturbance"``, and the default leaves them out otherwise.
         data : numpy array or TensorVariable, optional
             Observations to filter. Default None, which uses the observations
             :meth:`build_statespace_graph` registered on the active model.
@@ -1263,15 +1266,14 @@ class PyMCStateSpace:
         """
         if isinstance(names, str):
             names = [names]
-        if names is None:
-            names = list(FILTER_OUTPUT_DIMS)
-        else:
+        if names is not None:
             unknown_names = set(names).difference(FILTER_OUTPUT_DIMS)
             if unknown_names:
                 raise ValueError(
                     f"{sorted(unknown_names)} are not filter outputs. Valid names are "
                     f"{sorted(FILTER_OUTPUT_DIMS)}."
                 )
+        names = self._smoother_supported_names(names)
 
         pymc_model = modelcontext(None)
 
@@ -1293,13 +1295,29 @@ class PyMCStateSpace:
         outputs = {output.name: output for output in filter_outputs}
 
         if not set(SMOOTHER_OUTPUT_NAMES).isdisjoint(names):
-            smoothed_states, smoothed_covariances = kalman_smoother.build_graph(
+            smoother_outputs = kalman_smoother.build_graph(
                 data, (x0, P0, c, d, T, Z, R, H, Q), filter_outputs
             )
-            outputs[smoothed_states.name] = smoothed_states
-            outputs[smoothed_covariances.name] = smoothed_covariances
+            outputs.update({output.name: output for output in smoother_outputs})
 
         return {name: outputs[name] for name in names}
+
+    def _smoother_supported_names(self, names: list[str] | None) -> list[str]:
+        """
+        Default to every filter output this model's smoother computes, and reject a request for one
+        it does not.
+        """
+        unsupported = SHOCK_OUTPUT_NAMES if self.smoother_type == "rts" else []
+        if names is None:
+            return [name for name in FILTER_OUTPUT_DIMS if name not in unsupported]
+
+        requested = sorted(set(unsupported).intersection(names))
+        if requested:
+            raise ValueError(
+                f"{requested} are computed by the disturbance smoother only. Build the model with "
+                'smoother_type="disturbance" to request them.'
+            )
+        return names
 
     def _register_additional_statespace_variables(self) -> None:
         """
@@ -1623,8 +1641,10 @@ class PyMCStateSpace:
             Sampling results holding the parameter draws the outputs are computed from.
         filter_output_names : str or list of str, optional
             Which outputs to sample: ``filtered_states``, ``predicted_states``, ``smoothed_states``, each of
-            their ``_covariances`` counterparts, and ``predicted_observed_states`` with
-            ``predicted_observed_covariances``. Default None, which samples all of them.
+            their ``_covariances`` counterparts, ``predicted_observed_states`` with
+            ``predicted_observed_covariances``, and ``smoothed_shocks`` with
+            ``smoothed_shock_covariances``. Default None, which samples all of them. The shock
+            outputs need ``smoother_type="disturbance"``, and the default leaves them out otherwise.
         group : str, optional
             Which group of ``idata`` to draw from, ``"posterior"`` or ``"prior"``. Default "posterior".
         **kwargs

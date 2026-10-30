@@ -22,6 +22,7 @@ from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     JITTER_DEFAULT,
     MISSING_FILL,
+    SHOCK_OUTPUT_NAMES,
 )
 from tests.statespace.shared_fixtures import (
     rng,
@@ -602,6 +603,19 @@ def test_make_filter_outputs_accepts_data_directly(ss_mod, pymc_mod):
 def test_make_filter_outputs_rejects_unknown_names(ss_mod, pymc_mod):
     with pymc_mod, pytest.raises(ValueError, match="are not filter outputs"):
         ss_mod.make_filter_outputs(names="kalman_gain")
+
+
+def test_make_filter_outputs_leaves_shocks_to_the_disturbance_smoother(
+    ss_mod, pymc_mod, monkeypatch
+):
+    """The RTS smoother carries no r_t to build the shocks from."""
+    monkeypatch.setattr(ss_mod, "smoother_type", "rts")
+    with pymc_mod:
+        outputs = ss_mod.make_filter_outputs()
+        with pytest.raises(ValueError, match="disturbance smoother only"):
+            ss_mod.make_filter_outputs(names="smoothed_shocks")
+
+    assert set(outputs) == set(FILTER_OUTPUT_DIMS) - set(SHOCK_OUTPUT_NAMES)
 
 
 def test_make_filter_outputs_without_an_observation_raises(ss_mod):
