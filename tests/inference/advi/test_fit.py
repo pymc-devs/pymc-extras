@@ -274,7 +274,8 @@ def test_fit_streams_batches_into_data():
 
     trainer = Trainer()
     with model:
-        trainer.fit(1_000, batches(), random_seed=1)
+        with pytest.warns(UserWarning, match="No total_size"):
+            trainer.fit(1_000, batches(), random_seed=1)
         idata = trainer.sample_posterior(1_000, random_seed=2)
 
     theta_draws = idata["posterior"].dataset["theta"].values.ravel()
@@ -296,7 +297,8 @@ def test_fit_streams_observations_into_free_rv():
 
     trainer = Trainer()
     with model:
-        trainer.fit(1_000, batches(), observeds=["y"], random_seed=1)
+        with pytest.warns(UserWarning, match="No total_size"):
+            trainer.fit(1_000, batches(), observeds=["y"], random_seed=1)
         idata = trainer.sample_posterior(1_000, random_seed=2)
 
     # y was observed, so the posterior contains only theta
@@ -320,7 +322,8 @@ def test_fit_after_streaming_refuses_to_reuse_the_last_batch():
 
     trainer = Trainer()
     with model:
-        streamed = trainer.fit(10, batches(), observeds=["y"], random_seed=1)
+        with pytest.warns(UserWarning, match="No total_size"):
+            streamed = trainer.fit(10, batches(), observeds=["y"], random_seed=1)
 
         # the stream shareds still hold the last batch, so a bare fit would train on it
         with pytest.raises(ValueError, match="keep training on the last batch"):
@@ -337,14 +340,17 @@ def test_fit_after_streaming_refuses_to_reuse_the_last_batch():
     assert not np.allclose(continued.params["theta_loc"], streamed.params["theta_loc"])
 
 
-def test_fit_rescales_likelihood_when_stream_has_len():
+def test_fit_rescales_likelihood_when_stream_reports_total_size():
     rng = np.random.default_rng(0)
     full_data = rng.normal(1.0, 1.0, size=1_000)
 
     class Loader:
-        # A torch-style dataloader: yields minibatches, len is the dataset size N
+        # len is the number of batches, as for a torch DataLoader; the row count
+        # is advertised separately
+        total_size = 1_000
+
         def __len__(self):
-            return full_data.shape[0]
+            return 20
 
         def __iter__(self):
             while True:
@@ -384,7 +390,8 @@ def test_fit_stops_when_stream_runs_out():
     data = ({"y": np.ones(4)} for _ in range(5))
     trainer = Trainer()
     with model:
-        state = trainer.fit(1_000, data, observeds=["y"], random_seed=1)
+        with pytest.warns(UserWarning, match="No total_size"):
+            state = trainer.fit(1_000, data, observeds=["y"], random_seed=1)
 
     assert state.step == 5
 
@@ -413,7 +420,8 @@ def test_sample_posterior_with_explicit_model_after_streaming():
 
     trainer = Trainer()
     with model:
-        trainer.fit(500, batches(), observeds=["y"], random_seed=1)
+        with pytest.warns(UserWarning, match="No total_size"):
+            trainer.fit(500, batches(), observeds=["y"], random_seed=1)
 
     with model:
         idata = trainer.sample_posterior(500, random_seed=2)
@@ -423,3 +431,91 @@ def test_sample_posterior_with_explicit_model_after_streaming():
     np.testing.assert_allclose(theta_draws.mean(), 1.0, atol=0.15)
     # The user's model is untouched
     assert "y" not in [rv.name for rv in model.observed_RVs]
+
+
+def test_fit_ignores_len_as_a_row_count():
+    # len of an iterable of batches is the batch count; using it as N would
+    # scale the likelihood by 30 / 100 instead of 3000 / 100
+    rng = np.random.default_rng(0)
+    y = rng.normal(1.5, 1.0, 3_000)
+    batches = [{"y": y[i : i + 100]} for i in range(0, 3_000, 100)]
+
+    with pm.Model() as model:
+        mu = pm.Normal("mu", 0, 5)
+        data = pm.Data("y", batches[0]["y"])
+        pm.Normal("y_obs", mu, 1.0, observed=data)
+
+    trainer = Trainer()
+    with pytest.warns(UserWarning, match="No total_size"):
+        trainer.fit(30, data=batches, model=model, random_seed=1)
+    assert trainer._logp_scalings == {}
+
+    trainer = Trainer()
+    trainer.fit(30, data=batches, model=model, total_size=3_000, random_seed=1)
+    [scale] = trainer._logp_scalings.values()
+    np.testing.assert_allclose(scale.eval(), 30.0)
+
+
+def test_fit_raises_when_total_size_disagrees_with_the_stream():
+    class Loader:
+        total_size = 3_000
+
+        def __iter__(self):
+            while True:
+                yield {"y": np.zeros(100)}
+
+    with pm.Model() as model:
+        mu = pm.Normal("mu", 0, 5)
+        data = pm.Data("y", np.zeros(100))
+        pm.Normal("y_obs", mu, 1.0, observed=data)
+
+    with pytest.raises(ValueError, match="advertises total_size"):
+        Trainer().fit(5, data=Loader(), model=model, total_size=9_999, random_seed=1)
+
+
+def test_fit_scales_each_batch_by_its_own_rows():
+    # the first batch is short; the scale must follow the rows actually streamed
+    rows = [37] + [100] * 29
+
+    class Loader:
+        total_size = 3_000
+
+        def __iter__(self):
+            while True:
+                for n in rows:
+                    yield {"y": np.zeros(n)}
+
+    with pm.Model() as model:
+        mu = pm.Normal("mu", 0, 5)
+        data = pm.Data("y", np.zeros(37))
+        pm.Normal("y_obs", mu, 1.0, observed=data)
+
+    trainer = Trainer()
+    trainer.fit(1, data=Loader(), model=model, random_seed=1)
+    [scale] = trainer._logp_scalings.values()
+    np.testing.assert_allclose(scale.eval(), 3_000 / 37)
+    model.set_data("y", np.zeros(100))
+    np.testing.assert_allclose(scale.eval(), 30.0)
+
+
+def test_fit_scales_a_pm_data_variable_named_in_observeds():
+    rng = np.random.default_rng(0)
+    y = rng.normal(1.5, 1.0, 3_000)
+
+    class Loader:
+        total_size = 3_000
+
+        def __iter__(self):
+            while True:
+                for i in range(0, 3_000, 100):
+                    yield {"y": y[i : i + 100]}
+
+    with pm.Model() as model:
+        mu = pm.Normal("mu", 0, 5)
+        data = pm.Data("y", y[:100])
+        pm.Normal("y_obs", mu, 1.0, observed=data)
+
+    trainer = Trainer()
+    trainer.fit(5, data=Loader(), model=model, observeds=["y"], random_seed=1)
+    [scale] = trainer._logp_scalings.values()
+    np.testing.assert_allclose(scale.eval(), 30.0)
