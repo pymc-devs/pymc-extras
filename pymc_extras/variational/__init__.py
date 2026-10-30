@@ -11,6 +11,7 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
+from pymc_extras.variational.callbacks import CheckLossConvergence
 from pymc_extras.variational.dataloader import (
     DataLoader,
     parquet_source,
@@ -18,6 +19,7 @@ from pymc_extras.variational.dataloader import (
 )
 
 __all__ = [
+    "CheckLossConvergence",
     "DataLoader",
     "parquet_source",
     "shuffle_buffer",
