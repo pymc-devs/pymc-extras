@@ -746,7 +746,8 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
         unfrozen_shared_inputs[0].get_value(), scenario["x1"].values.reshape((-1, 1))
     )  # ensure the replaced data matches the exogenous data
 
-    for k in data_after_build_forecast_model.keys():
+    # The forecast model registers no likelihood, so it has no burn.
+    for k in data_before_build_forecast_model.keys() - {"loglikelihood_burn"}:
         assert (  # check that the data needed to init the forecasts doesn't change
             data_before_build_forecast_model[k].mean() == data_after_build_forecast_model[k].mean()
         )

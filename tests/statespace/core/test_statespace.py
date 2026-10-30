@@ -653,26 +653,6 @@ def test_a_plain_model_is_filtered():
     assert isinstance(pymc_model["obs"].owner.op, KalmanFilterRV)
 
 
-def test_loglikelihood_burn_leaves_the_first_periods_unscored(ss_mod):
-    def logp_and_terms(loglikelihood_burn):
-        with pm.Model(coords=ss_mod.coords) as pymc_model:
-            rho = pm.Beta("rho", 1, 1)
-            pm.Deterministic("zeta", 1 - rho)
-            ss_mod.build_statespace_graph(data=nile, loglikelihood_burn=loglikelihood_burn)
-
-        likelihood = pymc_model["obs"]
-        [terms] = pymc_model.replace_rvs_by_values([likelihood.owner.inputs[2]])
-        logp_fn = pymc_model.compile_fn([pymc_model.logp(vars=[likelihood]), terms])
-        return logp_fn(pymc_model.initial_point())
-
-    full_logp, full_terms = logp_and_terms(0)
-    burned_logp, burned_terms = logp_and_terms(10)
-
-    assert_allclose(burned_terms[:10], 0.0)
-    assert_allclose(burned_terms[10:], full_terms[10:])
-    assert_allclose(burned_logp, full_logp - full_terms[:10].sum())
-
-
 @pytest.mark.parametrize(
     "loglikelihood_burn, error, match",
     [
@@ -731,9 +711,10 @@ def test_loglikelihood_burn_falls_back_to_the_filter(make_model):
         mod.build_statespace_graph(np.zeros((30, 1), dtype=floatX), loglikelihood_burn=5)
 
     assert isinstance(pymc_model["obs"].owner.op, KalmanFilterRV)
+    assert pymc_model["loglikelihood_burn"].get_value() == 5
 
 
-def test_compiled_logp_follows_the_rebuilt_burn_and_rejects_short_data(ss_mod):
+def test_compiled_logp_follows_the_rebuilt_burn_and_rejects_invalid_ones(ss_mod):
     with pm.Model(coords=ss_mod.coords) as pymc_model:
         rho = pm.Beta("rho", 1, 1)
         pm.Deterministic("zeta", 1 - rho)
@@ -743,12 +724,14 @@ def test_compiled_logp_follows_the_rebuilt_burn_and_rejects_short_data(ss_mod):
     [terms] = pymc_model.replace_rvs_by_values([likelihood.owner.inputs[2]])
     logp_fn = pymc_model.compile_fn([pymc_model.logp(vars=[likelihood]), terms])
     point = pymc_model.initial_point()
-    burned_logp, _ = logp_fn(point)
+    burned_logp, burned_terms = logp_fn(point)
 
     with pymc_model:
         ss_mod.build_statespace_graph(data=nile)
     full_logp, full_terms = logp_fn(point)
 
+    assert_allclose(burned_terms[:10], 0.0)
+    assert_allclose(burned_terms[10:], full_terms[10:])
     assert_allclose(burned_logp, full_logp - full_terms[:10].sum())
 
     with pymc_model:
