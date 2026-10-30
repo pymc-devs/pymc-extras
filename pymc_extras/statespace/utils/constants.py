@@ -22,6 +22,7 @@ TREND_DIM = "trend"
 
 OBSERVED_DATA_NAME = "data"
 OBSERVED_LIKELIHOOD_NAME = "obs"
+LOGLIKELIHOOD_BURN_NAME = "loglikelihood_burn"
 
 MISSING_FILL = -9999.0
 JITTER_DEFAULT = 1e-8 if pytensor.config.floatX.endswith("64") else 1e-6

@@ -28,11 +28,13 @@ from tests.statespace.shared_fixtures import (
 )
 from tests.statespace.test_utilities import (
     fast_eval,
+    load_nile_test_data,
     make_statespace_mod,
     make_test_inputs,
 )
 
 floatX = pytensor.config.floatX
+nile = load_nile_test_data()
 
 
 def test_invalid_filter_name_raises():
@@ -649,3 +651,129 @@ def test_a_plain_model_is_filtered():
         mod.build_statespace_graph(np.zeros((10, 1)))
 
     assert isinstance(pymc_model["obs"].owner.op, KalmanFilterRV)
+
+
+def test_loglikelihood_burn_leaves_the_first_periods_unscored(ss_mod):
+    def logp_and_terms(loglikelihood_burn):
+        with pm.Model(coords=ss_mod.coords) as pymc_model:
+            rho = pm.Beta("rho", 1, 1)
+            pm.Deterministic("zeta", 1 - rho)
+            ss_mod.build_statespace_graph(data=nile, loglikelihood_burn=loglikelihood_burn)
+
+        likelihood = pymc_model["obs"]
+        [terms] = pymc_model.replace_rvs_by_values([likelihood.owner.inputs[2]])
+        logp_fn = pymc_model.compile_fn([pymc_model.logp(vars=[likelihood]), terms])
+        return logp_fn(pymc_model.initial_point())
+
+    full_logp, full_terms = logp_and_terms(0)
+    burned_logp, burned_terms = logp_and_terms(10)
+
+    assert_allclose(burned_terms[:10], 0.0)
+    assert_allclose(burned_terms[10:], full_terms[10:])
+    assert_allclose(burned_logp, full_logp - full_terms[:10].sum())
+
+
+@pytest.mark.parametrize(
+    "loglikelihood_burn, error, match",
+    [
+        (-1, ValueError, "loglikelihood_burn"),
+        (len(nile), ValueError, "loglikelihood_burn"),
+        (2.5, TypeError, "integer"),
+    ],
+)
+def test_loglikelihood_burn_must_be_an_integer_leaving_periods_to_score(
+    ss_mod, loglikelihood_burn, error, match
+):
+    with pm.Model(coords=ss_mod.coords), pytest.raises(error, match=match):
+        ss_mod.build_statespace_graph(data=nile, loglikelihood_burn=loglikelihood_burn)
+
+
+def test_override_that_ignores_loglikelihood_burn_raises(ss_mod, monkeypatch):
+    def closed_form(data, matrices, dims, missing, loglikelihood_burn=0):
+        return pm.Normal("obs", observed=data)
+
+    monkeypatch.setattr(ss_mod, "make_likelihood", closed_form)
+
+    with pm.Model(coords=ss_mod.coords), pytest.raises(ValueError, match="ignores"):
+        rho = pm.Beta("rho", 1, 1)
+        pm.Deterministic("zeta", 1 - rho)
+        ss_mod.build_statespace_graph(data=nile, loglikelihood_burn=5)
+
+
+@pytest.mark.parametrize(
+    "make_model",
+    [
+        pytest.param(lambda: BayesianSARIMAX(order=(2, 0, 0), verbose=False), id="SARIMAX"),
+        pytest.param(
+            lambda: BayesianVARMAX(
+                order=(1, 0), endog_names=["a"], stationary_initialization=True, verbose=False
+            ),
+            id="VARMAX",
+        ),
+        pytest.param(
+            lambda: BayesianETS(
+                order=("A", "N", "N"),
+                endog_names=["a"],
+                stationary_initialization=True,
+                verbose=False,
+            ),
+            id="ETS",
+        ),
+    ],
+)
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_loglikelihood_burn_falls_back_to_the_filter(make_model):
+    """A closed form scores every period, so burning any of them needs the filter."""
+    mod = make_model()
+    with pm.Model(coords=mod.coords) as pymc_model:
+        for name, info in mod.param_info.items():
+            pm.Flat(name, shape=info["shape"])
+        mod.build_statespace_graph(np.zeros((30, 1), dtype=floatX), loglikelihood_burn=5)
+
+    assert isinstance(pymc_model["obs"].owner.op, KalmanFilterRV)
+
+
+def test_compiled_logp_follows_the_rebuilt_burn_and_rejects_short_data(ss_mod):
+    with pm.Model(coords=ss_mod.coords) as pymc_model:
+        rho = pm.Beta("rho", 1, 1)
+        pm.Deterministic("zeta", 1 - rho)
+        ss_mod.build_statespace_graph(data=nile, loglikelihood_burn=10)
+
+    likelihood = pymc_model["obs"]
+    [terms] = pymc_model.replace_rvs_by_values([likelihood.owner.inputs[2]])
+    logp_fn = pymc_model.compile_fn([pymc_model.logp(vars=[likelihood]), terms])
+    point = pymc_model.initial_point()
+    burned_logp, _ = logp_fn(point)
+
+    with pymc_model:
+        ss_mod.build_statespace_graph(data=nile)
+    full_logp, full_terms = logp_fn(point)
+
+    assert_allclose(burned_logp, full_logp - full_terms[:10].sum())
+
+    with pymc_model:
+        ss_mod.build_statespace_graph(data=nile, loglikelihood_burn=10)
+        pm.set_data({"data": nile.values[:5]}, coords={"time": nile.index[:5]})
+
+    with pytest.raises(AssertionError, match="loglikelihood_burn"):
+        logp_fn(point)
+
+    with pymc_model:
+        pm.set_data({"loglikelihood_burn": np.int64(-1)})
+
+    with pytest.raises(AssertionError, match="loglikelihood_burn"):
+        logp_fn(point)
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_rebuilding_a_closed_form_likelihood_with_a_burn_raises():
+    mod = BayesianSARIMAX(order=(2, 0, 0), verbose=False)
+    data = np.zeros((30, 1), dtype=floatX)
+
+    with pm.Model(coords=mod.coords):
+        for name, info in mod.param_info.items():
+            pm.Flat(name, shape=info["shape"])
+        mod.build_statespace_graph(data)
+
+        with pytest.raises(ValueError, match="closed-form"):
+            mod.build_statespace_graph(data, loglikelihood_burn=5)

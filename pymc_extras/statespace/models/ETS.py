@@ -484,15 +484,23 @@ class BayesianETS(PyMCStateSpace):
 
         return R @ Q @ R.T
 
-    def make_likelihood(self, data, matrices, dims, missing):
+    def make_likelihood(self, data, matrices, dims, missing, loglikelihood_burn=0):
         """
         Register an :class:`~pymc_extras.statespace.filters.distributions.InnovationsStateSpace`.
 
         The recursion covers an additive model with no measurement error, initialized at its
-        steady-state covariance, over complete data. Anything else is filtered.
+        steady-state covariance, over complete data with no ``loglikelihood_burn``. Anything else
+        is filtered.
         """
-        if self.measurement_error or not self.stationary_initialization or missing.any():
-            return super().make_likelihood(data, matrices, dims, missing)
+        if (
+            self.measurement_error
+            or not self.stationary_initialization
+            or missing.any()
+            or loglikelihood_burn
+        ):
+            return super().make_likelihood(
+                data, matrices, dims, missing, loglikelihood_burn=loglikelihood_burn
+            )
 
         x0, _, _, _, transition, design, selection, _, state_cov = matrices
 
