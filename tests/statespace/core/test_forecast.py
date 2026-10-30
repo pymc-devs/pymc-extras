@@ -680,7 +680,7 @@ def test_build_forecast_model(rng, exog_ss_mod, exog_pymc_mod, exog_data, idata_
             "x1": rng.choice(2, size=10, replace=True).astype(float),
         }
     )
-    scenario.set_index("date", inplace=True)
+    scenario = scenario.set_index("date")
 
     time_index = exog_ss_mod._get_fit_time_index(idata_exog)
     t0, forecast_index = exog_ss_mod._build_forecast_index(
@@ -779,7 +779,7 @@ def test_forecast_valid_index(exog_pymc_mod, exog_ss_mod, exog_data):
     scenario = {
         "data_exog": pd.DataFrame(
             exog_data[["x1"]].loc[start_date:].iloc[:n_periods], columns=exog_data[["x1"]].columns
-        )
+        ).asfreq("D")
     }
 
     # Generate the forecast

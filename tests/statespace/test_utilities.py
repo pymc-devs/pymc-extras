@@ -32,16 +32,9 @@ floatX = pytensor.config.floatX
 
 
 def load_nile_test_data():
-    from importlib.metadata import version
-
     nile = pd.read_csv("tests/statespace/_data/nile.csv", dtype={"x": floatX})
-    major, minor, rev = map(int, version("pandas").split("."))
-    if major >= 3 or (major >= 2 and minor >= 2 and rev >= 0):
-        freq_str = "YS-JAN"
-    else:
-        freq_str = "AS-JAN"
-    nile.index = pd.date_range(start="1871-01-01", end="1970-01-01", freq=freq_str)
-    nile.rename(columns={"x": "height"}, inplace=True)
+    nile.index = pd.date_range(start="1871-01-01", end="1970-01-01", freq="YS-JAN")
+    nile = nile.rename(columns={"x": "height"})
     nile = (nile - nile.mean()) / nile.std()
     nile = nile.astype(floatX)
 

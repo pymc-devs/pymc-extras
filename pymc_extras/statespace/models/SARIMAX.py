@@ -537,7 +537,7 @@ class BayesianSARIMAX(PyMCStateSpace):
             c = c[0]
 
         x0 = pt.linalg.solve(pt.identity_like(T) - T, c, assume_a="gen", check_finite=False)
-        P0 = solve_discrete_lyapunov(T, pt.linalg.matrix_dot(R, Q, R.T), method="bilinear")
+        P0 = solve_discrete_lyapunov(T, R @ Q @ R.T, method="bilinear")
 
         return x0, P0
 

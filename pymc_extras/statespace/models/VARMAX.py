@@ -713,7 +713,7 @@ class BayesianVARMAX(PyMCStateSpace):
             x0 = pt.linalg.solve(pt.eye(T.shape[0]) - T, c, assume_a="gen", check_finite=False)
             P0 = solve_discrete_lyapunov(
                 T,
-                pt.linalg.matrix_dot(R, Q, R.T),
+                R @ Q @ R.T,
                 method="direct" if self.k_states < 10 else "bilinear",
             )
             self.ssm["initial_state"] = x0

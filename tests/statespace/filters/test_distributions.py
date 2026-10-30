@@ -655,7 +655,7 @@ def _reference_filter(
         x0,
         solve_discrete_lyapunov(
             transition,
-            pt.linalg.matrix_dot(selection, state_cov, selection.T),
+            selection @ state_cov @ selection.T,
             method="bilinear",
         ),
         state_intercept,
