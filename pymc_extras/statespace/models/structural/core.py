@@ -890,6 +890,7 @@ class Component:
         selection = pt.linalg.block_diag(R, o_R)
         selection.name = R.name
 
+        H, o_H = conform_time_varying_and_time_invariant_matrices(H, o_H)
         obs_cov = add_tensors_by_dim_labels(
             H,
             o_H,

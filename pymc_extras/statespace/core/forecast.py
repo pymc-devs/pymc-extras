@@ -144,7 +144,9 @@ def _validate_scenario_data(
 
     if any(len(dims) > 1 for dims in var_to_dims.values()):
         raise NotImplementedError(">2d exogenous data is not yet supported.")
-    var_to_coords = {var: coords[dim[0]] for var, dim in var_to_dims.items() if dim[0] in coords}
+    var_to_coords = {
+        var: coords[dim[0]] for var, dim in var_to_dims.items() if dim and dim[0] in coords
+    }
 
     if ss_mod._needs_exog_data and scenario is None:
         exog_str = ",".join(ss_mod.data_names)
@@ -155,6 +157,12 @@ def _validate_scenario_data(
         )
 
     if isinstance(scenario, dict):
+        if any(not dims for dims in var_to_dims.values()):
+            missing = sorted(set(ss_mod.data_names) - set(scenario))
+            if missing:
+                raise ValueError(
+                    f"Scenario data are missing required variables: {', '.join(missing)}"
+                )
         for name, data in scenario.items():
             if name not in ss_mod.data_names:
                 raise ValueError(
@@ -187,12 +195,6 @@ def _validate_scenario_data(
         return scenario
 
     elif isinstance(scenario, pd.Series | pd.DataFrame | np.ndarray | list | tuple):
-        # A user might be lazy and pass a simple list when there is only one exogenous variable.
-        if isinstance(scenario, list | tuple) or (
-            isinstance(scenario, np.ndarray) and scenario.ndim == 1
-        ):
-            scenario = np.array(scenario).reshape(-1, 1)
-
         if name is None:
             # name should only be None on the first non-recursive call. We only arrive to this branch in that case
             # if a non-dictionary was passed, which in turn should only happen if only a single exogenous data
@@ -203,6 +205,26 @@ def _validate_scenario_data(
                     "scenario data instead."
                 )
             name = ss_mod.data_names[0]
+
+        if not var_to_dims[name]:
+            if isinstance(scenario, pd.DataFrame):
+                if scenario.shape[1] != 1:
+                    raise ValueError(
+                        f"Scenario data for variable '{name}' must be one-dimensional."
+                    )
+                return scenario.iloc[:, 0]
+            if isinstance(scenario, pd.Series):
+                return scenario
+            scenario = np.asarray(scenario)
+            if scenario.ndim != 1:
+                raise ValueError(f"Scenario data for variable '{name}' must be one-dimensional.")
+            return scenario
+
+        # A user might be lazy and pass a simple list when there is only one exogenous variable.
+        if isinstance(scenario, list | tuple) or (
+            isinstance(scenario, np.ndarray) and scenario.ndim == 1
+        ):
+            scenario = np.array(scenario).reshape(-1, 1)
 
         # Omit dataframe from this basic shape check so we can give more detailed information about missing columns
         # in the next check
@@ -400,7 +422,9 @@ def _finalize_scenario_initialization(
 
     if any(len(dims) > 1 for dims in var_to_dims.values()):
         raise NotImplementedError(">2d exogenous data is not yet supported.")
-    var_to_coords = {var: coords[dim[0]] for var, dim in var_to_dims.items() if dim[0] in coords}
+    var_to_coords = {
+        var: coords[dim[0]] for var, dim in var_to_dims.items() if dim and dim[0] in coords
+    }
 
     if scenario is None:
         return scenario
@@ -414,6 +438,9 @@ def _finalize_scenario_initialization(
 
     # This was already checked as valid
     name = ss_mod.data_names[0] if name is None else name
+
+    if not var_to_dims[name]:
+        return pd.Series(np.asarray(scenario), index=forecast_index, name=name)
 
     # Small tidying up in the case we just have a single scenario that's already a dataframe.
     if isinstance(scenario, pd.DataFrame | pd.Series):

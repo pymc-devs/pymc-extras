@@ -1,10 +1,15 @@
 import numpy as np
 
+from pytensor import tensor as pt
+from pytensor.raise_op import Assert
+
 from pymc_extras.statespace.core.properties import (
     Coord,
+    Data,
     Parameter,
 )
 from pymc_extras.statespace.models.structural.core import Component
+from pymc_extras.statespace.utils.constants import OBSERVED_DATA_NAME, TIME_DIM
 
 
 class MeasurementError(Component):
@@ -25,6 +30,18 @@ class MeasurementError(Component):
         Whether latent states are shared across the observed states. If True, there will be only one set of latent
         states, which are observed by all observed states. If False, each observed state has its own set of
         latent states. This argument has no effect if `k_endog` is 1.
+
+    variance_data : str | None, optional
+        Name of a ``pm.Data`` container holding known observation variances (not
+        standard deviations). When supplied, no ``sigma_{name}`` prior is required.
+        Use shape ``(time,)`` for one observed state or ``share_states=True``;
+        otherwise use ``(time, n_observed_states)`` in ``observed_state_names``
+        order. Values must be finite and nonnegative. Runtime assertions remain
+        active after ``pm.set_data`` under the standard and numba backends;
+        JAX drops Assert operations and does not enforce these checks.
+        Forecasts require future variances in ``scenario``; the last observed
+        variance is never automatically extrapolated. Default is None, which
+        preserves the estimated-variance behavior.
 
     Notes
     -----
@@ -67,6 +84,22 @@ class MeasurementError(Component):
             ss_mod.build_statespace_graph(data)
             idata = pm.sample()
 
+    **Known, time-varying sampling variance:**
+
+    .. code:: python
+
+        measurement = st.MeasurementError(
+            name="sampling_error", variance_data="sampling_variance"
+        )
+        ss_mod = (st.LevelTrend(order=1) + measurement).build()
+        with pm.Model(coords=ss_mod.coords):
+            pm.Data("sampling_variance", sampling_variance, dims="time")
+            # Define the remaining priors listed by ss_mod, then build the graph.
+            ss_mod.build_statespace_graph(data)
+
+    Known and estimated measurement-error components can be added: their
+    variances sum on each observed state's diagonal.
+
     **Multivariate measurement error:**
 
     .. code:: python
@@ -105,7 +138,16 @@ class MeasurementError(Component):
         name: str = "MeasurementError",
         observed_state_names: list[str] | None = None,
         share_states: bool = False,
+        variance_data: str | None = None,
     ):
+        if variance_data is not None and (
+            not isinstance(variance_data, str)
+            or not variance_data.strip()
+            or variance_data == OBSERVED_DATA_NAME
+        ):
+            raise ValueError("variance_data must be a non-empty name other than 'data'.")
+        self.variance_data = variance_data
+
         if observed_state_names is None:
             observed_state_names = ["data"]
 
@@ -126,7 +168,20 @@ class MeasurementError(Component):
             share_states=share_states,
         )
 
+    def set_data_info(self) -> Data | tuple[Data, ...] | None:
+        if self.variance_data is None:
+            return None
+        shared = self.share_states or self.k_endog == 1
+        return Data(
+            name=self.variance_data,
+            shape=(None,) if shared else (None, self.k_endog),
+            dims=(TIME_DIM,) if shared else (TIME_DIM, f"endog_{self.name}"),
+            is_exogenous=True,
+        )
+
     def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
+        if self.variance_data is not None:
+            return None
         k_endog = self.k_endog
         k_endog_effective = 1 if self.share_states else k_endog
 
@@ -153,6 +208,19 @@ class MeasurementError(Component):
         return tuple(coords_container) if coords_container else None
 
     def make_symbolic_graph(self) -> None:
+        if self.variance_data is not None:
+            shared = self.share_states or self.k_endog == 1
+            variance = self.make_and_register_data(
+                self.variance_data, shape=(None,) if shared else (None, self.k_endog)
+            )
+            valid = pt.all(~pt.isnan(variance) & ~pt.isinf(variance) & (variance >= 0))
+            variance = Assert(
+                f"variance_data '{self.variance_data}' must contain finite, nonnegative variances."
+            )(variance, valid)
+            diagonal = variance[:, None] if shared else variance
+            self.ssm["obs_cov"] = diagonal[..., None] * pt.eye(self.k_endog)
+            self.ssm.declare_time_varying("obs_cov")
+            return
         k_endog = self.k_endog
         k_endog_effective = 1 if self.share_states else k_endog
 
