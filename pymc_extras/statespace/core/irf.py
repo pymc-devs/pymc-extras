@@ -22,6 +22,10 @@ from pymc_extras.statespace.utils.constants import (
     STRUCTURAL_SHOCK_DIM,
     TIME_DIM,
 )
+from pymc_extras.statespace.utils.data_tools import (
+    ensure_chain_and_draw,
+    is_single_parameterization,
+)
 
 if TYPE_CHECKING:
     from pymc_extras.statespace.core.statespace import PyMCStateSpace
@@ -134,9 +138,15 @@ def impulse_response_function(
     random_seed: RandomState | None = None,
     mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
     group: str = "posterior",
+    deterministic: bool | None = None,
     **kwargs,
 ):
     verify_group(group)
+    group_idata = idata[group]
+    if deterministic is None:
+        deterministic = is_single_parameterization(group_idata)
+    group_idata = ensure_chain_and_draw(group_idata)
+
     options = [shock_size, shock_cov, shock_trajectory]
     n_options = sum(x is not None for x in options)
     Q = None  # No covariance matrix needed if a trajectory is provided. Will be overwritten later if needed.
@@ -222,9 +232,14 @@ def impulse_response_function(
 
         elif shock_trajectory is None:
             if Q is not None:
-                init_shock = pm.MvNormal(
-                    "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
-                )
+                if deterministic:
+                    init_shock = pm.Deterministic(
+                        "initial_shock", pt.sqrt(pt.diag(Q)), dims=[SHOCK_DIM]
+                    )
+                else:
+                    init_shock = pm.MvNormal(
+                        "initial_shock", mu=0, cov=Q, dims=[SHOCK_DIM], method=mvn_method
+                    )
             else:
                 init_shock = pm.Deterministic(
                     "initial_shock",
@@ -267,7 +282,7 @@ def impulse_response_function(
         pm.Deterministic("irf", irf, dims=irf_dims)
 
         irf_idata = pm.sample_posterior_predictive(
-            idata[group],
+            group_idata,
             var_names=["irf"],
             random_seed=random_seed,
             compile_kwargs=compile_kwargs,
