@@ -1,6 +1,7 @@
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
+import pytest
 
 from pymc_extras.inference.advi.optimizers import (
     adam,
@@ -80,7 +81,7 @@ def _make_quadratic_step(optimizer, init_value=5.0):
     x = pytensor.shared(np.array(init_value), name="x")
     loss = x**2
     grads = pt.grad(loss, wrt=[x])
-    new_grads, updates = optimizer.pytensor(grads, [x])
+    new_grads, updates = optimizer.pytensor(grads, [x], optimizer.pytensor_init([x]))
     updates[x] = x + new_grads[0]
     return pytensor.compile.function(inputs=[], outputs=loss, updates=updates)
 
@@ -104,6 +105,41 @@ def test_sgd_pytensor_minimizes_quadratic():
     for _ in range(500):
         step()
     assert abs(step()) < 1e-3
+
+
+@pytest.mark.parametrize("make_optimizer", [adam, rmsprop, clipped_adam])
+def test_compiled_optimizer_state_outlives_the_compiled_step(make_optimizer):
+    """Two steps compiled against one state dict must advance the same buffers."""
+    x = pytensor.shared(np.array(3.0), name="x")
+    optimizer = make_optimizer(0.1)
+    state = optimizer.pytensor_init([x])
+
+    def compile_step():
+        grads = pt.grad(x**2, wrt=[x])
+        new_grads, updates = optimizer.pytensor(grads, [x], state)
+        updates[x] = x + new_grads[0]
+        return pytensor.compile.function(inputs=[], outputs=[], updates=updates)
+
+    first, second = compile_step(), compile_step()
+    for _ in range(5):
+        first()
+    for _ in range(5):
+        second()
+
+    # sgd has no state; for the others the step counter and moments saw all ten steps
+    if "adam_t" in state:
+        assert int(state["adam_t"].get_value()) == 10
+    assert all(np.any(np.asarray(v.get_value()) != 0) for v in state.values())
+
+
+def test_chain_refuses_state_names_two_stages_share():
+    schedule = linear_onecycle_schedule(transition_steps=100, peak_value=0.01)
+    doubled = chain(
+        scale_by_adam(), scale_by_learning_rate(schedule), scale_by_learning_rate(schedule)
+    )
+
+    with pytest.raises(ValueError, match="more than one state variable named"):
+        doubled.pytensor_init([pytensor.shared(np.array(1.0), name="x")])
 
 
 def test_chain_pytensor_composes():
@@ -136,7 +172,7 @@ def test_schedule_pytensor_follows_schedule():
     opt = scale_by_learning_rate(schedule)
 
     x = pytensor.shared(np.array(1.0), name="x")
-    new_grads, updates = opt.pytensor([pt.constant(1.0)], [x])
+    new_grads, updates = opt.pytensor([pt.constant(1.0)], [x], opt.pytensor_init([x]))
     # new_grads[0] = -lr * 1.0, so -new_grads[0] is the learning rate
     lr = -new_grads[0]
     updates[x] = x + new_grads[0]
