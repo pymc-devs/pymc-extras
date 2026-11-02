@@ -440,20 +440,27 @@ class BayesianVARMAX(PyMCStateSpace):
     def add_default_priors(self):
         raise NotImplementedError
 
-    def make_likelihood(self, data, matrices, dims, missing):
+    def make_likelihood(self, data, matrices, dims, missing, loglikelihood_burn=0):
         """
         Register a :class:`~pymc_extras.statespace.filters.distributions.StationaryVAR`.
 
         The closed form covers an autoregression with no moving average terms and no measurement
         error, initialized at its stationary distribution, with at most a constant trend. Anything
-        else is filtered, including data with missing values, which only the filter marginalizes.
+        else is filtered, including data with missing values, which only the filter marginalizes,
+        and a nonzero ``loglikelihood_burn``.
         """
-        if self.q > 0 or self.p == 0 or self.measurement_error:
-            return super().make_likelihood(data, matrices, dims, missing)
-        if not self.stationary_initialization or self.trend_powers not in ((), (0,)):
-            return super().make_likelihood(data, matrices, dims, missing)
-        if missing.any():
-            return super().make_likelihood(data, matrices, dims, missing)
+        if (
+            self.q > 0
+            or self.p == 0
+            or self.measurement_error
+            or not self.stationary_initialization
+            or self.trend_powers not in ((), (0,))
+            or missing.any()
+            or loglikelihood_burn
+        ):
+            return super().make_likelihood(
+                data, matrices, dims, missing, loglikelihood_burn=loglikelihood_burn
+            )
 
         k_endog = self.k_endog
         *_, transition, _, _, _, state_cov = matrices

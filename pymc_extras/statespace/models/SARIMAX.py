@@ -541,23 +541,29 @@ class BayesianSARIMAX(PyMCStateSpace):
 
         return x0, P0
 
-    def make_likelihood(self, data, matrices, dims, missing):
+    def make_likelihood(self, data, matrices, dims, missing, loglikelihood_burn=0):
         """
         Register a :class:`~pymc_extras.statespace.filters.distributions.StationaryVAR`.
 
         The closed form covers a pure autoregression, seasonal or not, with no measurement error,
         a stationary initialization -- which also rules out differencing, since the two cannot be
         combined -- and at most a constant trend. Anything else is filtered, including data with
-        missing values, which only the filter marginalizes.
+        missing values, which only the filter marginalizes, and a nonzero ``loglikelihood_burn``.
         """
-        if self.q > 0 or self.Q > 0 or self.p + self.P == 0 or self.measurement_error:
-            return super().make_likelihood(data, matrices, dims, missing)
-        if not self.stationary_initialization or self.state_structure != "fast":
-            return super().make_likelihood(data, matrices, dims, missing)
-        if self.trend_powers not in ((), (0,)):
-            return super().make_likelihood(data, matrices, dims, missing)
-        if missing.any():
-            return super().make_likelihood(data, matrices, dims, missing)
+        if (
+            self.q > 0
+            or self.Q > 0
+            or self.p + self.P == 0
+            or self.measurement_error
+            or not self.stationary_initialization
+            or self.state_structure != "fast"
+            or self.trend_powers not in ((), (0,))
+            or missing.any()
+            or loglikelihood_burn
+        ):
+            return super().make_likelihood(
+                data, matrices, dims, missing, loglikelihood_burn=loglikelihood_burn
+            )
 
         pymc_model = modelcontext(None)
         *_, transition, _, _, _, state_cov = matrices
