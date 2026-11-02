@@ -18,6 +18,7 @@ from pymc_extras.statespace.filters import (
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter
 from pymc_extras.statespace.utils.constants import (
     LONG_NAME_TO_SHORT,
+    MATRIX_DIMS,
     MATRIX_NAMES,
     MISSING_FILL,
 )
@@ -31,6 +32,7 @@ from tests.statespace.test_utilities import (
     make_test_inputs,
     nile_test_test_helper,
     statsmodels_loglike_obs,
+    statsmodels_ssm,
 )
 
 floatX = pytensor.config.floatX
@@ -413,7 +415,7 @@ class TestDisturbanceSmootherMatchesRTS:
         rts_states, rts_covs = RTSSmoother(cov_jitter=0.0).build_graph(
             data, matrices, filter_outputs
         )
-        dk_states, dk_covs = DisturbanceSmoother(cov_jitter=0.0).build_graph(
+        dk_states, dk_covs, *_ = DisturbanceSmoother(cov_jitter=0.0).build_graph(
             data, matrices, filter_outputs
         )
         cls.smoother_fn = pytensor.function(
@@ -448,6 +450,97 @@ class TestDisturbanceSmootherMatchesRTS:
         assert np.linalg.matrix_rank(P_last) == stochastic_states
         assert_allclose(dk_states, rts_states, atol=1e-6)
         assert_allclose(dk_covs, rts_covs, atol=1e-6)
+
+
+def smoothed_shock_inputs(time_varying_names, n_missing, rng):
+    """
+    Three states driven by two correlated shocks through a dense selection matrix, so a transposed
+    or misaligned ``R`` or ``Q`` cannot cancel out. Time-varying matrices differ at every step.
+    """
+    m, p, r, n = 3, 2, 2, 25
+    time_varying_short = {LONG_NAME_TO_SHORT[name] for name in time_varying_names}
+
+    def draw_R():
+        return rng.normal(size=(m, r))
+
+    def draw_Q():
+        A = rng.normal(size=(r, r))
+        return A @ A.T + np.eye(r)
+
+    def maybe_time_varying(name, draw):
+        return np.stack([draw() for _ in range(n)]) if name in time_varying_short else draw()
+
+    a0, P0 = np.zeros(m), np.eye(m)
+    c, d = rng.normal(size=m), rng.normal(size=p)
+    T = np.diag([0.9, 0.5, 0.7]) + 0.05 * rng.normal(size=(m, m))
+    Z, H = rng.normal(size=(p, m)), np.eye(p) * 0.5
+    R, Q = maybe_time_varying("R", draw_R), maybe_time_varying("Q", draw_Q)
+
+    data = rng.normal(size=(n, p))
+    data[rng.choice(n, n_missing, replace=False), 0] = np.nan
+
+    return [x.astype(floatX) for x in (data, a0, P0, c, d, T, Z, R, H, Q)]
+
+
+@cache
+def get_smoothed_shock_function(time_varying_names):
+    time_varying_short = {LONG_NAME_TO_SHORT[name] for name in time_varying_names}
+    data = pt.matrix("data", dtype=floatX)
+    matrices = [
+        pt.tensor(name, dtype=floatX, shape=(None,) * (len(dims) + (name in time_varying_short)))
+        for name, dims in MATRIX_DIMS.items()
+    ]
+    filter_outputs = StandardFilter(time_varying_names=time_varying_names).build_graph(
+        data, *matrices
+    )
+    smoother_outputs = DisturbanceSmoother(time_varying_names=time_varying_names).build_graph(
+        data, matrices, filter_outputs
+    )
+    return pytensor.function([data, *matrices], smoother_outputs)
+
+
+@pytest.mark.parametrize(
+    "time_varying_names", [(), ("selection", "state_cov")], ids=["static", "time_varying_R_Q"]
+)
+@pytest.mark.parametrize("n_missing", [0, 5], ids=["complete", "missing"])
+class TestSmoothedShocks:
+    """The disturbance smoother's shocks eta_t = Q R' r_t and their covariances Q - Q R' N R Q."""
+
+    @pytest.mark.skipif(floatX == "float32", reason="Tests are too sensitive for float32")
+    def test_matches_statsmodels(self, time_varying_names, n_missing, rng):
+        inputs = smoothed_shock_inputs(time_varying_names, n_missing, rng)
+        *_, shocks, shock_covs = get_smoothed_shock_function(time_varying_names)(*inputs)
+        res = statsmodels_ssm(*inputs).smooth()
+
+        n, r = inputs[0].shape[0], inputs[-1].shape[-1]
+        assert shocks.shape == (n, r)
+        assert shock_covs.shape == (n, r, r)
+        assert_allclose(shocks, res.smoothed_state_disturbance.T, atol=ATOL, rtol=RTOL)
+        assert_allclose(
+            shock_covs,
+            np.moveaxis(res.smoothed_state_disturbance_cov, -1, 0),
+            atol=ATOL,
+            rtol=RTOL,
+        )
+
+    def test_last_shock_is_its_prior(self, time_varying_names, n_missing, rng):
+        """No data follows the last step to inform the shock that leaves it."""
+        inputs = smoothed_shock_inputs(time_varying_names, n_missing, rng)
+        *_, shocks, shock_covs = get_smoothed_shock_function(time_varying_names)(*inputs)
+        Q = inputs[-1]
+
+        assert_allclose(shocks[-1], 0)
+        assert_allclose(shock_covs[-1], Q[-1] if Q.ndim == 3 else Q, atol=ATOL, rtol=RTOL)
+
+    def test_shocks_connect_smoothed_states(self, time_varying_names, n_missing, rng):
+        """The smoothed states obey the transition equation, a[t+1] = c + T a[t] + R eta[t]."""
+        inputs = smoothed_shock_inputs(time_varying_names, n_missing, rng)
+        states, _, shocks, _ = get_smoothed_shock_function(time_varying_names)(*inputs)
+        *_, c, _, T, _, R, _, _ = inputs
+        R = R[:-1] if R.ndim == 3 else R
+
+        expected = c + states[:-1] @ T.T + np.einsum("...ij,...j->...i", R, shocks[:-1])
+        assert_allclose(states[1:], expected, atol=ATOL, rtol=RTOL)
 
 
 @pytest.mark.parametrize("filter_name", filter_names)

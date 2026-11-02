@@ -477,15 +477,14 @@ def sample_filter_outputs(
     if isinstance(filter_output_names, str):
         filter_output_names = [filter_output_names]
 
-    if filter_output_names is None:
-        filter_output_names = list(FILTER_OUTPUT_DIMS.keys())
-    else:
+    if filter_output_names is not None:
         unknown_filter_output_names = set(filter_output_names).difference(FILTER_OUTPUT_DIMS)
         if unknown_filter_output_names:
             raise ValueError(
                 f"{sorted(unknown_filter_output_names)} not a valid filter output name!"
             )
         filter_output_names = [x for x in FILTER_OUTPUT_DIMS.keys() if x in filter_output_names]
+    filter_output_names = ss_mod._smoother_supported_names(filter_output_names)
 
     compile_kwargs = kwargs.pop("compile_kwargs", {})
     compile_kwargs.setdefault("mode", ss_mod.mode)

@@ -222,6 +222,32 @@ def test_sample_filter_outputs(rng, exog_ss_mod, idata_exog):
         exog_ss_mod.sample_filter_outputs(idata_exog, filter_output_names=incorrect_outputs)
 
 
+def test_sample_filter_outputs_smoothed_shocks(ss_mod, idata):
+    names = ["smoothed_shocks", "smoothed_shock_covariances"]
+    shocks = ss_mod.sample_filter_outputs(idata, filter_output_names=names).posterior_predictive
+
+    assert set(shocks.data_vars) == set(names)
+    assert shocks["smoothed_shocks"].dims == ("chain", "draw", "time", "shock")
+    assert shocks["smoothed_shock_covariances"].dims == (
+        "chain",
+        "draw",
+        "time",
+        "shock",
+        "shock_aux",
+    )
+
+    # No data follows the last step to inform its shock, which keeps its prior N(0, Q).
+    Q = ss_mod.ssm["state_cov"].eval()
+    assert_allclose(shocks["smoothed_shocks"].isel(time=-1), 0)
+    assert_allclose(shocks["smoothed_shock_covariances"].isel(time=-1).values - Q, 0, atol=1e-8)
+
+
+def test_sample_filter_outputs_rejects_shocks_from_the_rts_smoother(ss_mod, idata, monkeypatch):
+    monkeypatch.setattr(ss_mod, "smoother_type", "rts")
+    with pytest.raises(ValueError, match="disturbance smoother only"):
+        ss_mod.sample_filter_outputs(idata, filter_output_names="smoothed_shocks")
+
+
 class TestTimeVaryingTransition:
     """Tests for models with time-varying transition matrices (n_timesteps placeholder)."""
 
