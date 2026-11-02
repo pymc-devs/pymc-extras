@@ -14,6 +14,7 @@ from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import get_default_varnames
 from pytensor.tensor import TensorVariable
 from scipy.optimize import OptimizeResult
+from xarray import DataTree
 
 from pymc_extras.inference.laplace_approx.idata import (
     add_data_to_inference_data,
@@ -173,12 +174,7 @@ def find_MAP(
     compile_kwargs: dict | None = None,
     compute_hessian: bool = False,
     **optimizer_kwargs,
-) -> (
-    dict[str, np.ndarray]
-    | tuple[dict[str, np.ndarray], np.ndarray]
-    | tuple[dict[str, np.ndarray], OptimizeResult]
-    | tuple[dict[str, np.ndarray], OptimizeResult, np.ndarray]
-):
+) -> DataTree:
     """
     Fit a PyMC model via maximum a posteriori (MAP) estimation using JAX and scipy.optimize.
 
