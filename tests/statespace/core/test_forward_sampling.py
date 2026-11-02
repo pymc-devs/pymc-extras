@@ -12,6 +12,7 @@ from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
+    FILTER_OUTPUT_TYPES,
     LONG_MATRIX_NAMES,
     MATRIX_DIMS,
     MATRIX_NAMES,
@@ -79,6 +80,62 @@ def test_conditional_posterior_options_share_the_default_moments(
     assert np.isfinite(option).all()
     assert_allclose(option.mean(), default.mean(), atol=0.05 * default.std())
     assert_allclose(option.std(), default.std(), rtol=0.05)
+
+
+@pytest.mark.parametrize(
+    "group, joint_smoothed_draws",
+    [("posterior", True), ("prior", False)],
+    ids=["posterior-joint", "prior-marginal"],
+)
+def test_conditional_observed_without_measurement_error(
+    group, joint_smoothed_draws, mock_pymc_sample, rng
+):
+    """
+    With H = 25, the default adds measurement error to the observed trajectories and the option leaves
+    only the signal d + Z x.
+    """
+    n_obs, n_draws = 20, 100
+    data = pd.DataFrame(
+        rng.normal(size=(n_obs, 1)),
+        index=pd.date_range("2000-01-01", periods=n_obs, freq="MS"),
+        columns=["y"],
+    )
+    mod = (
+        st.LevelTrend(name="trend", order=2, innovations_order=1) + st.MeasurementError(name="obs")
+    ).build(verbose=False, joint_smoothed_draws=joint_smoothed_draws)
+    with pm.Model(coords=mod.coords):
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        pm.Exponential("sigma_obs", 1)
+        pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
+        mod.build_statespace_graph(data)
+        if group == "prior":
+            idata = pm.sample_prior_predictive(draws=n_draws, random_seed=0)
+        else:
+            idata = pm.sample(draws=n_draws, chains=1, random_seed=0)
+
+    idata[group]["sigma_obs"][:] = 5.0
+
+    sample = getattr(mod, f"sample_conditional_{group}")
+    with_h, without_h = (
+        sample(idata, random_seed=1, include_measurement_error=option) for option in [True, False]
+    )
+
+    assert set(without_h.data_vars) == set(with_h.data_vars)
+    for name, var in with_h.data_vars.items():
+        assert without_h[name].dims == var.dims
+        assert without_h[name].shape == var.shape
+
+    for name in FILTER_OUTPUT_TYPES:
+        default = with_h[f"{name}_{group}_observed"].values
+        option = without_h[f"{name}_{group}_observed"].values
+        signal = without_h[f"{name}_{group}"].values[..., :1]  # Z selects the level, d is zero
+
+        assert_allclose(default.var() - option.var(), 25.0, rtol=0.15)
+        assert_allclose(option.std(), signal.std(), rtol=0.1)
+
+        if name == "smoothed" and joint_smoothed_draws:
+            assert_allclose(option, signal)
 
 
 @pytest.mark.parametrize("group", ["posterior", "prior"])
