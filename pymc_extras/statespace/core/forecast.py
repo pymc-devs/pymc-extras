@@ -107,8 +107,7 @@ def _get_fit_time_index(
         )
 
     if isinstance(time_index[0], pd.Timestamp):
-        time_index = pd.DatetimeIndex(time_index)
-        time_index.freq = time_index.inferred_freq
+        time_index = pd.DatetimeIndex(time_index, freq="infer")
     else:
         time_index = np.array(time_index)
 

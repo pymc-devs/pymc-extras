@@ -57,8 +57,13 @@ def get_logp_logq(
     if logp_scalings:
         all_vars = model.free_RVs + model.observed_RVs + model.potentials
         logps = model.logp(vars=all_vars, sum=False)
-        scales = pt.constant([logp_scalings.get(var, 1.0) for var in all_vars])
-        model_logp = pt.sum([pt.sum(logp) * scale for logp, scale in zip(logps, scales)])
+        # A scale in its term's own dtype, since a float64 constant would upcast a float32 logp.
+        model_logp = pt.sum(
+            [
+                pt.sum(logp) * pt.constant(logp_scalings.get(var, 1.0), dtype=logp.dtype)
+                for var, logp in zip(all_vars, logps)
+            ]
+        )
     else:
         model_logp = model.logp()
 

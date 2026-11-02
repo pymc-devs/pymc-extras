@@ -73,7 +73,7 @@ def test_recovered_time_keeps_its_timestamps(exog_fit):
     time = coords_from_idata(mod, idata, "observed_data")["time"]
 
     assert isinstance(time[0], pd.Timestamp)
-    assert pd.DatetimeIndex(time).inferred_freq == "D"
+    assert pd.DatetimeIndex(time, freq="infer").freqstr == "D"
 
 
 @pytest.mark.parametrize("dim", ["shock", "shock_aux", "observed_state_aux"])

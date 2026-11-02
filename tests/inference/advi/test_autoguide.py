@@ -4,6 +4,7 @@ import pytensor.tensor as pt
 import pytest
 
 from pytensor import function as pytensor_function
+from scipy import stats
 
 from pymc_extras.inference.advi.autoguide import (
     AutoDiagonalNormal,
@@ -81,6 +82,23 @@ class TestAutoDiagonalNormal:
 
         assert tuple(guide.model.coords["city"]) == tuple(coords["city"])
         assert guide.model.named_vars_to_dims["mu"] == ("city",)
+
+
+@pytest.mark.parametrize(
+    "make_guide",
+    [AutoDiagonalNormal, AutoMultivariateNormal, AutoLowRankMultivariateNormal],
+)
+def test_guide_accepts_a_dim_declared_by_length_alone(make_guide):
+    """pm.Data with dims and no coords declares a dim with a length but no coordinate values."""
+    with pm.Model() as model:
+        x = pm.Data("x", np.arange(4.0), dims="obs_id")
+        beta = pm.Normal("beta", 0, 1)
+        pm.Normal("y", beta * x, 1, observed=np.ones(4), dims="obs_id")
+
+    guide = make_guide(model)
+
+    assert guide.model.coords["obs_id"] is None
+    assert guide.model.dim_lengths["obs_id"].eval() == 4
 
 
 class TestTransformedRVs:
@@ -230,7 +248,8 @@ class TestAutoMultivariateNormal:
         # D = 1 + 3 + 2 = 6 ; lower-triangular Cholesky packs 6 * 7 / 2 = 21 entries
         assert isinstance(guide, AutoGuideModel)
         assert {p.name for p in guide.params} == {"loc", "L_packed"}
-        assert guide["loc"].type.shape == (None,)  # symbolic graph; size fixed by the init value
+        assert guide["loc"].type.shape == (6,)
+        assert guide["L_packed"].type.shape == (21,)
         assert guide.params_init_values[guide["loc"]].shape == (6,)
         assert guide.params_init_values[guide["L_packed"]].shape == (21,)
 
@@ -257,6 +276,27 @@ class TestAutoMultivariateNormal:
         *_, p_draws = f_sample(*vals)
         assert p_draws.shape == (100, 3)
         np.testing.assert_allclose(p_draws.sum(axis=-1), 1.0)
+
+    @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+    def test_full_rank_guide_compiles_to_jax(self, multi_rv_model):
+        # Packing the Cholesky factor with tril_indices of a symbolic size produces a Nonzero,
+        # which JAX cannot compile
+        pytest.importorskip("jax")
+        guide = AutoMultivariateNormal(multi_rv_model, random_seed=0)
+        _, logq = get_logp_logq(multi_rv_model, guide, path_derivative_gradient=False)
+
+        rng = np.random.default_rng(0)
+        loc = rng.normal(size=4)
+        # Nonzero off-diagonal entries make the packing order matter
+        L_packed = rng.normal(scale=0.3, size=10)
+        f = pytensor_function([guide["loc"], guide["L_packed"]], [guide.latent, logq], mode="JAX")
+        latent, got = f(loc, L_packed)
+
+        chol = np.zeros((4, 4))
+        chol[np.tril_indices(4)] = L_packed
+        np.fill_diagonal(chol, np.exp(np.diag(chol)))
+        want = stats.multivariate_normal(mean=loc, cov=chol @ chol.T).logpdf(latent)
+        np.testing.assert_allclose(got, want)
 
 
 class TestAutoLowRankMultivariateNormal:

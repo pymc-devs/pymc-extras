@@ -40,7 +40,7 @@ def data():
         index_col=0,
         parse_dates=True,
     ).astype(floatX)
-    df.index.freq = df.index.inferred_freq
+    df.index = pd.DatetimeIndex(df.index, freq="infer")
     return df
 
 
@@ -491,7 +491,7 @@ def test_varmax_workflow(rng, mock_sample):
         index_col=0,
         parse_dates=True,
     ).astype(floatX)
-    df.index.freq = df.index.inferred_freq
+    df.index = pd.DatetimeIndex(df.index, freq="infer")
 
     ss_mod = BayesianVARMAX(
         endog_names=df.columns,

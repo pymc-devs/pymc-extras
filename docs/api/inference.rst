@@ -16,3 +16,16 @@ to these by name.
    fit_pathfinder
    fit_dadvi
    fit_INLA
+
+MLX MCLMC
+---------
+
+An approximate GPU sampler for Apple Silicon, kept out of ``fit`` and out of the
+``pymc_extras.inference`` namespace because it requires ``mlx``, which installs
+only on Apple Silicon.
+
+.. currentmodule:: pymc_extras.inference.mlx_mclmc
+.. autosummary::
+   :toctree: ../generated/
+
+   fit_mlx_mclmc

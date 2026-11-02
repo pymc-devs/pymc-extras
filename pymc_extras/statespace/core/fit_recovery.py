@@ -172,7 +172,7 @@ def data_from_idata(idata: DataTree, group: str) -> pd.DataFrame:
     if isinstance(data.index, pd.DatetimeIndex) and data.index.freq is None:
         # A round-trip through the inference data drops the frequency, which the data
         # preprocessor warns about and the forecast index needs.
-        data.index.freq = data.index.inferred_freq
+        data.index.freq = pd.DatetimeIndex(data.index, freq="infer").freq
 
     return data
 

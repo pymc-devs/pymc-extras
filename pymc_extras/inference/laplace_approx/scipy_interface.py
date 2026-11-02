@@ -8,7 +8,7 @@ import numpy as np
 import pymc as pm
 import pytensor
 
-from better_optimize.constants import MINIMIZE_MODE_KWARGS
+from better_optimize.configuration import MINIMIZE_CONFIGS
 from pymc.pytensorf import join_nonshared_inputs
 from pytensor import tensor as pt
 from pytensor.compile import Function
@@ -23,7 +23,7 @@ _log = logging.getLogger(__name__)
 def set_optimizer_function_defaults(
     method: str, use_grad: bool | None, use_hess: bool | None, use_hessp: bool | None
 ):
-    method_info = MINIMIZE_MODE_KWARGS[method].copy()
+    config = MINIMIZE_CONFIGS[method]
 
     if use_hess and use_hessp:
         _log.warning(
@@ -33,7 +33,7 @@ def set_optimizer_function_defaults(
         )
         use_hess = False
 
-    use_grad = use_grad if use_grad is not None else method_info["uses_grad"]
+    use_grad = use_grad if use_grad is not None else config.uses_grad
 
     if use_hessp is not None and use_hess is None:
         use_hess = not use_hessp
@@ -42,8 +42,8 @@ def set_optimizer_function_defaults(
         use_hessp = not use_hess
 
     elif use_hessp is None and use_hess is None:
-        use_hessp = method_info["uses_hessp"]
-        use_hess = method_info["uses_hess"]
+        use_hessp = config.uses_hessp
+        use_hess = config.uses_hess
         if use_hessp and use_hess:
             # If a method could use either hess or hessp, we default to using hessp
             use_hess = False

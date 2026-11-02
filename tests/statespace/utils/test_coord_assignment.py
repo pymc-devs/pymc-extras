@@ -40,7 +40,7 @@ def load_dataset():
 
     def _load_dataset(f):
         if f == "pandas_date_freq":
-            data.index.freq = data.index.inferred_freq
+            data.index = pd.DatetimeIndex(data.index, freq="infer")
             return data
         if f == "pandas_date_nofreq":
             data.index.freq = None

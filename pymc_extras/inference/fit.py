@@ -23,7 +23,7 @@ def fit(method: str, **kwargs) -> DataTree:
     ----------
     method : str
         Which inference method to run.
-        Supported: pathfinder or laplace
+        Supported: pathfinder, laplace, INLA or dadvi
 
     kwargs: keyword arguments are passed on to the inference method.
 
@@ -53,5 +53,6 @@ def fit(method: str, **kwargs) -> DataTree:
 
     else:
         raise ValueError(
-            f"method '{method}' not supported. Use one of 'pathfinder', 'laplace' or 'INLA'."
+            f"method '{method}' not supported. Use one of 'pathfinder', 'laplace', 'INLA' or "
+            f"'dadvi'."
         )

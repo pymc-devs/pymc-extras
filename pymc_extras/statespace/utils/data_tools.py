@@ -94,7 +94,7 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
     if isinstance(data.index, pd.DatetimeIndex):
         if data.index.freq is None:
             warnings.warn(NO_FREQ_INFO_WARNING)
-            data.index.freq = data.index.inferred_freq
+            data.index.freq = pd.DatetimeIndex(data.index, freq="infer").freq
 
         index = data.index
         return data.values, index

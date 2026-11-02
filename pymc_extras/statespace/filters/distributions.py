@@ -835,7 +835,7 @@ def _conditional_logp(
         endog_gram
         - effective @ cross_gram
         - cross_gram.T @ effective.T
-        + pt.linalg.matrix_dot(effective, regressor_gram, effective.T)
+        + effective @ regressor_gram @ effective.T
     )
 
     cov_cholesky = pt.linalg.cholesky(state_cov)

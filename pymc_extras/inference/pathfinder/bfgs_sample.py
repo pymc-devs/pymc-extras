@@ -178,12 +178,14 @@ def make_pathfinder_sample_fn(
         x_sym, g_sym, alpha_sym, s_win_sym, z_win_sym, u_sym, J, N
     )
 
+    # BFGS runs in float64, and a float32 logp won't accept a float64 input.
+    phi_model_sym = phi_sym.astype(single_input.dtype)
     if vectorize:
-        batched_logP_sym = vectorize_graph(logP_single, replace={single_input: phi_sym})
+        batched_logP_sym = vectorize_graph(logP_single, replace={single_input: phi_model_sym})
     else:
         batched_logP_sym = pytensor.map(
             fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
-            sequences=[phi_sym],
+            sequences=[phi_model_sym],
             return_updates=False,
         )
 
@@ -281,6 +283,9 @@ def get_neg_logp_dlogp_of_ravel_inputs(
         [model.logp(jacobian=jacobian), model.dlogp(jacobian=jacobian)],
         model.value_vars,
     )
-    neg_logp_dlogp_fn = compile([inputs], (-logP, -dlogP), **compile_kwargs)
+    # L-BFGS passes float64 x, which trust_input would hand a float32 logp uncast.
+    x = pt.vector("x", dtype="float64")
+    neg_logp, neg_dlogp = clone_replace([-logP, -dlogP], replace={inputs: x.astype(inputs.dtype)})
+    neg_logp_dlogp_fn = compile([x], (neg_logp, neg_dlogp), **compile_kwargs)
     neg_logp_dlogp_fn.trust_input = True
     return neg_logp_dlogp_fn

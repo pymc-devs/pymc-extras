@@ -359,7 +359,6 @@ class BayesianSARIMAX(PyMCStateSpace):
             cov_jitter=cov_jitter,
             missing_fill_value=missing_fill_value,
         )
-        self._needs_exog_data = self.k_exog > 0
 
     def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:
         k_states = self.k_states
@@ -538,7 +537,7 @@ class BayesianSARIMAX(PyMCStateSpace):
             c = c[0]
 
         x0 = pt.linalg.solve(pt.identity_like(T) - T, c, assume_a="gen", check_finite=False)
-        P0 = solve_discrete_lyapunov(T, pt.linalg.matrix_dot(R, Q, R.T), method="bilinear")
+        P0 = solve_discrete_lyapunov(T, R @ Q @ R.T, method="bilinear")
 
         return x0, P0
 
