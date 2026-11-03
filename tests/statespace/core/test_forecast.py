@@ -459,6 +459,28 @@ def test_invalid_scenarios():
         ss_mod._validate_scenario_data(scenario, coords)
 
 
+@pytest.mark.parametrize("verbose", [True, False], ids=["verbose", "quiet"])
+def test_validate_scenario_reorders_columns(verbose, caplog):
+    data_info = {"a": {"shape": (None, 2), "dims": ("time", "features_a")}}
+    ss_mod = make_statespace_mod(
+        k_endog=1,
+        k_posdef=1,
+        k_states=2,
+        filter_type="standard",
+        verbose=False,
+        data_info=data_info,
+    )
+    coords = dict(features_a=["column_1", "column_2"])
+
+    # forecast() always passes the scenario as a dict, so test that path
+    scenario = {"a": pd.DataFrame({"column_2": np.zeros(10), "column_1": np.ones(10)})}
+    scenario = ss_mod._validate_scenario_data(scenario, coords, verbose=verbose)
+
+    assert scenario["a"].columns.tolist() == ["column_1", "column_2"]
+    assert_allclose(scenario["a"].values[:, 0], 1.0)
+    assert any("different column order" in msg for msg in caplog.messages) == verbose
+
+
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
 @pytest.mark.parametrize("verbose", [True, False], ids=["verbose", "quiet"])
 def test_forecast_defaults_start_regardless_of_verbosity(
