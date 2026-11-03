@@ -11,8 +11,11 @@ from pytensor import tensor as pt
 from pytensor.graph.traversal import explicit_graph_inputs
 from scipy import linalg
 
+from pymc_extras.statespace.core.statespace import PyMCStateSpace
+from pymc_extras.statespace.filters.distributions import KalmanFilterRV
 from pymc_extras.statespace.models import structural as st
-from pymc_extras.statespace.utils.constants import MATRIX_NAMES
+from pymc_extras.statespace.models.structural.core import StructuralTimeSeries
+from pymc_extras.statespace.utils.constants import MATRIX_NAMES, OBSERVED_LIKELIHOOD_NAME
 from tests.statespace.test_utilities import (
     simulate_from_numpy_model,
     unpack_symbolic_matrices_with_params,
@@ -248,3 +251,83 @@ def test_sequence_type_component_arguments(arg_type):
 
     assert ss_mod.k_endog == len(state_names)
     assert sorted(ss_mod.observed_states) == sorted(list(state_names))
+
+
+class DenseLocalLevel(StructuralTimeSeries):
+    """Scores a local level with measurement error against its closed-form marginal covariance."""
+
+    def make_likelihood(self, data, matrices, dims, missing, loglikelihood_burn=0):
+        if missing.any() or loglikelihood_burn:
+            return super().make_likelihood(
+                data, matrices, dims, missing, loglikelihood_burn=loglikelihood_burn
+            )
+
+        x0, P0, *_, H, Q = matrices
+        steps = pt.arange(data.shape[0])
+        cov = (
+            P0[0, 0]
+            + pt.minimum(steps[:, None], steps[None, :]) * Q[0, 0]
+            + H[0, 0] * pt.eye(data.shape[0])
+        )
+        mu = pt.full((data.shape[0],), x0[0])
+        return pm.MvNormal(OBSERVED_LIKELIHOOD_NAME, mu=mu, cov=cov, observed=data.T)
+
+
+def _local_level_model(ss_mod, data):
+    with pm.Model(coords=ss_mod.coords) as model:
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Deterministic("P0", pt.eye(1, dtype=floatX), dims=["state", "state_aux"])
+        pm.Exponential("sigma_trend", 1, dims=["shock_trend"])
+        pm.Exponential("sigma_obs_err", 1)
+        ss_mod.build_statespace_graph(data)
+    return model
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_build_model_class_overrides_make_likelihood(rng):
+    """A subclass passed to build() registers its own likelihood, and it scores like the filter."""
+    component = st.LevelTrend(name="trend", order=1, innovations_order=1) + st.MeasurementError(
+        name="obs_err"
+    )
+    data = rng.normal(size=(12, 1)).cumsum(axis=0).astype(floatX)
+
+    filtered = component.build(verbose=False)
+    dense = component.build(verbose=False, model_class=DenseLocalLevel)
+    assert type(filtered) is StructuralTimeSeries
+    assert isinstance(dense, DenseLocalLevel)
+
+    filtered_model = _local_level_model(filtered, data)
+    dense_model = _local_level_model(dense, data)
+    assert isinstance(filtered_model["obs"].owner.op, KalmanFilterRV)
+    assert not isinstance(dense_model["obs"].owner.op, KalmanFilterRV)
+
+    point = filtered_model.initial_point()
+    assert_allclose(
+        dense_model.compile_logp()(point), filtered_model.compile_logp()(point), rtol=1e-6
+    )
+
+
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data")
+def test_build_model_class_overrides_make_filters():
+    """A make_filters override reaches both the likelihood and the post-estimation graphs."""
+    calls = []
+
+    class RecordingFilters(StructuralTimeSeries):
+        def make_filters(self):
+            calls.append("make_filters")
+            return super().make_filters()
+
+    ss_mod = (
+        st.LevelTrend(name="trend", order=1, innovations_order=1) + st.MeasurementError("obs_err")
+    ).build(verbose=False, model_class=RecordingFilters)
+
+    data = np.arange(10, dtype=floatX)[:, None]
+    with _local_level_model(ss_mod, data):
+        assert len(calls) == 1
+        ss_mod.make_filter_outputs(names="smoothed_states")
+    assert len(calls) == 2
+
+
+def test_build_model_class_must_subclass_structural_time_series():
+    with pytest.raises(TypeError, match="subclass of StructuralTimeSeries"):
+        st.LevelTrend(order=1).build(verbose=False, model_class=PyMCStateSpace)

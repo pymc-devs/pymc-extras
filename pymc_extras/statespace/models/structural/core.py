@@ -995,6 +995,7 @@ class Component:
         mode: str | Mode | None = None,
         cov_jitter: float = JITTER_DEFAULT,
         missing_fill_value: float = MISSING_FILL,
+        model_class: type[StructuralTimeSeries] = StructuralTimeSeries,
     ):
         """
         Build a StructuralTimeSeries statespace model from the current component(s)
@@ -1028,14 +1029,23 @@ class Component:
             default sentinel. Post-estimation graphs are built with this same value. Default None, which the
             filter resolves to -9999.0.
 
+        model_class: type, optional
+            Subclass of ``StructuralTimeSeries`` to construct, for example one that overrides ``make_likelihood``
+            to register a closed-form likelihood, or ``make_filters`` to use a custom filter. It is called with
+            the same arguments as ``StructuralTimeSeries``. Default is ``StructuralTimeSeries``.
+
         Returns
         -------
-        PyMCStateSpace
-            An initialized instance of a PyMCStateSpace, constructed using the system matrices contained in the
+        StructuralTimeSeries
+            An initialized instance of ``model_class``, constructed using the system matrices contained in the
             components.
         """
+        if not (isinstance(model_class, type) and issubclass(model_class, StructuralTimeSeries)):
+            raise TypeError(
+                f"model_class must be a subclass of StructuralTimeSeries, got {model_class!r}"
+            )
 
-        return StructuralTimeSeries(
+        return model_class(
             self.ssm,
             name=name,
             coords_info=self._coords_info,
