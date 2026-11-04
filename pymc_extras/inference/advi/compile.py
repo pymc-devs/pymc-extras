@@ -63,9 +63,10 @@ def build_svi_step(
         path_derivative_gradient=path_derivative_gradient,
         logp_scalings=logp_scalings,
     )
-    scalar_negative_elbo = advi_objective(logp, logq)
-    [negative_elbo_draws] = vectorize_random_graph([scalar_negative_elbo], batch_draws=draws)
-    negative_elbo = negative_elbo_draws.mean(axis=0)
+    negative_elbo = advi_objective(logp, logq)
+    if draws != 1:
+        [negative_elbo_draws] = vectorize_random_graph([negative_elbo], batch_draws=draws)
+        negative_elbo = negative_elbo_draws.mean(axis=0)
 
     params_to_shared = {param: shared_params[param.name] for param in guide.params}
     [negative_elbo] = graph_replace([negative_elbo], replace=params_to_shared)
