@@ -191,6 +191,58 @@ def test_sample_conditional_with_time_varying():
         assert np.all(np.isfinite(conditional[name].values))
 
 
+@pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
+def test_sample_conditional_with_matrices_assigned_whole():
+    # Regression test for #736: assigning whole matrices instead of by index broke conditional
+    # sampling on pytensor < 3.3.1.
+    k = 2
+
+    class WholeMatrices(PyMCStateSpace):
+        def __init__(self):
+            super().__init__(k_endog=k, k_states=k, k_posdef=k)
+
+        def make_symbolic_graph(self) -> None:
+            self.ssm["design"] = np.eye(k)
+            self.ssm["selection"] = np.eye(k)
+            self.ssm["initial_state", :] = self.make_and_register_variable("x0", shape=(k,))
+            self.ssm["initial_state_cov", :, :] = np.eye(k)
+            self.ssm["transition"] = self.make_and_register_variable("ar_params", shape=(k, k))
+            self.ssm["state_cov", :, :] = np.eye(k)
+            self.ssm["obs_cov"] = pt.diag(self.make_and_register_variable("sigma_obs", shape=(k,)))
+
+        @property
+        def param_names(self) -> list[str]:
+            return ["x0", "ar_params", "sigma_obs"]
+
+        @property
+        def state_names(self) -> list[str]:
+            return [f"state_{i}" for i in range(k)]
+
+        @property
+        def observed_states(self) -> list[str]:
+            return [f"state_{i}" for i in range(k)]
+
+        @property
+        def shock_names(self) -> list[str]:
+            return [f"shock_{i}" for i in range(k)]
+
+    ss_mod = WholeMatrices()
+    data = pd.DataFrame(np.random.default_rng(0).normal(size=(20, k)))
+
+    with pm.Model(coords=ss_mod.coords):
+        pm.Normal("x0", dims=["state"])
+        pm.Normal("ar_params", sigma=0.3, shape=(k, k))
+        pm.Exponential("sigma_obs", 1, shape=(k,))
+        ss_mod.build_statespace_graph(data)
+        prior = pm.sample_prior_predictive(draws=5, random_seed=0)
+
+    conditional = ss_mod.sample_conditional_prior(prior, random_seed=0)
+
+    for name in ["filtered_prior", "predicted_prior", "smoothed_prior"]:
+        assert conditional[name].sizes["time"] == data.shape[0]
+        assert np.all(np.isfinite(conditional[name].values))
+
+
 @pytest.mark.filterwarnings("ignore:Provided data contains missing values")
 @pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")
