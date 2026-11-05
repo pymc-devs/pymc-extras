@@ -26,6 +26,7 @@ from pymc_extras.distributions.continuous import (
 )
 from pymc_extras.distributions.discrete import (
     BetaNegativeBinomial,
+    FisherNoncentralHypergeometric,
     GeneralizedPoisson,
     Skellam,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "Chi",
     "DiscreteMarkovChain",
     "ExtGenPareto",
+    "FisherNoncentralHypergeometric",
     "GenExtreme",
     "GenPareto",
     "GeneralizedPoisson",
