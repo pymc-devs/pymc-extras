@@ -154,6 +154,30 @@ def test_doesnt_check_validity_values() -> None:
         pytest.fail(f"Unexpected exception: {e}")
 
 
+def test_preliz_nested_prior() -> None:
+    var = Prior("Truncated", dist=Prior("Normal", mu=2, sigma=3), lower=0, upper=10)
+    dist = var.preliz
+
+    assert isinstance(dist, preliz_distributions.Distribution)
+    assert (dist.mu, dist.sigma, dist.lower, dist.upper) == (2, 3, 0, 10)
+
+
+def test_preliz_hurdle() -> None:
+    dist = Prior("HurdleGamma", psi=0.5, alpha=2, beta=1).preliz
+
+    assert isinstance(dist, preliz_distributions.Distribution)
+    assert dist.params_dict == {"alpha": 2, "beta": 1, "psi": 0.5}
+
+
+def test_preliz_mixture() -> None:
+    components = [Prior("Normal", mu=0, sigma=1), Prior("Normal", mu=3, sigma=2)]
+    dist = Prior("Mixture", w=[0.25, 0.75], comp_dists=components).preliz
+
+    assert isinstance(dist, preliz_distributions.Distribution)
+    np.testing.assert_allclose(dist.weights, [0.25, 0.75])
+    np.testing.assert_allclose(dist.mean(), 2.25)
+
+
 def test_preliz() -> None:
     var = Prior("Normal", mu=0, sigma=1)
     dist = var.preliz
