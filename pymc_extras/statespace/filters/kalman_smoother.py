@@ -1,5 +1,3 @@
-from collections.abc import Iterable
-
 import pytensor
 import pytensor.tensor as pt
 
@@ -8,13 +6,11 @@ from pytensor.assumptions import assume
 from pymc_extras.statespace.filters.utilities import (
     mask_missing_values,
     quad_form_sym,
+    split_by_time_axis,
     stabilize,
+    unpack_scan_step,
 )
-from pymc_extras.statespace.utils.constants import (
-    JITTER_DEFAULT,
-    LONG_NAME_TO_SHORT,
-    MISSING_FILL,
-)
+from pymc_extras.statespace.utils.constants import JITTER_DEFAULT, MISSING_FILL
 
 # The smoother's backward pass only ever touches these three matrices.
 SMOOTHER_PARAM_NAMES = ("c", "T", "R", "Q")
@@ -33,32 +29,22 @@ class RTSSmoother:
     default; this class is kept for cross-checking against it.
     """
 
-    def __init__(
-        self,
-        time_varying_names: Iterable[str] = (),
-        cov_jitter: float | None = None,
-    ):
+    def __init__(self, cov_jitter: float | None = None):
         """
         Kalman smoother.
 
-        :meth:`build_graph` only reads these settings, so one smoother builds any number of graphs.
+        :meth:`build_graph` only reads this setting, so one smoother builds any number of graphs.
+        Which matrices ``scan`` receives as sequences is read off the matrices themselves, which
+        callers mark with
+        :func:`~pymc_extras.statespace.core.assumptions.declare_time_varying`.
 
         Parameters
         ----------
-        time_varying_names : iterable of str, optional
-            Long names of the matrices the model declared time-varying. Only the state intercept,
-            transition, selection and state covariance matrices reach the smoother. Default is no time-varying matrices.
         cov_jitter : float, optional
             Jitter added to the diagonal of every covariance matrix at each step. Default 1e-8, or
             1e-6 if ``pytensor.config.floatX`` is float32.
         """
         self.cov_jitter = JITTER_DEFAULT if cov_jitter is None else cov_jitter
-
-        time_varying_short = {LONG_NAME_TO_SHORT[name] for name in time_varying_names}
-        self.seq_names = [name for name in SMOOTHER_PARAM_NAMES if name in time_varying_short]
-        self.non_seq_names = [
-            name for name in SMOOTHER_PARAM_NAMES if name not in time_varying_short
-        ]
 
     def build_graph(self, data, matrices, filter_outputs):
         """
@@ -88,15 +74,15 @@ class RTSSmoother:
         a_last = pt.specify_shape(filtered_states[-1], (k,))
         P_last = pt.specify_shape(filtered_covariances[-1], (k, k))
 
-        params = dict(zip(SMOOTHER_PARAM_NAMES, [c, T, R, Q], strict=True))
-        sequences = [params[name] for name in self.seq_names]
-        non_sequences = [params[name] for name in self.non_seq_names]
+        sequences, non_sequences, seq_names, non_seq_names = split_by_time_axis(
+            dict(zip(SMOOTHER_PARAM_NAMES, [c, T, R, Q], strict=True))
+        )
 
-        # After the filtered moments, scan passes the time-varying matrices, then the carried
-        # smoothed moments, then the static matrices.
-        def step(a, P, *args):
-            names = [*self.seq_names, "a_smooth", "P_smooth", *self.non_seq_names]
-            return self.smoother_step(a, P, **dict(zip(names, args, strict=True)))
+        def step(a, P, *rest):
+            (a_smooth, P_smooth), matrices = unpack_scan_step(
+                rest, seq_names, non_seq_names, SMOOTHER_PARAM_NAMES
+            )
+            return self.smoother_step(a, P, a_smooth, P_smooth, *matrices)
 
         smoothed_states, smoothed_covariances = pytensor.scan(
             step,
@@ -152,10 +138,11 @@ class DisturbanceSmoother:
     :math:`P` instead, which is ``k_states`` square and singular whenever a state carries no
     process noise.
 
+    Which matrices ``scan`` receives as sequences is read off the matrices themselves, which callers
+    mark with :func:`~pymc_extras.statespace.core.assumptions.declare_time_varying`.
+
     Parameters
     ----------
-    time_varying_names : iterable of str, optional
-        Long names of the matrices the model declared time-varying. Default is none.
     cov_jitter : float, optional
         Jitter added to the innovation covariance before factoring it. Default 1e-8, or 1e-6 when
         ``pytensor.config.floatX`` is float32.
@@ -165,18 +152,11 @@ class DisturbanceSmoother:
 
     def __init__(
         self,
-        time_varying_names: Iterable[str] = (),
         cov_jitter: float | None = None,
         missing_fill_value: float | None = None,
     ):
         self.cov_jitter = JITTER_DEFAULT if cov_jitter is None else cov_jitter
         self.missing_fill_value = MISSING_FILL if missing_fill_value is None else missing_fill_value
-
-        time_varying_short = {LONG_NAME_TO_SHORT[name] for name in time_varying_names}
-        self.seq_names = [name for name in DISTURBANCE_PARAM_NAMES if name in time_varying_short]
-        self.non_seq_names = [
-            name for name in DISTURBANCE_PARAM_NAMES if name not in time_varying_short
-        ]
 
     def smoother_step(self, y, a, P, r, N, d, T, Z, H):
         y, Z, H, d, nan_mask = mask_missing_values(y, Z, H, d, self.missing_fill_value)
@@ -209,7 +189,7 @@ class DisturbanceSmoother:
             Observed series, shape ``(T, k_endog)``.
         matrices : sequence of TensorVariable
             The nine state-space matrices, in the order ``x0, P0, c, d, T, Z, R, H, Q``. Any matrix
-            named time-varying at construction carries a leading time axis.
+            declared time-varying carries a leading time axis.
         filter_outputs : sequence of TensorVariable
             Output of :meth:`BaseFilter.build_graph`, whose first six entries are the filtered,
             predicted and observed means followed by their covariances.
@@ -225,15 +205,15 @@ class DisturbanceSmoother:
         predicted_states, predicted_covariances = filter_outputs[1], filter_outputs[4]
         k_states = predicted_states.type.shape[1] or predicted_states.shape[1]
 
-        params = dict(zip(DISTURBANCE_PARAM_NAMES, [d, T, Z, H], strict=True))
-        sequences = [params[name] for name in self.seq_names]
-        non_sequences = [params[name] for name in self.non_seq_names]
+        sequences, non_sequences, seq_names, non_seq_names = split_by_time_axis(
+            dict(zip(DISTURBANCE_PARAM_NAMES, [d, T, Z, H], strict=True))
+        )
 
-        # After the data and predicted moments, scan passes the time-varying matrices, then the
-        # carried r and N, then the static matrices.
-        def step(y, a, P, *args):
-            names = [*self.seq_names, "r", "N", *self.non_seq_names]
-            return self.smoother_step(y, a, P, **dict(zip(names, args, strict=True)))
+        def step(y, a, P, *rest):
+            (r, N), matrices = unpack_scan_step(
+                rest, seq_names, non_seq_names, DISTURBANCE_PARAM_NAMES
+            )
+            return self.smoother_step(y, a, P, r, N, *matrices)
 
         _, _, smoothed_states, smoothed_covariances = pytensor.scan(
             step,

@@ -6,6 +6,7 @@ from pymc.model import modelcontext
 from pytensor.compile.mode import Mode
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 
+from pymc_extras.statespace.core.assumptions import is_time_varying
 from pymc_extras.statespace.core.properties import (
     Coord,
     Data,
@@ -705,8 +706,9 @@ class BayesianVARMAX(PyMCStateSpace):
             padding = [(0, self.k_states - self.k_endog)]
             if effect.ndim == 2:
                 padding = [(0, 0), *padding]
-                self.ssm.declare_time_varying("state_intercept")
             self.ssm["state_intercept"] = pt.pad(effect, padding)
+            if effect.ndim == 2:
+                self.ssm.declare_time_varying("state_intercept")
 
         if self.stationary_initialization:
             # Solve for matrix quadratic for P0
@@ -714,7 +716,8 @@ class BayesianVARMAX(PyMCStateSpace):
             R = self.ssm["selection"]
             Q = self.ssm["state_cov"]
             c = self.ssm["state_intercept"]
-            if "state_intercept" in self.ssm.time_varying_names:
+            [intercept_varies] = is_time_varying(c)
+            if intercept_varies:
                 c = c[0]
 
             x0 = pt.linalg.solve(pt.eye(T.shape[0]) - T, c, assume_a="gen", check_finite=False)
