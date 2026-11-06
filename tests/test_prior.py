@@ -614,6 +614,18 @@ def test_deepcopy_memo() -> None:
     assert len(memo) == 1
 
 
+def test_deepcopy_keeps_core_dims() -> None:
+    prior = Prior("ZeroSumNormal", sigma=1, core_dims=("city",), dims=("country", "city"))
+    copied = prior.deepcopy()
+
+    assert copied == prior
+
+    with pm.Model(coords={"country": range(2), "city": range(3)}) as model:
+        copied.create_variable("x", xdist=True)
+
+    assert model["x"].dims == ("country", "city")
+
+
 def test_create_likelihood_variable() -> None:
     distribution = Prior("Normal", sigma=Prior("HalfNormal"))
 

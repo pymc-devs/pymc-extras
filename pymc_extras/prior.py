@@ -1346,6 +1346,7 @@ class Prior:
             dims=copy.copy(self.dims),
             centered=self.centered,
             transform=self.transform,
+            core_dims=self.core_dims,
             **copy.deepcopy(self.parameters),
         )
         memo[id(self)] = copy_obj
