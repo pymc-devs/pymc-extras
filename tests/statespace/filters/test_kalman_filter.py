@@ -828,3 +828,15 @@ def test_filter_builds_and_runs_at_float32(filter_cls, rng):
     results = fn(*[np.asarray(v, dtype=dtype) for v in vals])
     for name, value in zip(GRAD_NAMES, results, strict=True):
         assert np.all(np.isfinite(value)), f"{name} is not finite at float32"
+
+
+def test_convergent_filter_keeps_float32_without_static_shapes():
+    """An unknown ``k_endog`` is a symbolic integer, which must not promote the log-likelihood."""
+    with pytensor.config.change_flags(floatX="float32"):
+        ndims = dict(data=2, a0=1, P0=2, c=1, d=1, T=2, Z=2, R=2, H=2, Q=2)
+        inputs = [
+            pt.tensor(name, dtype="float32", shape=(None,) * ndim) for name, ndim in ndims.items()
+        ]
+        *_, ll_obs = ConvergentFilter().build_graph(*inputs)
+
+    assert ll_obs.dtype == "float32"

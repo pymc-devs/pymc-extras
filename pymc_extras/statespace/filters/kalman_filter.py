@@ -988,7 +988,7 @@ class ConvergentFilter(StandardFilter):
         k = pt.minimum(a_filt_tr.shape[0], n - 1)
         a_star, P_star = a_hat_tr[k - 1], P_hat_tr[k - 1]
 
-        k_endog = dim_of(Z, -2)
+        mvn_constant = pt.as_tensor(dim_of(Z, -2)).astype(data.dtype) * MVN_CONST
 
         # Tail constants from P*, hoisted so the tail scan body carries no Cholesky or solve.
         F_star = Z @ P_star @ Z.mT + stabilize(H, self.cov_jitter)
@@ -1005,7 +1005,7 @@ class ConvergentFilter(StandardFilter):
             y_hat = d + Z @ a_prev
             v = y - y_hat
             solved = solve_triangular(F_chol_star, v, lower=True)
-            ll = -0.5 * (k_endog * MVN_CONST + logdet_F_star + (solved * solved).sum())
+            ll = -0.5 * (mvn_constant + logdet_F_star + (solved * solved).sum())
             a_filt = a_prev + K_star @ v
             return a_filt, T @ a_filt + c, y_hat, ll
 
