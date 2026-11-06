@@ -152,10 +152,12 @@ def _sample_conditional(
                 obs_cov = pt.zeros((obs_mu.shape[0], 1, 1), dtype=H.dtype) + H
                 obs_logp = pt.zeros_like(obs_mu)
             else:
+                # The filter leaves these covariances singular or slightly indefinite, which the
+                # factorizations behind the non-svd mvn_methods turn into NaN draws.
                 SequenceMvNormal(
                     f"{name}_{group}",
                     mus=mu,
-                    covs=cov,
+                    covs=cov + pt.eye(ss_mod.k_states) * ss_mod.cov_jitter,
                     logp=pt.zeros_like(mu),
                     dims=state_dims,
                     method=mvn_method,
@@ -168,7 +170,7 @@ def _sample_conditional(
             SequenceMvNormal(
                 f"{name}_{group}_observed",
                 mus=obs_mu,
-                covs=obs_cov,
+                covs=obs_cov + pt.eye(ss_mod.k_endog) * ss_mod.cov_jitter,
                 logp=obs_logp,
                 dims=obs_dims,
                 method=mvn_method,
