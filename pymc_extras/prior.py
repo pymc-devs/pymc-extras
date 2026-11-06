@@ -1448,9 +1448,8 @@ class Prior:
         if "mu" in self.parameters:
             raise MuAlreadyExistsError(self)
 
-        distribution = self.deepcopy()
-        distribution.parameters["mu"] = mu
-        distribution.parameters["observed"] = observed
+        distribution = copy.copy(self)
+        distribution.parameters = {**self.parameters, "mu": mu, "observed": observed}
         return distribution.create_variable(name, xdist=xdist)
 
 
@@ -1694,8 +1693,8 @@ class Censored:
         if "mu" in self.distribution.parameters:
             raise MuAlreadyExistsError(self.distribution)
 
-        distribution = self.distribution.deepcopy()
-        distribution.parameters["mu"] = mu
+        distribution = copy.copy(self.distribution)
+        distribution.parameters = {**self.distribution.parameters, "mu": mu}
         dist = distribution.create_variable(name, xdist=xdist)
         _remove_random_variable(var=dist)
 

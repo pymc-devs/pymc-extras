@@ -8,6 +8,7 @@ import pymc.dims as pmd
 import pytensor
 import pytensor.tensor as pt
 import pytest
+import scipy.stats
 import xarray as xr
 
 from preliz.distributions import distributions as preliz_distributions
@@ -623,6 +624,47 @@ def test_create_likelihood_variable() -> None:
 
     assert model.observed_RVs == [data]
     assert "data_sigma" in model
+
+
+@pytest.mark.parametrize("xdist", [False, True], ids=["tensor", "xtensor"])
+@pytest.mark.parametrize("censored", [False, True], ids=["prior", "censored"])
+def test_create_likelihood_variable_keeps_data_parameter(censored, xdist) -> None:
+    observed_values = np.ones(3)
+    mu, observed = np.zeros(3), observed_values
+    if xdist:
+        mu, observed = pmd.as_xtensor(mu, dims=("T",)), pmd.as_xtensor(observed, dims=("T",))
+
+    with pm.Model(coords={"T": range(3)}) as model:
+        sigma = pm.Data("sigma", 2.0)
+        normal = Prior("Normal", sigma=sigma, dims="T")
+        distribution = Censored(normal, lower=0) if censored else normal
+        distribution.create_likelihood_variable("y", mu=mu, observed=observed, xdist=xdist)
+
+    assert list(normal.parameters) == ["sigma"]
+
+    logp = model.compile_logp()
+    with model:
+        pm.set_data({"sigma": 50.0})
+
+    expected = scipy.stats.norm.logpdf(observed_values, loc=0, scale=50).sum()
+    np.testing.assert_allclose(logp({}), expected)
+
+
+def test_create_likelihood_variable_keeps_core_dims() -> None:
+    mu, cov, observed = np.zeros(3), np.eye(3), np.ones(3)
+    core_dims = ("city", "city_aux")
+    distribution = Prior("MvNormal", cov=pmd.as_xtensor(cov, dims=core_dims), core_dims=core_dims)
+
+    with pm.Model(coords={"city": range(3), "city_aux": range(3)}) as model:
+        distribution.create_likelihood_variable(
+            "y",
+            mu=pmd.as_xtensor(mu, dims=("city",)),
+            observed=pmd.as_xtensor(observed, dims=("city",)),
+            xdist=True,
+        )
+
+    expected = scipy.stats.multivariate_normal.logpdf(observed, mean=mu, cov=cov)
+    np.testing.assert_allclose(model.compile_logp()({}), expected)
 
 
 def test_create_likelihood_variable_already_has_mu() -> None:
