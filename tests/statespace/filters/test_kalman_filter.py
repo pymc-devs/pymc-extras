@@ -50,6 +50,8 @@ def get_filter_function(filter_name: str) -> Callable:
     match filter_name:
         case "StandardFilter":
             filter_inout = initialize_filter(StandardFilter())
+        case "JosephFormFilter":
+            filter_inout = initialize_filter(StandardFilter(use_joseph_form=True))
         case "CholeskyFilter":
             filter_inout = initialize_filter(SquareRootFilter())
         case "UnivariateFilter":
@@ -403,6 +405,32 @@ def test_square_root_filter_takes_a_covariance_for_P0(rng):
         assert_allclose(actual, expected, atol=ATOL, rtol=RTOL, err_msg=name)
 
 
+def test_joseph_form_matches_standard_form(rng):
+    p, m, r, n = 2, 3, 2, 20
+    inputs = make_test_inputs(p, m, r, n, rng, missing_data=4)
+
+    standard = get_filter_function("StandardFilter")(*inputs)
+    joseph = get_filter_function("JosephFormFilter")(*inputs)
+
+    for name, expected, actual in zip(output_names, standard, joseph, strict=True):
+        assert_allclose(actual, expected, atol=ATOL, rtol=RTOL, err_msg=name)
+
+
+def test_joseph_form_stays_psd_where_standard_form_does_not():
+    """A diffuse ``P0`` puts rounding from the first update above ``Q`` when ``H`` is zero."""
+    data = np.zeros((50, 1), dtype=floatX)
+    one, zero = np.eye(1, dtype=floatX), np.zeros((1, 1), dtype=floatX)
+    vector_zero = np.zeros(1, dtype=floatX)
+    inputs = [data, vector_zero, one * 1e15, vector_zero, vector_zero, one, one, one, zero, one]
+
+    filtered_covs = output_names.index("filtered_covs")
+    standard = get_filter_function("StandardFilter")(*inputs)[filtered_covs]
+    joseph = get_filter_function("JosephFormFilter")(*inputs)[filtered_covs]
+
+    assert standard.min() < 0
+    assert joseph.min() >= 0
+
+
 class TestDisturbanceSmootherMatchesRTS:
     """Compare the disturbance smoother with the RTS smoother through one compiled function."""
 
@@ -651,6 +679,8 @@ class TestConvergentFilter:
         cls.standard = cls._compile(StandardFilter())
         cls.convergent = cls._compile(ConvergentFilter())
         cls.convergent_never_converging = cls._compile(ConvergentFilter(tol=0.0))
+        cls.standard_joseph = cls._compile(StandardFilter(use_joseph_form=True))
+        cls.convergent_joseph = cls._compile(ConvergentFilter(use_joseph_form=True))
 
     @staticmethod
     def _compile(kfilter) -> Callable:
@@ -664,6 +694,15 @@ class TestConvergentFilter:
     def _forward_and_gradients(fn, vals):
         results = fn(*vals)
         return results[:N_FORWARD_OUTPUTS], results[N_FORWARD_OUTPUTS:]
+
+    @pytest.mark.parametrize("joseph_fn", ["standard_joseph", "convergent_joseph"])
+    def test_joseph_form_matches_standard(self, joseph_fn, rng):
+        vals = _make_stationary_system(5, 2, 5, 100, rng)
+        out_std, grads_std = self._forward_and_gradients(self.standard, vals)
+        out_joseph, grads_joseph = self._forward_and_gradients(getattr(self, joseph_fn), vals)
+
+        assert_results_match(out_std, out_joseph, output_names, err_prefix=f"{joseph_fn} ")
+        assert_results_match(grads_std, grads_joseph, GRAD_NAMES, err_prefix=f"{joseph_fn} ")
 
     @pytest.mark.parametrize(
         "m,p,n_shocks,n",

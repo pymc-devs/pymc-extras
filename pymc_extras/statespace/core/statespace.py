@@ -189,6 +189,13 @@ class PyMCStateSpace:
         if your data legitimately contains the default sentinel. Post-estimation graphs are built with this same
         value. Default -9999.0.
 
+    use_joseph_form: bool, optional
+        If True, the filter updates the filtered covariance with the Joseph form, which is PSD by construction but
+        costs ``O(k_states^3)`` per step instead of ``O(k_states^2 k_endog)``. The default update carries rounding
+        error of order ``eps * max(P)``, so use this when ``Q`` and ``H`` are not large next to that, as with a
+        diffuse ``P0`` at float32. Only the "standard" and "convergent" filters take it. Post-estimation graphs are
+        built with this same form. Default False.
+
     Notes
     -----
     Based on the statsmodels statespace implementation https://github.com/statsmodels/statsmodels/blob/main/statsmodels/tsa/statespace/representation.py,
@@ -316,6 +323,7 @@ class PyMCStateSpace:
         mode: str | None = None,
         cov_jitter: float = JITTER_DEFAULT,
         missing_fill_value: float = MISSING_FILL,
+        use_joseph_form: bool = False,
     ):
         self._needs_exog_data = False
         self._tensor_variable_info = SymbolicVariableInfo()
@@ -328,6 +336,7 @@ class PyMCStateSpace:
         self.mode = mode
         self.cov_jitter = cov_jitter
         self.missing_fill_value = missing_fill_value
+        self.use_joseph_form = use_joseph_form
 
         self._populate_properties()
 
@@ -344,6 +353,12 @@ class PyMCStateSpace:
 
         if filter_type == "single" and self.k_endog > 1:
             raise ValueError('Cannot use filter_type = "single" with multiple observed time series')
+
+        if use_joseph_form and not issubclass(FILTER_FACTORY[filter_type.lower()], StandardFilter):
+            raise ValueError(
+                f'use_joseph_form=True is not supported with filter_type = "{filter_type}". '
+                'Use "standard" or "convergent".'
+            )
 
         if smoother_type.lower() not in SMOOTHER_FACTORY.keys():
             raise NotImplementedError(
@@ -1012,8 +1027,8 @@ class PyMCStateSpace:
         the associated log probability of the data. Hidden states and log probabilities are computed via the Kalman
         Filter.
 
-        The filter is configured with the ``cov_jitter`` and ``missing_fill_value`` given to the model constructor,
-        which are also what post-estimation graphs use.
+        The filter is configured with the ``cov_jitter``, ``missing_fill_value`` and ``use_joseph_form`` given to the
+        model constructor, which are also what post-estimation graphs use.
 
         Parameters
         ----------
@@ -1209,11 +1224,16 @@ class PyMCStateSpace:
         kalman_smoother : DisturbanceSmoother or RTSSmoother
             Smoother carrying the same time-varying names and jitter.
         """
-        kalman_filter = FILTER_FACTORY[self.filter_type](
+        filter_class = FILTER_FACTORY[self.filter_type]
+        filter_kwargs = dict(
             time_varying_names=self.ssm.time_varying_names,
             cov_jitter=self.cov_jitter,
             missing_fill_value=self.missing_fill_value,
         )
+        if issubclass(filter_class, StandardFilter):
+            filter_kwargs["use_joseph_form"] = self.use_joseph_form
+
+        kalman_filter = filter_class(**filter_kwargs)
         smoother_class = SMOOTHER_FACTORY[self.smoother_type]
         smoother_kwargs = dict(
             time_varying_names=self.ssm.time_varying_names, cov_jitter=self.cov_jitter

@@ -538,7 +538,31 @@ class BaseFilter(ABC):
 class StandardFilter(BaseFilter):
     """
     Basic Kalman Filter
+
+    Parameters
+    ----------
+    use_joseph_form : bool, optional
+        If True, update the filtered covariance with the Joseph form
+        ``(I - KZ) P (I - KZ)^T + K H K^T``, which is PSD by construction but costs
+        ``O(k_states^3)`` per step. If False, use ``P - K F K^T``, which costs
+        ``O(k_states^2 k_endog)`` but carries rounding error of order ``eps * max(P)`` into the
+        recursion. When ``Q`` and ``H`` are not large next to that error, as with a diffuse ``P0``
+        at float32, the likelihood can be biased or NaN and nothing raises. Default False.
     """
+
+    def __init__(
+        self,
+        time_varying_names: Iterable[str] = (),
+        cov_jitter: float | None = None,
+        missing_fill_value: float | None = None,
+        use_joseph_form: bool = False,
+    ):
+        super().__init__(
+            time_varying_names=time_varying_names,
+            cov_jitter=cov_jitter,
+            missing_fill_value=missing_fill_value,
+        )
+        self.use_joseph_form = use_joseph_form
 
     def update(self, a, P, y, d, Z, H, nan_mask):
         """
@@ -602,11 +626,14 @@ class StandardFilter(BaseFilter):
 
         a_filtered = a + K @ v
 
-        # Equal to the Joseph form (I - KZ) P (I - KZ)^T + K H K^T, whose H carries no jitter, at
-        # O(k_states^2 k_endog) cost instead of O(k_states^3). Unlike the Joseph form it is not PSD by
-        # construction: it subtracts nearly equal terms when H is small next to Z P Z^T, so the
-        # result can carry eigenvalues below zero at rounding level.
-        P_filtered = P - quad_form_sym(K, stabilize(F, self.cov_jitter))
+        if self.use_joseph_form:
+            I_KZ = pt.eye(dim_of(a, 0)) - K @ Z
+            P_filtered = quad_form_sym(I_KZ, P) + quad_form_sym(K, H)
+        else:
+            # Equal to the Joseph form with unjittered H: the second jitter cancels the one inside
+            # K. It subtracts nearly equal terms, so it carries rounding error of order
+            # eps * ||P||, which can exceed Q and H.
+            P_filtered = P - quad_form_sym(K, stabilize(F, self.cov_jitter))
 
         F_inv_v = pt.linalg.cho_solve((F_chol, True), v)
         inner_term = v.T @ F_inv_v
@@ -885,6 +912,9 @@ class ConvergentFilter(StandardFilter):
     tol : float, optional
         Convergence tolerance on the Frobenius norm of ``P_{t+1|t} - P_{t|t-1}`` in the pre-convergence
         scan. The scan stops the first time this drops below ``tol``. Default ``1e-10``.
+    use_joseph_form : bool, optional
+        Covariance update form for the pre-convergence steps. See :class:`StandardFilter`.
+        Default False.
     """
 
     _MISSING_DATA_MSG = (
@@ -898,11 +928,13 @@ class ConvergentFilter(StandardFilter):
         cov_jitter: float | None = None,
         missing_fill_value: float | None = None,
         tol: float = 1e-10,
+        use_joseph_form: bool = False,
     ):
         super().__init__(
             time_varying_names=time_varying_names,
             cov_jitter=cov_jitter,
             missing_fill_value=missing_fill_value,
+            use_joseph_form=use_joseph_form,
         )
         if self.seq_names:
             raise ValueError(
