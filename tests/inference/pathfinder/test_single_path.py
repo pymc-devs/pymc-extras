@@ -1,6 +1,8 @@
 from unittest.mock import patch
 
 import numpy as np
+import pymc as pm
+import pytensor
 import pytest
 
 from pymc.blocking import DictToArrayBijection
@@ -181,6 +183,23 @@ def test_shared_single_fn_is_leak_free():
         np.testing.assert_array_equal(r.inv_hessian_diag, ref.inv_hessian_diag)
         compared += 1
     assert compared >= 2, "need >=2 successful paths to meaningfully exercise fn reuse"
+
+
+def test_float32_model_dtype_propagation():
+    """A float32 model keeps pathfinder's numpy buffers, ELBO draws, and outputs in float32, so no
+    float64 op leaks into the compiled (potentially device) graph."""
+    with pytensor.config.change_flags(floatX="float32"):
+        with pm.Model() as model:
+            mu = pm.Normal("mu", 0.0, 1.0, shape=3)
+            pm.Normal("y", mu=mu, sigma=1.0, observed=np.array([0.3, -0.7, 1.2], dtype="float32"))
+        result = make_single_fn(model)(0)
+
+    assert result.path_status not in FAILED_PATH_STATUS
+    assert result.samples is not None
+    assert result.samples.dtype == np.float32
+    assert result.logP.dtype == np.float32
+    assert result.logQ.dtype == np.float32
+    assert result.inv_hessian_diag.dtype == np.float32
 
 
 @pytest.mark.parametrize("model_name", ["ard_regression", "bpca_small"])

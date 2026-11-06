@@ -111,6 +111,7 @@ def make_single_pathfinder_fn(
     ip = Point(ipfn(None), model=model)
     x_base = DictToArrayBijection.map(ip).data
     N = x_base.shape[0]
+    floatX = x_base.dtype  # model precision; pathfinder's numpy buffers/draws follow it
 
     sample_logp_func = make_pathfinder_sample_fn(
         model=model,
@@ -120,6 +121,17 @@ def make_single_pathfinder_fn(
         compile_kwargs=compile_kwargs,
         vectorize=vectorize_logp,
     )
+
+    # LBFGS and its callback feed numpy buffers straight into sample_logp_func, which is compiled
+    # at the model's floatX with trust_input=True (no dtype coercion at call time). A dtype
+    # mismatch would be silently miscomputed rather than raised, so pin the buffer dtype to the
+    # function's declared input dtype.
+    sample_input_dtype = sample_logp_func.maker.fgraph.inputs[0].type.dtype
+    if floatX != sample_input_dtype:
+        raise ValueError(
+            f"Pathfinder buffer dtype {floatX} does not match the compiled sample-function input "
+            f"dtype {sample_input_dtype}."
+        )
 
     def _check_lbfgs_status(status):
         if status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
@@ -148,7 +160,7 @@ def make_single_pathfinder_fn(
         if progress_callback is not None:
             progress_callback({"status": "running"})
 
-        local_lbfgs = LBFGS(neg_logp_dlogp_func, maxcor, maxiter, ftol, gtol, maxls, epsilon)
+        local_lbfgs = LBFGS(maxcor, maxiter, ftol, gtol, maxls, dtype=floatX)
         lbfgs_status = LBFGSStatus.LBFGS_FAILED  # default before LBFGS runs
 
         try:
@@ -176,6 +188,7 @@ def make_single_pathfinder_fn(
                         J=maxcor,
                         epsilon=epsilon,
                         progress_callback=progress_callback,
+                        dtype=floatX,
                     )
 
                     lbfgs_niter, lbfgs_status = local_lbfgs.minimize_streaming(streaming_cb, x0)
@@ -191,7 +204,7 @@ def make_single_pathfinder_fn(
                     best_state = streaming_cb.best_state
 
                     final_rng = np.random.default_rng(final_seed)
-                    u_final = final_rng.standard_normal((num_draws, N))
+                    u_final = final_rng.standard_normal((num_draws, N)).astype(floatX)
                     if progress_callback is not None:
                         progress_callback({"status": "sampling"})
 
