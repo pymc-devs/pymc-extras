@@ -9,6 +9,7 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
+from pymc_extras.statespace.models import BayesianSARIMAX
 from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
@@ -41,6 +42,67 @@ def test_sampling_methods(group, kind, ss_mod, idata, rng):
         for output in ["latent", "observed"]:
             assert f"{group}_{output}" in test_idata
             assert not np.any(np.isnan(test_idata[f"{group}_{output}"].values))
+
+
+def test_unconditional_sampling_uses_the_model_cov_jitter(rng):
+    """Without measurement error, the observed draws differ from the latent ones by the jitter."""
+    n_obs = 50
+    data = pd.DataFrame(
+        rng.normal(size=(n_obs, 1)),
+        index=pd.date_range("2000-01-01", periods=n_obs, freq="MS"),
+        columns=["y"],
+    )
+    mod = st.LevelTrend(name="level", order=1, innovations_order=1).build(
+        verbose=False, cov_jitter=1.0
+    )
+    with pm.Model(coords=mod.coords):
+        pm.Normal("initial_level", dims=["state_level"])
+        pm.Exponential("sigma_level", 1, dims=["shock_level"])
+        pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
+        mod.build_statespace_graph(data)
+        prior = pm.sample_prior_predictive(draws=20, random_seed=rng)
+
+    draws = mod.sample_unconditional_prior(prior, random_seed=rng)
+    noise = draws["prior_observed"].values - draws["prior_latent"].values
+
+    assert_allclose(noise.std(), 1.0, rtol=0.1)
+
+
+@pytest.fixture(scope="module")
+def model_without_measurement_error():
+    rng = np.random.default_rng(1)
+    data = pd.DataFrame(
+        rng.normal(size=(40, 1)),
+        index=pd.date_range("2000-01-01", periods=40, freq="MS"),
+        columns=["y"],
+    )
+    mod = BayesianSARIMAX(order=(1, 0, 1), stationary_initialization=False, verbose=False)
+    with pm.Model(coords=mod.coords):
+        pm.Normal("x0", sigma=0.5, dims=["state"])
+        pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
+        pm.Uniform("ar_params", -0.9, 0.9, dims=["lag_ar"])
+        pm.Uniform("ma_params", -0.9, 0.9, dims=["lag_ma"])
+        pm.Exponential("sigma_state", 1)
+        mod.build_statespace_graph(data)
+        prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
+
+    return mod, prior
+
+
+@pytest.mark.parametrize("mvn_method", ["eigh", "cholesky"])
+def test_factoring_mvn_methods_draw_from_singular_covariances(
+    mvn_method, model_without_measurement_error
+):
+    mod, prior = model_without_measurement_error
+
+    conditional = mod.sample_conditional_prior(prior, mvn_method=mvn_method, random_seed=3)
+    for name, draws in conditional.data_vars.items():
+        assert not np.any(np.isnan(draws.values)), f"{name} contains NaNs"
+
+    forecast = mod.forecast(
+        prior, periods=5, mvn_method=mvn_method, group="prior", random_seed=3, verbose=False
+    )
+    assert not np.any(np.isnan(forecast["forecast_latent"].values))
 
 
 @pytest.mark.parametrize(

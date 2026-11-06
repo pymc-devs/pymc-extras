@@ -138,6 +138,7 @@ class StructuralTimeSeries(PyMCStateSpace):
         mode: str | Mode | None = None,
         cov_jitter: float = JITTER_DEFAULT,
         missing_fill_value: float = MISSING_FILL,
+        use_joseph_form: bool = False,
     ):
         """
         Initialize a StructuralTimeSeries model.
@@ -175,11 +176,19 @@ class StructuralTimeSeries(PyMCStateSpace):
         mode : str | Mode | None, default None
             PyTensor compilation mode.
         cov_jitter : float, optional
-            Jitter added to covariance diagonals at each filtering step. Post-estimation graphs use the same
-            value. Default 1e-8, or 1e-6 if ``pytensor.config.floatX`` is float32.
+            Jitter added to the diagonal of the observation noise covariance, and of any other
+            covariance matrix the filter or smoother factors, for systems where one can be singular.
+            Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
+            ``pytensor.config.floatX`` is float32.
         missing_fill_value : float, optional
             Sentinel used to mask missing observations. Post-estimation graphs use the same value.
             Default -9999.0.
+        use_joseph_form : bool, optional
+            If True, update the filtered covariance with the Joseph form, which is PSD by
+            construction but costs ``O(k_states^3)`` per step. The default update carries rounding
+            error of order ``eps * max(P)``, so use this when ``Q`` and ``H`` are not large next to
+            that, as with a diffuse ``P0`` at float32. Only the "standard" and "convergent" filters
+            take it. Post-estimation graphs are built with this same form. Default False.
         """
         self._name = name or "StructuralTimeSeries"
         self.measurement_error = measurement_error
@@ -202,6 +211,7 @@ class StructuralTimeSeries(PyMCStateSpace):
             mode=mode,
             cov_jitter=cov_jitter,
             missing_fill_value=missing_fill_value,
+            use_joseph_form=use_joseph_form,
         )
 
         self._tensor_variable_info = tensor_variable_info
@@ -995,6 +1005,7 @@ class Component:
         mode: str | Mode | None = None,
         cov_jitter: float = JITTER_DEFAULT,
         missing_fill_value: float = MISSING_FILL,
+        use_joseph_form: bool = False,
     ):
         """
         Build a StructuralTimeSeries statespace model from the current component(s)
@@ -1019,14 +1030,22 @@ class Component:
             to all sampling methods.
 
         cov_jitter: float, optional
-            Jitter added to the diagonal of every covariance matrix at each filtering step, for numerical
-            stability. Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
+            Jitter added to the diagonal of the observation noise covariance, and of any other
+            covariance matrix the filter or smoother factors, for systems where one can be singular.
+            Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
             ``pytensor.config.floatX`` is float32.
 
         missing_fill_value: float, optional
             Sentinel used to mask missing observations. Set this only if your data legitimately contains the
             default sentinel. Post-estimation graphs are built with this same value. Default None, which the
             filter resolves to -9999.0.
+
+        use_joseph_form: bool, optional
+            If True, update the filtered covariance with the Joseph form, which is PSD by
+            construction but costs ``O(k_states^3)`` per step. The default update carries rounding
+            error of order ``eps * max(P)``, so use this when ``Q`` and ``H`` are not large next to
+            that, as with a diffuse ``P0`` at float32. Only the "standard" and "convergent" filters
+            take it. Post-estimation graphs are built with this same form. Default False.
 
         Returns
         -------
@@ -1054,4 +1073,5 @@ class Component:
             mode=mode,
             cov_jitter=cov_jitter,
             missing_fill_value=missing_fill_value,
+            use_joseph_form=use_joseph_form,
         )

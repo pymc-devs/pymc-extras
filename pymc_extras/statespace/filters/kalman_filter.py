@@ -30,7 +30,9 @@ from pymc_extras.statespace.utils.constants import (
     MISSING_FILL,
 )
 
-MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
+# A Python float takes on floatX in the graph, where a float64 constant would upcast float32
+# likelihoods.
+MVN_CONST = float(np.log(2 * np.pi))
 
 assert_time_varying_dim_correct = Assert(
     "The first dimension of a time varying matrix (the time dimension) must be "
@@ -56,8 +58,9 @@ class BaseFilter(ABC):
             Long names of the matrices the model declared time-varying, which the filter passes to
             ``scan`` as sequences rather than non-sequences. Default is no time-varying matrices.
         cov_jitter : float, optional
-            Jitter added to the diagonal of every covariance matrix at each step. Default 1e-8, or
-            1e-6 if ``pytensor.config.floatX`` is float32.
+            Jitter added to the diagonal of each covariance matrix the filter factors, for systems
+            where one can be singular. Default 1e-8, or 1e-6 if ``pytensor.config.floatX`` is
+            float32.
         missing_fill_value : float, optional
             Sentinel marking missing observations in the data. Default -9999.0.
         """
@@ -170,16 +173,10 @@ class BaseFilter(ABC):
             the Kalman filter's hidden state inference. Change if your data happens to have legitimate values of -9999
 
         cov_jitter: float, default 1e-8 or 1e-6 if pytensor.config.floatX is float32
-            The Kalman filter is known to be numerically unstable, especially at half precision. This value is added to
-            the diagonal of every covariance matrix -- predicted, filtered, and smoothed -- at every step, to ensure
-            all matrices are strictly positive semi-definite.
-
-            Obviously, if this can be zero, that's best. In general:
-                - Having measurement error makes Kalman Filters more robust. A large source of numerical errors come
-                  from the Filtered and Smoothed matrices having a zero in the (0, 0) position, which always occurs
-                  when there is no measurement error.
-
-                - The Univariate Filter is more robust than other filters, and can tolerate a lower jitter value
+            Added to the diagonal of each covariance matrix the filter factors, such as the
+            innovation covariance, for systems where one can be singular. A model without
+            measurement error and with fewer states than observed series, for example, has a
+            singular innovation covariance.
 
         References
         ----------
@@ -217,16 +214,18 @@ class BaseFilter(ABC):
 
     def _declare_covariance_structure(self, outputs) -> list[TensorVariable]:
         """
-        Declare the covariance outputs symmetric, and positive definite where the recursion stabilizes them.
+        Declare the covariance outputs symmetric, and the observed covariance positive definite.
 
-        The predicted sequence begins with ``P0``, which a stationary initialization can leave
-        singular, so it is declared symmetric only.
+        Only the observed covariance carries ``cov_jitter``. The filtered covariance is exactly
+        singular for a model without measurement error, and the predicted sequence begins with
+        ``P0``, which a stationary initialization can leave singular, so both are declared symmetric
+        only.
         """
         states, (filtered, predicted, observed), loglike = outputs[:3], outputs[3:6], outputs[6]
         positive_definite = True if self.cov_jitter > 0 else None
 
         covariances = [
-            assume(filtered, symmetric=True, positive_definite=positive_definite),
+            assume(filtered, symmetric=True),
             assume(predicted, symmetric=True),
             assume(observed, symmetric=True, positive_definite=positive_definite),
         ]
@@ -530,8 +529,6 @@ class BaseFilter(ABC):
             y=y_masked, a=a, d=d_masked, P=P, Z=Z_masked, H=H_masked, nan_mask=nan_mask
         )
 
-        P_filtered = stabilize(P_filtered, self.cov_jitter)
-
         a_hat, P_hat = self.predict(a=a_filtered, P=P_filtered, c=c, T=T, R=R, Q=Q)
         outputs = (a_filtered, a_hat, obs_mu, P_filtered, P_hat, obs_cov, ll)
 
@@ -541,7 +538,31 @@ class BaseFilter(ABC):
 class StandardFilter(BaseFilter):
     """
     Basic Kalman Filter
+
+    Parameters
+    ----------
+    use_joseph_form : bool, optional
+        If True, update the filtered covariance with the Joseph form
+        ``(I - KZ) P (I - KZ)^T + K H K^T``, which is PSD by construction but costs
+        ``O(k_states^3)`` per step. If False, use ``P - K F K^T``, which costs
+        ``O(k_states^2 k_endog)`` but carries rounding error of order ``eps * max(P)`` into the
+        recursion. When ``Q`` and ``H`` are not large next to that error, as with a diffuse ``P0``
+        at float32, the likelihood can be biased or NaN and nothing raises. Default False.
     """
+
+    def __init__(
+        self,
+        time_varying_names: Iterable[str] = (),
+        cov_jitter: float | None = None,
+        missing_fill_value: float | None = None,
+        use_joseph_form: bool = False,
+    ):
+        super().__init__(
+            time_varying_names=time_varying_names,
+            cov_jitter=cov_jitter,
+            missing_fill_value=missing_fill_value,
+        )
+        self.use_joseph_form = use_joseph_form
 
     def update(self, a, P, y, d, Z, H, nan_mask):
         """
@@ -597,15 +618,22 @@ class StandardFilter(BaseFilter):
         # A masked row of F holds only the stabilizing jitter, which log |F| would count as
         # log(jitter). Put a one there instead; the gain and the innovation are zero on that row.
         observed = pt.bitwise_not(nan_mask).astype(F.dtype)
-        F_scored = F * pt.outer(observed, observed) + pt.diag(1 - observed)
+        F_scored = F * pt.outer(observed, observed) + pt.eye(dim_of(F, 0)) * (1 - observed)
 
         F_chol = pt.linalg.cholesky(F_scored, lower=True)
 
         K = pt.linalg.cho_solve((F_chol, True), PZT.mT).mT
-        I_KZ = pt.eye(dim_of(a, 0)) - K.dot(Z)
 
         a_filtered = a + K @ v
-        P_filtered = quad_form_sym(I_KZ, P) + quad_form_sym(K, H)
+
+        if self.use_joseph_form:
+            I_KZ = pt.eye(dim_of(a, 0)) - K @ Z
+            P_filtered = quad_form_sym(I_KZ, P) + quad_form_sym(K, H)
+        else:
+            # Equal to the Joseph form with unjittered H: the second jitter cancels the one inside
+            # K. It subtracts nearly equal terms, so it carries rounding error of order
+            # eps * ||P||, which can exceed Q and H.
+            P_filtered = P - quad_form_sym(K, stabilize(F, self.cov_jitter))
 
         F_inv_v = pt.linalg.cho_solve((F_chol, True), v)
         inner_term = v.T @ F_inv_v
@@ -828,10 +856,11 @@ class UnivariateFilter(BaseFilter):
             obs_cov[-1],
         )
 
-        P_filtered = stabilize(0.5 * (P_filtered + P_filtered.mT), self.cov_jitter)
+        P_filtered = 0.5 * (P_filtered + P_filtered.mT)
         a_hat, P_hat = self.predict(a=a_filtered, P=P_filtered, c=c, T=T, R=R, Q=Q)
 
-        ll = -0.5 * (pt.bitwise_not(nan_mask).sum() * MVN_CONST + ll_inner.sum())
+        n_observed = pt.bitwise_not(nan_mask).astype(ll_inner.dtype).sum()
+        ll = -0.5 * (n_observed * MVN_CONST + ll_inner.sum())
 
         return a_filtered, a_hat, obs_mu, P_filtered, P_hat, obs_cov, ll
 
@@ -883,6 +912,9 @@ class ConvergentFilter(StandardFilter):
     tol : float, optional
         Convergence tolerance on the Frobenius norm of ``P_{t+1|t} - P_{t|t-1}`` in the pre-convergence
         scan. The scan stops the first time this drops below ``tol``. Default ``1e-10``.
+    use_joseph_form : bool, optional
+        Covariance update form for the pre-convergence steps. See :class:`StandardFilter`.
+        Default False.
     """
 
     _MISSING_DATA_MSG = (
@@ -896,11 +928,13 @@ class ConvergentFilter(StandardFilter):
         cov_jitter: float | None = None,
         missing_fill_value: float | None = None,
         tol: float = 1e-10,
+        use_joseph_form: bool = False,
     ):
         super().__init__(
             time_varying_names=time_varying_names,
             cov_jitter=cov_jitter,
             missing_fill_value=missing_fill_value,
+            use_joseph_form=use_joseph_form,
         )
         if self.seq_names:
             raise ValueError(
@@ -929,7 +963,6 @@ class ConvergentFilter(StandardFilter):
         a_filt, P_filt, y_hat, F, ll = self.update(
             a=a, P=P, y=y, d=d, Z=Z, H=H, nan_mask=pt.zeros((dim_of(Z, -2),), dtype=bool)
         )
-        P_filt = stabilize(P_filt, self.cov_jitter)
         a_hat, P_hat = self.predict(a=a_filt, P=P_filt, c=c, T=T, R=R, Q=Q)
         return a_filt, a_hat, y_hat, P_filt, P_hat, F, ll
 
@@ -987,7 +1020,7 @@ class ConvergentFilter(StandardFilter):
         k = pt.minimum(a_filt_tr.shape[0], n - 1)
         a_star, P_star = a_hat_tr[k - 1], P_hat_tr[k - 1]
 
-        k_endog = dim_of(Z, -2)
+        mvn_constant = pt.as_tensor(dim_of(Z, -2)).astype(data.dtype) * MVN_CONST
 
         # Tail constants from P*, hoisted so the tail scan body carries no Cholesky or solve.
         F_star = Z @ P_star @ Z.mT + stabilize(H, self.cov_jitter)
@@ -997,16 +1030,14 @@ class ConvergentFilter(StandardFilter):
             F_star.mT, (P_star @ Z.mT).mT, assume_a="pos", check_finite=False
         ).mT
         I_KZ_star = pt.eye(dim_of(P_star, -1)) - K_star @ Z
-        P_filt_star = stabilize(
-            quad_form_sym(I_KZ_star, P_star) + quad_form_sym(K_star, H), self.cov_jitter
-        )
+        P_filt_star = quad_form_sym(I_KZ_star, P_star) + quad_form_sym(K_star, H)
 
         # Tail scan: fixed K*, F* (no per-step Cholesky). Recurrent slot is a_hat.
         def tail_body(y, a_prev):
             y_hat = d + Z @ a_prev
             v = y - y_hat
             solved = solve_triangular(F_chol_star, v, lower=True)
-            ll = -0.5 * (k_endog * MVN_CONST + logdet_F_star + (solved * solved).sum())
+            ll = -0.5 * (mvn_constant + logdet_F_star + (solved * solved).sum())
             a_filt = a_prev + K_star @ v
             return a_filt, T @ a_filt + c, y_hat, ll
 
