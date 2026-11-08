@@ -19,6 +19,7 @@ from pymc_extras.statespace.utils.constants import (
 from pymc_extras.statespace.utils.data_tools import (
     NO_FREQ_INFO_WARNING,
     NO_TIME_INDEX_WARNING,
+    preprocess_pandas_data,
 )
 from tests.statespace.test_utilities import load_nile_test_data
 
@@ -187,3 +188,22 @@ def test_multiindex_raises():
         NotImplementedError, match="MultiIndex panel data is not currently supported"
     ):
         make_model(index)
+
+
+def test_preprocess_pandas_data_leaves_caller_data_untouched():
+    index = pd.date_range("2024-01-01", periods=10)
+    index.freq = None
+    series = pd.Series(np.zeros(10), index=index)
+    frame = pd.DataFrame({"y": np.zeros(10)}, index=index.copy())
+    frame.index.freq = None
+
+    with pytest.warns(UserWarning, match=NO_FREQ_INFO_WARNING):
+        _, series_index = preprocess_pandas_data(series, n_obs=1)
+    with pytest.warns(UserWarning, match=NO_FREQ_INFO_WARNING):
+        _, frame_index = preprocess_pandas_data(frame, n_obs=1)
+
+    assert series.name is None
+    assert series.index.freq is None
+    assert frame.index.freq is None
+    assert series_index.freq == pd.tseries.frequencies.to_offset("D")
+    assert frame_index.freq == pd.tseries.frequencies.to_offset("D")
