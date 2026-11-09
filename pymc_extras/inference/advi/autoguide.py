@@ -360,12 +360,7 @@ class AutoLowRankGuideModel(AutoGuideModel):
     """Guide model for a low-rank-plus-diagonal multivariate normal ADVI approximation."""
 
     def fit_quantities(self, params: dict[str, np.ndarray]) -> FitQuantities:
-        r"""Report the mean and the two terms of the covariance.
-
-        The covariance is :math:`W W^{T} + \mathrm{diag}(d^{2})`, so ``cov_factor`` is
-        :math:`W` and ``diagonal_standard_deviation`` is :math:`d` -- a standard deviation,
-        squared before it enters the covariance.
-        """
+        """Report the mean, the covariance factor ``W``, and the diagonal standard deviation ``d``."""
         return {
             "mean_vector": (("rows",), params["loc"]),
             "cov_factor": (("rows", "factors"), params["cov_factor"]),
