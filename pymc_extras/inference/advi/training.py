@@ -708,7 +708,6 @@ class Trainer(WithMemoization):
         fit_model = self._fit_model if self._fit_model is not None else model
         self._bind_guide(fit_model)
         sampling_fn = self._sampling_fn(fit_model, draws, random_seed)
-        guide = self._guide
 
         params = {name: np.asarray(value) for name, value in state.params.items()}
         samples = sampling_fn(**params)
@@ -730,7 +729,9 @@ class Trainer(WithMemoization):
         idata = add_data_to_inference_data(
             idata=idata, progressbar=False, model=model, compile_kwargs=self.compile_kwargs
         )
-        idata = add_fit_to_inference_data(idata=idata, guide=guide, params=params, model=fit_model)
+        idata = add_fit_to_inference_data(
+            idata=idata, guide=self._guide, params=params, model=fit_model
+        )
         idata = add_fit_stats_to_inference_data(idata=idata, loss_history=state.loss_history)
 
         return idata
