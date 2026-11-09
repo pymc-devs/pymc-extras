@@ -164,7 +164,7 @@ def _validate_scenario_data(
 
             # Recursively call this function to trigger the non-dictionary branch of the checks on each object
             # inside the dictionary
-            scenario[name] = ss_mod._validate_scenario_data(data, coords, name)
+            scenario[name] = ss_mod._validate_scenario_data(data, coords, name, verbose=verbose)
 
         # The provided dictionary might be a mix of numpy arrays and dataframes if the user is truly horrible.
         # For checking shapes, the first object will always be good enough. But we also need to make sure all the
@@ -242,13 +242,14 @@ def _validate_scenario_data(
                     f"{', '.join(extra_columns)}"
                 )
 
-            if not (a == b for a, b in zip(expected_cols, cols)) and verbose:
-                _log.warning(
-                    f"Scenario data for {name} has a different column order than the data used to fit the "
-                    f"model. Columns will be automatically re-ordered. Ensure consistent ordering to avoid "
-                    f"silent errors."
-                )
-                scenario = scenario[expected_cols]
+            if list(expected_cols) != list(cols):
+                if verbose:
+                    _log.warning(
+                        f"Scenario data for {name} has a different column order than the data used to fit the "
+                        f"model. Columns will be automatically re-ordered. Ensure consistent ordering to avoid "
+                        f"silent errors."
+                    )
+                scenario = scenario[list(expected_cols)]
 
         return scenario
 
