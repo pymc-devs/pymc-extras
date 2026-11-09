@@ -66,6 +66,7 @@ FitQuantities = dict[str, tuple[tuple[str, ...], np.ndarray]]
 class AutoGuideModel:
     model: Model
     params_init_values: dict[Variable, np.ndarray]
+    value_names: tuple[str, ...] = field(default=(), kw_only=True)
     name_to_param: dict[str, Variable] = field(init=False)
 
     def __post_init__(self):
@@ -96,8 +97,9 @@ class AutoGuideModel:
 
         By default this reports each guide parameter as fitted, unconstrained. A guide that
         has a more readable form, such as a mean and a covariance, overrides it. An array
-        over the model's free RV elements uses the dims ``rows`` and ``columns``, which
-        :func:`~pymc_extras.inference.advi.idata.add_fit_to_inference_data` labels.
+        over the elements of the model's value variables uses the dims ``rows`` and
+        ``columns``, laid out in the order of :attr:`value_names`, and
+        :func:`~pymc_extras.inference.advi.idata.add_fit_to_inference_data` labels them.
 
         Parameters
         ----------
@@ -169,12 +171,12 @@ def _check_continuous_rvs(model: Model, free_rvs: list[Variable]) -> None:
 class AutoDiagonalGuideModel(AutoGuideModel):
     """Guide model for a mean-field (diagonal normal) ADVI approximation."""
 
-    variable_names: tuple[str, ...]
+    rv_names: tuple[str, ...]
 
     def fit_quantities(self, params: dict[str, np.ndarray]) -> FitQuantities:
         """Report the mean and the marginal standard deviation of each free RV."""
-        locs = [params[f"{name}_loc"].ravel() for name in self.variable_names]
-        scales = [params[f"{name}_scale"].ravel() for name in self.variable_names]
+        locs = [params[f"{name}_loc"].ravel() for name in self.rv_names]
+        scales = [params[f"{name}_scale"].ravel() for name in self.rv_names]
         return {
             "mean_vector": (("rows",), np.concatenate(locs)),
             "standard_deviation": (("rows",), np.exp(np.concatenate(scales))),
@@ -245,7 +247,10 @@ def AutoDiagonalNormal(model: Model, random_seed=None) -> AutoGuideModel:
             )
 
     return AutoDiagonalGuideModel(
-        guide_model, params_init_values, tuple(rv.name for rv in free_rvs)
+        model=guide_model,
+        params_init_values=params_init_values,
+        rv_names=tuple(rv.name for rv in free_rvs),
+        value_names=tuple(model.rvs_to_values[rv].name for rv in free_rvs),
     )
 
 
@@ -343,7 +348,11 @@ def AutoMultivariateNormal(model: Model, random_seed=None) -> AutoGuideModel:
         for rv, part in zip(ordered_rvs, parts):
             Deterministic(rv.name, part, dims=value_dims[rv])
 
-    return AutoFullRankGuideModel(guide_model, {loc: loc_init, L_packed: L_packed_init})
+    return AutoFullRankGuideModel(
+        model=guide_model,
+        params_init_values={loc: loc_init, L_packed: L_packed_init},
+        value_names=tuple(name for name, *_ in point_map_info),
+    )
 
 
 @dataclass(frozen=True)
@@ -463,5 +472,7 @@ def AutoLowRankMultivariateNormal(
             Deterministic(rv.name, part, dims=value_dims[rv])
 
     return AutoLowRankGuideModel(
-        guide_model, {loc: loc_init, W: W_init, d_unconstrained: d_unconstrained_init}
+        model=guide_model,
+        params_init_values={loc: loc_init, W: W_init, d_unconstrained: d_unconstrained_init},
+        value_names=tuple(name for name, *_ in point_map_info),
     )

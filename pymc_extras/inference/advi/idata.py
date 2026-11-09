@@ -7,7 +7,7 @@ from xarray import DataTree
 from pymc_extras.inference.advi.autoguide import AutoGuideModel
 from pymc_extras.inference.idata_utils import make_unpacked_variable_names
 
-# Dims labelled by the free RV element they index, as in the Laplace fit group.
+# Dims labeled by the value-variable element they index, as in the Laplace fit group.
 _PARAMETER_DIMS = ("rows", "columns")
 
 
@@ -41,11 +41,11 @@ def add_fit_to_inference_data(
     """
     model = pm.modelcontext(model)
 
-    value_names = [model.rvs_to_values[rv].name for rv in model.free_RVs]
-    labels = make_unpacked_variable_names(value_names, model)
-
     fit = xr.Dataset(guide.fit_quantities(params))
-    fit = fit.assign_coords({dim: labels for dim in _PARAMETER_DIMS if dim in fit.dims})
+    labeled_dims = [dim for dim in _PARAMETER_DIMS if dim in fit.dims]
+    if labeled_dims:
+        labels = make_unpacked_variable_names(names=list(guide.value_names), model=model)
+        fit = fit.assign_coords({dim: labels for dim in labeled_dims})
 
     idata["fit"] = DataTree(dataset=fit)
 
