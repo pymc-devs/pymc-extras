@@ -1269,17 +1269,13 @@ class PyMCStateSpace:
         kalman_filter : BaseFilter
             Filter of the type this model was constructed with.
         kalman_smoother : DisturbanceSmoother or RTSSmoother
-            Smoother carrying the same time-varying names and jitter.
+            Smoother carrying the same jitter.
         """
         kalman_filter = FILTER_FACTORY[self.filter_type](
-            time_varying_names=self.ssm.time_varying_names,
-            cov_jitter=self.cov_jitter,
-            missing_fill_value=self.missing_fill_value,
+            cov_jitter=self.cov_jitter, missing_fill_value=self.missing_fill_value
         )
         smoother_class = SMOOTHER_FACTORY[self.smoother_type]
-        smoother_kwargs = dict(
-            time_varying_names=self.ssm.time_varying_names, cov_jitter=self.cov_jitter
-        )
+        smoother_kwargs = dict(cov_jitter=self.cov_jitter)
         if smoother_class is DisturbanceSmoother:
             smoother_kwargs["missing_fill_value"] = self.missing_fill_value
 

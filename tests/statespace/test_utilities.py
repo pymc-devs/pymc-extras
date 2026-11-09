@@ -19,6 +19,7 @@ from pymc import modelcontext
 from pytensor.graph.replace import graph_replace
 from pytensor.graph.traversal import explicit_graph_inputs
 
+from pymc_extras.statespace.core.assumptions import declare_time_varying, is_time_varying
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.filters import StandardFilter
 from pymc_extras.statespace.filters.kalman_smoother import RTSSmoother
@@ -293,14 +294,16 @@ def compare_likelihood_to_filter(mod, param_dict, data, data_dict=None):
     point = {name: np.asarray(param_dict[name], dtype=floatX) for name in mod.param_info}
     built = pymc_model.compile_logp()(point)
 
-    x0, P0, c, d, T, Z, R, H, Q = unpack_symbolic_matrices_with_params(
+    matrices = unpack_symbolic_matrices_with_params(
         mod, param_dict, steps=len(data), data_dict=data_dict
     )
-    *_, ll = StandardFilter(
-        time_varying_names=mod.ssm.time_varying_names, cov_jitter=0.0
-    ).build_graph(
-        pt.specify_shape(pt.as_tensor_variable(data), data.shape),
-        *[pt.as_tensor_variable(m) for m in (x0, P0, c, d, T, Z, R, H, Q)],
+    # Evaluating the matrices drops their declarations, so read them off the symbolic ones.
+    matrices = [
+        declare_time_varying(pt.as_tensor_variable(m)) if varying else pt.as_tensor_variable(m)
+        for m, varying in zip(matrices, is_time_varying(*unpack_statespace(mod.ssm)), strict=True)
+    ]
+    *_, ll = StandardFilter(cov_jitter=0.0).build_graph(
+        pt.specify_shape(pt.as_tensor_variable(data), data.shape), *matrices
     )
 
     return pymc_model, built, ll.sum().eval()

@@ -11,6 +11,7 @@ from scipy.stats import multivariate_normal
 from statsmodels.tsa.statespace.mlemodel import MLEModel
 
 from pymc_extras.statespace import structural
+from pymc_extras.statespace.core.assumptions import declare_time_varying
 from pymc_extras.statespace.filters.distributions import (
     LinearGaussianStateSpace,
     SequenceMvNormal,
@@ -179,7 +180,6 @@ def test_lgss_distribution_with_dims(output_name, ss_mod_me, pymc_model_2):
             *matrices,
             steps=100,
             dims=[TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM],
-            sequence_names=[],
             k_endog=ss_mod_me.k_endog,
         )
         # pylint: enable=unpacking-non-sequence
@@ -226,7 +226,6 @@ def test_lgss_with_time_varying_inputs(output_name, rng):
             "states",
             *matrices,
             steps=9,
-            sequence_names=["d", "Z"],
             dims=[TIME_DIM, ALL_STATE_DIM, OBS_STATE_DIM],
         )
         # pylint: enable=unpacking-non-sequence
@@ -253,13 +252,15 @@ def test_forward_simulation_reads_one_matrix_row_per_timestep(append_x0):
     steps = 4
     scalar_zero = np.zeros((1, 1), dtype=floatX)
     scalar_one = np.ones((1, 1), dtype=floatX)
-    d_time_varying = (np.arange(steps + 1, dtype=floatX) * 100).reshape(-1, 1)
+    d_time_varying = declare_time_varying(
+        pt.as_tensor_variable((np.arange(steps + 1, dtype=floatX) * 100).reshape(-1, 1))
+    )
 
     alpha, y, _ = _forward_simulate_latent_and_obs(
         pt.as_tensor_variable(np.zeros(1, dtype=floatX)),
         pt.as_tensor_variable(scalar_zero),
         pt.as_tensor_variable(np.ones(1, dtype=floatX)),
-        pt.as_tensor_variable(d_time_varying),
+        d_time_varying,
         pt.as_tensor_variable(scalar_one),
         pt.as_tensor_variable(scalar_one),
         pt.as_tensor_variable(scalar_one),
@@ -267,7 +268,6 @@ def test_forward_simulation_reads_one_matrix_row_per_timestep(append_x0):
         pt.as_tensor_variable(scalar_zero),
         steps=steps,
         rng=pytensor.shared(np.random.default_rng(0)),
-        sequence_names=("d",),
         append_x0=append_x0,
     )
     alpha_val, y_val = (v.ravel() for v in pytensor.function([], [alpha, y])())
@@ -300,10 +300,8 @@ def test_lgss_signature():
     assert lgss.owner.op.ndims_params == [1, 2, 1, 1, 2, 2, 2, 2, 2]
 
     # Case with time-varying matrices
-    T = pt.tensor("T", shape=(None, None, None))
-    lgss = _LinearGaussianStateSpace.dist(
-        x0, P0, c, d, T, Z, R, H, Q, steps=100, sequence_names=["T"]
-    )
+    T = declare_time_varying(pt.tensor("T", shape=(None, None, None)))
+    lgss = _LinearGaussianStateSpace.dist(x0, P0, c, d, T, Z, R, H, Q, steps=100)
 
     assert (
         lgss.owner.op.extended_signature
@@ -528,7 +526,7 @@ def test_simulation_smoother_signature(small_lgssm):
     )
 
     # Time-varying case: the declared matrix gains a leading time axis.
-    d_time_varying = pt.tensor("d", shape=(None, None))
+    d_time_varying = declare_time_varying(pt.tensor("d", shape=(None, None)))
     sample = SimulationSmoother.dist(
         data,
         pt.as_tensor_variable(params["a0"]),
@@ -540,9 +538,8 @@ def test_simulation_smoother_signature(small_lgssm):
         pt.as_tensor_variable(params["R"]),
         pt.as_tensor_variable(params["H"]),
         pt.as_tensor_variable(params["Q"]),
-        kalman_filter=StandardFilter(time_varying_names=["obs_intercept"]),
+        kalman_filter=StandardFilter(),
         kalman_smoother=RTSSmoother(),
-        sequence_names=("d",),
     )
     assert (
         sample.owner.op.extended_signature
@@ -554,8 +551,7 @@ def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
     """Shifting the data and a time-varying ``d`` by the same per-step sequence leaves a draw
     from the same rng state unchanged.
 
-    Exercises the ``sequence_names`` path, where the forward simulation must index the same
-    timestep of ``d`` as the data. A row applied one step off leaves a residual equal to the
+    The forward simulation must index the same timestep of ``d`` as the data. A row applied one step off leaves a residual equal to the
     difference between consecutive shifts.
     """
     params = small_lgssm
@@ -570,11 +566,10 @@ def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
     sample = SimulationSmoother.dist(
         y,
         *matrices[:3],
-        d,
+        declare_time_varying(d),
         *matrices[3:],
-        kalman_filter=StandardFilter(time_varying_names=["obs_intercept"]),
+        kalman_filter=StandardFilter(),
         kalman_smoother=RTSSmoother(),
-        sequence_names=("d",),
         rng=rng,
     )
     draw = pm.compile([y, d], sample)
@@ -641,16 +636,15 @@ def _reference_filter(
     if exog_in_observation:
         x0 = pt.zeros((k_states,))
         state_intercept = pt.zeros((k_states,))
-        obs_intercept = exog_effect
-        time_varying_names = ["obs_intercept"]
+        obs_intercept = declare_time_varying(exog_effect)
     else:
         shifted = pt.concatenate([exog_effect[1:], exog_effect[-1:]], axis=0)
         state_intercept = pt.pad(shifted, [(0, 0), (0, k_states - k_endog)])
         x0 = pt.linalg.solve(pt.eye(k_states) - transition, state_intercept[0], b_ndim=1)
+        state_intercept = declare_time_varying(state_intercept)
         obs_intercept = pt.zeros((k_endog,))
-        time_varying_names = ["state_intercept"]
 
-    return StandardFilter(time_varying_names=time_varying_names, cov_jitter=0.0).build_graph(
+    return StandardFilter(cov_jitter=0.0).build_graph(
         pt.specify_shape(pt.as_tensor_variable(endog), (n_timesteps, k_endog)),
         x0,
         solve_discrete_lyapunov(

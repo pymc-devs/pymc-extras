@@ -7,6 +7,7 @@ from pymc.model import modelcontext
 from pytensor.compile.mode import Mode
 from pytensor.tensor.linalg import solve_discrete_lyapunov
 
+from pymc_extras.statespace.core.assumptions import is_time_varying
 from pymc_extras.statespace.core.properties import (
     Coord,
     Data,
@@ -533,7 +534,8 @@ class BayesianSARIMAX(PyMCStateSpace):
         R = self.ssm["selection"]
         Q = self.ssm["state_cov"]
         c = self.ssm["state_intercept"]
-        if "state_intercept" in self.ssm.time_varying_names:
+        [intercept_varies] = is_time_varying(c)
+        if intercept_varies:
             c = c[0]
 
         x0 = pt.linalg.solve(pt.identity_like(T) - T, c, assume_a="gen", check_finite=False)
