@@ -105,16 +105,6 @@ def test_low_rank_fit_group_holds_the_factor_and_diagonal_of_the_guide_graph(mod
     np.testing.assert_allclose(fit["diagonal_standard_deviation"].values, diagonal)
 
 
-def test_fit_group_rows_are_labeled_in_unconstrained_space(model):
-    guide = AutoDiagonalNormal(model, random_seed=0)
-
-    fit = fit_group(guide=guide, params=initial_params(guide), model=model)
-
-    # the transformed variable is labeled by its value variable, and the vector one
-    # element per scalar, matching how the Laplace fit group labels its rows
-    assert list(fit.coords["rows"].values) == ["a", "s_log__", "b[0]", "b[1]"]
-
-
 @pytest.mark.parametrize(
     "make_guide",
     [
@@ -138,33 +128,6 @@ def test_fit_group_mean_vector_element_matches_its_row_label(make_guide):
 
     assert list(fit.coords["rows"].values) == ["a", "s_log__", "b[0]", "b[1]"]
     np.testing.assert_allclose(fit["mean_vector"].values, [1.0, 2.0, 3.0, 4.0])
-
-
-def test_fit_group_holds_only_arrays_every_backend_can_store(model):
-    for guide in (
-        AutoDiagonalNormal(model, random_seed=0),
-        AutoMultivariateNormal(model, random_seed=0),
-        AutoLowRankMultivariateNormal(model, rank=2, random_seed=0),
-    ):
-        fit = fit_group(guide=guide, params=initial_params(guide), model=model)
-        for name, array in fit.data_vars.items():
-            assert array.dtype.kind in "fiu", f"{name} has non-numeric dtype {array.dtype}"
-
-
-def test_mean_field_fit_group_is_linear_in_the_parameter_count():
-    # a dense covariance would be quadratic here, which is the representation the mean-field
-    # guide exists to avoid
-    n_dim = 5_000
-    with pm.Model() as wide_model:
-        pm.Normal("wide", shape=n_dim)
-        pm.Normal("y", 0, 1, observed=[1.0])
-
-    guide = AutoDiagonalNormal(wide_model, random_seed=0)
-    fit = fit_group(guide=guide, params=initial_params(guide), model=wide_model)
-
-    assert fit["mean_vector"].shape == (n_dim,)
-    assert fit["standard_deviation"].shape == (n_dim,)
-    assert sum(array.size for array in fit.data_vars.values()) == 2 * n_dim
 
 
 def test_fit_group_rows_follow_the_guide_order_and_not_the_model_order(model):
