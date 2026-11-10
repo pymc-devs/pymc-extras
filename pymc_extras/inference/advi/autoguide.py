@@ -59,10 +59,14 @@ def get_value_shapes_and_dims(
     return dict(zip(free_rvs, value_shapes)), value_dims
 
 
+FitQuantities = dict[str, tuple[tuple[str, ...], np.ndarray]]
+
+
 @dataclass(frozen=True)
 class AutoGuideModel:
     model: Model
     params_init_values: dict[Variable, np.ndarray]
+    value_names: tuple[str, ...] = field(default=(), kw_only=True)
     name_to_param: dict[str, Variable] = field(init=False)
 
     def __post_init__(self):
@@ -87,6 +91,30 @@ class AutoGuideModel:
         that does not (e.g. the mean-field :func:`AutoDiagonalNormal`) raises a KeyError.
         """
         return self.model["latent"]
+
+    def fit_quantities(self, params: dict[str, np.ndarray]) -> FitQuantities:
+        """Summarize the fitted approximation for the ``fit`` group.
+
+        By default this reports each guide parameter as fitted, unconstrained. A guide that
+        has a more readable form, such as a mean and a covariance, overrides it. An array
+        over the elements of the model's value variables uses the dims ``rows`` and
+        ``columns``, laid out in the order of :attr:`value_names`, and
+        :func:`~pymc_extras.inference.advi.idata.add_fit_to_inference_data` labels them.
+
+        Parameters
+        ----------
+        params : dict of str to ndarray
+            Guide parameter values, keyed as in :attr:`params_init_values`.
+
+        Returns
+        -------
+        quantities : dict of str to (dims, ndarray)
+            The summary, keyed by the name each entry takes in the ``fit`` group.
+        """
+        return {
+            name: (tuple(f"{name}_dim_{axis}" for axis in range(np.ndim(value))), value)
+            for name, value in params.items()
+        }
 
     def stochastic_logq(self, path_derivative_gradient: bool = True) -> pt.TensorVariable:
         """Returns a graph representing the logp of the guide model, evaluated under draws from its random variables.
@@ -137,6 +165,22 @@ def _check_continuous_rvs(model: Model, free_rvs: list[Variable]) -> None:
             f"ADVI requires continuous free RVs, but {discrete_rvs} are discrete. "
             "Marginalize them out or use another inference method."
         )
+
+
+@dataclass(frozen=True)
+class AutoDiagonalGuideModel(AutoGuideModel):
+    """Guide model for a mean-field (diagonal normal) ADVI approximation."""
+
+    rv_names: tuple[str, ...]
+
+    def fit_quantities(self, params: dict[str, np.ndarray]) -> FitQuantities:
+        """Report the mean and the marginal standard deviation of each free RV."""
+        locs = [params[f"{name}_loc"].ravel() for name in self.rv_names]
+        scales = [params[f"{name}_scale"].ravel() for name in self.rv_names]
+        return {
+            "mean_vector": (("rows",), np.concatenate(locs)),
+            "standard_deviation": (("rows",), np.exp(np.concatenate(scales))),
+        }
 
 
 def AutoDiagonalNormal(model: Model, random_seed=None) -> AutoGuideModel:
@@ -202,12 +246,29 @@ def AutoDiagonalNormal(model: Model, random_seed=None) -> AutoGuideModel:
                 dims=value_dims[rv],
             )
 
-    return AutoGuideModel(guide_model, params_init_values)
+    return AutoDiagonalGuideModel(
+        model=guide_model,
+        params_init_values=params_init_values,
+        rv_names=tuple(rv.name for rv in free_rvs),
+        value_names=tuple(model.rvs_to_values[rv].name for rv in free_rvs),
+    )
 
 
 @dataclass(frozen=True)
 class AutoFullRankGuideModel(AutoGuideModel):
     """Guide model for a full-rank (multivariate normal) ADVI approximation."""
+
+    def fit_quantities(self, params: dict[str, np.ndarray]) -> FitQuantities:
+        """Report the mean and the lower-triangular Cholesky factor of the covariance."""
+        loc = params["loc"]
+        n_dim = loc.size
+        cholesky = np.zeros((n_dim, n_dim), dtype=loc.dtype)
+        cholesky[np.tril_indices(n_dim)] = params["L_packed"]
+        np.fill_diagonal(cholesky, np.exp(np.diagonal(cholesky)))
+        return {
+            "mean_vector": (("rows",), loc),
+            "cholesky_lower": (("rows", "columns"), cholesky),
+        }
 
     def stochastic_logq(self, path_derivative_gradient: bool = True) -> pt.TensorVariable:
         """Joint logq of the full-rank guide, derived by logprob inference.
@@ -287,12 +348,24 @@ def AutoMultivariateNormal(model: Model, random_seed=None) -> AutoGuideModel:
         for rv, part in zip(ordered_rvs, parts):
             Deterministic(rv.name, part, dims=value_dims[rv])
 
-    return AutoFullRankGuideModel(guide_model, {loc: loc_init, L_packed: L_packed_init})
+    return AutoFullRankGuideModel(
+        model=guide_model,
+        params_init_values={loc: loc_init, L_packed: L_packed_init},
+        value_names=tuple(name for name, *_ in point_map_info),
+    )
 
 
 @dataclass(frozen=True)
 class AutoLowRankGuideModel(AutoGuideModel):
     """Guide model for a low-rank-plus-diagonal multivariate normal ADVI approximation."""
+
+    def fit_quantities(self, params: dict[str, np.ndarray]) -> FitQuantities:
+        """Report the mean, the covariance factor ``W``, and the diagonal standard deviation ``d``."""
+        return {
+            "mean_vector": (("rows",), params["loc"]),
+            "cov_factor": (("rows", "factors"), params["cov_factor"]),
+            "diagonal_standard_deviation": (("rows",), np.exp(params["cov_diag_unconstrained"])),
+        }
 
     def stochastic_logq(self, path_derivative_gradient: bool = True) -> pt.TensorVariable:
         """Joint logq of the low-rank guide, evaluated in closed form.
@@ -394,5 +467,7 @@ def AutoLowRankMultivariateNormal(
             Deterministic(rv.name, part, dims=value_dims[rv])
 
     return AutoLowRankGuideModel(
-        guide_model, {loc: loc_init, W: W_init, d_unconstrained: d_unconstrained_init}
+        model=guide_model,
+        params_init_values={loc: loc_init, W: W_init, d_unconstrained: d_unconstrained_init},
+        value_names=tuple(name for name, *_ in point_map_info),
     )

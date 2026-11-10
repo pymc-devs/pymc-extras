@@ -45,6 +45,10 @@ from pymc_extras.inference.advi.compile import (
     compile_svi_step_fn,
     shared_guide_params,
 )
+from pymc_extras.inference.advi.idata import (
+    add_fit_stats_to_inference_data,
+    add_fit_to_inference_data,
+)
 from pymc_extras.inference.laplace_approx.idata import add_data_to_inference_data
 
 
@@ -689,7 +693,9 @@ class Trainer(WithMemoization):
         Returns
         -------
         DataTree
-            Samples from the guide posterior for each latent variable.
+            Samples from the guide posterior for each latent variable, the guide's summary
+            in the ``fit`` group, and the per-step diagnostics in ``fit_stats``. All three
+            describe ``state``.
         """
         model = modelcontext(model)
         if state is None:
@@ -723,5 +729,9 @@ class Trainer(WithMemoization):
         idata = add_data_to_inference_data(
             idata=idata, progressbar=False, model=model, compile_kwargs=self.compile_kwargs
         )
+        idata = add_fit_to_inference_data(
+            idata=idata, guide=self._guide, params=params, model=fit_model
+        )
+        idata = add_fit_stats_to_inference_data(idata=idata, loss_history=state.loss_history)
 
         return idata
