@@ -168,11 +168,12 @@ def multipath_pathfinder(
     joined_blas_limiter, effective_cores, num_blas_per_worker = setup_cores_blas_cores(
         blas_cores, num_paths, effective_cores, mp_ctx
     )
-    if parallel and mp_ctx.get_start_method() == "fork":
+    forks_workers = parallel and mp_ctx.get_start_method() == "fork"
+    if forks_workers:
         joined_blas_limiter = _single_threaded_blas
 
     # One progress row per path, updated in real time.
-    progress = _make_multipath_progress(progressbar)
+    progress = _make_multipath_progress(progressbar, redirect_streams=not forks_workers)
     refresh = _make_refresher(progress)
     task_ids: list[TaskID] = []
     path_callbacks: list[Callable | None] = []
@@ -191,7 +192,7 @@ def multipath_pathfinder(
                 completed=0,
             )
             task_ids.append(tid)
-            path_callbacks.append(_make_progress_callback(progress, tid))
+            path_callbacks.append(_make_progress_callback(progress, tid, refresh=refresh))
 
         # parallel=True runs each path in its own worker process; parallel=False is serial.
         generator = make_generator(
@@ -246,8 +247,9 @@ def _resolve_mp_context(
     mp_ctx: mp.context.BaseContext | str | None, mode
 ) -> mp.context.BaseContext:
     """Resolve the start method, threading the compile mode through so a JAX backend never forks."""
-    # Accelerate runs large BLAS calls on libdispatch, which aborts in any process forked from a
-    # parent that has already used it, and forkserver's server is itself forked from the parent.
+    # Accelerate runs large BLAS calls on libdispatch, which aborts in a child forked from a parent
+    # that already used it. pymc<6.5 forks by default on Apple silicon. Delete this once the pymc
+    # pin includes pymc-devs/pymc@ff263907, which makes spawn the default there.
     if mp_ctx is None and platform.system() == "Darwin":
         mp_ctx = "spawn"
     return _initialize_multiprocessing_context(mp_ctx, mode=mode, quiet=True)
@@ -400,25 +402,11 @@ def _execute_serially(
     fn: SinglePathfinderFn,
     seeds: list[int],
     progress_callbacks: list[Callable | None] | None = None,
-    refresh: Callable[[], None] | None = None,
 ) -> Iterator[tuple[int, PathfinderResult]]:
-    """Execute pathfinder runs serially, redrawing after each progress message."""
+    """Execute pathfinder runs serially."""
     callbacks = progress_callbacks or [None] * len(seeds)
     for chain, (seed, cb) in enumerate(zip(seeds, callbacks)):
-        yield chain, fn(seed, _with_refresh(cb, refresh))
-
-
-def _with_refresh(
-    cb: Callable[[dict], None] | None, refresh: Callable[[], None] | None
-) -> Callable[[dict], None] | None:
-    if cb is None or refresh is None:
-        return cb
-
-    def cb_then_refresh(info: dict) -> None:
-        cb(info)
-        refresh()
-
-    return cb_then_refresh
+        yield chain, fn(seed, cb)
 
 
 def make_generator(
@@ -448,10 +436,10 @@ def make_generator(
             refresh=refresh,
         )
     else:
-        yield from _execute_serially(fn, seeds, progress_callbacks, refresh=refresh)
+        yield from _execute_serially(fn, seeds, progress_callbacks)
 
 
-def _make_multipath_progress(progressbar: bool) -> CustomProgress:
+def _make_multipath_progress(progressbar: bool, redirect_streams: bool) -> CustomProgress:
     # Per-path lifecycle status, an L-BFGS progress bar, and the best ELBO seen so far -- the value
     # pathfinder actually selects on.
     return CustomProgress(
@@ -471,12 +459,13 @@ def _make_multipath_progress(progressbar: bool) -> CustomProgress:
         include_headers=True,
         console=Console(theme=default_progress_theme),
         disable=not progressbar,
-        # Workers are forked while this display is live. Rich's refresh thread and its
-        # stdout/stderr proxies hold locks a forked child would inherit mid-acquire and hang on
-        # (pymc#8421), so neither runs; the parent redraws from its own polling loop instead.
+        # Workers may fork while this display is live. Rich's refresh thread could hold the console
+        # lock at fork time (pymc#8421), so the parent redraws from its polling loop instead.
+        # Forked children would also inherit the stdout/stderr proxies and route their writes
+        # through a stale copy of the display, so the caller disables redirection when forking.
         auto_refresh=False,
-        redirect_stdout=False,
-        redirect_stderr=False,
+        redirect_stdout=redirect_streams,
+        redirect_stderr=redirect_streams,
     )
 
 
@@ -494,7 +483,11 @@ def _make_refresher(progress: CustomProgress) -> Callable[[], None]:
     return refresh
 
 
-def _make_progress_callback(progress: CustomProgress, task_id: TaskID) -> Callable[[dict], None]:
+def _make_progress_callback(
+    progress: CustomProgress, task_id: TaskID, refresh: Callable[[], None]
+) -> Callable[[dict], None]:
+    """Apply one path's progress message to its row, then redraw (throttled by ``refresh``)."""
+
     def cb(info: dict) -> None:
         if not progress.tasks[task_id].started:
             progress.start_task(task_id)
@@ -526,5 +519,6 @@ def _make_progress_callback(progress: CustomProgress, task_id: TaskID) -> Callab
                 n = int(info["lbfgs_steps"])
                 progress.update(task_id, total=n, completed=n)
             progress.stop_task(task_id)
+        refresh()
 
     return cb

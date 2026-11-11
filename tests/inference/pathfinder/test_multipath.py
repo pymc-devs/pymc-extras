@@ -1,4 +1,5 @@
 import contextlib
+import faulthandler
 import sys
 
 import numpy as np
@@ -62,10 +63,14 @@ def _per_path_means(posterior):
     return np.asarray(rows)
 
 
-def test_parallel_paths_match_serial_per_path():
+def test_parallel_paths_match_serial_per_path(monkeypatch):
     """Each chain gets the same per-path approximation under parallel and serial execution (same
     seed, within cross-process BLAS noise) -- guarding against state leaking across the shared
-    compiled functions."""
+    compiled functions. The parallel fit must also redraw the display from the parent."""
+    redraws = []
+    monkeypatch.setattr(
+        multipath_mod, "_make_refresher", lambda progress: lambda: redraws.append(1)
+    )
     model = make_logistic_regression()
     kw = dict(
         method="pathfinder",
@@ -80,7 +85,10 @@ def test_parallel_paths_match_serial_per_path():
     )
     with model:
         serial = pmx.fit(parallel=False, **kw).posterior
+        redraws.clear()
         parallel = pmx.fit(parallel=True, **kw).posterior
+
+    assert redraws
 
     assert serial.sizes["chain"] == parallel.sizes["chain"] == kw["num_paths"]
     np.testing.assert_allclose(
@@ -158,7 +166,12 @@ def test_fork_caps_blas_to_one_thread_only_while_workers_run(monkeypatch, parall
 
     monkeypatch.setattr(multipath_mod, "threadpool_limits", recording_limits)
 
-    _small_serial_fit(make_ard_regression(), parallel=parallel, mp_ctx="fork")
+    # A broken cap hangs the forked workers on MKL. Abort with a traceback instead of stalling CI.
+    faulthandler.dump_traceback_later(timeout=300, exit=True)
+    try:
+        _small_serial_fit(make_ard_regression(), parallel=parallel, mp_ctx="fork")
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
     assert requested == ([1] if parallel else [])
 
@@ -181,8 +194,8 @@ def test_compile_mode_threaded_to_mp_context(monkeypatch):
 
 
 def test_blas_limiter_wraps_path_execution(monkeypatch):
-    """Paths must run inside ``joined_blas_limiter()``; a recording limiter makes the wrap
-    observable even on fork, where the real limiter is a no-op."""
+    """Paths must run inside ``joined_blas_limiter()``. A recording limiter makes the wrap
+    observable on a serial fit, where the real limiter may be a no-op."""
     entered = []
     real = multipath_mod.setup_cores_blas_cores
 
@@ -258,7 +271,7 @@ def test_parallel_path_order_is_deterministic(monkeypatch):
 
 
 def _new_task():
-    progress = _make_multipath_progress(progressbar=False)
+    progress = _make_multipath_progress(progressbar=False, redirect_streams=False)
     task_id = progress.add_task(
         "path 0",
         start=False,
@@ -274,7 +287,7 @@ def _new_task():
 
 def test_progress_callback_formats_fields():
     progress, task_id = _new_task()
-    cb = _make_progress_callback(progress, task_id)
+    cb = _make_progress_callback(progress, task_id, refresh=lambda: None)
 
     cb({"status": "running", "iteration": 7, "best_elbo": 1.23456})
     task = progress.tasks[0]
@@ -286,38 +299,16 @@ def test_progress_callback_formats_fields():
     assert progress.tasks[0].fields["elbo"] == "—"
 
 
-def test_serial_paths_redraw_after_every_message():
-    """With Rich's refresh thread off, the executor is the only thing that redraws."""
-    messages = [{"iteration": 1}, {"best_elbo": 0.5}, {"status": "ok"}]
-
-    def fake_path(seed, cb):
-        for info in messages:
-            cb(info)
-        return seed
-
+def test_progress_callback_redraws_after_every_message():
+    """With Rich's refresh thread off, the progress callback is what redraws the display."""
+    progress, task_id = _new_task()
     redraws = []
-    results = list(
-        multipath_mod._execute_serially(
-            fake_path,
-            seeds=[7, 8],
-            progress_callbacks=[lambda info: None] * 2,
-            refresh=lambda: redraws.append(1),
-        )
-    )
+    cb = _make_progress_callback(progress, task_id, refresh=lambda: redraws.append(1))
 
-    assert results == [(0, 7), (1, 8)]
-    assert len(redraws) == 2 * len(messages)
+    for info in [{"iteration": 1}, {"best_elbo": 0.5}, {"status": "ok"}]:
+        cb(info)
 
-
-def test_parallel_fit_redraws_from_the_parent(monkeypatch):
-    redraws = []
-    monkeypatch.setattr(
-        multipath_mod, "_make_refresher", lambda progress: lambda: redraws.append(1)
-    )
-
-    _small_serial_fit(make_ard_regression(), parallel=True, num_paths=2)
-
-    assert redraws
+    assert len(redraws) == 3
 
 
 def test_refresher_throttles_to_the_refresh_interval(monkeypatch):
@@ -337,7 +328,7 @@ def test_refresher_throttles_to_the_refresh_interval(monkeypatch):
 
 def test_progress_callback_stops_task_on_terminal_status():
     progress, task_id = _new_task()
-    cb = _make_progress_callback(progress, task_id)
+    cb = _make_progress_callback(progress, task_id, refresh=lambda: None)
 
     cb({"status": "ok"})
 
