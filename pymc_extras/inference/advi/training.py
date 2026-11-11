@@ -266,7 +266,7 @@ class Trainer(WithMemoization):
 
     @property
     def learning_rate(self) -> float | None:
-        """The current base rate, or None when the optimizer carries its own."""
+        """The default optimizer's current learning rate, or None for a caller-built optimizer."""
         if self._shared_learning_rate is None:
             return None
         return float(self._shared_learning_rate.get_value())
@@ -546,9 +546,9 @@ class Trainer(WithMemoization):
             dataset and the posterior will be too wide. Variables that already
             carry a ``total_size`` in the model are left alone.
         learning_rate : float, optional
-            Change the default rule's base rate before running, leaving it there for
-            later calls too. A rule given to the constructor carries its own rate, so
-            there is nothing here to change in that case.
+            New learning rate for the default optimizer, kept for later calls too. Only
+            valid when the trainer was built without an ``optimizer``, since a caller-built
+            optimizer carries its own rate.
         random_seed : optional
             Seed for the guide draws used to estimate the gradients.
 
