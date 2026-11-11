@@ -356,6 +356,11 @@ def test_learning_rate_is_a_live_shared_value(conjugate_model):
     np.testing.assert_allclose(frozen.params["theta_loc"], init_loc)
     assert trainer.learning_rate == 0.0
 
+    # the rate persists into a later fit that does not pass one
+    with model:
+        still_frozen = trainer.fit(50, random_seed=1)
+    np.testing.assert_allclose(still_frozen.params["theta_loc"], init_loc)
+
     # and fit can change it without rebuilding the step function
     step_fn = trainer._cached_step_fn(model)
     with model:
