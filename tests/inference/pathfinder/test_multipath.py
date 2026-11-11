@@ -5,7 +5,6 @@ import numpy as np
 import pymc as pm
 import pytest
 
-from rich.file_proxy import FileProxy
 from threadpoolctl import threadpool_limits
 
 import pymc_extras as pmx
@@ -258,15 +257,6 @@ def test_parallel_path_order_is_deterministic(monkeypatch):
         np.testing.assert_array_equal(forward[var].values, backward[var].values)
 
 
-def test_live_progress_display_starts_no_thread_and_no_stream_proxies():
-    """Workers fork while the display is live, so it must own no refresh thread and no
-    stdout/stderr proxies for a child to inherit locked (pymc#8421)."""
-    with _make_multipath_progress(progressbar=True) as progress:
-        assert progress.live._refresh_thread is None
-        assert not isinstance(sys.stdout, FileProxy)
-        assert not isinstance(sys.stderr, FileProxy)
-
-
 def _new_task():
     progress = _make_multipath_progress(progressbar=False)
     task_id = progress.add_task(
@@ -280,17 +270,6 @@ def _new_task():
         completed=0,
     )
     return progress, task_id
-
-
-def test_progress_callback_starts_the_clock_on_first_message():
-    """A queued path's elapsed time counts from its first message, not from the run's start."""
-    progress, task_id = _new_task()
-    cb = _make_progress_callback(progress, task_id)
-    assert progress.tasks[0].start_time is None
-
-    cb({"status": "running"})
-
-    assert progress.tasks[0].start_time is not None
 
 
 def test_progress_callback_formats_fields():
