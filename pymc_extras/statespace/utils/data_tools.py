@@ -84,19 +84,17 @@ def preprocess_numpy_data(data, n_obs, obs_coords=None):
 
 def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=False):
     if isinstance(data, pd.Series):
-        if data.name is None:
-            data.name = "data"
-        data = data.to_frame()
+        data = data.to_frame(name="data" if data.name is None else data.name)
 
     col_names = data.columns
     _validate_data_shape(data.shape, n_obs, obs_coords, check_column_names, col_names)
 
     if isinstance(data.index, pd.DatetimeIndex):
-        if data.index.freq is None:
-            warnings.warn(NO_FREQ_INFO_WARNING)
-            data.index.freq = pd.DatetimeIndex(data.index, freq="infer").freq
-
         index = data.index
+        if index.freq is None:
+            warnings.warn(NO_FREQ_INFO_WARNING)
+            index = pd.DatetimeIndex(index, freq="infer")
+
         return data.values, index
 
     elif isinstance(data.index, pd.RangeIndex):
