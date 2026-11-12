@@ -227,3 +227,13 @@ class TestSkellam:
                 {"mu1": Rplus_small, "mu2": Rplus_small},
                 lambda value, mu1, mu2: scipy.stats.skellam.logpmf(value, mu1, mu2),
             )
+
+    @pytest.mark.parametrize(
+        "mu1, mu2, value",
+        [(500.0, 500.0, 0), (500.0, 500.0, 25), (2000.0, 1500.0, 450), (1500.0, 2000.0, -450)],
+    )
+    def test_logp_large_mu(self, mu1, mu2, value):
+        # Bessel function iv(value, 2 * sqrt(mu1 * mu2)) overflows for these parameters
+        dist = Skellam.dist(mu1=np.float64(mu1), mu2=np.float64(mu2))
+        logp = pm.logp(dist, value).eval()
+        np.testing.assert_allclose(logp, scipy.stats.skellam.logpmf(value, mu1, mu2))
