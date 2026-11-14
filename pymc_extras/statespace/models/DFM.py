@@ -245,6 +245,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
         mode: str | Mode | None = None,
         cov_jitter: float = JITTER_DEFAULT,
         missing_fill_value: float = MISSING_FILL,
+        use_joseph_form: bool = False,
     ):
         r"""
         Create a Bayesian Dynamic Factor Model.
@@ -291,13 +292,20 @@ class BayesianDynamicFactor(PyMCStateSpace):
             ``pm.sample``. Regardless of whether a mode is specified, it can always be overwritten
             via the ``compile_kwargs`` argument to all sampling methods. Default None.
         cov_jitter : float, optional
-            Jitter added to the diagonal of every covariance matrix at each filtering step, for
-            numerical stability. Post-estimation graphs are built with this same value. Default
-            1e-8, or 1e-6 if ``pytensor.config.floatX`` is float32.
+            Jitter added to the diagonal of the observation noise covariance, and of any other
+            covariance matrix the filter or smoother factors, for systems where one can be singular.
+            Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
+            ``pytensor.config.floatX`` is float32.
         missing_fill_value : float, optional
             Sentinel used to mask missing observations. Set this only if your data legitimately
             contains the default sentinel. Post-estimation graphs are built with this same value.
             Default -9999.0.
+        use_joseph_form : bool, optional
+            If True, update the filtered covariance with the Joseph form, which is PSD by
+            construction but costs ``O(k_states^3)`` per step. The default update carries rounding
+            error of order ``eps * max(P)``, so use this when ``Q`` and ``H`` are not large next to
+            that, as with a diffuse ``P0`` at float32. Only the "standard" and "convergent" filters
+            take it. Post-estimation graphs are built with this same form. Default False.
         """
         validate_names(endog_names, var_name="endog_names", optional=False)
         validate_names(exog_state_names, var_name="exog_state_names", optional=True)
@@ -338,6 +346,7 @@ class BayesianDynamicFactor(PyMCStateSpace):
             mode=mode,
             cov_jitter=cov_jitter,
             missing_fill_value=missing_fill_value,
+            use_joseph_form=use_joseph_form,
         )
 
     def set_parameters(self) -> Parameter | tuple[Parameter, ...] | None:

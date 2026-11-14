@@ -4,7 +4,6 @@ import pytensor
 import pytensor.tensor as pt
 
 from pymc_extras.statespace.utils.constants import (
-    JITTER_DEFAULT,
     LONG_NAME_TO_SHORT,
     MATRIX_NAMES,
 )
@@ -87,7 +86,7 @@ def split_vars_into_seq_and_nonseq(params, param_names, time_varying_names: Iter
     return sequences, non_sequences, seq_names, non_seq_names
 
 
-def stabilize(cov, jitter=JITTER_DEFAULT):
+def stabilize(cov, jitter):
     cov = cov + pt.identity_like(cov) * jitter
 
     return cov
@@ -137,12 +136,12 @@ def mask_missing_values(y, Z, H, d, missing_fill_value):
         Boolean vector, True where the observation is missing.
     """
     nan_mask = missing_mask(y, missing_fill_value)
-    W = pt.diag(pt.bitwise_not(nan_mask).astype(pytensor.config.floatX))
+    observed = pt.bitwise_not(nan_mask).astype(pytensor.config.floatX)
 
     return (
-        pt.set_subtensor(y[nan_mask], 0.0),
-        W.dot(Z),
-        W.dot(H).dot(W.mT),
-        W.dot(d),
+        pt.where(nan_mask, 0.0, y),
+        pt.expand_dims(observed, -1) * Z,
+        pt.outer(observed, observed) * H,
+        observed * d,
         nan_mask,
     )

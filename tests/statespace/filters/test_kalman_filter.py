@@ -6,7 +6,7 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 
-from numpy.testing import assert_allclose, assert_array_less
+from numpy.testing import assert_allclose
 
 from pymc_extras.statespace.filters import (
     DisturbanceSmoother,
@@ -25,6 +25,7 @@ from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
     rng,
 )
 from tests.statespace.test_utilities import (
+    assert_psd,
     get_expected_shape,
     get_sm_state_from_output_name,
     initialize_filter,
@@ -49,6 +50,8 @@ def get_filter_function(filter_name: str) -> Callable:
     match filter_name:
         case "StandardFilter":
             filter_inout = initialize_filter(StandardFilter())
+        case "JosephFormFilter":
+            filter_inout = initialize_filter(StandardFilter(use_joseph_form=True))
         case "CholeskyFilter":
             filter_inout = initialize_filter(SquareRootFilter())
         case "UnivariateFilter":
@@ -402,6 +405,32 @@ def test_square_root_filter_takes_a_covariance_for_P0(rng):
         assert_allclose(actual, expected, atol=ATOL, rtol=RTOL, err_msg=name)
 
 
+def test_joseph_form_matches_standard_form(rng):
+    p, m, r, n = 2, 3, 2, 20
+    inputs = make_test_inputs(p, m, r, n, rng, missing_data=4)
+
+    standard = get_filter_function("StandardFilter")(*inputs)
+    joseph = get_filter_function("JosephFormFilter")(*inputs)
+
+    for name, expected, actual in zip(output_names, standard, joseph, strict=True):
+        assert_allclose(actual, expected, atol=ATOL, rtol=RTOL, err_msg=name)
+
+
+def test_joseph_form_stays_psd_where_standard_form_does_not():
+    """A diffuse ``P0`` puts rounding from the first update above ``Q`` when ``H`` is zero."""
+    data = np.zeros((50, 1), dtype=floatX)
+    one, zero = np.eye(1, dtype=floatX), np.zeros((1, 1), dtype=floatX)
+    vector_zero = np.zeros(1, dtype=floatX)
+    inputs = [data, vector_zero, one * 1e15, vector_zero, vector_zero, one, one, one, zero, one]
+
+    filtered_covs = output_names.index("filtered_covs")
+    standard = get_filter_function("StandardFilter")(*inputs)[filtered_covs]
+    joseph = get_filter_function("JosephFormFilter")(*inputs)[filtered_covs]
+
+    assert standard.min() < 0
+    assert joseph.min() >= 0
+
+
 class TestDisturbanceSmootherMatchesRTS:
     """Compare the disturbance smoother with the RTS smoother through one compiled function."""
 
@@ -520,9 +549,7 @@ def test_all_covariance_matrices_are_PSD(filter_name, n_missing, obs_noise, rng)
 
     for output_idx, name in zip([3, 4, 5], output_names[3:-2]):
         cov_stack = outputs[output_idx]
-        w, v = np.linalg.eig(cov_stack)
-
-        assert_array_less(0, w, err_msg=f"Smallest eigenvalue of {name}: {min(w.ravel())}")
+        assert_psd(cov_stack, err_msg=name)
         assert_allclose(
             cov_stack,
             np.swapaxes(cov_stack, -2, -1),
@@ -652,6 +679,8 @@ class TestConvergentFilter:
         cls.standard = cls._compile(StandardFilter())
         cls.convergent = cls._compile(ConvergentFilter())
         cls.convergent_never_converging = cls._compile(ConvergentFilter(tol=0.0))
+        cls.standard_joseph = cls._compile(StandardFilter(use_joseph_form=True))
+        cls.convergent_joseph = cls._compile(ConvergentFilter(use_joseph_form=True))
 
     @staticmethod
     def _compile(kfilter) -> Callable:
@@ -665,6 +694,15 @@ class TestConvergentFilter:
     def _forward_and_gradients(fn, vals):
         results = fn(*vals)
         return results[:N_FORWARD_OUTPUTS], results[N_FORWARD_OUTPUTS:]
+
+    @pytest.mark.parametrize("joseph_fn", ["standard_joseph", "convergent_joseph"])
+    def test_joseph_form_matches_standard(self, joseph_fn, rng):
+        vals = _make_stationary_system(5, 2, 5, 100, rng)
+        out_std, grads_std = self._forward_and_gradients(self.standard, vals)
+        out_joseph, grads_joseph = self._forward_and_gradients(getattr(self, joseph_fn), vals)
+
+        assert_results_match(out_std, out_joseph, output_names, err_prefix=f"{joseph_fn} ")
+        assert_results_match(grads_std, grads_joseph, GRAD_NAMES, err_prefix=f"{joseph_fn} ")
 
     @pytest.mark.parametrize(
         "m,p,n_shocks,n",
@@ -797,7 +835,10 @@ def test_convergent_filter_rejects_missing_fill_sentinel(rng):
         )
 
 
-def test_convergent_filter_builds_and_runs_at_float32(rng):
+@pytest.mark.parametrize(
+    "filter_cls", [ConvergentFilter, StandardFilter, SquareRootFilter, UnivariateFilter]
+)
+def test_filter_builds_and_runs_at_float32(filter_cls, rng):
     """The filter follows ``pytensor.config.floatX``; nothing in its graph is pinned to float64."""
     m, p, n_shocks, n = 3, 2, 3, 60
     vals = _make_stationary_system(m, p, n_shocks, n, rng)
@@ -818,10 +859,23 @@ def test_convergent_filter_builds_and_runs_at_float32(rng):
         }
         inputs = [pt.tensor(name, dtype=dtype, shape=shape) for name, shape in shapes.items()]
 
-        *_, ll_obs = ConvergentFilter().build_graph(*inputs)
+        *_, ll_obs = filter_cls().build_graph(*inputs)
         loss = ll_obs.sum()
+        assert loss.dtype == "float32"
         fn = pytensor.function(inputs, [loss, *pt.grad(loss, inputs[1:])], on_unused_input="ignore")
 
     results = fn(*[np.asarray(v, dtype=dtype) for v in vals])
     for name, value in zip(GRAD_NAMES, results, strict=True):
         assert np.all(np.isfinite(value)), f"{name} is not finite at float32"
+
+
+def test_convergent_filter_keeps_float32_without_static_shapes():
+    """An unknown ``k_endog`` is a symbolic integer, which must not promote the log-likelihood."""
+    with pytensor.config.change_flags(floatX="float32"):
+        ndims = dict(data=2, a0=1, P0=2, c=1, d=1, T=2, Z=2, R=2, H=2, Q=2)
+        inputs = [
+            pt.tensor(name, dtype="float32", shape=(None,) * ndim) for name, ndim in ndims.items()
+        ]
+        *_, ll_obs = ConvergentFilter().build_graph(*inputs)
+
+    assert ll_obs.dtype == "float32"

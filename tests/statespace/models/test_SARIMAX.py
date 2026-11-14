@@ -8,7 +8,7 @@ import pytensor.tensor as pt
 import pytest
 import statsmodels.api as sm
 
-from numpy.testing import assert_allclose, assert_array_less
+from numpy.testing import assert_allclose
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.testing import mock_sample_setup_and_teardown
 
@@ -27,6 +27,7 @@ from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
     rng,
 )
 from tests.statespace.test_utilities import (
+    assert_psd,
     build_model_with_flat_priors,
     compare_likelihood_to_filter,
     load_nile_test_data,
@@ -345,8 +346,7 @@ def test_all_prior_covariances_are_PSD(arima_mod, pymc_mod, rng):
         cov_mats = filter_idata.posterior_predictive[cov_name].values.reshape(
             -1, arima_mod.k_states, arima_mod.k_states
         )
-        w, v = np.linalg.eig(cov_mats)
-        assert_array_less(0, w, err_msg=f"{cov_name}: smallest eigenvalue {min(w.ravel())}")
+        assert_psd(cov_mats, err_msg=cov_name)
 
 
 def test_interpretable_raises_if_d_nonzero():

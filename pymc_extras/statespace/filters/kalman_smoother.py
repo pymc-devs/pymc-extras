@@ -49,8 +49,8 @@ class RTSSmoother:
             Long names of the matrices the model declared time-varying. Only the state intercept,
             transition, selection and state covariance matrices reach the smoother. Default is no time-varying matrices.
         cov_jitter : float, optional
-            Jitter added to the diagonal of every covariance matrix at each step. Default 1e-8, or
-            1e-6 if ``pytensor.config.floatX`` is float32.
+            Jitter added to the diagonal of the smoothed and predicted covariance matrices at each
+            step. Default 1e-8, or 1e-6 if ``pytensor.config.floatX`` is float32.
         """
         self.cov_jitter = JITTER_DEFAULT if cov_jitter is None else cov_jitter
 
@@ -157,7 +157,7 @@ class DisturbanceSmoother:
     time_varying_names : iterable of str, optional
         Long names of the matrices the model declared time-varying. Default is none.
     cov_jitter : float, optional
-        Jitter added to the innovation covariance before factoring it. Default 1e-8, or 1e-6 when
+        Jitter added to the innovation covariance before factoring it. Default 1e-8, or 1e-6 if
         ``pytensor.config.floatX`` is float32.
     missing_fill_value : float, optional
         Sentinel standing in for a missing observation, alongside ``nan``.
