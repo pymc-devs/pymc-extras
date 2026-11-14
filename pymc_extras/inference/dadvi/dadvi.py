@@ -36,6 +36,7 @@ def fit_dadvi(
     compile_kwargs: dict | None = None,
     random_seed: RandomSeed = None,
     progressbar: bool = True,
+    vectorize_hessian: bool = False,
     **optimizer_kwargs,
 ) -> DataTree:
     """
@@ -84,6 +85,11 @@ def fit_dadvi(
     use_hess: bool, optional
         If True, pass the hessian to `scipy.optimize.minimize`. Note that this is generally not recommended since its
         computation can be slow and memory-intensive if there are many parameters.
+
+    vectorize_hessian: bool
+        If True, build the Hessian with ``jacobian(..., vectorize=True)`` instead of a ``Scan`` over the gradient
+        entries. This allows compiling on backends without ``Scan`` support (e.g. MLX) and trades higher memory for
+        parallel compute. Only used when the Hessian is computed with ``gradient_backend="pytensor"``. Default False.
 
     progressbar: bool
         Whether or not to show a progress bar during optimization. Default is True.
@@ -137,6 +143,7 @@ def fit_dadvi(
         use_grad=use_grad,
         use_hessp=use_hessp,
         use_hess=use_hess,
+        vectorize_hessian=vectorize_hessian,
         gradient_backend=gradient_backend,
         compile_kwargs=compile_kwargs,
         inputs_are_flat=True,

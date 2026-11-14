@@ -191,6 +191,29 @@ def test_find_MAP(
     assert ("covariance_matrix" in idata.fit) == compute_hessian
 
 
+def test_find_MAP_vectorize_hessian(rng):
+    with pm.Model():
+        mu = pm.Normal("mu")
+        sigma = pm.Exponential("sigma", 1)
+        pm.Normal("y_hat", mu=mu, sigma=sigma, observed=rng.normal(loc=3, scale=1.5, size=10))
+
+        idatas = [
+            find_MAP(
+                method="trust-exact",
+                use_grad=True,
+                use_hess=True,
+                vectorize_hessian=vectorize_hessian,
+                compute_hessian=True,
+                progressbar=False,
+            )
+            for vectorize_hessian in (False, True)
+        ]
+
+    scan_fit, vectorized_fit = (idata.fit for idata in idatas)
+    np.testing.assert_allclose(vectorized_fit["mean_vector"], scan_fit["mean_vector"])
+    np.testing.assert_allclose(vectorized_fit["covariance_matrix"], scan_fit["covariance_matrix"])
+
+
 def test_find_map_outside_model_context():
     """
     Test that find_MAP can be called outside of a model context.

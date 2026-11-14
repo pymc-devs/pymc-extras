@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from pytensor import tensor as pt
+from pytensor.scan.op import Scan
 
 from pymc_extras.inference.laplace_approx import scipy_interface
 
@@ -48,6 +49,33 @@ def test_compile_functions_for_scipy_optimize_with_hess(simple_loss_and_inputs):
     assert np.isclose(loss_val, np.sum(x_val**2))
     assert np.allclose(grad_val, 2 * x_val)
     assert np.allclose(hess_val, 2 * np.eye(len(x_val)))
+
+
+@pytest.mark.parametrize("vectorize_hessian", [True, False], ids=["vectorized", "scan"])
+def test_compile_functions_for_scipy_optimize_vectorize_hessian(vectorize_hessian):
+    x = pt.vector("x", shape=(3,))
+    loss = pt.sum(x**3) + x[0] * x[1] * x[2]
+    [f_fused, _] = scipy_interface._compile_functions_for_scipy_optimize(
+        loss,
+        [x],
+        compute_grad=True,
+        compute_hess=True,
+        compute_hessp=False,
+        vectorize_hessian=vectorize_hessian,
+    )
+    x_val = np.array([1.0, 2.0, 3.0])
+    _, _, hess_val = f_fused(x_val)
+    expected = np.array(
+        [
+            [6 * x_val[0], x_val[2], x_val[1]],
+            [x_val[2], 6 * x_val[1], x_val[0]],
+            [x_val[1], x_val[0], 6 * x_val[2]],
+        ]
+    )
+    np.testing.assert_allclose(hess_val, expected)
+
+    has_scan = any(isinstance(node.op, Scan) for node in f_fused.maker.fgraph.apply_nodes)
+    assert has_scan != vectorize_hessian
 
 
 def test_compile_functions_for_scipy_optimize_with_hessp(simple_loss_and_inputs):
