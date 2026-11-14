@@ -43,6 +43,30 @@ def test_sampling_methods(group, kind, ss_mod, idata, rng):
             assert not np.any(np.isnan(test_idata[f"{group}_{output}"].values))
 
 
+def test_unconditional_sampling_uses_the_model_cov_jitter(rng):
+    """Without measurement error, the observed draws differ from the latent ones by the jitter."""
+    n_obs = 50
+    data = pd.DataFrame(
+        rng.normal(size=(n_obs, 1)),
+        index=pd.date_range("2000-01-01", periods=n_obs, freq="MS"),
+        columns=["y"],
+    )
+    mod = st.LevelTrend(name="level", order=1, innovations_order=1).build(
+        verbose=False, cov_jitter=1.0
+    )
+    with pm.Model(coords=mod.coords):
+        pm.Normal("initial_level", dims=["state_level"])
+        pm.Exponential("sigma_level", 1, dims=["shock_level"])
+        pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
+        mod.build_statespace_graph(data)
+        prior = pm.sample_prior_predictive(draws=20, random_seed=rng)
+
+    draws = mod.sample_unconditional_prior(prior, random_seed=rng)
+    noise = draws["prior_observed"].values - draws["prior_latent"].values
+
+    assert_allclose(noise.std(), 1.0, rtol=0.1)
+
+
 @pytest.mark.parametrize(
     "build_kwargs", [dict(joint_smoothed_draws=False)], ids=["marginal_smoothed_draws"]
 )

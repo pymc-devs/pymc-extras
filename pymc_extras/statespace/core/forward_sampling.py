@@ -298,7 +298,7 @@ def _sample_unconditional(
         x0, P0, c, d, T, Z, R, H, Q = matrices
 
         if not ss_mod.measurement_error:
-            H_jittered = pm.Deterministic("H_jittered", stabilize(H))
+            H_jittered = pm.Deterministic("H_jittered", stabilize(H, ss_mod.cov_jitter))
             matrices = [x0, P0, c, d, T, Z, R, H_jittered, Q]
 
         LinearGaussianStateSpace(

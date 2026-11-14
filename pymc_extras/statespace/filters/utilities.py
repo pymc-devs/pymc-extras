@@ -4,7 +4,6 @@ import pytensor
 import pytensor.tensor as pt
 
 from pymc_extras.statespace.utils.constants import (
-    JITTER_DEFAULT,
     LONG_NAME_TO_SHORT,
     MATRIX_NAMES,
 )
@@ -87,7 +86,7 @@ def split_vars_into_seq_and_nonseq(params, param_names, time_varying_names: Iter
     return sequences, non_sequences, seq_names, non_seq_names
 
 
-def stabilize(cov, jitter=JITTER_DEFAULT):
+def stabilize(cov, jitter):
     cov = cov + pt.identity_like(cov) * jitter
 
     return cov
