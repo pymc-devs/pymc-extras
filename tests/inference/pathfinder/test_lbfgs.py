@@ -1,4 +1,5 @@
 import numpy as np
+import pytensor
 import pytest
 
 from pymc.blocking import DictToArrayBijection
@@ -72,9 +73,8 @@ def test_set_default_maxcor_heuristic(N, expected):
     ids=["init_failed", "init_low_pct", "max_iter", "non_finite", "low_update_pct", "converged"],
 )
 def test_classify_status(nit, status, update_count, expected):
-    lbfgs = LBFGS(value_grad_fn=lambda x: (0.0, x), maxcor=5)
     result = OptimizeResult(nit=nit, status=status)
-    assert lbfgs._classify_status(result, update_count) is expected
+    assert LBFGS._classify_status(result, update_count) is expected
 
 
 @pytest.mark.parametrize("vectorize", [False, True])
@@ -97,13 +97,14 @@ def test_elbo_call_count(vectorize):
     assert cb.step_count > 0
 
 
-def test_infinite_logp_step_tolerance():
+@pytest.mark.parametrize("floatX", ["float64", "float32"])
+def test_infinite_logp_step_tolerance(floatX):
     """A step that yields non-finite logP is scored as -inf and skipped; the path succeeds."""
-    model = make_ard_regression()
-    neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True)
-    N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
-
-    sample_logp_fn = make_pathfinder_sample_fn(model, N, MAXCOR, jacobian=True)
+    with pytensor.config.change_flags(floatX=floatX):
+        model = make_ard_regression()
+        neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True)
+        N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
+        sample_logp_fn = make_pathfinder_sample_fn(model, N, MAXCOR, jacobian=True)
 
     fail_at_step = [1]
     call_count = [0]
@@ -132,6 +133,7 @@ def test_infinite_logp_step_tolerance():
         rng=rng,
         J=MAXCOR,
         epsilon=STREAMING_EPSILON,
+        dtype=x_base.dtype,
     )
 
     from scipy.optimize import minimize as scipy_minimize
@@ -148,3 +150,4 @@ def test_infinite_logp_step_tolerance():
     assert cb.step_count >= 2
     assert cb.any_valid
     assert cb.best_step_idx != fail_at_step[0]
+    assert all(value.dtype == floatX for value in cb.best_state.values())

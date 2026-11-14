@@ -78,7 +78,7 @@ def generate_fixture(name: str, model_fn, **compile_kwargs) -> None:
     )
     cached_fn = LRUCache1(neg_logp_dlogp_func, copy_x=True)
     rng_elbo = np.random.default_rng(ELBO_SEED)
-    lbfgs = LBFGS(cached_fn, MAXCOR, MAXITER)
+    lbfgs = LBFGS(maxcor=MAXCOR, maxiter=MAXITER)
     cb = LBFGSStreamingCallback(
         value_grad_fn=cached_fn,
         x0=x0,
@@ -87,6 +87,7 @@ def generate_fixture(name: str, model_fn, **compile_kwargs) -> None:
         rng=rng_elbo,
         J=MAXCOR,
         epsilon=1e-12,
+        dtype="float64",
         on_step_callback=_on_step,
     )
     niter, status = lbfgs.minimize_streaming(cb, x0)

@@ -1,11 +1,13 @@
 import numpy as np
 import pymc as pm
+import pytensor
 import pytest
 
 from pymc_extras.inference.pathfinder.bfgs_sample import (
     alpha_step_numpy,
     get_logp_dlogp_of_ravel_inputs,
     get_neg_logp_dlogp_of_ravel_inputs,
+    make_pathfinder_sample_fn,
 )
 
 
@@ -74,3 +76,68 @@ def test_neg_logp_dlogp_negates(scalar_model):
 
     np.testing.assert_allclose(neg_logp, -_standard_normal_logp(np.array(2.0)))
     np.testing.assert_allclose(neg_dlogp, [2.0])
+
+
+def test_neg_logp_dlogp_takes_model_dtype():
+    with pytensor.config.change_flags(floatX="float32"), pm.Model() as model:
+        pm.Normal("x", 0, 1)
+    fn = get_neg_logp_dlogp_of_ravel_inputs(model)
+
+    assert fn.maker.fgraph.inputs[0].type.dtype == "float32"
+
+
+def _pathfinder_sample_fn(N, J, mode, floatX="float64"):
+    with pytensor.config.change_flags(floatX=floatX):
+        with pm.Model() as model:
+            pm.Normal("x", 0, 1, shape=N)
+        return make_pathfinder_sample_fn(
+            model=model,
+            N=N,
+            J=J,
+            jacobian=True,
+            compile_kwargs={"mode": mode},
+        )
+
+
+def _pathfinder_sample_inputs(N, J, M):
+    rng = np.random.default_rng(0)
+    return (
+        rng.standard_normal(N),
+        rng.standard_normal(N),
+        np.abs(rng.standard_normal(N)) + 0.1,
+        rng.standard_normal((N, J)),
+        rng.standard_normal((N, J)),
+        rng.standard_normal((M, N)),
+    )
+
+
+_DENSE = (3, 5)
+_SPARSE = (8, 2)
+
+
+@pytest.mark.parametrize("N, J", [_DENSE, _SPARSE], ids=["dense", "sparse"])
+def test_make_pathfinder_sample_fn_preserves_float32(N, J):
+    M = 7
+    fn = _pathfinder_sample_fn(N, J, mode="FAST_RUN", floatX="float32")
+    inputs = tuple(np.asarray(a, dtype="float32") for a in _pathfinder_sample_inputs(N, J, M))
+    phi, logQ, logP, inv_hessian_diag = fn(*inputs)
+
+    assert phi.shape == (M, N)
+    assert logQ.shape == (M,)
+    assert logP.shape == (M,)
+    assert inv_hessian_diag.shape == (N,)
+    for output in (phi, logQ, logP, inv_hessian_diag):
+        assert np.asarray(output).dtype == np.float32
+
+
+@pytest.mark.parametrize("N, J", [_DENSE, _SPARSE], ids=["dense", "sparse"])
+def test_make_pathfinder_sample_fn_jax_matches_default_mode(N, J):
+    pytest.importorskip("jax")
+
+    M = 7
+    inputs = _pathfinder_sample_inputs(N, J, M)
+    default_outputs = _pathfinder_sample_fn(N, J, mode="FAST_RUN")(*inputs)
+    jax_outputs = _pathfinder_sample_fn(N, J, mode="JAX")(*inputs)
+
+    for default_out, jax_out in zip(default_outputs, jax_outputs):
+        np.testing.assert_allclose(np.asarray(jax_out), default_out, rtol=1e-6, atol=1e-6)

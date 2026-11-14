@@ -83,15 +83,18 @@ def _bfgs_sample_pt(
     inv_hessian_diag : (N,) diagonal of sampler covariance used for `phi`
     """
     J2 = 2 * J
+    dtype = x.dtype
+    # 1e-8 rounds away against 1.0 in float32, so never jitter below the dtype's eps.
+    regularization = max(REGULARIZATION_TERM, float(np.finfo(dtype).eps))
 
     # Inverse Hessian factors
-    E = pt.triu(S.T @ Z) + pt.eye(J) * REGULARIZATION_TERM  # (J, J)
+    E = pt.triu(S.T @ Z) + pt.eye(J, dtype=dtype) * regularization  # (J, J)
     eta = pt.diag(E)  # (J,)
     AZ = alpha[:, None] * Z  # (N, J)
     beta = pt.concatenate([AZ, S], axis=1)  # (N, 2J)
-    E_inv = pt.linalg.solve_triangular(E, pt.eye(J), lower=False)  # (J, J)
+    E_inv = pt.linalg.solve_triangular(E, pt.eye(J, dtype=dtype), lower=False)  # (J, J)
     block_dd = E_inv.T @ (pt.diag(eta) + Z.T @ AZ) @ E_inv  # (J, J)
-    top = pt.concatenate([pt.zeros((J, J)), -E_inv], axis=1)  # (J, 2J)
+    top = pt.concatenate([pt.zeros((J, J), dtype=dtype), -E_inv], axis=1)  # (J, 2J)
     bot = pt.concatenate([-E_inv.T, block_dd], axis=1)  # (J, 2J)
     gamma = pt.concatenate([top, bot], axis=0)  # (2J, 2J)
 
@@ -102,7 +105,7 @@ def _bfgs_sample_pt(
         # Dense path: form H_inv explicitly (small-N regime, O(N²) is fine)
         isa_d = pt.diag(inv_sqrt_alpha)  # (N, N)
         sa_d = pt.diag(sqrt_alpha)  # (N, N)
-        IdN = pt.eye(N) * (1.0 + REGULARIZATION_TERM)
+        IdN = pt.eye(N, dtype=dtype) * (1.0 + regularization)
         H_inv = sa_d @ (IdN + isa_d @ beta @ gamma @ beta.T @ isa_d) @ sa_d
         Lchol = pt.linalg.cholesky(H_inv, lower=False)  # (N, N)
         logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diag(Lchol))))
@@ -112,18 +115,23 @@ def _bfgs_sample_pt(
     else:
         # Sparse path: economy QR avoids O(N²) matrices (large-N regime)
         Q, R = pt.linalg.qr(beta * inv_sqrt_alpha[:, None], mode="reduced")  # Q:(N,2J), R:(2J,2J)
-        I2J = pt.eye(J2) * (1.0 + REGULARIZATION_TERM)
+        I2J = pt.eye(J2, dtype=dtype) * (1.0 + regularization)
         Lchol = pt.linalg.cholesky(I2J + R @ gamma @ R.T, lower=False)  # (2J, 2J)
         logdet = 2.0 * pt.sum(pt.log(pt.abs(pt.diag(Lchol)))) + pt.sum(pt.log(alpha))
         btg = beta.T @ g[:, None]  # (2J, 1)
         mu = x - ((alpha * g)[:, None] + beta @ (gamma @ btg))[:, 0]  # (N,)
         QtU = Q.T @ u.T  # (2J, M)
-        phi = (mu[:, None] + sqrt_alpha[:, None] * (Q @ ((Lchol - pt.eye(J2)) @ QtU) + u.T)).T
+        phi = (
+            mu[:, None]
+            + sqrt_alpha[:, None] * (Q @ ((Lchol - pt.eye(J2, dtype=dtype)) @ QtU) + u.T)
+        ).T
         # diag(Q (L L^T - I) Q^T) = row_norm_sq(Q L) - row_norm_sq(Q)
         ql = Q @ Lchol
         inv_hessian_diag = alpha * (1.0 + pt.sum(ql * ql, axis=1) - pt.sum(Q * Q, axis=1))
 
-    logQ = -0.5 * (logdet + pt.sum(u * u, axis=-1) + N * np.log(2.0 * np.pi))
+    # A bare np.float64 constant would upcast logQ out of float32.
+    log_2pi = pt.constant(np.log(2.0 * np.pi), dtype=dtype)
+    logQ = -0.5 * (logdet + pt.sum(u * u, axis=-1) + N * log_2pi)
     return phi, logQ, inv_hessian_diag
 
 
@@ -167,25 +175,24 @@ def make_pathfinder_sample_fn(
         model.value_vars,
     )
 
-    x_sym = pt.vector("x", dtype="float64")
-    g_sym = pt.vector("g", dtype="float64")
-    alpha_sym = pt.vector("alpha", dtype="float64")
-    s_win_sym = pt.matrix("s_win", dtype="float64")  # (N, J)
-    z_win_sym = pt.matrix("z_win", dtype="float64")  # (N, J)
-    u_sym = pt.matrix("u", dtype="float64")  # (M, N) — M is dynamic
+    dtype = single_input.type.dtype
+    x_sym = pt.tensor("x", shape=(N,), dtype=dtype)
+    g_sym = pt.tensor("g", shape=(N,), dtype=dtype)
+    alpha_sym = pt.tensor("alpha", shape=(N,), dtype=dtype)
+    s_win_sym = pt.tensor("s_win", shape=(N, J), dtype=dtype)
+    z_win_sym = pt.tensor("z_win", shape=(N, J), dtype=dtype)
+    u_sym = pt.matrix("u", dtype=dtype)  # (M, N), M is dynamic
 
     phi_sym, logQ_sym, inv_hessian_diag_sym = _bfgs_sample_pt(
         x_sym, g_sym, alpha_sym, s_win_sym, z_win_sym, u_sym, J, N
     )
 
-    # BFGS runs in float64, and a float32 logp won't accept a float64 input.
-    phi_model_sym = phi_sym.astype(single_input.dtype)
     if vectorize:
-        batched_logP_sym = vectorize_graph(logP_single, replace={single_input: phi_model_sym})
+        batched_logP_sym = vectorize_graph(logP_single, replace={single_input: phi_sym})
     else:
         batched_logP_sym = pytensor.map(
             fn=lambda x_i: clone_replace([logP_single], replace={single_input: x_i})[0],
-            sequences=[phi_model_sym],
+            sequences=[phi_sym],
             return_updates=False,
         )
 
@@ -283,9 +290,6 @@ def get_neg_logp_dlogp_of_ravel_inputs(
         [model.logp(jacobian=jacobian), model.dlogp(jacobian=jacobian)],
         model.value_vars,
     )
-    # L-BFGS passes float64 x, which trust_input would hand a float32 logp uncast.
-    x = pt.vector("x", dtype="float64")
-    neg_logp, neg_dlogp = clone_replace([-logP, -dlogP], replace={inputs: x.astype(inputs.dtype)})
-    neg_logp_dlogp_fn = compile([x], (neg_logp, neg_dlogp), **compile_kwargs)
+    neg_logp_dlogp_fn = compile([inputs], (-logP, -dlogP), **compile_kwargs)
     neg_logp_dlogp_fn.trust_input = True
     return neg_logp_dlogp_fn

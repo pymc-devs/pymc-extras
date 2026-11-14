@@ -103,6 +103,7 @@ def _run_callback_replay(
         rng=rng,
         J=MAXCOR,
         epsilon=REPLAY_EPSILON,
+        dtype="float64",
         on_step_callback=on_step,
     )
 
