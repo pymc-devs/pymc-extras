@@ -248,11 +248,6 @@ def test_mock_result_is_subset_of_real_schema():
     )
 
 
-# ---------------------------------------------------------------------------
-# pathfinder_report
-# ---------------------------------------------------------------------------
-
-
 def test_pathfinder_report_smoke():
     """pathfinder_report prints without raising on a fully populated idata."""
     posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
@@ -269,10 +264,6 @@ def test_pathfinder_report_missing_group():
     with pytest.raises(ValueError, match="missing the 'pathfinder' group"):
         pathfinder_report(idata)
 
-
-# ---------------------------------------------------------------------------
-# convert_flat_trace_to_idata
-# ---------------------------------------------------------------------------
 
 _POSTPROC_N = 3  # a (scalar) + b (shape 2)
 
