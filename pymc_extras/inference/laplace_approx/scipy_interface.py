@@ -112,6 +112,7 @@ def _compile_functions_for_scipy_optimize(
     compute_hess: bool,
     compute_hessp: bool,
     compile_kwargs: dict | None = None,
+    vectorize_hessian: bool = False,
 ) -> list[Function] | list[Function, Function | None, Function | None]:
     """
     Compile loss functions for use with scipy.optimize.minimize.
@@ -129,6 +130,9 @@ def _compile_functions_for_scipy_optimize(
         Whether to compile a function that computes the Hessian of the loss function.
     compute_hessp: bool
         Whether to compile a function that computes the Hessian-vector product of the loss function.
+    vectorize_hessian: bool, default False
+        If True, build the Hessian with ``jacobian(..., vectorize=True)`` instead of a ``Scan`` over the gradient
+        entries.
     compile_kwargs: dict, optional
         Additional keyword arguments to pass to the ``pm.compile`` function.
 
@@ -169,7 +173,7 @@ def _compile_functions_for_scipy_optimize(
         outputs.append(grad)
 
     if compute_hess:
-        hess = pytensor.gradient.jacobian(grad, inputs)[0]
+        hess = pytensor.gradient.jacobian(grad, inputs, vectorize=vectorize_hessian)[0]
         outputs.append(hess)
 
     f_fused = pm.compile(inputs, outputs, **compile_kwargs)
@@ -187,6 +191,7 @@ def scipy_optimize_funcs_from_loss(
     gradient_backend: GradientBackend = "pytensor",
     compile_kwargs: dict | None = None,
     inputs_are_flat: bool = False,
+    vectorize_hessian: bool = False,
 ) -> tuple[Callable, ...]:
     """
     Compile loss functions for use with scipy.optimize.minimize.
@@ -205,6 +210,10 @@ def scipy_optimize_funcs_from_loss(
         Whether to compile a function that computes the Hessian of the loss function.
     use_hessp: bool
         Whether to compile a function that computes the Hessian-vector product of the loss function.
+    vectorize_hessian: bool, default False
+        If True, build the Hessian with ``jacobian(..., vectorize=True)`` instead of a ``Scan`` over the gradient
+        entries. This allows compiling on backends without ``Scan`` support (e.g. MLX) and trades higher memory for
+        parallel compute. Only used when the Hessian is computed with ``gradient_backend="pytensor"``. Default False.
     gradient_backend: str, default "pytensor"
         Which backend to use to compute gradients. Must be one of "jax" or "pytensor"
     compile_kwargs:
@@ -268,6 +277,7 @@ def scipy_optimize_funcs_from_loss(
         compute_grad=compute_grad,
         compute_hess=compute_hess,
         compute_hessp=compute_hessp,
+        vectorize_hessian=vectorize_hessian,
         compile_kwargs=compile_kwargs,
     )
 
