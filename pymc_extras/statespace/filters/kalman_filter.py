@@ -30,7 +30,9 @@ from pymc_extras.statespace.utils.constants import (
     MISSING_FILL,
 )
 
-MVN_CONST = pt.log(2 * pt.constant(np.pi, dtype="float64"))
+# A Python float takes on floatX in the graph, where a float64 constant would upcast float32
+# likelihoods.
+MVN_CONST = float(np.log(2 * np.pi))
 
 assert_time_varying_dim_correct = Assert(
     "The first dimension of a time varying matrix (the time dimension) must be "
@@ -835,7 +837,8 @@ class UnivariateFilter(BaseFilter):
         P_filtered = stabilize(0.5 * (P_filtered + P_filtered.mT), self.cov_jitter)
         a_hat, P_hat = self.predict(a=a_filtered, P=P_filtered, c=c, T=T, R=R, Q=Q)
 
-        ll = -0.5 * (pt.bitwise_not(nan_mask).sum() * MVN_CONST + ll_inner.sum())
+        n_observed = pt.bitwise_not(nan_mask).astype(ll_inner.dtype).sum()
+        ll = -0.5 * (n_observed * MVN_CONST + ll_inner.sum())
 
         return a_filtered, a_hat, obs_mu, P_filtered, P_hat, obs_cov, ll
 
@@ -991,7 +994,7 @@ class ConvergentFilter(StandardFilter):
         k = pt.minimum(a_filt_tr.shape[0], n - 1)
         a_star, P_star = a_hat_tr[k - 1], P_hat_tr[k - 1]
 
-        k_endog = dim_of(Z, -2)
+        mvn_constant = pt.as_tensor(dim_of(Z, -2)).astype(data.dtype) * MVN_CONST
 
         # Tail constants from P*, hoisted so the tail scan body carries no Cholesky or solve.
         F_star = Z @ P_star @ Z.mT + stabilize(H, self.cov_jitter)
@@ -1010,7 +1013,7 @@ class ConvergentFilter(StandardFilter):
             y_hat = d + Z @ a_prev
             v = y - y_hat
             solved = solve_triangular(F_chol_star, v, lower=True)
-            ll = -0.5 * (k_endog * MVN_CONST + logdet_F_star + (solved * solved).sum())
+            ll = -0.5 * (mvn_constant + logdet_F_star + (solved * solved).sum())
             a_filt = a_prev + K_star @ v
             return a_filt, T @ a_filt + c, y_hat, ll
 
