@@ -1,5 +1,6 @@
 import numpy as np
 import pymc as pm
+import pytensor
 import pytest
 
 from pymc_extras.inference.pathfinder.bfgs_sample import (
@@ -77,16 +78,25 @@ def test_neg_logp_dlogp_negates(scalar_model):
     np.testing.assert_allclose(neg_dlogp, [2.0])
 
 
-def _pathfinder_sample_fn(N, J, mode):
-    with pm.Model() as model:
-        pm.Normal("x", 0, 1, shape=N)
-    return make_pathfinder_sample_fn(
-        model=model,
-        N=N,
-        J=J,
-        jacobian=True,
-        compile_kwargs={"mode": mode},
-    )
+def test_neg_logp_dlogp_takes_model_dtype():
+    with pytensor.config.change_flags(floatX="float32"), pm.Model() as model:
+        pm.Normal("x", 0, 1)
+    fn = get_neg_logp_dlogp_of_ravel_inputs(model)
+
+    assert fn.maker.fgraph.inputs[0].type.dtype == "float32"
+
+
+def _pathfinder_sample_fn(N, J, mode, floatX="float64"):
+    with pytensor.config.change_flags(floatX=floatX):
+        with pm.Model() as model:
+            pm.Normal("x", 0, 1, shape=N)
+        return make_pathfinder_sample_fn(
+            model=model,
+            N=N,
+            J=J,
+            jacobian=True,
+            compile_kwargs={"mode": mode},
+        )
 
 
 def _pathfinder_sample_inputs(N, J, M):
@@ -105,6 +115,21 @@ def _pathfinder_sample_inputs(N, J, M):
 # path, 2J < N takes the sparse QR path.
 _DENSE = (3, 5)
 _SPARSE = (8, 2)
+
+
+@pytest.mark.parametrize("N, J", [_DENSE, _SPARSE], ids=["dense", "sparse"])
+def test_make_pathfinder_sample_fn_preserves_float32(N, J):
+    M = 7
+    fn = _pathfinder_sample_fn(N, J, mode="FAST_RUN", floatX="float32")
+    inputs = tuple(np.asarray(a, dtype="float32") for a in _pathfinder_sample_inputs(N, J, M))
+    phi, logQ, logP, inv_hessian_diag = fn(*inputs)
+
+    assert phi.shape == (M, N)
+    assert logQ.shape == (M,)
+    assert logP.shape == (M,)
+    assert inv_hessian_diag.shape == (N,)
+    for output in (phi, logQ, logP, inv_hessian_diag):
+        assert np.asarray(output).dtype == np.float32
 
 
 @pytest.mark.parametrize("N, J", [_DENSE, _SPARSE], ids=["dense", "sparse"])

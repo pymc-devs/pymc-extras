@@ -131,6 +131,7 @@ def test_infinite_logp_step_tolerance():
         rng=rng,
         J=MAXCOR,
         epsilon=STREAMING_EPSILON,
+        dtype="float64",
     )
 
     from scipy.optimize import minimize as scipy_minimize

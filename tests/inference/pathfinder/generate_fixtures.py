@@ -87,6 +87,7 @@ def generate_fixture(name: str, model_fn, **compile_kwargs) -> None:
         rng=rng_elbo,
         J=MAXCOR,
         epsilon=1e-12,
+        dtype="float64",
         on_step_callback=_on_step,
     )
     niter, status = lbfgs.minimize_streaming(cb, x0)

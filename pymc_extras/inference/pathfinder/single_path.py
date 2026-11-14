@@ -120,6 +120,7 @@ def make_single_pathfinder_fn(
         compile_kwargs=compile_kwargs,
         vectorize=vectorize_logp,
     )
+    dtype = sample_logp_func.maker.fgraph.inputs[0].type.dtype
 
     def _check_lbfgs_status(status):
         if status in {LBFGSStatus.INIT_FAILED, LBFGSStatus.INIT_FAILED_LOW_UPDATE_PCT}:
@@ -175,6 +176,7 @@ def make_single_pathfinder_fn(
                         rng=elbo_rng,
                         J=maxcor,
                         epsilon=epsilon,
+                        dtype=dtype,
                         progress_callback=progress_callback,
                     )
 
@@ -191,7 +193,7 @@ def make_single_pathfinder_fn(
                     best_state = streaming_cb.best_state
 
                     final_rng = np.random.default_rng(final_seed)
-                    u_final = final_rng.standard_normal((num_draws, N))
+                    u_final = final_rng.standard_normal((num_draws, N)).astype(dtype)
                     if progress_callback is not None:
                         progress_callback({"status": "sampling"})
 

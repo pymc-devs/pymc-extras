@@ -169,8 +169,8 @@ class LBFGS:
         Parameters
         ----------
         callback : object
-            Exposes ``value_grad_fn``, the fused ``(x) -> (value, grad)`` objective, and a
-            ``step_count`` it updates on each accepted step.
+            Exposes ``value_grad_fn``, the fused ``(x) -> (value, grad)`` objective, its working
+            ``dtype``, and a ``step_count`` it updates on each accepted step.
         x0 : array_like
             Initial position.
 
@@ -181,7 +181,8 @@ class LBFGS:
         lbfgs_status : LBFGSStatus
             The classified termination status.
         """
-        x0 = np.array(x0, dtype=np.float64)
+        # scipy evaluates the objective at x0's dtype while keeping its own state in float64.
+        x0 = np.asarray(x0, dtype=callback.dtype)
         # better_optimize detects the fused (value, grad) objective and promotes maxcor/maxiter/...
         # to scipy's options dict itself, so they pass straight through as keyword arguments.
         result = minimize(
@@ -223,6 +224,9 @@ class LBFGSStreamingCallback:
         L-BFGS history size (``maxcor``).
     epsilon : float
         Curvature-condition threshold for accepting a step.
+    dtype : str or numpy.dtype
+        Input dtype of ``value_grad_fn`` and ``sample_logp_fn``. Positions, buffers, and ELBO
+        draws are cast to it.
     progress_callback : callable, optional
         Called with a progress dict after each step. Default None.
     on_step_callback : callable, optional
@@ -238,6 +242,7 @@ class LBFGSStreamingCallback:
         rng: np.random.Generator,
         J: int,
         epsilon: float,
+        dtype: str | np.dtype,
         progress_callback: Callable | None = None,
         on_step_callback: Callable | None = None,
     ) -> None:
@@ -249,19 +254,21 @@ class LBFGSStreamingCallback:
         self.epsilon = epsilon
         self.progress_callback = progress_callback
         self.on_step_callback = on_step_callback
+        self.dtype = np.dtype(dtype)
 
         N = x0.shape[0]
         self._N = N
+        x0 = np.asarray(x0, dtype=self.dtype)
         _, g0 = self.value_grad_fn(x0)
 
         self.x_prev: NDArray = x0.copy()
-        self.g_prev: NDArray = np.array(g0, dtype=np.float64)
-        self.alpha_prev: NDArray = np.ones(N, dtype=np.float64)
+        self.g_prev: NDArray = np.asarray(g0, dtype=self.dtype)
+        self.alpha_prev: NDArray = np.ones(N, dtype=self.dtype)
 
         # Ring buffer: numpy arrays passed as inputs to sample_logp_fn each call.
         # Thread-safe: no shared mutable state across concurrent invocations.
-        self.s_win: NDArray = np.zeros((N, J), dtype=np.float64)
-        self.z_win: NDArray = np.zeros((N, J), dtype=np.float64)
+        self.s_win: NDArray = np.zeros((N, J), dtype=self.dtype)
+        self.z_win: NDArray = np.zeros((N, J), dtype=self.dtype)
         self.win_idx: int = -1
         self.best_elbo: float = -np.inf
         self.best_state: dict = {}
@@ -276,13 +283,14 @@ class LBFGSStreamingCallback:
         ``intermediate`` is a scipy/better_optimize ``OptimizeResult`` (carrying ``.x``, ``.fun``,
         and ``.jac``) or, for a classic scipy callback, the raw position array.
         """
+        # scipy reports float64 positions, and sample_logp_fn has trust_input=True.
         if hasattr(intermediate, "x"):
-            x = np.asarray(intermediate.x, dtype=np.float64)
+            x = np.asarray(intermediate.x, dtype=self.dtype)
             value = float(intermediate.fun)
             g = getattr(intermediate, "jac", None)
-            g = self.value_grad_fn(x)[1] if g is None else np.asarray(g, dtype=np.float64)
+            g = self.value_grad_fn(x)[1] if g is None else np.asarray(g, dtype=self.dtype)
         else:
-            x = np.asarray(intermediate, dtype=np.float64)
+            x = np.asarray(intermediate, dtype=self.dtype)
             value, g = self.value_grad_fn(x)
 
         s = x - self.x_prev
@@ -301,7 +309,7 @@ class LBFGSStreamingCallback:
         self.z_win[:, self.win_idx] = z
 
         # Sample + logP in a single compiled call. Pass s_win/z_win as inputs.
-        u = self._rng.standard_normal((self.num_elbo_draws, self._N))
+        u = self._rng.standard_normal((self.num_elbo_draws, self._N)).astype(self.dtype)
         sample_out = self.sample_logp_fn(x, g, alpha, self.s_win, self.z_win, u)
         _, logQ, logP, _ = sample_out
         logP = np.asarray(logP)
