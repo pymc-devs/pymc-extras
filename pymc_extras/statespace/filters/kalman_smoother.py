@@ -19,8 +19,9 @@ from pymc_extras.statespace.utils.constants import (
 # The smoother's backward pass only ever touches these three matrices.
 SMOOTHER_PARAM_NAMES = ("c", "T", "R", "Q")
 
-# The disturbance smoother's backward pass reads the observation block as well as the transition.
-DISTURBANCE_PARAM_NAMES = ("d", "T", "Z", "H")
+# The disturbance smoother's backward pass reads the observation block as well as the transition,
+# and the selection and state covariance matrices map r and N onto the state shocks.
+DISTURBANCE_PARAM_NAMES = ("d", "T", "Z", "R", "H", "Q")
 
 
 class RTSSmoother:
@@ -178,7 +179,7 @@ class DisturbanceSmoother:
             name for name in DISTURBANCE_PARAM_NAMES if name not in time_varying_short
         ]
 
-    def smoother_step(self, y, a, P, r, N, d, T, Z, H):
+    def smoother_step(self, y, a, P, r, N, d, T, Z, R, H, Q):
         y, Z, H, d, nan_mask = mask_missing_values(y, Z, H, d, self.missing_fill_value)
 
         # A masked row of F is all zeros. A one on its diagonal keeps the factorization defined,
@@ -197,7 +198,13 @@ class DisturbanceSmoother:
         r_next = Z_F_inv.mT @ v + L.mT @ r
         N_next = Z_F_inv.mT @ Z + quad_form_sym(L.mT, N)
 
-        return r_next, N_next, a + P @ r_next, P - quad_form_sym(P, N_next)
+        # The shock at t moves the state from t to t+1, so it reads the incoming r_t and N_t, which
+        # are zero at the last step: no data follows to inform it.
+        QR = Q @ R.mT
+        shock = QR @ r
+        shock_cov = Q - quad_form_sym(QR, N)
+
+        return r_next, N_next, a + P @ r_next, P - quad_form_sym(P, N_next), shock, shock_cov
 
     def build_graph(self, data, matrices, filter_outputs):
         """
@@ -220,12 +227,18 @@ class DisturbanceSmoother:
             Smoothed state means, shape ``(T, k_states)``.
         smoothed_covariances : TensorVariable
             Smoothed state covariances, shape ``(T, k_states, k_states)``.
+        smoothed_shocks : TensorVariable
+            Smoothed state shocks, shape ``(T, k_posdef)``. The shock at ``t`` drives the state
+            from ``t`` to ``t + 1``, so the last one is zero.
+        smoothed_shock_covariances : TensorVariable
+            Smoothed state shock covariances, shape ``(T, k_posdef, k_posdef)``. The last one is
+            the state covariance ``Q``.
         """
-        _, _, _, d, T, Z, _, H, _ = matrices
+        _, _, _, d, T, Z, R, H, Q = matrices
         predicted_states, predicted_covariances = filter_outputs[1], filter_outputs[4]
         k_states = predicted_states.type.shape[1] or predicted_states.shape[1]
 
-        params = dict(zip(DISTURBANCE_PARAM_NAMES, [d, T, Z, H], strict=True))
+        params = dict(zip(DISTURBANCE_PARAM_NAMES, [d, T, Z, R, H, Q], strict=True))
         sequences = [params[name] for name in self.seq_names]
         non_sequences = [params[name] for name in self.non_seq_names]
 
@@ -235,10 +248,17 @@ class DisturbanceSmoother:
             names = [*self.seq_names, "r", "N", *self.non_seq_names]
             return self.smoother_step(y, a, P, **dict(zip(names, args, strict=True)))
 
-        _, _, smoothed_states, smoothed_covariances = pytensor.scan(
+        outputs = pytensor.scan(
             step,
             sequences=[data, predicted_states, predicted_covariances, *sequences],
-            outputs_info=[pt.zeros(k_states), pt.zeros((k_states, k_states)), None, None],
+            outputs_info=[
+                pt.zeros(k_states),
+                pt.zeros((k_states, k_states)),
+                None,
+                None,
+                None,
+                None,
+            ],
             non_sequences=non_sequences,
             go_backwards=True,
             name="disturbance_smoother",
@@ -246,11 +266,15 @@ class DisturbanceSmoother:
             return_updates=False,
         )
 
-        smoothed_states = smoothed_states[::-1]
-        smoothed_covariances = smoothed_covariances[::-1]
+        smoothed_states, smoothed_covariances, smoothed_shocks, smoothed_shock_covariances = (
+            output[::-1] for output in outputs[2:]
+        )
 
         smoothed_covariances = assume(smoothed_covariances, symmetric=True)
+        smoothed_shock_covariances = assume(smoothed_shock_covariances, symmetric=True)
         smoothed_states.name = "smoothed_states"
         smoothed_covariances.name = "smoothed_covariances"
+        smoothed_shocks.name = "smoothed_shocks"
+        smoothed_shock_covariances.name = "smoothed_shock_covariances"
 
-        return smoothed_states, smoothed_covariances
+        return smoothed_states, smoothed_covariances, smoothed_shocks, smoothed_shock_covariances
