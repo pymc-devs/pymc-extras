@@ -178,9 +178,11 @@ class PyMCStateSpace:
         to all sampling methods.
 
     cov_jitter: float, optional
-        Value added to the diagonal of every covariance matrix at each filtering step, for numerical stability.
-        Post-estimation graphs -- ``forecast``, the conditional samplers, ``sample_filter_outputs`` -- are built
-        with this same value. Default 1e-8, or 1e-6 if ``pytensor.config.floatX`` is float32.
+        Value added to the diagonal of the observation noise covariance, and of any other covariance
+        matrix the filter or smoother factors, for systems where one can be singular.
+        Post-estimation graphs -- ``forecast``, the conditional samplers, ``sample_filter_outputs``
+        -- are built with this same value. Default 1e-8, or 1e-6 if ``pytensor.config.floatX`` is
+        float32.
 
     missing_fill_value: float, optional
         Sentinel used to mask missing observations, so PyMC's imputation machinery is not triggered. Set this only

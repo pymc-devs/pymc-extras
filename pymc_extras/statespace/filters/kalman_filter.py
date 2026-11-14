@@ -58,8 +58,9 @@ class BaseFilter(ABC):
             Long names of the matrices the model declared time-varying, which the filter passes to
             ``scan`` as sequences rather than non-sequences. Default is no time-varying matrices.
         cov_jitter : float, optional
-            Jitter added to the diagonal of every covariance matrix at each step. Default 1e-8, or
-            1e-6 if ``pytensor.config.floatX`` is float32.
+            Jitter added to the diagonal of each covariance matrix the filter factors, for systems
+            where one can be singular. Default 1e-8, or 1e-6 if ``pytensor.config.floatX`` is
+            float32.
         missing_fill_value : float, optional
             Sentinel marking missing observations in the data. Default -9999.0.
         """
@@ -172,16 +173,10 @@ class BaseFilter(ABC):
             the Kalman filter's hidden state inference. Change if your data happens to have legitimate values of -9999
 
         cov_jitter: float, default 1e-8 or 1e-6 if pytensor.config.floatX is float32
-            The Kalman filter is known to be numerically unstable, especially at half precision. This value is added to
-            the diagonal of every covariance matrix -- predicted, filtered, and smoothed -- at every step, to ensure
-            all matrices are strictly positive semi-definite.
-
-            Obviously, if this can be zero, that's best. In general:
-                - Having measurement error makes Kalman Filters more robust. A large source of numerical errors come
-                  from the Filtered and Smoothed matrices having a zero in the (0, 0) position, which always occurs
-                  when there is no measurement error.
-
-                - The Univariate Filter is more robust than other filters, and can tolerate a lower jitter value
+            Added to the diagonal of each covariance matrix the filter factors, such as the
+            innovation covariance, for systems where one can be singular. A model without
+            measurement error and with fewer states than observed series, for example, has a
+            singular innovation covariance.
 
         References
         ----------
@@ -219,16 +214,18 @@ class BaseFilter(ABC):
 
     def _declare_covariance_structure(self, outputs) -> list[TensorVariable]:
         """
-        Declare the covariance outputs symmetric, and positive definite where the recursion stabilizes them.
+        Declare the covariance outputs symmetric, and the observed covariance positive definite.
 
-        The predicted sequence begins with ``P0``, which a stationary initialization can leave
-        singular, so it is declared symmetric only.
+        Only the observed covariance carries ``cov_jitter``. The filtered covariance is exactly
+        singular for a model without measurement error, and the predicted sequence begins with
+        ``P0``, which a stationary initialization can leave singular, so both are declared symmetric
+        only.
         """
         states, (filtered, predicted, observed), loglike = outputs[:3], outputs[3:6], outputs[6]
         positive_definite = True if self.cov_jitter > 0 else None
 
         covariances = [
-            assume(filtered, symmetric=True, positive_definite=positive_definite),
+            assume(filtered, symmetric=True),
             assume(predicted, symmetric=True),
             assume(observed, symmetric=True, positive_definite=positive_definite),
         ]
@@ -532,8 +529,6 @@ class BaseFilter(ABC):
             y=y_masked, a=a, d=d_masked, P=P, Z=Z_masked, H=H_masked, nan_mask=nan_mask
         )
 
-        P_filtered = stabilize(P_filtered, self.cov_jitter)
-
         a_hat, P_hat = self.predict(a=a_filtered, P=P_filtered, c=c, T=T, R=R, Q=Q)
         outputs = (a_filtered, a_hat, obs_mu, P_filtered, P_hat, obs_cov, ll)
 
@@ -609,8 +604,8 @@ class StandardFilter(BaseFilter):
 
         # Equal to the Joseph form (I - KZ) P (I - KZ)^T + K H K^T, whose H carries no jitter, at
         # O(k_states^2 k_endog) cost instead of O(k_states^3). Unlike the Joseph form it is not PSD by
-        # construction: it subtracts nearly equal terms when H is small next to Z P Z^T, and the
-        # cancellation error is left for the jitter added after the update to absorb.
+        # construction: it subtracts nearly equal terms when H is small next to Z P Z^T, so the
+        # result can carry eigenvalues below zero at rounding level.
         P_filtered = P - quad_form_sym(K, stabilize(F, self.cov_jitter))
 
         F_inv_v = pt.linalg.cho_solve((F_chol, True), v)
@@ -834,7 +829,7 @@ class UnivariateFilter(BaseFilter):
             obs_cov[-1],
         )
 
-        P_filtered = stabilize(0.5 * (P_filtered + P_filtered.mT), self.cov_jitter)
+        P_filtered = 0.5 * (P_filtered + P_filtered.mT)
         a_hat, P_hat = self.predict(a=a_filtered, P=P_filtered, c=c, T=T, R=R, Q=Q)
 
         n_observed = pt.bitwise_not(nan_mask).astype(ll_inner.dtype).sum()
@@ -936,7 +931,6 @@ class ConvergentFilter(StandardFilter):
         a_filt, P_filt, y_hat, F, ll = self.update(
             a=a, P=P, y=y, d=d, Z=Z, H=H, nan_mask=pt.zeros((dim_of(Z, -2),), dtype=bool)
         )
-        P_filt = stabilize(P_filt, self.cov_jitter)
         a_hat, P_hat = self.predict(a=a_filt, P=P_filt, c=c, T=T, R=R, Q=Q)
         return a_filt, a_hat, y_hat, P_filt, P_hat, F, ll
 
@@ -1004,9 +998,7 @@ class ConvergentFilter(StandardFilter):
             F_star.mT, (P_star @ Z.mT).mT, assume_a="pos", check_finite=False
         ).mT
         I_KZ_star = pt.eye(dim_of(P_star, -1)) - K_star @ Z
-        P_filt_star = stabilize(
-            quad_form_sym(I_KZ_star, P_star) + quad_form_sym(K_star, H), self.cov_jitter
-        )
+        P_filt_star = quad_form_sym(I_KZ_star, P_star) + quad_form_sym(K_star, H)
 
         # Tail scan: fixed K*, F* (no per-step Cholesky). Recurrent slot is a_hat.
         def tail_body(y, a_prev):

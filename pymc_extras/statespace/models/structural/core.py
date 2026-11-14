@@ -175,8 +175,10 @@ class StructuralTimeSeries(PyMCStateSpace):
         mode : str | Mode | None, default None
             PyTensor compilation mode.
         cov_jitter : float, optional
-            Jitter added to covariance diagonals at each filtering step. Post-estimation graphs use the same
-            value. Default 1e-8, or 1e-6 if ``pytensor.config.floatX`` is float32.
+            Jitter added to the diagonal of the observation noise covariance, and of any other
+            covariance matrix the filter or smoother factors, for systems where one can be singular.
+            Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
+            ``pytensor.config.floatX`` is float32.
         missing_fill_value : float, optional
             Sentinel used to mask missing observations. Post-estimation graphs use the same value.
             Default -9999.0.
@@ -1019,8 +1021,9 @@ class Component:
             to all sampling methods.
 
         cov_jitter: float, optional
-            Jitter added to the diagonal of every covariance matrix at each filtering step, for numerical
-            stability. Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
+            Jitter added to the diagonal of the observation noise covariance, and of any other
+            covariance matrix the filter or smoother factors, for systems where one can be singular.
+            Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
             ``pytensor.config.floatX`` is float32.
 
         missing_fill_value: float, optional

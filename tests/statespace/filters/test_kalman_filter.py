@@ -6,7 +6,7 @@ import pytensor
 import pytensor.tensor as pt
 import pytest
 
-from numpy.testing import assert_allclose, assert_array_less
+from numpy.testing import assert_allclose
 
 from pymc_extras.statespace.filters import (
     DisturbanceSmoother,
@@ -25,6 +25,7 @@ from tests.statespace.shared_fixtures import (  # pylint: disable=unused-import
     rng,
 )
 from tests.statespace.test_utilities import (
+    assert_psd,
     get_expected_shape,
     get_sm_state_from_output_name,
     initialize_filter,
@@ -520,9 +521,7 @@ def test_all_covariance_matrices_are_PSD(filter_name, n_missing, obs_noise, rng)
 
     for output_idx, name in zip([3, 4, 5], output_names[3:-2]):
         cov_stack = outputs[output_idx]
-        w, v = np.linalg.eig(cov_stack)
-
-        assert_array_less(0, w, err_msg=f"Smallest eigenvalue of {name}: {min(w.ravel())}")
+        assert_psd(cov_stack, err_msg=name)
         assert_allclose(
             cov_stack,
             np.swapaxes(cov_stack, -2, -1),

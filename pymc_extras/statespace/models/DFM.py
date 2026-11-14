@@ -291,9 +291,10 @@ class BayesianDynamicFactor(PyMCStateSpace):
             ``pm.sample``. Regardless of whether a mode is specified, it can always be overwritten
             via the ``compile_kwargs`` argument to all sampling methods. Default None.
         cov_jitter : float, optional
-            Jitter added to the diagonal of every covariance matrix at each filtering step, for
-            numerical stability. Post-estimation graphs are built with this same value. Default
-            1e-8, or 1e-6 if ``pytensor.config.floatX`` is float32.
+            Jitter added to the diagonal of the observation noise covariance, and of any other
+            covariance matrix the filter or smoother factors, for systems where one can be singular.
+            Post-estimation graphs are built with this same value. Default 1e-8, or 1e-6 if
+            ``pytensor.config.floatX`` is float32.
         missing_fill_value : float, optional
             Sentinel used to mask missing observations. Set this only if your data legitimately
             contains the default sentinel. Post-estimation graphs are built with this same value.
