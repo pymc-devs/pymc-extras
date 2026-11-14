@@ -107,7 +107,7 @@ def run_streaming_lbfgs(model, sample_logp_fn, *, seed):
         rng=rng,
         J=MAXCOR,
         epsilon=STREAMING_EPSILON,
-        dtype="float64",
+        dtype=x_base.dtype,
     )
 
     scipy_minimize(

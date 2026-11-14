@@ -1,4 +1,5 @@
 import numpy as np
+import pytensor
 import pytest
 
 from pymc.blocking import DictToArrayBijection
@@ -96,13 +97,14 @@ def test_elbo_call_count(vectorize):
     assert cb.step_count > 0
 
 
-def test_infinite_logp_step_tolerance():
+@pytest.mark.parametrize("floatX", ["float64", "float32"])
+def test_infinite_logp_step_tolerance(floatX):
     """A step that yields non-finite logP is scored as -inf and skipped; the path succeeds."""
-    model = make_ard_regression()
-    neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True)
-    N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
-
-    sample_logp_fn = make_pathfinder_sample_fn(model, N, MAXCOR, jacobian=True)
+    with pytensor.config.change_flags(floatX=floatX):
+        model = make_ard_regression()
+        neg_logp_dlogp = get_neg_logp_dlogp_of_ravel_inputs(model, jacobian=True)
+        N = DictToArrayBijection.map(model.initial_point()).data.shape[0]
+        sample_logp_fn = make_pathfinder_sample_fn(model, N, MAXCOR, jacobian=True)
 
     fail_at_step = [1]
     call_count = [0]
@@ -131,7 +133,7 @@ def test_infinite_logp_step_tolerance():
         rng=rng,
         J=MAXCOR,
         epsilon=STREAMING_EPSILON,
-        dtype="float64",
+        dtype=x_base.dtype,
     )
 
     from scipy.optimize import minimize as scipy_minimize
@@ -148,3 +150,4 @@ def test_infinite_logp_step_tolerance():
     assert cb.step_count >= 2
     assert cb.any_valid
     assert cb.best_step_idx != fail_at_step[0]
+    assert all(value.dtype == floatX for value in cb.best_state.values())
