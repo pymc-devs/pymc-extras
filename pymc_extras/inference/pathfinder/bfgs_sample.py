@@ -167,11 +167,11 @@ def make_pathfinder_sample_fn(
         model.value_vars,
     )
 
-    x_sym = pt.vector("x", dtype="float64")
-    g_sym = pt.vector("g", dtype="float64")
-    alpha_sym = pt.vector("alpha", dtype="float64")
-    s_win_sym = pt.matrix("s_win", dtype="float64")  # (N, J)
-    z_win_sym = pt.matrix("z_win", dtype="float64")  # (N, J)
+    x_sym = pt.tensor("x", shape=(N,), dtype="float64")
+    g_sym = pt.tensor("g", shape=(N,), dtype="float64")
+    alpha_sym = pt.tensor("alpha", shape=(N,), dtype="float64")
+    s_win_sym = pt.tensor("s_win", shape=(N, J), dtype="float64")
+    z_win_sym = pt.tensor("z_win", shape=(N, J), dtype="float64")
     u_sym = pt.matrix("u", dtype="float64")  # (M, N) — M is dynamic
 
     phi_sym, logQ_sym, inv_hessian_diag_sym = _bfgs_sample_pt(
