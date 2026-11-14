@@ -235,6 +235,7 @@ def test_sequence_type_component_arguments(arg_type):
         st.LevelTrend,
         partial(st.Cycle, cycle_length=12),
         st.Autoregressive,
+        st.MovingAverage,
         partial(st.FrequencySeasonality, season_length=12),
         partial(st.TimeSeasonality, season_length=12),
         st.MeasurementError,

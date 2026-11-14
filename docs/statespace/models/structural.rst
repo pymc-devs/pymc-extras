@@ -8,6 +8,7 @@ Structural Components
 
    LevelTrend
    Autoregressive
+   MovingAverage
    TimeSeasonality
    FrequencySeasonality
    MeasurementError
