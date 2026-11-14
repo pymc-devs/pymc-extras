@@ -90,6 +90,19 @@ class LBFGSInitFailed(LBFGSException):
         super().__init__(message or self.DEFAULT_MESSAGE, status)
 
 
+def _as_numpy_value_grad(value_grad_fn: Callable) -> Callable:
+    """Convert a fused ``(value, grad)`` objective's outputs to numpy, keeping their dtype.
+
+    scipy's L-BFGS-B takes zero steps when handed backend arrays such as ``mx.array``.
+    """
+
+    def wrapped(x):
+        value, grad = value_grad_fn(x)
+        return np.asarray(value), np.asarray(grad)
+
+    return wrapped
+
+
 class LBFGS:
     """L-BFGS optimizer wrapping ``scipy.optimize.minimize(method="L-BFGS-B")``.
 
@@ -228,7 +241,7 @@ class LBFGSStreamingCallback:
         progress_callback: Callable | None = None,
         on_step_callback: Callable | None = None,
     ) -> None:
-        self.value_grad_fn = value_grad_fn
+        self.value_grad_fn = _as_numpy_value_grad(value_grad_fn)
         self.sample_logp_fn = sample_logp_fn
         self.num_elbo_draws = num_elbo_draws
         self._rng = rng
@@ -239,7 +252,7 @@ class LBFGSStreamingCallback:
 
         N = x0.shape[0]
         self._N = N
-        _, g0 = value_grad_fn(x0)
+        _, g0 = self.value_grad_fn(x0)
 
         self.x_prev: NDArray = x0.copy()
         self.g_prev: NDArray = np.array(g0, dtype=np.float64)
