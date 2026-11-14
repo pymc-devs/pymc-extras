@@ -111,8 +111,6 @@ def _pathfinder_sample_inputs(N, J, M):
     )
 
 
-# (N, J) chosen to exercise both branches of _bfgs_sample_pt: 2J >= N takes the dense
-# path, 2J < N takes the sparse QR path.
 _DENSE = (3, 5)
 _SPARSE = (8, 2)
 
