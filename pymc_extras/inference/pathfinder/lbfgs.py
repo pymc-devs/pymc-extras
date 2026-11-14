@@ -95,8 +95,6 @@ class LBFGS:
 
     Parameters
     ----------
-    value_grad_fn : callable
-        Returns ``(value, gradient)`` for a position.
     maxcor : int
         Number of variable-metric corrections.
     maxiter : int, optional
@@ -107,29 +105,24 @@ class LBFGS:
         Gradient-norm tolerance for convergence. Default 1e-8.
     maxls : int, optional
         Maximum line-search steps per iteration. Default 1000.
-    epsilon : float, optional
-        Curvature-condition threshold for accepting a step. Default 1e-12.
     """
 
     def __init__(
         self,
-        value_grad_fn,
         maxcor: int,
         maxiter: int = 1000,
         ftol: float = 1e-5,
         gtol: float = 1e-8,
         maxls: int = 1000,
-        epsilon: float = 1e-12,
     ) -> None:
-        self.value_grad_fn = value_grad_fn
         self.maxcor = maxcor
         self.maxiter = maxiter
         self.ftol = ftol
         self.gtol = gtol
         self.maxls = maxls
-        self.epsilon = epsilon
 
-    def _classify_status(self, result, update_count: int) -> LBFGSStatus:
+    @staticmethod
+    def _classify_status(result, update_count: int) -> LBFGSStatus:
         """Classify the LBFGS termination status.
 
         Parameters
