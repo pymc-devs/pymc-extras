@@ -1,16 +1,23 @@
 import contextlib
+import faulthandler
+import sys
 
 import numpy as np
 import pymc as pm
 import pytest
+
+from threadpoolctl import threadpool_limits
 
 import pymc_extras as pmx
 
 from pymc_extras.inference.pathfinder import multipath as multipath_mod
 from pymc_extras.inference.pathfinder.lbfgs import LBFGSConfig
 from pymc_extras.inference.pathfinder.multipath import (
+    REFRESH_INTERVAL,
     _make_multipath_progress,
     _make_progress_callback,
+    _make_refresher,
+    _resolve_mp_context,
 )
 from tests.inference.pathfinder.equivalence_models import (
     make_ard_regression,
@@ -56,10 +63,14 @@ def _per_path_means(posterior):
     return np.asarray(rows)
 
 
-def test_parallel_paths_match_serial_per_path():
+def test_parallel_paths_match_serial_per_path(monkeypatch):
     """Each chain gets the same per-path approximation under parallel and serial execution (same
     seed, within cross-process BLAS noise) -- guarding against state leaking across the shared
-    compiled functions."""
+    compiled functions. The parallel fit must also redraw the display from the parent."""
+    redraws = []
+    monkeypatch.setattr(
+        multipath_mod, "_make_refresher", lambda progress: lambda: redraws.append(1)
+    )
     model = make_logistic_regression()
     kw = dict(
         method="pathfinder",
@@ -74,7 +85,10 @@ def test_parallel_paths_match_serial_per_path():
     )
     with model:
         serial = pmx.fit(parallel=False, **kw).posterior
+        redraws.clear()
         parallel = pmx.fit(parallel=True, **kw).posterior
+
+    assert redraws
 
     assert serial.sizes["chain"] == parallel.sizes["chain"] == kw["num_paths"]
     np.testing.assert_allclose(
@@ -121,6 +135,47 @@ def test_all_paths_failing_raises():
         _small_serial_fit(model, num_paths=3, max_init_retries=0)
 
 
+@pytest.mark.parametrize(
+    "system, expected", [("Darwin", "spawn"), ("Linux", None)], ids=["macos", "linux"]
+)
+def test_default_context_spawns_on_macos(monkeypatch, system, expected):
+    """macOS defaults to spawn; elsewhere the choice is left to pymc's resolver."""
+    seen = []
+    monkeypatch.setattr(multipath_mod.platform, "system", lambda: system)
+    monkeypatch.setattr(
+        multipath_mod,
+        "_initialize_multiprocessing_context",
+        lambda mp_ctx, *, mode=None, quiet=False: seen.append(mp_ctx),
+    )
+
+    _resolve_mp_context(None, mode=None)
+
+    assert seen == [expected]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fork start method is unavailable on Windows")
+@pytest.mark.parametrize("parallel", [True, False], ids=["parallel", "serial"])
+def test_fork_caps_blas_to_one_thread_only_while_workers_run(monkeypatch, parallel):
+    """A parallel fit under fork caps BLAS to one thread in the parent so forked workers inherit
+    the cap; a serial fit keeps the parent's full BLAS width."""
+    requested = []
+
+    def recording_limits(limits=None):
+        requested.append(limits)
+        return threadpool_limits(limits=limits)
+
+    monkeypatch.setattr(multipath_mod, "threadpool_limits", recording_limits)
+
+    # A broken cap hangs the forked workers on MKL. Abort with a traceback instead of stalling CI.
+    faulthandler.dump_traceback_later(timeout=300, exit=True)
+    try:
+        _small_serial_fit(make_ard_regression(), parallel=parallel, mp_ctx="fork")
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+
+    assert requested == ([1] if parallel else [])
+
+
 def test_compile_mode_threaded_to_mp_context(monkeypatch):
     """The compile ``mode`` must reach the multiprocessing-context resolver so a JAX backend can
     dodge a fork+JAX deadlock; resolution is unconditional, so a serial fit exercises it."""
@@ -139,8 +194,8 @@ def test_compile_mode_threaded_to_mp_context(monkeypatch):
 
 
 def test_blas_limiter_wraps_path_execution(monkeypatch):
-    """Paths must run inside ``joined_blas_limiter()``; a recording limiter makes the wrap
-    observable even on fork, where the real limiter is a no-op."""
+    """Paths must run inside ``joined_blas_limiter()``. A recording limiter makes the wrap
+    observable on a serial fit, where the real limiter may be a no-op."""
     entered = []
     real = multipath_mod.setup_cores_blas_cores
 
@@ -216,16 +271,23 @@ def test_parallel_path_order_is_deterministic(monkeypatch):
 
 
 def _new_task():
-    progress = _make_multipath_progress(progressbar=False)
+    progress = _make_multipath_progress(progressbar=False, redirect_streams=False)
     task_id = progress.add_task(
-        "path 0", status="", elbo="", speed=0.0, speed_unit="it/s", total=1000, completed=0
+        "path 0",
+        start=False,
+        status="",
+        elbo="",
+        speed=0.0,
+        speed_unit="it/s",
+        total=1000,
+        completed=0,
     )
     return progress, task_id
 
 
 def test_progress_callback_formats_fields():
     progress, task_id = _new_task()
-    cb = _make_progress_callback(progress, task_id)
+    cb = _make_progress_callback(progress, task_id, refresh=lambda: None)
 
     cb({"status": "running", "iteration": 7, "best_elbo": 1.23456})
     task = progress.tasks[0]
@@ -237,9 +299,36 @@ def test_progress_callback_formats_fields():
     assert progress.tasks[0].fields["elbo"] == "—"
 
 
+def test_progress_callback_redraws_after_every_message():
+    """With Rich's refresh thread off, the progress callback is what redraws the display."""
+    progress, task_id = _new_task()
+    redraws = []
+    cb = _make_progress_callback(progress, task_id, refresh=lambda: redraws.append(1))
+
+    for info in [{"iteration": 1}, {"best_elbo": 0.5}, {"status": "ok"}]:
+        cb(info)
+
+    assert len(redraws) == 3
+
+
+def test_refresher_throttles_to_the_refresh_interval(monkeypatch):
+    progress, _ = _new_task()
+    redraws = []
+    monkeypatch.setattr(progress, "refresh", lambda: redraws.append(1))
+    clock = iter([1.0, 1.0 + REFRESH_INTERVAL / 2, 1.0 + 2 * REFRESH_INTERVAL])
+    monkeypatch.setattr(multipath_mod.time, "monotonic", lambda: next(clock))
+    refresh = _make_refresher(progress)
+
+    refresh()
+    refresh()
+    refresh()
+
+    assert len(redraws) == 2
+
+
 def test_progress_callback_stops_task_on_terminal_status():
     progress, task_id = _new_task()
-    cb = _make_progress_callback(progress, task_id)
+    cb = _make_progress_callback(progress, task_id, refresh=lambda: None)
 
     cb({"status": "ok"})
 
