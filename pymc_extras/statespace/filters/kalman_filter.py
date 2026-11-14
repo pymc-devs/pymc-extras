@@ -597,7 +597,7 @@ class StandardFilter(BaseFilter):
         # A masked row of F holds only the stabilizing jitter, which log |F| would count as
         # log(jitter). Put a one there instead; the gain and the innovation are zero on that row.
         observed = pt.bitwise_not(nan_mask).astype(F.dtype)
-        F_scored = F * pt.outer(observed, observed) + pt.diag(1 - observed)
+        F_scored = F * pt.outer(observed, observed) + pt.eye(dim_of(F, 0)) * (1 - observed)
 
         F_chol = pt.linalg.cholesky(F_scored, lower=True)
 

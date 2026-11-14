@@ -137,12 +137,12 @@ def mask_missing_values(y, Z, H, d, missing_fill_value):
         Boolean vector, True where the observation is missing.
     """
     nan_mask = missing_mask(y, missing_fill_value)
-    W = pt.diag(pt.bitwise_not(nan_mask).astype(pytensor.config.floatX))
+    observed = pt.bitwise_not(nan_mask).astype(pytensor.config.floatX)
 
     return (
-        pt.set_subtensor(y[nan_mask], 0.0),
-        W.dot(Z),
-        W.dot(H).dot(W.mT),
-        W.dot(d),
+        pt.where(nan_mask, 0.0, y),
+        pt.expand_dims(observed, -1) * Z,
+        pt.outer(observed, observed) * H,
+        observed * d,
         nan_mask,
     )
