@@ -3,6 +3,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import Enum, auto
+from functools import wraps
 from typing import Self
 
 import numpy as np
@@ -96,6 +97,7 @@ def _as_numpy_value_grad(value_grad_fn: Callable) -> Callable:
     scipy's L-BFGS-B takes zero steps when handed backend arrays such as ``mx.array``.
     """
 
+    @wraps(value_grad_fn)
     def wrapped(x):
         value, grad = value_grad_fn(x)
         return np.asarray(value), np.asarray(grad)
