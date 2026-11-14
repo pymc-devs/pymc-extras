@@ -602,10 +602,14 @@ class StandardFilter(BaseFilter):
         F_chol = pt.linalg.cholesky(F_scored, lower=True)
 
         K = pt.linalg.cho_solve((F_chol, True), PZT.mT).mT
-        I_KZ = pt.eye(dim_of(a, 0)) - K.dot(Z)
 
         a_filtered = a + K @ v
-        P_filtered = quad_form_sym(I_KZ, P) + quad_form_sym(K, H)
+
+        # Equal to the Joseph form (I - KZ) P (I - KZ)^T + K H K^T, whose H carries no jitter, at
+        # O(k_states^2 k_endog) cost instead of O(k_states^3). Unlike the Joseph form it is not PSD by
+        # construction: it subtracts nearly equal terms when H is small next to Z P Z^T, and the
+        # cancellation error is left for the jitter added after the update to absorb.
+        P_filtered = P - quad_form_sym(K, stabilize(F, self.cov_jitter))
 
         F_inv_v = pt.linalg.cho_solve((F_chol, True), v)
         inner_term = v.T @ F_inv_v
