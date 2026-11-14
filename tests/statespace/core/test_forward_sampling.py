@@ -9,6 +9,7 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
+from pymc_extras.statespace.models import BayesianSARIMAX
 from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
@@ -65,6 +66,50 @@ def test_unconditional_sampling_uses_the_model_cov_jitter(rng):
     noise = draws["prior_observed"].values - draws["prior_latent"].values
 
     assert_allclose(noise.std(), 1.0, rtol=0.1)
+
+
+@pytest.fixture(scope="module")
+def model_without_measurement_error():
+    rng = np.random.default_rng(1)
+    data = pd.DataFrame(
+        rng.normal(size=(40, 1)),
+        index=pd.date_range("2000-01-01", periods=40, freq="MS"),
+        columns=["y"],
+    )
+    mod = BayesianSARIMAX(order=(1, 0, 1), stationary_initialization=False, verbose=False)
+    with pm.Model(coords=mod.coords):
+        pm.Normal("x0", sigma=0.5, dims=["state"])
+        pm.Deterministic("P0", pt.eye(mod.k_states), dims=["state", "state_aux"])
+        pm.Uniform("ar_params", -0.9, 0.9, dims=["lag_ar"])
+        pm.Uniform("ma_params", -0.9, 0.9, dims=["lag_ma"])
+        pm.Exponential("sigma_state", 1)
+        mod.build_statespace_graph(data)
+        prior = pm.sample_prior_predictive(draws=10, random_seed=rng)
+
+    return mod, prior
+
+
+@pytest.mark.parametrize("mvn_method", ["eigh", "cholesky"])
+def test_factoring_mvn_methods_draw_from_singular_covariances(
+    mvn_method, model_without_measurement_error
+):
+    mod, prior = model_without_measurement_error
+
+    conditional = mod.sample_conditional_prior(prior, mvn_method=mvn_method, random_seed=3)
+    for name, draws in conditional.data_vars.items():
+        assert not np.any(np.isnan(draws.values)), f"{name} contains NaNs"
+
+    # Without measurement error the smoothed states pin the observed one to the data, up to the
+    # filter's cov_jitter. Finite draws alone do not show this: a NaN draw inside the smoother
+    # reads as a missing observation and leaves the smoothed path unconditioned.
+    observed_state = conditional["smoothed_prior"].values[..., 0]
+    data = prior.observed_data["obs"].values[:, 0]
+    assert_allclose(observed_state - data, 0.0, atol=10 * np.sqrt(mod.cov_jitter))
+
+    forecast = mod.forecast(
+        prior, periods=5, mvn_method=mvn_method, group="prior", random_seed=3, verbose=False
+    )
+    assert not np.any(np.isnan(forecast["forecast_latent"].values))
 
 
 @pytest.mark.parametrize(
