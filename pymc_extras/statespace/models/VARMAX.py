@@ -132,6 +132,7 @@ class BayesianVARMAX(PyMCStateSpace):
         mode: str | Mode | None = None,
         cov_jitter: float = JITTER_DEFAULT,
         missing_fill_value: float = MISSING_FILL,
+        use_joseph_form: bool = False,
     ):
         """
         Create a Bayesian VARMAX model.
@@ -202,6 +203,12 @@ class BayesianVARMAX(PyMCStateSpace):
         missing_fill_value: float, optional
             Sentinel used to mask missing observations. Set this only if your data legitimately contains the
             default sentinel. Post-estimation graphs are built with this same value. Default -9999.0.
+        use_joseph_form: bool, optional
+            If True, update the filtered covariance with the Joseph form, which is PSD by
+            construction but costs ``O(k_states^3)`` per step. The default update carries rounding
+            error of order ``eps * max(P)``, so use this when ``Q`` and ``H`` are not large next to
+            that, as with a diffuse ``P0`` at float32. Only the "standard" and "convergent" filters
+            take it. Post-estimation graphs are built with this same form. Default False.
         """
 
         validate_names(endog_names, var_name="endog_names", optional=False)
@@ -254,6 +261,7 @@ class BayesianVARMAX(PyMCStateSpace):
             mode=mode,
             cov_jitter=cov_jitter,
             missing_fill_value=missing_fill_value,
+            use_joseph_form=use_joseph_form,
         )
 
         # Save counts of the number of parameters in each category

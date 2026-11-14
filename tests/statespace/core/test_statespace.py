@@ -63,6 +63,24 @@ def test_make_filters_returns_the_requested_smoother(smoother_type, expected):
     assert isinstance(smoother, expected)
 
 
+@pytest.mark.parametrize("filter_type", ["standard", "convergent"])
+def test_make_filters_passes_use_joseph_form(filter_type):
+    mod = make_statespace_mod(
+        k_endog=1, k_states=5, k_posdef=1, filter_type=filter_type, use_joseph_form=True
+    )
+    kalman_filter, _ = mod.make_filters()
+
+    assert kalman_filter.use_joseph_form
+
+
+@pytest.mark.parametrize("filter_type", ["cholesky", "univariate"])
+def test_use_joseph_form_raises_for_filters_without_it(filter_type):
+    with pytest.raises(ValueError, match="use_joseph_form=True is not supported"):
+        make_statespace_mod(
+            k_endog=1, k_states=5, k_posdef=1, filter_type=filter_type, use_joseph_form=True
+        )
+
+
 def test_unpack_matrices(rng):
     p, m, r, n = 2, 5, 1, 10
     data, *inputs = make_test_inputs(p, m, r, n, rng, missing_data=0)
