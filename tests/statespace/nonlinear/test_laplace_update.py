@@ -626,3 +626,52 @@ def test_state_posterior_handles_parameter_with_zero_predictive_variance():
     )
     assert_allclose(mean, expected_mean, atol=ATOL, rtol=RTOL)
     assert_allclose(covariance, expected_covariance, atol=ATOL, rtol=RTOL)
+
+
+def test_gauss_newton_partial_in_dependent_distribution_parameters():
+    scale_slope = 0.5
+    design, observed, point = regression_data(n_observations=8, n_parameters=2, seed=16)
+
+    # The scale is computed from the mean, so the curvature block has to hold partial derivatives
+    # in (mean, sigma) while the Jacobian carries sigma's dependence on the mean.
+    parameters = pt.vector("parameters", shape=(2,))
+    mean = design @ parameters
+    sigma = pt.exp(scale_slope * mean)
+    pointwise_logp = -0.5 * ((observed - mean) / sigma) ** 2 - pt.log(sigma)
+    curvature = gauss_newton_curvature(
+        pointwise_logp=pointwise_logp,
+        distribution_parameters=[mean, sigma],
+        parameters=parameters,
+    )
+    gauss_newton = pytensor.function([parameters], curvature)(point)
+
+    location = design @ point
+    residuals = observed - location
+    scale = np.exp(scale_slope * location)
+    expected = np.zeros((2, 2))
+    for design_row, residual, row_scale in zip(design, residuals, scale):
+        negative_hessian = np.array(
+            [
+                [1 / row_scale**2, 2 * residual / row_scale**3],
+                [2 * residual / row_scale**3, 3 * residual**2 / row_scale**4 - 1 / row_scale**2],
+            ]
+        )
+        eigenvalues, eigenvectors = np.linalg.eigh(negative_hessian)
+        projected = (eigenvectors * np.maximum(eigenvalues, 0.0)) @ eigenvectors.T
+        jacobian = np.array([design_row, scale_slope * row_scale * design_row])
+        expected += jacobian.T @ projected @ jacobian
+
+    assert_allclose(gauss_newton, expected, atol=ATOL, rtol=RTOL)
+
+
+def test_gauss_newton_rejects_logp_outside_distribution_parameters():
+    parameters = pt.vector("parameters", shape=(2,))
+    mean = pt.broadcast_to(parameters[0], (5,))
+    pointwise_logp = -0.5 * mean**2 + parameters[1]
+
+    with pytest.raises(ValueError, match="other than through distribution_parameters"):
+        gauss_newton_curvature(
+            pointwise_logp=pointwise_logp,
+            distribution_parameters=[mean],
+            parameters=parameters,
+        )

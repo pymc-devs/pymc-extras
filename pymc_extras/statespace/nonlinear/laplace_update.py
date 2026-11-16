@@ -242,31 +242,47 @@ def gauss_newton_curvature(
             "contributing to the Jacobian."
         )
 
+    # Differentiating with respect to the distribution parameters themselves would give total
+    # derivatives, which count a parameter computed from another one twice. Placeholders make the
+    # Hessian partial in the distribution parameters, as the Gauss-Newton matrix needs.
+    placeholders = [eta.type() for eta in distribution_parameters]
+    to_placeholders = dict(zip(distribution_parameters, placeholders, strict=True))
+    detached_logp = graph_replace(pointwise_logp.sum(), to_placeholders)
+    if parameters in ancestors([detached_logp]):
+        raise ValueError(
+            "pointwise_logp depends on parameters other than through distribution_parameters."
+        )
+
     # The Hessian in the stacked distribution parameters is block diagonal across observations, so
     # its product with the indicator of parameter j holds column j of every observation's block.
     hessian_columns = [
         pt.stack(
             hessian_vector_product(
-                cost=pointwise_logp.sum(),
-                wrt=list(distribution_parameters),
+                cost=detached_logp,
+                wrt=placeholders,
                 p=[
-                    pt.ones_like(eta) if position == column else pt.zeros_like(eta)
-                    for position, eta in enumerate(distribution_parameters)
+                    pt.ones_like(placeholder) if position == column else pt.zeros_like(placeholder)
+                    for position, placeholder in enumerate(placeholders)
                 ],
                 disconnected_inputs="ignore",
             ),
             axis=-1,
         )
-        for column in range(len(distribution_parameters))
+        for column in range(len(placeholders))
     ]
-    negative_hessian = -pt.stack(hessian_columns, axis=-1)
+    negative_hessian = graph_replace(
+        -pt.stack(hessian_columns, axis=-1),
+        dict(zip(placeholders, distribution_parameters, strict=True)),
+    )
     eigenvalues, eigenvectors = pt.linalg.eigh(0.5 * (negative_hessian + negative_hessian.mT))
     projected = (eigenvectors * pt.maximum(eigenvalues, 0.0)[..., None, :]) @ eigenvectors.mT
 
+    # One pushforward per distribution parameter: a joint pushforward drops the dependence of one
+    # output on another when one is computed from the other.
     tangent = parameters.type()
-    tangent_derivatives = pushforward(
-        f=list(distribution_parameters), wrt=parameters, tangents=tangent
-    )
+    tangent_derivatives = [
+        pushforward(f=eta, wrt=parameters, tangents=tangent) for eta in distribution_parameters
+    ]
     jacobian = vectorize_graph(
         pt.stack(tangent_derivatives), {tangent: pt.eye(parameters.shape[0])}
     )
