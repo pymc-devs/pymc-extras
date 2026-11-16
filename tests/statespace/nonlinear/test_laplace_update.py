@@ -11,6 +11,7 @@ from pymc_extras.statespace.nonlinear import (
     gauss_newton_curvature,
     laplace_mode,
     parameter_posterior,
+    state_posterior,
 )
 
 floatX = pytensor.config.floatX
@@ -446,3 +447,182 @@ def test_gauss_newton_projects_location_scale_blocks():
         expected += jacobian.T @ projected @ jacobian
 
     assert_allclose(gauss_newton, expected, atol=ATOL, rtol=RTOL)
+
+
+def kalman_update(
+    *,
+    state_mean,
+    state_covariance,
+    design,
+    offset,
+    parameter_noise,
+    observation_design,
+    observed,
+    noise_sigma,
+):
+    """Return the exact state posterior for observations that are linear-Gaussian in the parameters.
+
+    ``observed ~ N(observation_design @ theta, noise_sigma**2 I)`` with
+    ``theta = design @ x + offset + eta`` and ``eta ~ N(0, parameter_noise)``.
+    """
+    full_design = observation_design @ design
+    innovation_covariance = (
+        full_design @ state_covariance @ full_design.T
+        + observation_design @ parameter_noise @ observation_design.T
+        + noise_sigma**2 * np.eye(len(observed))
+    )
+    gain = state_covariance @ full_design.T @ np.linalg.inv(innovation_covariance)
+    innovation = observed - observation_design @ (design @ state_mean + offset)
+    return state_mean + gain @ innovation, state_covariance - gain @ full_design @ state_covariance
+
+
+def lifted_posterior(*, logp, parameters, state_mean, state_covariance, design, offset, noise):
+    """Return the state posterior from laplace_mode followed by state_posterior."""
+    mode = laplace_mode(
+        logp=logp,
+        parameters=parameters,
+        curvature=-hessian(logp, parameters),
+        predictive_mean=pt.as_tensor(design @ state_mean + offset),
+        predictive_covariance=pt.as_tensor(design @ state_covariance @ design.T + noise),
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
+    mean, covariance = state_posterior(
+        whitened=mode.whitened,
+        predictive_factor=mode.predictive_factor,
+        whitened_curvature=mode.whitened_curvature,
+        state_mean=pt.as_tensor(state_mean),
+        state_covariance=pt.as_tensor(state_covariance),
+        design=pt.as_tensor(design),
+    )
+    return pytensor.function([], [mean, covariance])()
+
+
+def test_state_posterior_matches_kalman_update_with_parameter_noise():
+    rng = np.random.default_rng(11)
+    state_mean = rng.normal(size=3).astype(floatX)
+    root = rng.normal(size=(3, 3))
+    state_covariance = (root @ root.T + np.eye(3)).astype(floatX)
+    design = rng.normal(size=(2, 3)).astype(floatX)
+    offset = rng.normal(size=2).astype(floatX)
+    parameter_noise = np.diag([0.3, 0.5]).astype(floatX)
+    observation_design, observed, _ = regression_data(n_observations=6, n_parameters=2, seed=12)
+
+    parameters = pt.vector("parameters", shape=(2,))
+    residuals = observed - observation_design @ parameters
+    mean, covariance = lifted_posterior(
+        logp=-0.5 * pt.sum(residuals**2) / NOISE_SIGMA**2,
+        parameters=parameters,
+        state_mean=state_mean,
+        state_covariance=state_covariance,
+        design=design,
+        offset=offset,
+        noise=parameter_noise,
+    )
+
+    expected_mean, expected_covariance = kalman_update(
+        state_mean=state_mean,
+        state_covariance=state_covariance,
+        design=design,
+        offset=offset,
+        parameter_noise=parameter_noise,
+        observation_design=observation_design,
+        observed=observed,
+        noise_sigma=NOISE_SIGMA,
+    )
+    assert_allclose(mean, expected_mean, atol=ATOL, rtol=RTOL)
+    assert_allclose(covariance, expected_covariance, atol=ATOL, rtol=RTOL)
+
+
+def test_state_posterior_handles_parameters_sharing_a_state():
+    state_mean = np.array([0.4], dtype=floatX)
+    state_covariance = np.array([[2.0]], dtype=floatX)
+    # Both parameters load on the one state with no parameter noise, so their predictive is rank 1.
+    design = np.array([[0.6], [0.8]], dtype=floatX)
+    offset = np.zeros(2, dtype=floatX)
+    parameter_noise = np.zeros((2, 2), dtype=floatX)
+    observation_design, observed, _ = regression_data(n_observations=6, n_parameters=2, seed=13)
+
+    parameters = pt.vector("parameters", shape=(2,))
+    residuals = observed - observation_design @ parameters
+    mean, covariance = lifted_posterior(
+        logp=-0.5 * pt.sum(residuals**2) / NOISE_SIGMA**2,
+        parameters=parameters,
+        state_mean=state_mean,
+        state_covariance=state_covariance,
+        design=design,
+        offset=offset,
+        noise=parameter_noise,
+    )
+
+    expected_mean, expected_covariance = kalman_update(
+        state_mean=state_mean,
+        state_covariance=state_covariance,
+        design=design,
+        offset=offset,
+        parameter_noise=parameter_noise,
+        observation_design=observation_design,
+        observed=observed,
+        noise_sigma=NOISE_SIGMA,
+    )
+    assert_allclose(mean, expected_mean, atol=ATOL, rtol=RTOL)
+    assert_allclose(covariance, expected_covariance, atol=ATOL, rtol=RTOL)
+
+
+def test_state_posterior_unchanged_by_uninformative_observations():
+    rng = np.random.default_rng(14)
+    state_mean = rng.normal(size=3).astype(floatX)
+    root = rng.normal(size=(3, 3))
+    state_covariance = (root @ root.T + np.eye(3)).astype(floatX)
+    design = rng.normal(size=(2, 3)).astype(floatX)
+
+    parameters = pt.vector("parameters", shape=(2,))
+    mean, covariance = lifted_posterior(
+        logp=0.0 * pt.sum(parameters),
+        parameters=parameters,
+        state_mean=state_mean,
+        state_covariance=state_covariance,
+        design=design,
+        offset=np.zeros(2, dtype=floatX),
+        noise=np.diag([0.3, 0.5]).astype(floatX),
+    )
+
+    assert_allclose(mean, state_mean, atol=ATOL, rtol=RTOL)
+    assert_allclose(covariance, state_covariance, atol=ATOL, rtol=RTOL)
+
+
+def test_state_posterior_handles_parameter_with_zero_predictive_variance():
+    state_mean = np.array([0.4, -0.3], dtype=floatX)
+    state_covariance = np.array([[2.0, 0.0], [0.0, 1.5]], dtype=floatX)
+    # The second parameter loads on no state and has no noise, so it is known exactly and its
+    # column of the predictive factor is exactly zero.
+    design = np.array([[1.0, 0.5], [0.0, 0.0]], dtype=floatX)
+    offset = np.array([0.0, 0.7], dtype=floatX)
+    parameter_noise = np.diag([0.2, 0.0]).astype(floatX)
+    observation_design, observed, _ = regression_data(n_observations=6, n_parameters=2, seed=15)
+
+    parameters = pt.vector("parameters", shape=(2,))
+    residuals = observed - observation_design @ parameters
+    mean, covariance = lifted_posterior(
+        logp=-0.5 * pt.sum(residuals**2) / NOISE_SIGMA**2,
+        parameters=parameters,
+        state_mean=state_mean,
+        state_covariance=state_covariance,
+        design=design,
+        offset=offset,
+        noise=parameter_noise,
+    )
+
+    expected_mean, expected_covariance = kalman_update(
+        state_mean=state_mean,
+        state_covariance=state_covariance,
+        design=design,
+        offset=offset,
+        parameter_noise=parameter_noise,
+        observation_design=observation_design,
+        observed=observed,
+        noise_sigma=NOISE_SIGMA,
+    )
+    assert_allclose(mean, expected_mean, atol=ATOL, rtol=RTOL)
+    assert_allclose(covariance, expected_covariance, atol=ATOL, rtol=RTOL)

@@ -309,3 +309,65 @@ def parameter_posterior(
     mean = predictive_mean + predictive_factor @ whitened
     covariance = quad_form_sym(predictive_factor, pt.linalg.inv(whitened_curvature))
     return mean, covariance
+
+
+def state_posterior(
+    *,
+    whitened: TensorVariable,
+    predictive_factor: TensorVariable,
+    whitened_curvature: TensorVariable,
+    state_mean: TensorVariable,
+    state_covariance: TensorVariable,
+    design: TensorVariable,
+) -> tuple[TensorVariable, TensorVariable]:
+    r"""
+    Return the Gaussian posterior of the state implied by a whitened parameter posterior.
+
+    The state has the predictive :math:`N(a, P)` and the parameters are
+    :math:`\theta = Z x + d + \eta` with :math:`\eta \sim N(0, H)`, so their predictive is
+    :math:`N(Z a + d, Z P Z^\top + H)`, factored as :math:`L L^\top` by :func:`laplace_mode`. The
+    observations depend on the state only through :math:`\theta`, so conditioning the joint
+    Gaussian of :math:`(x, \theta)` on the parameter posterior gives
+
+    .. math::
+
+        a^+ = a + C \hat u, \qquad P^+ = P - C (I - B^{-1}) C^\top,
+        \qquad C = P Z^\top (L^\top)^+,
+
+    where :math:`(L^\top)^+` is the pseudo-inverse, so a singular parameter predictive is
+    allowed. Observations that carry no information leave the state predictive unchanged.
+
+    Parameters
+    ----------
+    whitened : TensorVariable
+        Whitened mode :math:`\hat u` from :func:`laplace_mode`, shape ``(k,)``.
+    predictive_factor : TensorVariable
+        Factor :math:`L` of the parameter predictive covariance from :func:`laplace_mode`, with
+        orthogonal columns, shape ``(k, k)``.
+    whitened_curvature : TensorVariable
+        Positive definite :math:`B` at :math:`\hat u` from :func:`laplace_mode`, shape ``(k, k)``.
+    state_mean : TensorVariable
+        Predictive mean :math:`a` of the state, shape ``(m,)``.
+    state_covariance : TensorVariable
+        Predictive covariance :math:`P` of the state, shape ``(m, m)``.
+    design : TensorVariable
+        Design matrix :math:`Z` from the state to the parameters, shape ``(k, m)``.
+
+    Returns
+    -------
+    mean : TensorVariable
+        Posterior mean of the state, shape ``(m,)``.
+    covariance : TensorVariable
+        Posterior covariance of the state, shape ``(m, m)``.
+    """
+    # L has orthogonal columns, so the pseudo-inverse of its transpose divides each column by its
+    # squared norm and zeroes the columns of a singular predictive.
+    squared_norms = pt.sum(predictive_factor**2, axis=0)
+    nonzero = squared_norms > 0
+    inverse_squared_norms = pt.where(nonzero, 1 / pt.where(nonzero, squared_norms, 1), 0)
+    gain = (state_covariance @ design.T @ predictive_factor) * inverse_squared_norms
+
+    mean = state_mean + gain @ whitened
+    whitened_variance_reduction = pt.eye(whitened.shape[0]) - pt.linalg.inv(whitened_curvature)
+    covariance = state_covariance - quad_form_sym(gain, whitened_variance_reduction)
+    return mean, covariance
