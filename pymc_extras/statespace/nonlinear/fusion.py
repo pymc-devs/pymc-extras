@@ -1,0 +1,132 @@
+import itertools
+
+from collections.abc import Sequence
+
+import numpy as np
+import pytensor.tensor as pt
+
+from pymc.model import Model
+from pytensor.tensor.variable import TensorVariable
+
+from pymc_extras.statespace.core.statespace import PyMCStateSpace
+
+
+def observed_state_names(*, model: Model, rv_names: Sequence[str]) -> dict[str, list[str]]:
+    """
+    Return the observed-state names that stand for each element of the named random variables.
+
+    Build the statespace components from these names. An element is named after its coordinates
+    when every dim of its variable has coordinate values, and after its position otherwise; a
+    scalar variable is named after itself. Elements are listed in row-major order.
+
+    Parameters
+    ----------
+    model : Model
+        The cross-sectional model.
+    rv_names : sequence of str
+        Names of free random variables of ``model``.
+
+    Returns
+    -------
+    names : dict of str to list of str
+        For each variable, the names of its elements.
+    """
+    return {
+        name: _element_labels(model=model, rv=model[name]).ravel().tolist() for name in rv_names
+    }
+
+
+class FusedStateSpace:
+    r"""
+    Combine a cross-sectional PyMC model with a statespace model over its parameters.
+
+    The elements of the free random variables named in ``rv_names`` are the observed states of
+    ``statespace``, under the names :func:`observed_state_names` gives them. The observed states,
+    in the statespace's order, form the parameter vector :math:`\theta`; :meth:`unpack` returns
+    a vector in that layout as the variables' own shapes.
+
+    Parameters
+    ----------
+    model : Model
+        The cross-sectional model.
+    statespace : PyMCStateSpace
+        The statespace model whose observed states are the variables' elements.
+    rv_names : sequence of str
+        Names of the free random variables that are observed states.
+
+    Attributes
+    ----------
+    parameters : TensorVariable
+        Input vector :math:`\theta`, shape ``(k,)``, with one entry per observed state.
+    """
+
+    def __init__(self, *, model: Model, statespace: PyMCStateSpace, rv_names: Sequence[str]):
+        self.model = model
+        self.statespace = statespace
+        self.rv_names = list(rv_names)
+
+        free_names = [rv.name for rv in model.free_RVs]
+        not_free = [name for name in self.rv_names if name not in free_names]
+        if not_free:
+            raise ValueError(f"rv_names {not_free} are not free random variables of the model.")
+        unlisted = [name for name in free_names if name not in self.rv_names]
+        if unlisted:
+            raise ValueError(f"Free random variables {unlisted} are not in rv_names.")
+
+        labels = {name: _element_labels(model=model, rv=model[name]) for name in self.rv_names}
+        observed_states = list(statespace.observed_states)
+        expected_states = {
+            str(state) for name_labels in labels.values() for state in name_labels.flat
+        }
+        missing = [state for state in expected_states if state not in observed_states]
+        extra = [state for state in observed_states if state not in expected_states]
+        if missing or extra:
+            raise ValueError(
+                "The statespace's observed states have to be the names from "
+                f"observed_state_names; missing: {sorted(missing)}, unexpected: {extra}."
+            )
+
+        state_positions = {state: position for position, state in enumerate(observed_states)}
+        self.parameters = pt.vector("parameters", shape=(len(observed_states),))
+        # Packing the variables in rv_names order gives a vector whose entry i sits at
+        # _packed_order[i] in parameters, which follow the statespace's order.
+        self._packed_order = np.array(
+            [state_positions[str(state)] for name in self.rv_names for state in labels[name].flat],
+            dtype=int,
+        )
+        self._packed_shapes = [labels[name].shape for name in self.rv_names]
+
+    def unpack(self, vector: TensorVariable) -> dict[str, TensorVariable]:
+        """
+        Return the entries of a vector laid out like ``parameters``, in each variable's shape.
+
+        Parameters
+        ----------
+        vector : TensorVariable
+            Vector of shape ``(k,)``.
+
+        Returns
+        -------
+        values : dict of str to TensorVariable
+            For each variable in ``rv_names``, its entries of ``vector``.
+        """
+        values = pt.unpack(vector[self._packed_order], packed_shapes=self._packed_shapes)
+        return dict(zip(self.rv_names, values, strict=True))
+
+
+def _element_labels(*, model: Model, rv: TensorVariable) -> np.ndarray:
+    shape = tuple(int(length) for length in rv.shape.eval())
+    if not shape:
+        return np.array(rv.name)
+
+    dims = model.named_vars_to_dims.get(rv.name)
+    if dims is not None and all(model.coords.get(dim) is not None for dim in dims):
+        axes = [model.coords[dim] for dim in dims]
+    else:
+        axes = [range(length) for length in shape]
+
+    labels = [
+        f"{rv.name}[{', '.join(str(entry) for entry in entries)}]"
+        for entries in itertools.product(*axes)
+    ]
+    return np.array(labels).reshape(shape)
