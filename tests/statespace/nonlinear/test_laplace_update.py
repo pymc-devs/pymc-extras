@@ -75,7 +75,7 @@ def test_newton_step_matches_conjugate_posterior():
     assert_allclose(covariance, expected_covariance, atol=ATOL, rtol=RTOL)
 
 
-def test_rank_deficient_predictive():
+def test_rank_deficient_predictive_keeps_posterior_in_its_span():
     design, observed, predictive_mean = regression_data(n_observations=10, n_parameters=2, seed=3)
     direction = np.array([0.6, 0.8], dtype=floatX)
     direction_sd = 1.5
