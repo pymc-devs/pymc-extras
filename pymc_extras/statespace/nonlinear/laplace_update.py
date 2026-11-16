@@ -1,11 +1,13 @@
+from collections.abc import Sequence
 from typing import NamedTuple
 
 import pytensor
 import pytensor.tensor as pt
 
 from pytensor.assumptions import assume
-from pytensor.gradient import grad
-from pytensor.graph.replace import graph_replace
+from pytensor.gradient import grad, hessian_vector_product, pushforward
+from pytensor.graph.replace import graph_replace, vectorize_graph
+from pytensor.graph.traversal import ancestors
 from pytensor.scan.utils import until
 from pytensor.tensor.variable import TensorVariable
 from pytensor_ml.optim.line_search import LineSearch, search_along
@@ -181,6 +183,96 @@ def laplace_mode(
         invalid_direction=invalid_directions.any(),
         converged=(pt.max(pt.abs(direction_trace[-1])) <= tolerance) & ~failures[-1],
     )
+
+
+def gauss_newton_curvature(
+    *,
+    pointwise_logp: TensorVariable,
+    distribution_parameters: Sequence[TensorVariable],
+    parameters: TensorVariable,
+) -> TensorVariable:
+    r"""
+    Return a generalized Gauss-Newton approximation to the negative Hessian of a log-likelihood.
+
+    Observation :math:`i` has log-likelihood :math:`\ell_i(\eta_i)` in its distribution parameters
+    :math:`\eta_i = \eta_i(\theta)`. The curvature is
+
+    .. math::
+
+        \Lambda = \sum_i J_i^\top \left[-\nabla^2_{\eta_i} \ell_i\right]_+ J_i,
+
+    where :math:`J_i` is the Jacobian of :math:`\eta_i` with respect to :math:`\theta` and
+    :math:`[\cdot]_+` clips each block's eigenvalues at zero, so :math:`\Lambda` is positive
+    semidefinite. It drops the second derivatives of :math:`\eta` from the exact Hessian [1]_ [2]_.
+
+    Parameters
+    ----------
+    pointwise_logp : TensorVariable
+        Log-likelihood of each observation, shape ``(n,)``. Entry :math:`i` depends on the
+        parameters only through entry :math:`i` of each distribution parameter.
+    distribution_parameters : sequence of TensorVariable
+        The distribution parameters :math:`\eta` that depend on ``parameters``, each of shape
+        ``(n,)``. A parameter shared across observations has to be broadcast to ``(n,)``, and one
+        that does not depend on ``parameters`` has to be left out.
+    parameters : TensorVariable
+        Input vector of the parameters, shape ``(k,)``.
+
+    Returns
+    -------
+    curvature : TensorVariable
+        Positive semidefinite matrix of shape ``(k, k)``, a graph of ``parameters``.
+
+    References
+    ----------
+    .. [1] Schraudolph, N. N. Fast curvature matrix-vector products for second-order gradient
+           descent. Neural Computation 14(7), 2002.
+    .. [2] Martens, J. New insights and perspectives on the natural gradient method. Journal of
+           Machine Learning Research 21(146), 2020.
+    """
+    constant_positions = [
+        position
+        for position, eta in enumerate(distribution_parameters)
+        if parameters not in ancestors([eta])
+    ]
+    if constant_positions:
+        raise ValueError(
+            f"distribution_parameters at positions {constant_positions} do not depend on "
+            "parameters. "
+            "Leave them out: they would distort each observation's curvature block without "
+            "contributing to the Jacobian."
+        )
+
+    # The Hessian in the stacked distribution parameters is block diagonal across observations, so
+    # its product with the indicator of parameter j holds column j of every observation's block.
+    hessian_columns = [
+        pt.stack(
+            hessian_vector_product(
+                cost=pointwise_logp.sum(),
+                wrt=list(distribution_parameters),
+                p=[
+                    pt.ones_like(eta) if position == column else pt.zeros_like(eta)
+                    for position, eta in enumerate(distribution_parameters)
+                ],
+                disconnected_inputs="ignore",
+            ),
+            axis=-1,
+        )
+        for column in range(len(distribution_parameters))
+    ]
+    negative_hessian = -pt.stack(hessian_columns, axis=-1)
+    eigenvalues, eigenvectors = pt.linalg.eigh(0.5 * (negative_hessian + negative_hessian.mT))
+    projected = (eigenvectors * pt.maximum(eigenvalues, 0.0)[..., None, :]) @ eigenvectors.mT
+
+    tangent = parameters.type()
+    tangent_derivatives = pushforward(
+        f=list(distribution_parameters), wrt=parameters, tangents=tangent
+    )
+    jacobian = vectorize_graph(
+        pt.stack(tangent_derivatives), {tangent: pt.eye(parameters.shape[0])}
+    )
+    jacobian = jacobian.transpose(2, 1, 0)
+
+    return pt.einsum("npk,npq,nql->kl", jacobian, projected, jacobian)
 
 
 def parameter_posterior(

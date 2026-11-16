@@ -1,12 +1,17 @@
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
+import pytest
 
 from numpy.testing import assert_allclose
 from pytensor.gradient import hessian
 from pytensor_ml.optim import zoom_line_search
 
-from pymc_extras.statespace.nonlinear import laplace_mode, parameter_posterior
+from pymc_extras.statespace.nonlinear import (
+    gauss_newton_curvature,
+    laplace_mode,
+    parameter_posterior,
+)
 
 floatX = pytensor.config.floatX
 ATOL = 1e-8 if floatX.endswith("64") else 1e-4
@@ -304,3 +309,140 @@ def test_laplace_mode_stops_on_indefinite_curvature():
     assert iterations == 1
     assert invalid_direction
     assert not converged
+
+
+def test_gauss_newton_equals_hessian_for_normal_mean():
+    design, observed, point = regression_data(n_observations=10, n_parameters=3, seed=7)
+
+    parameters = pt.vector("parameters", shape=(3,))
+    mean = design @ parameters
+    pointwise_logp = -0.5 * ((observed - mean) / NOISE_SIGMA) ** 2
+    curvature = gauss_newton_curvature(
+        pointwise_logp=pointwise_logp,
+        distribution_parameters=[mean],
+        parameters=parameters,
+    )
+
+    gauss_newton, exact = pytensor.function(
+        [parameters], [curvature, -hessian(pointwise_logp.sum(), parameters)]
+    )(point)
+    assert_allclose(gauss_newton, exact, atol=ATOL, rtol=RTOL)
+
+
+def test_gauss_newton_psd_far_from_mode():
+    nu = 3.0
+    design, observed, _ = regression_data(n_observations=20, n_parameters=2, seed=8)
+    far_point = np.array([4.0, -4.0], dtype=floatX)
+
+    parameters = pt.vector("parameters", shape=(2,))
+    mean = design @ parameters
+    pointwise_logp = -0.5 * (nu + 1) * pt.log1p((observed - mean) ** 2 / nu)
+    curvature = gauss_newton_curvature(
+        pointwise_logp=pointwise_logp,
+        distribution_parameters=[mean],
+        parameters=parameters,
+    )
+    gauss_newton, exact = pytensor.function(
+        [parameters], [curvature, -hessian(pointwise_logp.sum(), parameters)]
+    )(far_point)
+
+    # The Student-t log-likelihood is concave in the location only for residuals below sqrt(nu),
+    # so each observation's curvature block is clipped at zero beyond that.
+    residuals = observed - design @ far_point
+    location_curvature = (nu + 1) * (nu - residuals**2) / (nu + residuals**2) ** 2
+    expected = (design.T * np.maximum(location_curvature, 0.0)) @ design
+
+    assert np.linalg.eigvalsh(exact).min() < 0
+    assert_allclose(gauss_newton, expected, atol=ATOL, rtol=RTOL)
+
+
+def test_gauss_newton_moves_log_sigma():
+    n_observations = 50
+    observed = np.random.default_rng(9).normal(loc=1.5, scale=2.0, size=n_observations)
+    observed = observed.astype(floatX)
+    predictive_variance = 4.0
+
+    # The parameters are the mean and the log standard deviation, shared by every observation.
+    parameters = pt.vector("parameters", shape=(2,))
+    mean = pt.broadcast_to(parameters[0], (n_observations,))
+    sigma = pt.broadcast_to(pt.exp(parameters[1]), (n_observations,))
+    pointwise_logp = -0.5 * ((observed - mean) / sigma) ** 2 - pt.log(sigma)
+    mode = laplace_mode(
+        logp=pointwise_logp.sum(),
+        parameters=parameters,
+        curvature=gauss_newton_curvature(
+            pointwise_logp=pointwise_logp,
+            distribution_parameters=[mean, sigma],
+            parameters=parameters,
+        ),
+        predictive_mean=pt.zeros(2),
+        predictive_covariance=predictive_variance * pt.eye(2),
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=50,
+    )
+    posterior_mean, _ = parameter_posterior(
+        whitened=mode.whitened,
+        predictive_mean=pt.zeros(2),
+        predictive_factor=mode.predictive_factor,
+        whitened_curvature=mode.whitened_curvature,
+    )
+    (location, log_scale), converged = pytensor.function([], [posterior_mean, mode.converged])()
+
+    residuals = observed - location
+    scale = np.exp(log_scale)
+    location_gradient = residuals.sum() / scale**2 - location / predictive_variance
+    log_scale_gradient = (residuals**2 / scale**2 - 1).sum() - log_scale / predictive_variance
+
+    assert converged
+    assert log_scale > 0.5
+    assert_allclose([location_gradient, log_scale_gradient], 0.0, atol=1e-6)
+
+
+def test_gauss_newton_rejects_constant_distribution_parameter():
+    parameters = pt.vector("parameters", shape=(2,))
+    mean = pt.broadcast_to(parameters[0], (5,))
+    sigma = pt.ones(5)
+    pointwise_logp = -0.5 * ((np.zeros(5) - mean) / sigma) ** 2
+
+    with pytest.raises(ValueError, match="positions \\[1\\]"):
+        gauss_newton_curvature(
+            pointwise_logp=pointwise_logp,
+            distribution_parameters=[mean, sigma],
+            parameters=parameters,
+        )
+
+
+def test_gauss_newton_projects_location_scale_blocks():
+    scale_slope = 0.7
+    design, observed, point = regression_data(n_observations=8, n_parameters=2, seed=10)
+
+    parameters = pt.vector("parameters", shape=(2,))
+    mean = design @ parameters
+    sigma = pt.broadcast_to(pt.exp(scale_slope * parameters[1]), (8,))
+    pointwise_logp = -0.5 * ((observed - mean) / sigma) ** 2 - pt.log(sigma)
+    curvature = gauss_newton_curvature(
+        pointwise_logp=pointwise_logp,
+        distribution_parameters=[mean, sigma],
+        parameters=parameters,
+    )
+    gauss_newton = pytensor.function([parameters], curvature)(point)
+
+    # Each observation's negative Hessian in (mean, sigma) has a negative determinant, so every
+    # block is indefinite and its projection keeps only the positive eigenvalue.
+    residuals = observed - design @ point
+    scale = np.exp(scale_slope * point[1])
+    expected = np.zeros((2, 2))
+    for design_row, residual in zip(design, residuals):
+        negative_hessian = np.array(
+            [
+                [1 / scale**2, 2 * residual / scale**3],
+                [2 * residual / scale**3, 3 * residual**2 / scale**4 - 1 / scale**2],
+            ]
+        )
+        eigenvalues, eigenvectors = np.linalg.eigh(negative_hessian)
+        projected = (eigenvectors * np.maximum(eigenvalues, 0.0)) @ eigenvectors.T
+        jacobian = np.array([design_row, [0.0, scale_slope * scale]])
+        expected += jacobian.T @ projected @ jacobian
+
+    assert_allclose(gauss_newton, expected, atol=ATOL, rtol=RTOL)
