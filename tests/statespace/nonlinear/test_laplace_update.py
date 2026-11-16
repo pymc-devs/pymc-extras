@@ -675,3 +675,29 @@ def test_gauss_newton_rejects_logp_outside_distribution_parameters():
             distribution_parameters=[mean],
             parameters=parameters,
         )
+
+
+def test_laplace_mode_reports_invalid_direction_after_a_step():
+    parameters = pt.vector("parameters", shape=(1,))
+    logp = -0.5 * pt.sum((parameters - 3.0) ** 2)
+
+    # The curvature is positive at the predictive mean and turns negative a short step away, so the
+    # first step is taken and the direction at the new iterate is invalid.
+    mode = laplace_mode(
+        logp=logp,
+        parameters=parameters,
+        curvature=pt.atleast_2d(9.0 - 200.0 * parameters[0] ** 2),
+        predictive_mean=pt.zeros(1),
+        predictive_covariance=pt.eye(1),
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
+    whitened, iterations, invalid_direction, converged = pytensor.function(
+        [], [mode.whitened, mode.iterations, mode.invalid_direction, mode.converged]
+    )()
+
+    assert_allclose(whitened, [0.3], atol=ATOL, rtol=RTOL)
+    assert iterations == 1
+    assert invalid_direction
+    assert not converged

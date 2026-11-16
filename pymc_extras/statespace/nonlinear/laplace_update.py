@@ -34,9 +34,9 @@ class LaplaceMode(NamedTuple):
     search_failed : TensorVariable
         Whether any line search along a direction larger than the tolerance failed.
     invalid_direction : TensorVariable
-        Whether a Newton direction was not finite. A ``curvature`` that is not positive
-        semidefinite makes :math:`B` indefinite and produces one, and then ``whitened_curvature``
-        is not positive definite either.
+        Whether a Newton direction larger than the tolerance was not finite or not a descent
+        direction. A ``curvature`` that is not positive semidefinite can produce one, and then
+        ``whitened_curvature`` may not be positive definite either.
     converged : TensorVariable
         Whether the Newton direction at :math:`\hat u` is within the tolerance and the last search
         did not fail.
@@ -142,8 +142,11 @@ def laplace_mode(
         next_whitened = pt.switch(moving, whitened + search.step_size * direction, whitened)
         failed = search.failed & moving
 
-        *_, next_curvature, next_direction = newton_terms_at(next_whitened)
-        invalid = ~pt.all(pt.isfinite(next_direction))
+        _, next_gradient, next_curvature, next_direction = newton_terms_at(next_whitened)
+        ascending = (next_gradient @ next_direction >= 0) & (
+            pt.max(pt.abs(next_direction)) > tolerance
+        )
+        invalid = ~pt.all(pt.isfinite(next_direction)) | ascending
         stop = (pt.max(pt.abs(next_direction)) <= tolerance) | failed | invalid
         outputs = (
             next_whitened,
