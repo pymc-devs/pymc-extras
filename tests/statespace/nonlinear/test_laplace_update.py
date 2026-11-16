@@ -701,3 +701,26 @@ def test_laplace_mode_reports_invalid_direction_after_a_step():
     assert iterations == 1
     assert invalid_direction
     assert not converged
+
+
+def test_laplace_mode_factor_has_orthogonal_columns():
+    root = np.random.default_rng(17).normal(size=(3, 3))
+    predictive_covariance = (root @ root.T).astype(floatX)
+
+    parameters = pt.vector("parameters", shape=(3,))
+    logp = -0.5 * pt.sum(parameters**2)
+    mode = laplace_mode(
+        logp=logp,
+        parameters=parameters,
+        curvature=-hessian(logp, parameters),
+        predictive_mean=pt.zeros(3),
+        predictive_covariance=pt.as_tensor(predictive_covariance),
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
+    factor = pytensor.function([], mode.predictive_factor)()
+
+    gram = factor.T @ factor
+    assert_allclose(gram - np.diag(np.diag(gram)), 0.0, atol=ATOL)
+    assert_allclose(factor @ factor.T, predictive_covariance, atol=ATOL, rtol=RTOL)

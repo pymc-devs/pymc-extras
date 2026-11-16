@@ -24,7 +24,8 @@ class LaplaceMode(NamedTuple):
     whitened : TensorVariable
         Final iterate :math:`\hat u`, shape ``(k,)``.
     predictive_factor : TensorVariable
-        Factor :math:`L` of the predictive covariance, shape ``(k, k)``.
+        Factor :math:`L = V \operatorname{diag}(\sqrt{\max(\lambda, 0)})` of the predictive
+        covariance from its eigendecomposition, so its columns are orthogonal, shape ``(k, k)``.
     whitened_curvature : TensorVariable
         :math:`B` at :math:`\hat u`, shape ``(k, k)``, marked positive definite.
     iterations : TensorVariable
