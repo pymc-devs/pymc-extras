@@ -4,6 +4,7 @@ from pytensor.assumptions import assume
 from pytensor.gradient import grad
 from pytensor.graph.replace import graph_replace
 from pytensor.tensor.variable import TensorVariable
+from pytensor_ml.optim.line_search import LineSearch, SearchResult, search_along
 
 from pymc_extras.statespace.filters.utilities import quad_form_sym
 
@@ -16,16 +17,19 @@ def newton_step(
     whitened: TensorVariable,
     predictive_mean: TensorVariable,
     predictive_factor: TensorVariable,
-) -> tuple[TensorVariable, TensorVariable]:
+    line_search: LineSearch,
+) -> tuple[TensorVariable, TensorVariable, SearchResult]:
     r"""
-    Take one Newton step on the parameters' log posterior in whitened coordinates.
+    Take one damped Newton step on the parameters' log posterior in whitened coordinates.
 
     The parameters :math:`\theta` have the Gaussian predictive :math:`N(\mu, L L^\top)` and the
     observations contribute :math:`\ell(\theta)`. Writing :math:`\theta = \mu + L u`, the step
     minimizes :math:`J(u) = -\ell(\mu + L u) + \tfrac{1}{2} u^\top u`, whose curvature
     :math:`B = I + L^\top \Lambda L` is at least the identity whenever :math:`\Lambda` is positive
     semidefinite [1]_. :math:`\Lambda` may be singular, and :math:`L` may have zero columns where the
-    predictive is singular.
+    predictive is singular. ``line_search`` sets the step length along the Newton direction,
+    starting from the full step. When the search fails, the step is the best trial that met
+    sufficient decrease, or zero.
 
     Parameters
     ----------
@@ -42,6 +46,9 @@ def newton_step(
         Predictive mean :math:`\mu` of the parameters, shape ``(k,)``.
     predictive_factor : TensorVariable
         Factor :math:`L` of the predictive covariance, shape ``(k, k)``.
+    line_search : LineSearch
+        Search along the Newton direction, for example
+        :func:`pytensor_ml.optim.zoom_line_search`.
 
     Returns
     -------
@@ -49,6 +56,8 @@ def newton_step(
         Next iterate, shape ``(k,)``.
     whitened_curvature : TensorVariable
         :math:`B` at the current iterate, shape ``(k, k)``, marked positive definite.
+    search : SearchResult
+        The accepted step length, whether the search failed, and how many trials it took.
 
     References
     ----------
@@ -57,15 +66,24 @@ def newton_step(
     """
     gradient = grad(logp, parameters)
     at_iterate = {parameters: predictive_mean + predictive_factor @ whitened}
-    gradient, curvature = graph_replace([gradient, curvature], at_iterate)
+    logp, gradient, curvature = graph_replace([logp, gradient, curvature], at_iterate)
 
+    objective = -logp + 0.5 * whitened @ whitened
+    objective_gradient = whitened - predictive_factor.T @ gradient
     whitened_curvature = assume(
         pt.eye(whitened.shape[0]) + predictive_factor.T @ curvature @ predictive_factor,
         positive_definite=True,
     )
-    step = pt.linalg.solve(whitened_curvature, predictive_factor.T @ gradient - whitened)
+    direction = pt.linalg.solve(whitened_curvature, -objective_gradient)
 
-    return whitened + step, whitened_curvature
+    search = search_along(
+        loss=objective,
+        parameters=[whitened],
+        gradients=[objective_gradient],
+        directions=[direction],
+        line_search=line_search,
+    )
+    return whitened + search.step_size * direction, whitened_curvature, search
 
 
 def parameter_posterior(
