@@ -53,11 +53,6 @@ class FusedStateSpace:
         The statespace model whose observed states are the variables' elements.
     rv_names : sequence of str
         Names of the free random variables that are observed states.
-
-    Attributes
-    ----------
-    parameters : TensorVariable
-        Input vector :math:`\theta`, shape ``(k,)``, with one entry per observed state.
     """
 
     def __init__(self, *, model: Model, statespace: PyMCStateSpace, rv_names: Sequence[str]):
@@ -87,9 +82,8 @@ class FusedStateSpace:
             )
 
         state_positions = {state: position for position, state in enumerate(observed_states)}
-        self.parameters = pt.vector("parameters", shape=(len(observed_states),))
         # Packing the variables in rv_names order gives a vector whose entry i sits at
-        # _packed_order[i] in parameters, which follow the statespace's order.
+        # _packed_order[i] in theta, which follows the statespace's order.
         self._packed_order = np.array(
             [state_positions[str(state)] for name in self.rv_names for state in labels[name].flat],
             dtype=int,
@@ -98,7 +92,7 @@ class FusedStateSpace:
 
     def unpack(self, vector: TensorVariable) -> dict[str, TensorVariable]:
         """
-        Return the entries of a vector laid out like ``parameters``, in each variable's shape.
+        Return the entries of a vector laid out like :math:`\theta`, in each variable's shape.
 
         Parameters
         ----------

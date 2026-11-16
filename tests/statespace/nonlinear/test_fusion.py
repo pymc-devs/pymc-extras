@@ -1,5 +1,6 @@
 import numpy as np
 import pymc as pm
+import pytensor.tensor as pt
 import pytest
 
 from pymc_extras.statespace.models import structural as st
@@ -46,12 +47,9 @@ def test_unpack_follows_the_statespace_order():
         model=model, statespace=level_statespace(shuffled), rv_names=["alpha", "matrix"]
     )
 
-    assert fused.parameters.type.shape == (5,)
-
-    values = fused.unpack(fused.parameters)
-    unpacked = {
-        name: value.eval({fused.parameters: np.arange(5.0)}) for name, value in values.items()
-    }
+    theta = pt.vector("theta", shape=(5,))
+    values = fused.unpack(theta)
+    unpacked = {name: value.eval({theta: np.arange(5.0)}) for name, value in values.items()}
     assert unpacked["alpha"] == 1.0
     np.testing.assert_array_equal(unpacked["matrix"], [[2.0, 3.0], [4.0, 0.0]])
 
