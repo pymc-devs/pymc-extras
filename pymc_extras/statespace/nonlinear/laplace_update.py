@@ -355,7 +355,9 @@ def state_posterior(
         \qquad C = P Z^\top (L^\top)^+,
 
     where :math:`(L^\top)^+` is the pseudo-inverse, so a singular parameter predictive is
-    allowed. Observations that carry no information leave the state predictive unchanged.
+    allowed. Observations that carry no information leave the state predictive unchanged. The
+    covariance is a difference, so observations that shrink a variance by many orders of magnitude
+    can leave :math:`P^+` slightly indefinite through cancellation.
 
     Parameters
     ----------
