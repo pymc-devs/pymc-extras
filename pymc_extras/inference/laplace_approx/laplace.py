@@ -14,6 +14,7 @@
 
 
 import logging
+import warnings
 
 from collections.abc import Callable
 from typing import Literal
@@ -22,30 +23,18 @@ import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
-import xarray as xr
 
 from arviz_base import dict_to_dataset
 from better_optimize.constants import minimize_method
 from numpy.typing import ArrayLike
 from pymc import Model
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
-from pymc.blocking import DictToArrayBijection
 from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import get_untransformed_name, is_transformed_name
 from pytensor.graph import vectorize_graph
 from pytensor.tensor import TensorVariable
 from pytensor.tensor.optimize import minimize
 from xarray import Dataset, DataTree
-
-from pymc_extras.inference.laplace_approx.find_map import (
-    _compute_inverse_hessian,
-    _make_initial_point,
-    find_MAP,
-)
-from pymc_extras.inference.laplace_approx.scipy_interface import (
-    GradientBackend,
-    scipy_optimize_funcs_from_loss,
-)
 
 _log = logging.getLogger(__name__)
 
@@ -328,11 +317,12 @@ def fit_laplace(
     use_hess: bool | None = None,
     initvals: dict | None = None,
     random_seed: int | np.random.Generator | None = None,
+    jitter: bool = False,
     jitter_rvs: list[pt.TensorVariable] | None = None,
     progressbar: bool = True,
     include_transformed: bool = True,
     freeze_model: bool = True,
-    gradient_backend: GradientBackend = "pytensor",
+    gradient_backend: str | None = None,
     chains: None | int = None,
     draws: int = 500,
     vectorize_draws: bool = True,
@@ -369,8 +359,10 @@ def fit_laplace(
          If None, the model's default initial values are used.
     random_seed : None | int | np.random.Generator, optional
         Seed for the random number generator or a numpy Generator for reproducibility
+    jitter : bool, default False
+        Whether to jitter the initial point, as in :func:`pymc.find_MAP`.
     jitter_rvs : list of TensorVariables, optional
-        Variables whose initial values should be jittered. If None, all variables are jittered.
+        Deprecated, use ``jitter=True``, which jitters all optimized variables.
     progressbar : bool, optional
         Whether to display a progress bar during optimization. Defaults to True.
     include_transformed: bool, default True
@@ -380,8 +372,9 @@ def fit_laplace(
         If True, freeze_dims_and_data will be called on the model before compiling the loss functions. This is
         sometimes necessary for JAX, and can sometimes improve performance by allowing constant folding. Defaults to
         True.
-    gradient_backend: str, default "pytensor"
-        The backend to use for gradient computations. Must be one of "pytensor" or "jax".
+    gradient_backend: str, optional
+        Deprecated and ignored: derivatives are always taken by PyTensor. Use
+        ``compile_kwargs={"mode": "JAX"}`` to compile with JAX.
     draws: int, default: 500
         The number of samples to draw from the approximated posterior.
     optimizer_kwargs
@@ -428,14 +421,23 @@ def fit_laplace(
             "The behavior can be recreated by unstacking draws into multiple chains after fitting"
         )
 
-    compile_kwargs = {} if compile_kwargs is None else compile_kwargs
+    if jitter_rvs is not None:
+        warnings.warn("`jitter_rvs` is deprecated, use `jitter=True`.", FutureWarning, stacklevel=2)
+        jitter = jitter or bool(jitter_rvs)
+    if gradient_backend is not None:
+        warnings.warn(
+            "`gradient_backend` is deprecated and ignored; derivatives are always taken by PyTensor.",
+            FutureWarning,
+            stacklevel=2,
+        )
+
     optimizer_kwargs = {} if optimizer_kwargs is None else optimizer_kwargs
     model = pm.modelcontext(model) if model is None else model
 
     if freeze_model:
         model = freeze_dims_and_data(model)
 
-    idata = find_MAP(
+    idata = pm.find_MAP(
         method=optimize_method,
         model=model,
         use_grad=use_grad,
@@ -443,47 +445,13 @@ def fit_laplace(
         use_hess=use_hess,
         initvals=initvals,
         random_seed=random_seed,
-        jitter_rvs=jitter_rvs,
+        jitter=jitter,
         progressbar=progressbar,
-        include_transformed=include_transformed,
-        freeze_model=False,
-        gradient_backend=gradient_backend,
         compile_kwargs=compile_kwargs,
         compute_hessian=True,
+        return_inferencedata=True,
         **optimizer_kwargs,
     )
-
-    if "covariance_matrix" not in idata.fit:
-        # The user didn't use `use_hess` or `use_hessp` (or an optimization method that returns an inverse Hessian), so
-        # we have to go back and compute the Hessian at the MAP point now.
-        unpacked_variable_names = idata.fit["mean_vector"].coords["rows"].values.tolist()
-        frozen_model = freeze_dims_and_data(model)
-        initial_params = _make_initial_point(frozen_model, initvals, random_seed, jitter_rvs)
-
-        _, f_hessp = scipy_optimize_funcs_from_loss(
-            loss=-frozen_model.logp(jacobian=False),
-            inputs=frozen_model.continuous_value_vars + frozen_model.discrete_value_vars,
-            initial_point_dict=DictToArrayBijection.rmap(initial_params),
-            use_grad=False,
-            use_hess=False,
-            use_hessp=True,
-            gradient_backend=gradient_backend,
-            compile_kwargs=compile_kwargs,
-        )
-        H_inv = _compute_inverse_hessian(
-            optimizer_result=None,
-            optimal_point=idata.fit.mean_vector.values,
-            f_fused=None,
-            f_hessp=f_hessp,
-            use_hess=False,
-            method=optimize_method,
-        )
-
-        idata.fit["covariance_matrix"] = xr.DataArray(
-            H_inv,
-            dims=("rows", "columns"),
-            coords={"rows": unpacked_variable_names, "columns": unpacked_variable_names},
-        )
 
     # We override the posterior/unconstrained_posterior from find_MAP
     idata["posterior"], unconstrained_posterior = draws_from_laplace_approx(
@@ -496,5 +464,5 @@ def fit_laplace(
         random_seed=random_seed,
     )
     if include_transformed:
-        idata.unconstrained_posterior = unconstrained_posterior
+        idata["unconstrained_posterior"] = DataTree(dataset=unconstrained_posterior)
     return idata

@@ -13,11 +13,7 @@ def rng():
     return np.random.default_rng(seed)
 
 
-@pytest.mark.parametrize(
-    "mode, gradient_backend",
-    [(None, "pytensor")],
-)
-def test_fit_dadvi_basic(mode, gradient_backend):
+def test_fit_dadvi_basic():
     # Example from BDA3, section 4.1 (same as Laplace test)
     y = np.array([2642, 3503, 4358], dtype=np.float64)
     n = y.size
@@ -34,8 +30,6 @@ def test_fit_dadvi_basic(mode, gradient_backend):
             optimizer_method="trust-ncg",
             n_fixed_draws=draws,
             n_draws=draws,
-            compile_kwargs={"mode": mode},
-            gradient_backend=gradient_backend,
         )
 
     assert idata["posterior"]["mu"].shape == (1, draws)

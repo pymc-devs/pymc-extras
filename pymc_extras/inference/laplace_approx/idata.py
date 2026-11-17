@@ -4,146 +4,15 @@ import numpy as np
 import pymc as pm
 import xarray as xr
 
-from arviz_base import dict_to_dataset, from_dict
+from arviz_base import dict_to_dataset
 from better_optimize.constants import minimize_method
 from pymc.backends.arviz import coords_and_dims_for_inferencedata, find_constants, find_observations
 from pymc.blocking import RaveledVars
-from pymc.util import get_default_varnames
 from scipy.optimize import OptimizeResult
 from scipy.sparse.linalg import LinearOperator
 from xarray import DataTree
 
 from pymc_extras.inference.idata_utils import make_unpacked_variable_names
-
-
-def map_results_to_inference_data(
-    map_point: dict[str, float | int | np.ndarray],
-    model: pm.Model | None = None,
-    include_transformed: bool = True,
-):
-    """
-    Add the MAP point to a DataTree object in the posterior group.
-
-    Unlike a typical posterior, the MAP point is a single point estimate rather than a distribution. As a result, it
-    does not have a chain or draw dimension, and is stored as a single point in the posterior group.
-
-    Parameters
-    ----------
-    map_point: dict
-        A dictionary containing the MAP point estimates for each variable. The keys should be the variable names, and
-        the values should be the corresponding MAP estimates.
-    model: Model, optional
-        A PyMC model. If None, the model is taken from the current model context.
-    include_transformed: bool
-        Whether to return transformed (unconstrained) variables in the constrained_posterior group. Default is True.
-
-    Returns
-    -------
-    idata: DataTree
-        The provided DataTree, with the MAP point added to the posterior group.
-    """
-
-    model = pm.modelcontext(model) if model is None else model
-    coords, dims = coords_and_dims_for_inferencedata(model)
-    initial_point = model.initial_point()
-
-    # The MAP point will have both the transformed and untransformed variables, so we need to ensure that
-    # we have the correct dimensions for each variable.
-    var_name_to_value_name = {
-        rv.name: value.name
-        for rv, value in model.rvs_to_values.items()
-        if rv not in model.observed_RVs
-    }
-    dims.update(
-        {
-            value_name: dims[var_name]
-            for var_name, value_name in var_name_to_value_name.items()
-            if var_name in dims and (initial_point[value_name].shape == map_point[var_name].shape)
-        }
-    )
-
-    constrained_names = [
-        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=False)
-    ]
-    all_varnames = [
-        x.name for x in get_default_varnames(model.unobserved_value_vars, include_transformed=True)
-    ]
-
-    unconstrained_names = sorted(set(all_varnames) - set(constrained_names))
-
-    idata = from_dict(
-        {
-            "posterior": {
-                k: np.expand_dims(v, (0, 1)) for k, v in map_point.items() if k in constrained_names
-            }
-        },
-        coords=coords,
-        dims=dims,
-    )
-
-    if unconstrained_names and include_transformed:
-        unconstrained_posterior_ds = dict_to_dataset(
-            {
-                k: np.expand_dims(v, (0, 1))
-                for k, v in map_point.items()
-                if k in unconstrained_names
-            },
-            coords=coords,
-            dims=dims,
-        )
-
-        idata["unconstrained_posterior"] = unconstrained_posterior_ds
-
-    return idata
-
-
-def add_fit_to_inference_data(
-    idata: DataTree,
-    mu: RaveledVars,
-    H_inv: np.ndarray | None,
-    model: pm.Model | None = None,
-) -> DataTree:
-    """
-    Add the mean vector and covariance matrix of the Laplace approximation to a DataTree object.
-
-    Parameters
-    ----------
-    idata: az.InfereceData
-        A DataTree object containing the approximated posterior samples.
-    mu: RaveledVars
-        The MAP estimate of the model parameters.
-    H_inv: np.ndarray, optional
-        The inverse Hessian matrix of the log-posterior evaluated at the MAP estimate.
-    model: Model, optional
-        A PyMC model. If None, the model is taken from the current model context.
-
-    Returns
-    -------
-    idata: DataTree
-        The provided DataTree, with the mean vector and covariance matrix added to the "fit" group.
-    """
-    model = pm.modelcontext(model) if model is None else model
-
-    variable_names, *_ = zip(*mu.point_map_info)
-
-    unpacked_variable_names = make_unpacked_variable_names(variable_names, model)
-
-    mean_dataarray = xr.DataArray(mu.data, dims=["rows"], coords={"rows": unpacked_variable_names})
-
-    data = {"mean_vector": mean_dataarray}
-
-    if H_inv is not None:
-        cov_dataarray = xr.DataArray(
-            H_inv,
-            dims=["rows", "columns"],
-            coords={"rows": unpacked_variable_names, "columns": unpacked_variable_names},
-        )
-        data["covariance_matrix"] = cov_dataarray
-
-    dataset = xr.Dataset(data)
-    idata["fit"] = DataTree(dataset=dataset)
-
-    return idata
 
 
 def add_data_to_inference_data(

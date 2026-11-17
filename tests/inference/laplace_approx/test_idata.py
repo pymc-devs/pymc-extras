@@ -12,7 +12,6 @@ from scipy.sparse.linalg import LinearOperator
 
 from pymc_extras.inference.laplace_approx.idata import (
     add_data_to_inference_data,
-    add_fit_to_inference_data,
     optimizer_result_to_dataset,
 )
 
@@ -66,71 +65,6 @@ def hierarchical_model(rng):
         test_point = RaveledVars(mu_val, point_map_info)
 
     return model, mu_val, H_inv, test_point
-
-
-class TestFittoDataTree:
-    def check_idata(self, idata, var_names, n_vars):
-        assert "/fit" in idata.groups
-
-        fit = idata.fit
-        assert "mean_vector" in fit
-        assert "covariance_matrix" in fit
-        assert fit["mean_vector"].shape[0] == n_vars
-        assert fit["covariance_matrix"].shape == (n_vars, n_vars)
-
-        assert list(fit.coords.keys()) == ["rows", "columns"]
-        assert fit.coords["rows"].values.tolist() == var_names
-        assert fit.coords["columns"].values.tolist() == var_names
-
-    @pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
-    def test_add_fit_to_inferencedata(self, use_context, simple_model, rng):
-        model, mu_val, H_inv, test_point = simple_model
-        idata = from_dict(
-            {"posterior": {"mu": rng.normal(size=(1, 1)), "sigma_log__": rng.normal(size=(1, 1))}}
-        )
-
-        context = model if use_context else no_op()
-        model_arg = model if not use_context else None
-
-        with context:
-            idata2 = add_fit_to_inference_data(idata, test_point, H_inv, model=model_arg)
-
-        self.check_idata(idata2, ["mu", "sigma_log__"], 2)
-
-    @pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])
-    def test_add_fit_with_coords_to_inferencedata(self, use_context, hierarchical_model, rng):
-        model, mu_val, H_inv, test_point = hierarchical_model
-        idata = from_dict(
-            {
-                "posterior": {
-                    "mu_loc": rng.normal(size=(1, 1)),
-                    "mu_scale_log__": rng.normal(size=(1, 1)),
-                    "mu": rng.normal(size=(1, 1, 5)),
-                    "sigma_log__": rng.normal(size=(1, 1)),
-                }
-            }
-        )
-
-        context = model if use_context else no_op()
-        model_arg = model if not use_context else None
-
-        with context:
-            idata2 = add_fit_to_inference_data(idata, test_point, H_inv, model=model_arg)
-
-        self.check_idata(
-            idata2,
-            [
-                "mu_loc",
-                "mu_scale_log__",
-                "mu[1]",
-                "mu[2]",
-                "mu[3]",
-                "mu[4]",
-                "mu[5]",
-                "sigma_log__",
-            ],
-            8,
-        )
 
 
 @pytest.mark.parametrize("use_context", [False, True], ids=["model_arg", "model_context"])

@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pymc
 import pytensor
@@ -8,6 +10,10 @@ from better_optimize.constants import minimize_method
 from pymc import Model
 from pymc.blocking import DictToArrayBijection, RaveledVars
 from pymc.pytensorf import join_nonshared_inputs
+from pymc.tuning.scipy_interface import (
+    scipy_optimize_funcs_from_loss,
+    set_optimizer_function_defaults,
+)
 from pymc.util import RandomSeed
 from pytensor.tensor.variable import TensorVariable
 from xarray import DataTree
@@ -17,10 +23,6 @@ from pymc_extras.inference.laplace_approx.idata import (
     add_optimizer_result_to_inference_data,
 )
 from pymc_extras.inference.laplace_approx.laplace import draws_from_laplace_approx
-from pymc_extras.inference.laplace_approx.scipy_interface import (
-    scipy_optimize_funcs_from_loss,
-    set_optimizer_function_defaults,
-)
 
 
 def fit_dadvi(
@@ -32,7 +34,7 @@ def fit_dadvi(
     use_grad: bool | None = None,
     use_hessp: bool | None = None,
     use_hess: bool | None = None,
-    gradient_backend: str = "pytensor",
+    gradient_backend: str | None = None,
     compile_kwargs: dict | None = None,
     random_seed: RandomSeed = None,
     progressbar: bool = True,
@@ -69,8 +71,9 @@ def fit_dadvi(
         Other methods such as L-BFGS-B might be faster but potentially more brittle and may not converge exactly to
         the optimum.
 
-    gradient_backend: str
-        Which backend to use to compute gradients. Must be one of "jax" or "pytensor". Default is "pytensor".
+    gradient_backend: str, optional
+        Deprecated and ignored: derivatives are always taken by PyTensor. Use
+        ``compile_kwargs={"mode": "JAX"}`` to compile with JAX.
 
     compile_kwargs: dict, optional
         Additional keyword arguments to pass to `pytensor.function`
@@ -103,6 +106,12 @@ def fit_dadvi(
     Faster, More Accurate, and Even More Black Box. Journal of Machine Learning Research, 25(18), 1–39.
     """
 
+    if gradient_backend is not None:
+        warnings.warn(
+            "`gradient_backend` is deprecated and ignored; derivatives are always taken by PyTensor.",
+            FutureWarning,
+            stacklevel=2,
+        )
     model = pymc.modelcontext(model) if model is None else model
     do_basinhopping = optimizer_method == "basinhopping"
     minimizer_kwargs = optimizer_kwargs.pop("minimizer_kwargs", {})
@@ -137,7 +146,6 @@ def fit_dadvi(
         use_grad=use_grad,
         use_hessp=use_hessp,
         use_hess=use_hess,
-        gradient_backend=gradient_backend,
         compile_kwargs=compile_kwargs,
         inputs_are_flat=True,
     )
