@@ -13,11 +13,7 @@ def rng():
     return np.random.default_rng(seed)
 
 
-@pytest.mark.parametrize(
-    "mode, gradient_backend",
-    [(None, "pytensor")],
-)
-def test_fit_dadvi_basic(mode, gradient_backend):
+def test_fit_dadvi_basic():
     # Example from BDA3, section 4.1 (same as Laplace test)
     y = np.array([2642, 3503, 4358], dtype=np.float64)
     n = y.size
@@ -34,8 +30,6 @@ def test_fit_dadvi_basic(mode, gradient_backend):
             optimizer_method="trust-ncg",
             n_fixed_draws=draws,
             n_draws=draws,
-            compile_kwargs={"mode": mode},
-            gradient_backend=gradient_backend,
         )
 
     assert idata["posterior"]["mu"].shape == (1, draws)
@@ -54,13 +48,15 @@ def test_fit_dadvi_outside_model_context():
         sigma = pm.Exponential("sigma", 1)
         y_hat = pm.Normal("y_hat", mu=mu, sigma=sigma, observed=np.random.normal(size=10))
 
-    idata = fit_dadvi(
-        model=m,
-        optimizer_method="L-BFGS-B",
-        use_grad=True,
-        progressbar=False,
-        n_draws=100,
-    )
+    with pytest.warns(FutureWarning, match="`gradient_backend` is deprecated"):
+        idata = fit_dadvi(
+            model=m,
+            optimizer_method="L-BFGS-B",
+            use_grad=True,
+            gradient_backend="pytensor",
+            progressbar=False,
+            n_draws=100,
+        )
 
     assert hasattr(idata, "posterior")
     assert hasattr(idata, "optimizer_result")

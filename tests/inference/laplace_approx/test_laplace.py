@@ -19,14 +19,15 @@ import pytest
 
 import pymc_extras as pmx
 
-from pymc_extras.inference.laplace_approx.find_map import GradientBackend
 from pymc_extras.inference.laplace_approx.laplace import (
     fit_laplace,
 )
 
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:Numba will use object mode to run MinimizeOp:UserWarning"
-)
+pytestmark = [
+    pytest.mark.filterwarnings("ignore:Numba will use object mode to run MinimizeOp:UserWarning"),
+    # pm.find_MAP reports scipy's precision-loss exits, which these fits hit at their tight tolerances
+    pytest.mark.filterwarnings("ignore:The optimizer did not converge:UserWarning"),
+]
 
 
 @pytest.fixture(scope="session")
@@ -36,16 +37,10 @@ def rng():
 
 
 @pytest.mark.parametrize(
-    "mode, gradient_backend, vectorize_draws",
-    [
-        (None, "pytensor", True),
-        (None, "pytensor", False),
-        ("NUMBA", "pytensor", True),
-        ("JAX", "jax", True),
-        ("JAX", "pytensor", True),
-    ],
+    "mode, vectorize_draws",
+    [(None, True), (None, False), ("NUMBA", True), ("JAX", True)],
 )
-def test_fit_laplace_basic(mode, gradient_backend: GradientBackend, vectorize_draws):
+def test_fit_laplace_basic(mode, vectorize_draws):
     # vectorize_draws only changes how draws are taken after the fit, so one backend covers it
     # Example originates from Bayesian Data Analyses, 3rd Edition
     # By Andrew Gelman, John Carlin, Hal Stern, David Dunson,
@@ -69,7 +64,6 @@ def test_fit_laplace_basic(mode, gradient_backend: GradientBackend, vectorize_dr
             draws=draws,
             random_seed=173300,
             compile_kwargs={"mode": mode},
-            gradient_backend=gradient_backend,
             optimizer_kwargs=dict(tol=1e-20),
             vectorize_draws=vectorize_draws,
             progressbar=False,
@@ -89,6 +83,16 @@ def test_fit_laplace_basic(mode, gradient_backend: GradientBackend, vectorize_dr
 
     np.testing.assert_allclose(idata.fit["mean_vector"].values, bda_map, atol=1, rtol=1e-3)
     np.testing.assert_allclose(idata.fit["covariance_matrix"].values, bda_cov, rtol=1e-3, atol=1e-3)
+
+
+def test_fit_laplace_deprecated_kwargs():
+    with pm.Model() as m:
+        mu = pm.Normal("mu")
+        with (
+            pytest.warns(FutureWarning, match="`jitter_rvs` is deprecated"),
+            pytest.warns(FutureWarning, match="`gradient_backend` is deprecated"),
+        ):
+            fit_laplace(jitter_rvs=[mu], gradient_backend="jax", draws=10, progressbar=False)
 
 
 def test_fit_laplace_outside_model_context():
@@ -230,7 +234,7 @@ def test_model_with_nonstandard_dimensionality(rng):
         )
 
     with pmx.marginalize(model, [class_idx]):
-        idata = pmx.fit_laplace(progressbar=False)
+        idata = pmx.fit_laplace(progressbar=False, jitter=True, random_seed=1)
 
     # The dirichlet value variable has a funky shape; check that it got a default
     assert "w_simplex___dim_0" in list(idata["unconstrained_posterior"].w_simplex__.coords.keys())
