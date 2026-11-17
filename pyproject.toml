@@ -46,12 +46,12 @@ dependencies = [
 
 [project.optional-dependencies]
 complete = [
-  "dask[complete]<2025.1.1",
+  "dask[complete]",
   "xhistogram",
 ]
 dev = [
   "pytest>=6.0,<10.0",
-  "dask[all]<2025.1.1",
+  "dask[all]",
   "blackjax>=0.12,<2.0",
   "statsmodels",
 ]
@@ -61,7 +61,7 @@ docs = [
   "pymc-sphinx-theme>=0.16,<1.0",
 ]
 dask_histogram = [
-  "dask[complete]<2025.1.1",
+  "dask[complete]",
   "xhistogram",
 ]
 histogram = [
