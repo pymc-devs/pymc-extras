@@ -88,9 +88,11 @@ def test_fit_laplace_basic(mode, vectorize_draws):
 def test_fit_laplace_deprecated_kwargs():
     with pm.Model() as m:
         mu = pm.Normal("mu")
-        with pytest.warns(FutureWarning) as record:
+        with (
+            pytest.warns(FutureWarning, match="`jitter_rvs` is deprecated"),
+            pytest.warns(FutureWarning, match="`gradient_backend` is deprecated"),
+        ):
             fit_laplace(jitter_rvs=[mu], gradient_backend="jax", draws=10, progressbar=False)
-    assert {str(w.message).split("`")[1] for w in record} >= {"jitter_rvs", "gradient_backend"}
 
 
 def test_fit_laplace_outside_model_context():
