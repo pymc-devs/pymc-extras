@@ -1222,6 +1222,9 @@ class Prior:
     def to_dict(self) -> dict[str, Any]:
         """Convert the prior to dictionary format.
 
+        Nonempty ``core_dims`` are preserved alongside ``dims``, including in
+        nested priors. Empty ``core_dims`` are omitted for backward compatibility.
+
         Returns
         -------
         dict[str, Any]
@@ -1278,6 +1281,9 @@ class Prior:
         if self.dims is not None:
             data["dims"] = self.dims
 
+        if self.core_dims:
+            data["core_dims"] = self.core_dims
+
         if self.transform:
             data["transform"] = self.transform
 
@@ -1286,6 +1292,9 @@ class Prior:
     @classmethod
     def from_dict(cls, data) -> Prior:
         """Create a Prior from the dictionary format.
+
+        ``core_dims`` are restored using the constructor's normalization. Older
+        dictionaries without ``core_dims`` default to no core dimensions.
 
         Parameters
         ----------
@@ -1341,7 +1350,14 @@ class Prior:
             dims = tuple(dims)
         transform = data.get("transform")
 
-        return cls(dist, dims=dims, centered=centered, transform=transform, **kwargs)
+        return cls(
+            dist,
+            dims=dims,
+            centered=centered,
+            transform=transform,
+            core_dims=data.get("core_dims", ()),
+            **kwargs,
+        )
 
     def constrain(self, lower: float, upper: float, mass: float = 0.95, kwargs=None) -> Prior:
         """Create a new prior with a given mass constrained within the given bounds.

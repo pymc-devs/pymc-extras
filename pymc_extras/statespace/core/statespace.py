@@ -47,6 +47,7 @@ from pymc_extras.statespace.filters import (
     UnivariateFilter,
 )
 from pymc_extras.statespace.filters.distributions import (
+    InnovationsStateSpaceRV,
     KalmanFilterRV,
     SequenceMvNormal,
     StationaryVARRV,
@@ -102,7 +103,7 @@ def _validate_property(props, property_name, expected_type):
 
 # Every op a statespace model registers as its observation likelihood. A variable named ``obs``
 # is only ours if one of these produced it, so a user's own variable is never mistaken for it.
-LIKELIHOOD_OPS = (KalmanFilterRV, StationaryVARRV)
+LIKELIHOOD_OPS = (KalmanFilterRV, StationaryVARRV, InnovationsStateSpaceRV)
 
 
 def _has_statespace_graph(model: Model) -> bool:

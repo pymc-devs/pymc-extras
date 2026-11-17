@@ -1,3 +1,4 @@
+import json
 import warnings
 
 from copy import deepcopy
@@ -1527,6 +1528,19 @@ class TestXDist:
 
         data_again = prior_again.to_dict()
         assert data_again == data
+
+    def test_core_dims_json_round_trip(self):
+        prior = Prior(
+            "Dirichlet",
+            a=DataArray([1, 2, 3], dims="category"),
+            dims="category",
+            core_dims="category",
+        )
+        restored = Prior.from_dict(json.loads(json.dumps(prior.to_dict())))
+        assert restored.core_dims == ("category",)
+        with pm.Model(coords={"category": range(3)}):
+            variable = restored.create_variable("x", xdist=True)
+        assert variable.dims == ("category",)
 
     @pytest.mark.parametrize("transform", (None, "exp"))
     def test_xdist_prior(self, transform):
