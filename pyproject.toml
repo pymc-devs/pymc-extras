@@ -35,23 +35,23 @@ license = {file = "LICENSE"}
 dynamic = ["version"]  # specify the version in the __init__.py file
 dependencies = [
   "pymc>=6.4.0,<6.5",
-  "pytensor>=3.3.6,<3.4",
+  "pytensor>=3.3.8,<3.4",
   "arviz>=1.2,<2.0",
   "better-optimize>=0.5.1,<1.0",
   "pandas>=2.2,<3.2",
   "pydantic>=2.0.0,<3.0",
   "preliz>=0.27.0,<0.29.0",
-  "pytensor-ml>=0.3.0,<0.4",
+  "pytensor-ml>=0.4.0,<0.5",
 ]
 
 [project.optional-dependencies]
 complete = [
-  "dask[complete]<2025.1.1",
+  "dask[complete]",
   "xhistogram",
 ]
 dev = [
   "pytest>=6.0,<10.0",
-  "dask[all]<2025.1.1",
+  "dask[all]",
   "blackjax>=0.12,<2.0",
   "statsmodels",
 ]
@@ -61,7 +61,7 @@ docs = [
   "pymc-sphinx-theme>=0.16,<1.0",
 ]
 dask_histogram = [
-  "dask[complete]<2025.1.1",
+  "dask[complete]",
   "xhistogram",
 ]
 histogram = [
