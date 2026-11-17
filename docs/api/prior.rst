@@ -16,6 +16,7 @@ file rather than hardcoded in a model, as in
    sample_prior
    create_dim_handler
    handle_dims
+   register_pymc_distribution
    register_tensor_transform
    VariableFactory
 
