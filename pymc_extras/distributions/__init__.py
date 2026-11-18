@@ -30,7 +30,12 @@ from pymc_extras.distributions.discrete import (
     Skellam,
 )
 from pymc_extras.distributions.histogram_utils import histogram_approximation
-from pymc_extras.distributions.multivariate import R2D2M2CP, JointCategorical
+from pymc_extras.distributions.multivariate import (
+    R2D2M2CP,
+    JointCategorical,
+    SparseDirichletMultinomial,
+)
+from pymc_extras.distributions.sparse import SparseBetaBinomial, SparseNegativeBinomial
 from pymc_extras.distributions.timeseries import DiscreteMarkovChain
 from pymc_extras.distributions.transforms import PartialOrder
 
@@ -47,5 +52,8 @@ __all__ = [
     "Maxwell",
     "PartialOrder",
     "Skellam",
+    "SparseBetaBinomial",
+    "SparseDirichletMultinomial",
+    "SparseNegativeBinomial",
     "histogram_approximation",
 ]
