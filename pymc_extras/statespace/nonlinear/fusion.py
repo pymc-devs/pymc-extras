@@ -5,12 +5,15 @@ from collections.abc import Mapping, Sequence
 import numpy as np
 import pytensor.tensor as pt
 
+from pymc.distributions.shape_utils import change_dist_size
 from pymc.model import Model
-from pymc.model.fgraph import ModelFreeRV, fgraph_from_model
+from pymc.model.fgraph import ModelFreeRV, ModelNamed, ModelObservedRV, fgraph_from_model
 from pymc.pytensorf import toposort_replace
+from pytensor.graph.basic import Apply
 from pytensor.graph.fg import FunctionGraph
+from pytensor.graph.replace import clone_replace
 from pytensor.tensor import TensorLike
-from pytensor.tensor.variable import TensorVariable
+from pytensor.tensor.variable import TensorConstant, TensorVariable
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
 
@@ -154,8 +157,26 @@ class FusedStateSpace:
         values = pt.unpack(vector[self._packed_order], packed_shapes=self._packed_shapes)
         return dict(zip(self.rv_names, values, strict=True))
 
-    def _rewrite(self, *, parameters: TensorVariable) -> FunctionGraph:
-        """Return a new graph of the model with every free variable replaced by its value."""
+    def _rewrite(
+        self, *, parameters: TensorVariable
+    ) -> tuple[FunctionGraph, dict[str, TensorVariable]]:
+        """
+        Return a new graph of the model with its free variables and data replaced.
+
+        Parameters
+        ----------
+        parameters : TensorVariable
+            Vector laid out like :math:`\theta`.
+
+        Returns
+        -------
+        fgraph : FunctionGraph
+            The model with each mapped variable read from ``parameters`` through its backward
+            transform, each frozen variable at its value, and each data variable and constant
+            observed value replaced by a placeholder whose shape every observed variable follows.
+        placeholders : dict of str to TensorVariable
+            The placeholders, by the name of the data variable or of the observed variable.
+        """
         fgraph, _ = fgraph_from_model(self.model, inlined_views=True)
         free_rvs = {
             node.op.name: node.outputs[0]
@@ -173,7 +194,44 @@ class FusedStateSpace:
         # A backward transform reads its inputs, which may be other free variables, from the graph
         # as it stands. Replacing dependents first lets the later replacements reach into them.
         toposort_replace(fgraph, replacements, reverse=True)
-        return fgraph
+
+        return _replace_data(fgraph=fgraph)
+
+
+def _replace_data(*, fgraph: FunctionGraph) -> tuple[FunctionGraph, dict[str, TensorVariable]]:
+    data = {
+        node.op.name: node.outputs[0]
+        for node in fgraph.apply_nodes
+        if isinstance(node.op, ModelNamed)
+    }
+    constant_observations = {
+        node.op.name: node.inputs[1]
+        for node in fgraph.apply_nodes
+        if isinstance(node.op, ModelObservedRV) and isinstance(node.inputs[1], TensorConstant)
+    }
+    replaced = {**data, **constant_observations}
+    placeholders = {
+        name: pt.tensor(name=name, dtype=variable.dtype, shape=(None,) * variable.ndim)
+        for name, variable in replaced.items()
+    }
+    # Rebuilding the graph, unlike replacing in place, lets each type lose the static shape of
+    # the value it was built from.
+    outputs = clone_replace(
+        fgraph.outputs,
+        replace={variable: placeholders[name] for name, variable in replaced.items()},
+        rebuild_strict=False,
+    )
+    observed = [
+        variable
+        for variable in outputs
+        if variable.owner is not None and isinstance(variable.owner.op, ModelObservedRV)
+    ]
+    outputs = clone_replace(
+        outputs,
+        replace={variable: _resized_to_value(node=variable.owner) for variable in observed},
+        rebuild_strict=False,
+    )
+    return FunctionGraph(outputs=outputs, clone=False), placeholders
 
 
 def _backward_transform(*, free_rv: TensorVariable, value: TensorVariable) -> TensorVariable:
@@ -182,6 +240,12 @@ def _backward_transform(*, free_rv: TensorVariable, value: TensorVariable) -> Te
         return value
     rv = free_rv.owner.inputs[0]
     return transform.backward(value, *rv.owner.inputs)
+
+
+def _resized_to_value(*, node: Apply) -> TensorVariable:
+    rv, value = node.inputs
+    batch_shape = value.shape[: value.ndim - rv.owner.op.ndim_supp]
+    return node.op(change_dist_size(rv, new_size=batch_shape), value)
 
 
 def _unconstrained_shape(*, model: Model, rv: TensorVariable) -> np.ndarray:

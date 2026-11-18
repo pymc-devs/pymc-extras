@@ -116,7 +116,7 @@ def test_frozen_rvs_are_constants():
     )
 
     theta = pt.vector("theta", shape=(1,))
-    fgraph = fused._rewrite(parameters=theta)
+    fgraph, _ = fused._rewrite(parameters=theta)
     nodes = fgraph.apply_nodes
     assert not any(isinstance(node.op, ModelFreeRV) for node in nodes)
     [observed] = [node for node in nodes if isinstance(node.op, ModelObservedRV)]
@@ -174,11 +174,8 @@ def test_frozen_value_may_be_symbolic():
     )
 
     theta = pt.vector("theta", shape=(1,))
-    [observed] = [
-        node
-        for node in fused._rewrite(parameters=theta).apply_nodes
-        if isinstance(node.op, ModelObservedRV)
-    ]
+    fgraph, _ = fused._rewrite(parameters=theta)
+    [observed] = [node for node in fgraph.apply_nodes if isinstance(node.op, ModelObservedRV)]
     *_, scale = observed.inputs[0].owner.inputs
     np.testing.assert_allclose(scale.eval({sigma_value: 3.0}), 3.0)
 
@@ -197,11 +194,8 @@ def test_positive_rv_state_is_log_scale():
     )
 
     theta = pt.vector("theta", shape=(2,))
-    [observed] = [
-        node
-        for node in fused._rewrite(parameters=theta).apply_nodes
-        if isinstance(node.op, ModelObservedRV)
-    ]
+    fgraph, _ = fused._rewrite(parameters=theta)
+    [observed] = [node for node in fgraph.apply_nodes if isinstance(node.op, ModelObservedRV)]
     *_, mean, scale = observed.inputs[0].owner.inputs
     np.testing.assert_allclose(mean.eval({theta: [np.log(3.0), 0.5]}), 0.5)
     np.testing.assert_allclose(scale.eval({theta: [np.log(3.0), 0.5]}), 3.0)
@@ -221,7 +215,8 @@ def test_transform_depending_on_another_rv():
     )
 
     theta = pt.vector("theta", shape=(2,))
-    nodes = fused._rewrite(parameters=theta).apply_nodes
+    fgraph, _ = fused._rewrite(parameters=theta)
+    nodes = fgraph.apply_nodes
     assert not any(isinstance(node.op, ModelFreeRV) for node in nodes)
     [observed] = [node for node in nodes if isinstance(node.op, ModelObservedRV)]
     *_, mean, _ = observed.inputs[0].owner.inputs
@@ -242,3 +237,47 @@ def test_transform_that_changes_shape_raises():
             rv_names=["weights"],
             frozen={},
         )
+
+
+def test_observed_length_follows_data():
+    with pm.Model(coords={"obs": range(3)}) as model:
+        x = pm.Data("x", np.ones(3), dims="obs")
+        y_data = pm.Data("y_data", np.zeros(3), dims="obs")
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", alpha * x, 1, observed=y_data, dims="obs")
+
+    fused = FusedStateSpace(
+        model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+    )
+
+    theta = pt.vector("theta", shape=(1,))
+    fgraph, placeholders = fused._rewrite(parameters=theta)
+    assert set(placeholders) == {"x", "y_data"}
+    [observed] = [node for node in fgraph.apply_nodes if isinstance(node.op, ModelObservedRV)]
+    rv, value = observed.inputs
+    assert value is placeholders["y_data"]
+    np.testing.assert_array_equal(
+        rv.shape.eval(
+            {theta: [0.0], placeholders["x"]: np.ones(5), placeholders["y_data"]: np.zeros(5)}
+        ),
+        [5],
+    )
+
+
+def test_raw_numpy_observed_is_replaced():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.MvNormal("w", mu=alpha + np.zeros(2), cov=np.eye(2), observed=np.zeros((4, 2)))
+
+    fused = FusedStateSpace(
+        model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+    )
+
+    theta = pt.vector("theta", shape=(1,))
+    fgraph, placeholders = fused._rewrite(parameters=theta)
+    [observed] = [node for node in fgraph.apply_nodes if isinstance(node.op, ModelObservedRV)]
+    rv, value = observed.inputs
+    assert value is placeholders["w"]
+    np.testing.assert_array_equal(
+        rv.shape.eval({theta: [0.0], placeholders["w"]: np.zeros((6, 2))}), [6, 2]
+    )
