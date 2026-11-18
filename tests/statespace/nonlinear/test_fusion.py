@@ -3,11 +3,16 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
-from pymc.model.fgraph import ModelFreeRV, ModelObservedRV
 from pytensor.compile.sharedvalue import SharedVariable
+from pytensor.graph.traversal import graph_inputs
+from scipy import stats
 
 from pymc_extras.statespace.models import structural as st
-from pymc_extras.statespace.nonlinear import FusedStateSpace, observed_state_names
+from pymc_extras.statespace.nonlinear import (
+    FusedStateSpace,
+    gauss_newton_curvature,
+    observed_state_names,
+)
 
 
 def level_statespace(observed_state_names):
@@ -116,15 +121,14 @@ def test_frozen_rvs_are_constants():
     )
 
     theta = pt.vector("theta", shape=(1,))
-    fgraph, _ = fused._rewrite(parameters=theta)
-    nodes = fgraph.apply_nodes
-    assert not any(isinstance(node.op, ModelFreeRV) for node in nodes)
-    [observed] = [node for node in nodes if isinstance(node.op, ModelObservedRV)]
-    *_, mean, scale = observed.inputs[0].owner.inputs
-    assert scale.eval() == 2.0
-    assert mean.eval({theta: [0.5]}) == 4.5
+    y = pt.vector("y")
+    logp, _ = fused.observation_logp(parameters=theta, data={"y": y})["y"]
+    np.testing.assert_allclose(
+        logp.eval({theta: [0.5], y: np.zeros(3)}),
+        stats.norm.logpdf(np.zeros(3), loc=4.5, scale=2.0),
+    )
     shared_names = {
-        variable.name for variable in fgraph.inputs if isinstance(variable, SharedVariable)
+        variable.name for variable in graph_inputs([logp]) if isinstance(variable, SharedVariable)
     }
     assert not shared_names & {"sigma", "weights"}
 
@@ -174,10 +178,13 @@ def test_frozen_value_may_be_symbolic():
     )
 
     theta = pt.vector("theta", shape=(1,))
-    fgraph, _ = fused._rewrite(parameters=theta)
-    [observed] = [node for node in fgraph.apply_nodes if isinstance(node.op, ModelObservedRV)]
-    *_, scale = observed.inputs[0].owner.inputs
-    np.testing.assert_allclose(scale.eval({sigma_value: 3.0}), 3.0)
+    y = pt.vector("y")
+    logp, _ = fused.observation_logp(parameters=theta, data={"y": y})["y"]
+    y_values = np.array([0.3, -1.0, 2.0])
+    np.testing.assert_allclose(
+        logp.eval({theta: [0.5], sigma_value: 3.0, y: y_values}),
+        stats.norm.logpdf(y_values, loc=0.5, scale=3.0),
+    )
 
 
 def test_positive_rv_state_is_log_scale():
@@ -194,11 +201,13 @@ def test_positive_rv_state_is_log_scale():
     )
 
     theta = pt.vector("theta", shape=(2,))
-    fgraph, _ = fused._rewrite(parameters=theta)
-    [observed] = [node for node in fgraph.apply_nodes if isinstance(node.op, ModelObservedRV)]
-    *_, mean, scale = observed.inputs[0].owner.inputs
-    np.testing.assert_allclose(mean.eval({theta: [np.log(3.0), 0.5]}), 0.5)
-    np.testing.assert_allclose(scale.eval({theta: [np.log(3.0), 0.5]}), 3.0)
+    y = pt.vector("y")
+    logp, _ = fused.observation_logp(parameters=theta, data={"y": y})["y"]
+    y_values = np.array([0.3, -1.0, 2.0])
+    np.testing.assert_allclose(
+        logp.eval({theta: [np.log(3.0), 0.5], y: y_values}),
+        stats.norm.logpdf(y_values, loc=0.5, scale=3.0),
+    )
 
 
 def test_transform_depending_on_another_rv():
@@ -215,13 +224,13 @@ def test_transform_depending_on_another_rv():
     )
 
     theta = pt.vector("theta", shape=(2,))
-    fgraph, _ = fused._rewrite(parameters=theta)
-    nodes = fgraph.apply_nodes
-    assert not any(isinstance(node.op, ModelFreeRV) for node in nodes)
-    [observed] = [node for node in nodes if isinstance(node.op, ModelObservedRV)]
-    *_, mean, _ = observed.inputs[0].owner.inputs
+    y = pt.vector("y")
+    logp, _ = fused.observation_logp(parameters=theta, data={"y": y})["y"]
+    y_values = np.array([0.3, -1.0, 2.0])
     # beta = alpha + 2 * sigmoid(theta_beta), so a zero logit is the midpoint.
-    np.testing.assert_allclose(mean.eval({theta: [1.0, 0.0]}), 2.0)
+    np.testing.assert_allclose(
+        logp.eval({theta: [1.0, 0.0], y: y_values}), stats.norm.logpdf(y_values, loc=2.0)
+    )
 
 
 def test_transform_that_changes_shape_raises():
@@ -251,16 +260,14 @@ def test_observed_length_follows_data():
     )
 
     theta = pt.vector("theta", shape=(1,))
-    fgraph, placeholders = fused._rewrite(parameters=theta)
-    assert set(placeholders) == {"x", "y_data"}
-    [observed] = [node for node in fgraph.apply_nodes if isinstance(node.op, ModelObservedRV)]
-    rv, value = observed.inputs
-    assert value is placeholders["y_data"]
-    np.testing.assert_array_equal(
-        rv.shape.eval(
-            {theta: [0.0], placeholders["x"]: np.ones(5), placeholders["y_data"]: np.zeros(5)}
-        ),
-        [5],
+    x_input = pt.vector("x")
+    y_input = pt.vector("y_data")
+    logp, _ = fused.observation_logp(parameters=theta, data={"x": x_input, "y_data": y_input})["y"]
+    x_values = np.arange(5.0)
+    y_values = np.linspace(-1.0, 1.0, 5)
+    np.testing.assert_allclose(
+        logp.eval({theta: [0.7], x_input: x_values, y_input: y_values}),
+        stats.norm.logpdf(y_values, loc=0.7 * x_values),
     )
 
 
@@ -274,10 +281,138 @@ def test_raw_numpy_observed_is_replaced():
     )
 
     theta = pt.vector("theta", shape=(1,))
-    fgraph, placeholders = fused._rewrite(parameters=theta)
-    [observed] = [node for node in fgraph.apply_nodes if isinstance(node.op, ModelObservedRV)]
-    rv, value = observed.inputs
-    assert value is placeholders["w"]
-    np.testing.assert_array_equal(
-        rv.shape.eval({theta: [0.0], placeholders["w"]: np.zeros((6, 2))}), [6, 2]
+    w = pt.matrix("w")
+    logp, _ = fused.observation_logp(parameters=theta, data={"w": w})["w"]
+    w_values = np.linspace(-1.0, 1.0, 12).reshape(6, 2)
+    np.testing.assert_allclose(
+        logp.eval({theta: [0.5], w: w_values}),
+        stats.multivariate_normal.logpdf(w_values, mean=[0.5, 0.5]),
+    )
+
+
+def test_data_with_other_names_raises():
+    with pm.Model() as model:
+        x = pm.Data("x", np.ones(3))
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", alpha * x, 1, observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+    )
+
+    with pytest.raises(ValueError, match=r"missing: \['y'\], unexpected: \['z'\]"):
+        fused.observation_logp(
+            parameters=pt.vector("theta", shape=(1,)),
+            data={"x": pt.vector("x"), "z": pt.vector("z")},
+        )
+
+
+def test_observation_logp_matches_model_logp():
+    with pm.Model(coords={"obs": range(3)}) as model:
+        x = pm.Data("x", np.ones(3), dims="obs")
+        y_data = pm.Data("y_data", np.zeros(3), dims="obs")
+        alpha = pm.Normal("alpha")
+        sigma = pm.HalfNormal("sigma")
+        mean = pm.Deterministic("mean", alpha * x, dims="obs")
+        pm.Normal("y", mean, sigma, observed=y_data, dims="obs")
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=level_statespace(["sigma", "alpha"]),
+        rv_names=["alpha", "sigma"],
+        frozen={},
+    )
+
+    theta = pt.vector("theta", shape=(2,))
+    x_input = pt.vector("x")
+    y_input = pt.vector("y_data")
+    logp, _ = fused.observation_logp(parameters=theta, data={"x": x_input, "y_data": y_input})["y"]
+    x_values = np.arange(4.0)
+    y_values = np.array([0.3, -1.0, 2.0, 0.5])
+    np.testing.assert_allclose(
+        logp.eval({theta: [np.log(1.5), 0.7], x_input: x_values, y_input: y_values}),
+        stats.norm.logpdf(y_values, loc=0.7 * x_values, scale=1.5),
+    )
+
+
+def test_distribution_parameters_are_those_that_depend_on_theta():
+    with pm.Model(coords={"obs": range(3)}) as model:
+        x = pm.Data("x", np.ones(3), dims="obs")
+        alpha = pm.Normal("alpha")
+        sigma = pm.HalfNormal("sigma")
+        pm.Normal("y", alpha * x, sigma, observed=np.zeros(3), dims="obs")
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=level_statespace(["alpha"]),
+        rv_names=["alpha"],
+        frozen={"sigma": 2.0},
+    )
+
+    theta = pt.vector("theta", shape=(1,))
+    x_input = pt.vector("x")
+    y = pt.vector("y")
+    logp, distribution_parameters = fused.observation_logp(
+        parameters=theta, data={"x": x_input, "y": y}
+    )["y"]
+    [mean] = distribution_parameters
+    curvature = gauss_newton_curvature(
+        pointwise_logp=logp, distribution_parameters=[mean], parameters=theta
+    )
+    x_values = np.arange(4.0)
+    np.testing.assert_allclose(
+        curvature.eval({theta: [0.7], x_input: x_values, y: np.zeros(4)}),
+        [[np.sum(x_values**2) / 4.0]],
+    )
+
+
+def test_opaque_likelihood_has_no_distribution_parameters():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Censored("y", pm.Normal.dist(alpha, 1), lower=-1, upper=1, observed=np.zeros(2))
+
+    fused = FusedStateSpace(
+        model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+    )
+
+    theta = pt.vector("theta", shape=(1,))
+    y = pt.vector("y")
+    logp, distribution_parameters = fused.observation_logp(parameters=theta, data={"y": y})["y"]
+    assert distribution_parameters is None
+    y_values = np.array([-1.0, 0.2, 1.0])
+    expected = pm.logp(pm.Censored.dist(pm.Normal.dist(0.5, 1), lower=-1, upper=1), y_values)
+    np.testing.assert_allclose(logp.eval({theta: [0.5], y: y_values}), expected.eval())
+
+
+def test_each_observed_rv_gets_its_own_logp():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        sigma = pm.HalfNormal("sigma")
+        pm.Normal("y", alpha, sigma, observed=np.zeros(3))
+        pm.Poisson("counts", pm.math.exp(alpha), observed=np.zeros(2))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=level_statespace(["alpha", "sigma"]),
+        rv_names=["alpha", "sigma"],
+        frozen={},
+    )
+
+    theta = pt.vector("theta", shape=(2,))
+    y = pt.vector("y")
+    counts = pt.vector("counts", dtype="int64")
+    observation_logp = fused.observation_logp(parameters=theta, data={"y": y, "counts": counts})
+    y_logp, _ = observation_logp["y"]
+    counts_logp, [counts_rate] = observation_logp["counts"]
+    theta_values = [0.5, np.log(2.0)]
+    np.testing.assert_allclose(
+        y_logp.eval({theta: theta_values, y: [0.3, -1.0, 2.0]}),
+        stats.norm.logpdf([0.3, -1.0, 2.0], loc=0.5, scale=2.0),
+    )
+    np.testing.assert_allclose(
+        counts_logp.eval({theta: theta_values, counts: [1, 4]}),
+        stats.poisson.logpmf([1, 4], mu=np.exp(0.5)),
+    )
+    np.testing.assert_allclose(
+        counts_rate.eval({theta: theta_values, counts: [1, 4]}), np.exp([0.5, 0.5])
     )

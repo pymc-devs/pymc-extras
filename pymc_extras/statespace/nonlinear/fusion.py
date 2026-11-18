@@ -6,13 +6,22 @@ import numpy as np
 import pytensor.tensor as pt
 
 from pymc.distributions.shape_utils import change_dist_size
+from pymc.logprob.basic import conditional_logp
 from pymc.model import Model
-from pymc.model.fgraph import ModelFreeRV, ModelNamed, ModelObservedRV, fgraph_from_model
+from pymc.model.fgraph import (
+    ModelDeterministic,
+    ModelFreeRV,
+    ModelNamed,
+    ModelObservedRV,
+    fgraph_from_model,
+)
 from pymc.pytensorf import toposort_replace
 from pytensor.graph.basic import Apply
 from pytensor.graph.fg import FunctionGraph
-from pytensor.graph.replace import clone_replace
+from pytensor.graph.replace import clone_replace, graph_replace
+from pytensor.graph.traversal import ancestors
 from pytensor.tensor import TensorLike
+from pytensor.tensor.random.op import RandomVariable
 from pytensor.tensor.variable import TensorConstant, TensorVariable
 
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
@@ -157,26 +166,80 @@ class FusedStateSpace:
         values = pt.unpack(vector[self._packed_order], packed_shapes=self._packed_shapes)
         return dict(zip(self.rv_names, values, strict=True))
 
-    def _rewrite(
-        self, *, parameters: TensorVariable
-    ) -> tuple[FunctionGraph, dict[str, TensorVariable]]:
-        """
-        Return a new graph of the model with its free variables and data replaced.
+    def observation_logp(
+        self, *, parameters: TensorVariable, data: Mapping[str, TensorVariable]
+    ) -> dict[str, tuple[TensorVariable, list[TensorVariable] | None]]:
+        r"""
+        Return the log-likelihood of each observed variable.
 
         Parameters
         ----------
         parameters : TensorVariable
             Vector laid out like :math:`\theta`.
+        data : mapping of str to TensorVariable
+            A value for each data variable and for each observed variable whose observations are
+            constants, by name. Every observed variable takes its batch shape from its value.
 
         Returns
         -------
-        fgraph : FunctionGraph
-            The model with each mapped variable read from ``parameters`` through its backward
-            transform, each frozen variable at its value, and each data variable and constant
-            observed value replaced by a placeholder whose shape every observed variable follows.
-        placeholders : dict of str to TensorVariable
-            The placeholders, by the name of the data variable or of the observed variable.
+        logp : dict of str to tuple
+            For each observed variable, the log-likelihood of each observation, shaped like its
+            batch dims, and its distribution parameters that depend on ``parameters``, broadcast
+            to its batch dims and contained in that log-likelihood. The distribution parameters
+            are None for a distribution without separate parameters, whose curvature has to be
+            exact.
         """
+        fgraph = self._rewrite(parameters=parameters, data=data)
+
+        observations = {}
+        distribution_parameters = {}
+        stand_ins = {}
+        for node in fgraph.toposort():
+            if not isinstance(node.op, ModelObservedRV):
+                continue
+            rv, value = node.inputs
+            op = rv.owner.op
+            if isinstance(op, RandomVariable):
+                batch_shape = tuple(value.shape)[: value.ndim - op.ndim_supp]
+                broadcast = [
+                    pt.broadcast_to(
+                        parameter, (*batch_shape, *tuple(parameter.shape)[parameter.ndim - core :])
+                    )
+                    for parameter, core in zip(
+                        op.dist_params(rv.owner), op.ndims_params, strict=True
+                    )
+                ]
+
+                # conditional_logp rewrites the graph it is given, so its log-likelihood would not
+                # contain these parameters. Building the variable on stand-ins and substituting
+                # the parameters afterwards keeps them in it, where the Gauss-Newton curvature
+                # cuts the graph.
+                parameter_stand_ins = [parameter.type() for parameter in broadcast]
+                stand_ins.update(zip(parameter_stand_ins, broadcast, strict=True))
+                rng, size, *_ = rv.owner.inputs
+                rv = op.make_node(rng, size, *parameter_stand_ins).default_output()
+                distribution_parameters[node.op.name] = [
+                    parameter for parameter in broadcast if parameters in ancestors([parameter])
+                ]
+            else:
+                distribution_parameters[node.op.name] = None
+            observations[node.op.name] = (rv, value)
+
+        value_logps = conditional_logp(dict(observations.values()))
+        pointwise_logps = graph_replace(
+            [value_logps[value] for _, value in observations.values()],
+            replace=stand_ins,
+            strict=False,
+        )
+        return {
+            name: (pointwise_logp, distribution_parameters[name])
+            for name, pointwise_logp in zip(observations, pointwise_logps, strict=True)
+        }
+
+    def _rewrite(
+        self, *, parameters: TensorVariable, data: Mapping[str, TensorVariable]
+    ) -> FunctionGraph:
+        """Return a new graph of the model with its free variables and data replaced."""
         fgraph, _ = fgraph_from_model(self.model, inlined_views=True)
         free_rvs = {
             node.op.name: node.outputs[0]
@@ -190,16 +253,20 @@ class FusedStateSpace:
         replacements = [
             (free_rvs[name], free_rvs[name].type.filter_variable(value))
             for name, value in {**constrained, **self.frozen}.items()
+        ] + [
+            (node.outputs[0], node.inputs[0])
+            for node in fgraph.apply_nodes
+            if isinstance(node.op, ModelDeterministic)
         ]
         # A backward transform reads its inputs, which may be other free variables, from the graph
         # as it stands. Replacing dependents first lets the later replacements reach into them.
         toposort_replace(fgraph, replacements, reverse=True)
 
-        return _replace_data(fgraph=fgraph)
+        return _replace_data(fgraph=fgraph, data=data)
 
 
-def _replace_data(*, fgraph: FunctionGraph) -> tuple[FunctionGraph, dict[str, TensorVariable]]:
-    data = {
+def _replace_data(*, fgraph: FunctionGraph, data: Mapping[str, TensorVariable]) -> FunctionGraph:
+    named_data = {
         node.op.name: node.outputs[0]
         for node in fgraph.apply_nodes
         if isinstance(node.op, ModelNamed)
@@ -209,16 +276,18 @@ def _replace_data(*, fgraph: FunctionGraph) -> tuple[FunctionGraph, dict[str, Te
         for node in fgraph.apply_nodes
         if isinstance(node.op, ModelObservedRV) and isinstance(node.inputs[1], TensorConstant)
     }
-    replaced = {**data, **constant_observations}
-    placeholders = {
-        name: pt.tensor(name=name, dtype=variable.dtype, shape=(None,) * variable.ndim)
-        for name, variable in replaced.items()
-    }
+    replaced = {**named_data, **constant_observations}
+    if set(data) != set(replaced):
+        raise ValueError(
+            f"data has to give a value for exactly {sorted(replaced)}; missing: "
+            f"{sorted(set(replaced) - set(data))}, unexpected: {sorted(set(data) - set(replaced))}."
+        )
+
     # Rebuilding the graph, unlike replacing in place, lets each type lose the static shape of
     # the value it was built from.
     outputs = clone_replace(
         fgraph.outputs,
-        replace={variable: placeholders[name] for name, variable in replaced.items()},
+        replace={variable: data[name] for name, variable in replaced.items()},
         rebuild_strict=False,
     )
     observed = [
@@ -231,7 +300,7 @@ def _replace_data(*, fgraph: FunctionGraph) -> tuple[FunctionGraph, dict[str, Te
         replace={variable: _resized_to_value(node=variable.owner) for variable in observed},
         rebuild_strict=False,
     )
-    return FunctionGraph(outputs=outputs, clone=False), placeholders
+    return FunctionGraph(outputs=outputs, clone=False)
 
 
 def _backward_transform(*, free_rv: TensorVariable, value: TensorVariable) -> TensorVariable:
