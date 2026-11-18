@@ -141,22 +141,34 @@ class FusedStateSpace:
         values = pt.unpack(vector[self._packed_order], packed_shapes=self._packed_shapes)
         return dict(zip(self.rv_names, values, strict=True))
 
-    def _rewrite(self) -> FunctionGraph:
-        """Return a new graph of the model with the frozen variables replaced by constants."""
+    def _rewrite(self, *, parameters: TensorVariable) -> FunctionGraph:
+        """Return a new graph of the model with every free variable replaced by its value."""
         fgraph, _ = fgraph_from_model(self.model, inlined_views=True)
         free_rvs = {
             node.op.name: node.outputs[0]
             for node in fgraph.apply_nodes
             if isinstance(node.op, ModelFreeRV)
         }
-        toposort_replace(
-            fgraph,
-            [
-                (free_rvs[name], free_rvs[name].type.filter_variable(value))
-                for name, value in self.frozen.items()
-            ],
-        )
+        constrained = {
+            name: _backward_transform(free_rv=free_rvs[name], value=value)
+            for name, value in self.unpack(parameters).items()
+        }
+        replacements = [
+            (free_rvs[name], free_rvs[name].type.filter_variable(value))
+            for name, value in {**constrained, **self.frozen}.items()
+        ]
+        # A backward transform reads its inputs, which may be other free variables, from the graph
+        # as it stands. Replacing dependents first lets the later replacements reach into them.
+        toposort_replace(fgraph, replacements, reverse=True)
         return fgraph
+
+
+def _backward_transform(*, free_rv: TensorVariable, value: TensorVariable) -> TensorVariable:
+    transform = free_rv.owner.op.transform
+    if transform is None:
+        return value
+    rv = free_rv.owner.inputs[0]
+    return transform.backward(value, *rv.owner.inputs)
 
 
 def _element_labels(*, model: Model, rv: TensorVariable) -> np.ndarray:

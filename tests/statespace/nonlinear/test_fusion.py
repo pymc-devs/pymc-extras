@@ -115,14 +115,14 @@ def test_frozen_rvs_are_constants():
         frozen={"sigma": 2.0, "weights": np.ones((2, 2))},
     )
 
-    fgraph = fused._rewrite()
+    theta = pt.vector("theta", shape=(1,))
+    fgraph = fused._rewrite(parameters=theta)
     nodes = fgraph.apply_nodes
-    [free] = [node for node in nodes if isinstance(node.op, ModelFreeRV)]
-    assert free.op.name == "alpha"
+    assert not any(isinstance(node.op, ModelFreeRV) for node in nodes)
     [observed] = [node for node in nodes if isinstance(node.op, ModelObservedRV)]
     *_, mean, scale = observed.inputs[0].owner.inputs
     assert scale.eval() == 2.0
-    assert mean.eval({free.outputs[0]: 0.5}) == 4.5
+    assert mean.eval({theta: [0.5]}) == 4.5
     shared_names = {
         variable.name for variable in fgraph.inputs if isinstance(variable, SharedVariable)
     }
@@ -173,8 +173,57 @@ def test_frozen_value_may_be_symbolic():
         frozen={"sigma": sigma_value},
     )
 
+    theta = pt.vector("theta", shape=(1,))
     [observed] = [
-        node for node in fused._rewrite().apply_nodes if isinstance(node.op, ModelObservedRV)
+        node
+        for node in fused._rewrite(parameters=theta).apply_nodes
+        if isinstance(node.op, ModelObservedRV)
     ]
     *_, scale = observed.inputs[0].owner.inputs
     np.testing.assert_allclose(scale.eval({sigma_value: 3.0}), 3.0)
+
+
+def test_positive_rv_state_is_log_scale():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        sigma = pm.HalfNormal("sigma")
+        pm.Normal("y", alpha, sigma, observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=level_statespace(["sigma", "alpha"]),
+        rv_names=["alpha", "sigma"],
+        frozen={},
+    )
+
+    theta = pt.vector("theta", shape=(2,))
+    [observed] = [
+        node
+        for node in fused._rewrite(parameters=theta).apply_nodes
+        if isinstance(node.op, ModelObservedRV)
+    ]
+    *_, mean, scale = observed.inputs[0].owner.inputs
+    np.testing.assert_allclose(mean.eval({theta: [np.log(3.0), 0.5]}), 0.5)
+    np.testing.assert_allclose(scale.eval({theta: [np.log(3.0), 0.5]}), 3.0)
+
+
+def test_transform_depending_on_another_rv():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        beta = pm.Uniform("beta", lower=alpha, upper=alpha + 2)
+        pm.Normal("y", beta, 1, observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=level_statespace(["alpha", "beta"]),
+        rv_names=["alpha", "beta"],
+        frozen={},
+    )
+
+    theta = pt.vector("theta", shape=(2,))
+    nodes = fused._rewrite(parameters=theta).apply_nodes
+    assert not any(isinstance(node.op, ModelFreeRV) for node in nodes)
+    [observed] = [node for node in nodes if isinstance(node.op, ModelObservedRV)]
+    *_, mean, _ = observed.inputs[0].owner.inputs
+    # beta = alpha + 2 * sigmoid(theta_beta), so a zero logit is the midpoint.
+    np.testing.assert_allclose(mean.eval({theta: [1.0, 0.0]}), 2.0)
