@@ -227,3 +227,18 @@ def test_transform_depending_on_another_rv():
     *_, mean, _ = observed.inputs[0].owner.inputs
     # beta = alpha + 2 * sigmoid(theta_beta), so a zero logit is the midpoint.
     np.testing.assert_allclose(mean.eval({theta: [1.0, 0.0]}), 2.0)
+
+
+def test_transform_that_changes_shape_raises():
+    with pm.Model(coords={"component": ["a", "b", "c"]}) as model:
+        weights = pm.Dirichlet("weights", a=np.ones(3), dims="component")
+        pm.Normal("y", weights[0], 1, observed=np.zeros(3))
+
+    names = observed_state_names(model=model, rv_names=["weights"])
+    with pytest.raises(ValueError, match=r"\['weights'\] have transforms that change their shape"):
+        FusedStateSpace(
+            model=model,
+            statespace=level_statespace(names["weights"]),
+            rv_names=["weights"],
+            frozen={},
+        )

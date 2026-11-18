@@ -89,6 +89,19 @@ class FusedStateSpace:
                 f"Free random variables {unlisted} are neither in rv_names nor frozen."
             )
 
+        reshaping = [
+            name
+            for name in self.rv_names
+            if not np.array_equal(
+                _unconstrained_shape(model=model, rv=model[name]), model[name].shape.eval()
+            )
+        ]
+        if reshaping:
+            raise ValueError(
+                f"{reshaping} have transforms that change their shape, so their elements are not "
+                "observed states."
+            )
+
         wrong_shapes = {}
         for name, value in self.frozen.items():
             expected = tuple(int(length) for length in model[name].shape.eval())
@@ -169,6 +182,13 @@ def _backward_transform(*, free_rv: TensorVariable, value: TensorVariable) -> Te
         return value
     rv = free_rv.owner.inputs[0]
     return transform.backward(value, *rv.owner.inputs)
+
+
+def _unconstrained_shape(*, model: Model, rv: TensorVariable) -> np.ndarray:
+    transform = model.rvs_to_transforms[rv]
+    if transform is None:
+        return rv.shape.eval()
+    return transform.forward(rv, *rv.owner.inputs).shape.eval()
 
 
 def _element_labels(*, model: Model, rv: TensorVariable) -> np.ndarray:
