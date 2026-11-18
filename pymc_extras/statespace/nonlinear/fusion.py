@@ -236,6 +236,39 @@ class FusedStateSpace:
             for name, pointwise_logp in zip(observations, pointwise_logps, strict=True)
         }
 
+    def statespace_matrices(
+        self, *, statespace_parameters: Mapping[str, TensorLike]
+    ) -> list[TensorVariable]:
+        """
+        Return the statespace matrices at given values of the statespace's parameters.
+
+        Parameters
+        ----------
+        statespace_parameters : mapping of str to TensorLike
+            A value, constant or symbolic, for each name in the statespace's ``param_names``.
+
+        Returns
+        -------
+        matrices : list of TensorVariable
+            The matrices ``x0, P0, c, d, T, Z, R, H, Q``.
+        """
+        placeholders = self.statespace._name_to_variable
+        if set(statespace_parameters) != set(placeholders):
+            raise ValueError(
+                f"statespace_parameters has to give a value for exactly {sorted(placeholders)}; "
+                f"missing: {sorted(set(placeholders) - set(statespace_parameters))}, unexpected: "
+                f"{sorted(set(statespace_parameters) - set(placeholders))}."
+            )
+
+        return graph_replace(
+            list(self.statespace._unpack_statespace_with_placeholders()),
+            replace={
+                placeholder: placeholder.type.filter_variable(statespace_parameters[name])
+                for name, placeholder in placeholders.items()
+            },
+            strict=True,
+        )
+
     def _rewrite(
         self, *, parameters: TensorVariable, data: Mapping[str, TensorVariable]
     ) -> FunctionGraph:

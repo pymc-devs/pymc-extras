@@ -416,3 +416,61 @@ def test_each_observed_rv_gets_its_own_logp():
     np.testing.assert_allclose(
         counts_rate.eval({theta: theta_values, counts: [1, 4]}), np.exp([0.5, 0.5])
     )
+
+
+def test_statespace_matrices_at_given_parameters():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", alpha, 1, observed=np.zeros(3))
+
+    statespace = st.Autoregressive(order=2, name="ar", observed_state_names=["alpha"]).build(
+        verbose=False
+    )
+    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["alpha"], frozen={})
+
+    initial_covariance = [[2.0, 0.3], [0.3, 1.0]]
+    x0, P0, c, d, T, Z, R, H, Q = fused.statespace_matrices(
+        statespace_parameters={"params_ar": [0.5, -0.2], "sigma_ar": 0.5, "P0": initial_covariance}
+    )
+    np.testing.assert_allclose(x0.eval(), [0.0, 0.0])
+    np.testing.assert_allclose(P0.eval(), initial_covariance)
+    np.testing.assert_allclose(c.eval(), [0.0, 0.0])
+    np.testing.assert_allclose(d.eval(), [0.0])
+    np.testing.assert_allclose(T.eval(), [[0.5, -0.2], [1.0, 0.0]])
+    np.testing.assert_allclose(Z.eval(), [[1.0, 0.0]])
+    np.testing.assert_allclose(R.eval(), [[1.0], [0.0]])
+    np.testing.assert_allclose(H.eval(), [[0.0]])
+    np.testing.assert_allclose(Q.eval(), [[0.25]])
+
+
+def test_statespace_matrices_accept_symbolic_parameters():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", alpha, 1, observed=np.zeros(3))
+
+    statespace = st.Autoregressive(order=1, name="ar", observed_state_names=["alpha"]).build(
+        verbose=False
+    )
+    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["alpha"], frozen={})
+
+    rho = pt.vector("rho", shape=(1,))
+    x0, P0, c, d, T, Z, R, H, Q = fused.statespace_matrices(
+        statespace_parameters={"params_ar": rho, "sigma_ar": 0.5, "P0": [[2.0]]}
+    )
+    np.testing.assert_allclose(T.eval({rho: [-0.3]}), [[-0.3]])
+
+
+def test_statespace_matrices_with_other_names_raise():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", alpha, 1, observed=np.zeros(3))
+
+    statespace = st.Autoregressive(order=1, name="ar", observed_state_names=["alpha"]).build(
+        verbose=False
+    )
+    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["alpha"], frozen={})
+
+    with pytest.raises(ValueError, match=r"missing: \['P0'\], unexpected: \['rho'\]"):
+        fused.statespace_matrices(
+            statespace_parameters={"params_ar": [0.8], "sigma_ar": 0.5, "rho": 1.0}
+        )
