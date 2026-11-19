@@ -57,11 +57,12 @@ class FusedStateSpace:
     r"""
     Combine a cross-sectional PyMC model with a statespace model over its parameters.
 
-    The elements of the free random variables named in ``rv_names`` are the observed states of
-    ``statespace``, under the names :func:`observed_state_names` gives them. The observed states,
-    in the statespace's order, form the parameter vector :math:`\theta`; :meth:`unpack` returns
-    a vector in that layout as the variables' own shapes. Every other free random variable is
-    held at a value given in ``frozen``.
+    The elements of the free random variables named in ``rv_names``, on the unconstrained scale
+    of each variable's transform, are the observed states of ``statespace``, under the names
+    :func:`observed_state_names` gives them. The observed states, in the statespace's order, form
+    the parameter vector :math:`\theta`; :meth:`unpack` returns a vector in that layout as the
+    variables' own shapes. Every other free random variable is held at a value given in
+    ``frozen``, on the variable's own constrained scale.
 
     The model's likelihood has to consist of observed variables that do not depend on each other,
     without potentials or imputed observations.
@@ -75,8 +76,8 @@ class FusedStateSpace:
     rv_names : sequence of str
         Names of the free random variables that are observed states.
     frozen : mapping of str to TensorLike
-        Values for the free random variables that are not observed states, each shaped like its
-        variable.
+        Values for the free random variables that are not observed states, each on its
+        variable's constrained scale and shaped like it.
     """
 
     def __init__(
@@ -184,7 +185,7 @@ class FusedStateSpace:
         self._packed_shapes = [labels[name].shape for name in self.rv_names]
 
     def unpack(self, vector: TensorVariable) -> dict[str, TensorVariable]:
-        """
+        r"""
         Return the entries of a vector laid out like :math:`\theta`, in each variable's shape.
 
         Parameters
