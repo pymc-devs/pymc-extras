@@ -555,3 +555,38 @@ def test_exact_and_gauss_newton_curvatures_differ_at_the_same_mode():
     assert_allclose(mode, residual_term, atol=1e-8)
     assert_allclose(variances["gauss_newton"], 1 / (1 + 3 * np.exp(2 * mode)))
     assert_allclose(variances["exact"], 1 / (1 + 3 * np.exp(2 * mode) - residual_term))
+
+
+def test_date_out_of_iterations_is_not_converged():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", pm.math.exp(alpha), 1, observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=st.LevelTrend(
+            order=1, innovations_order=1, observed_state_names=["alpha"]
+        ).build(verbose=False),
+        rv_names=["alpha"],
+        frozen={},
+    )
+
+    filtered = run_filter(
+        fused=fused,
+        statespace_parameters={
+            "initial_level_trend": [0.0],
+            "sigma_level_trend": [0.3],
+            "P0": [[1.0]],
+        },
+        statespace_data={},
+        data={"y": [np.array([2.0, 3.0, 2.5])]},
+        dates=np.arange(1),
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=1,
+    )
+    assert filtered["diagnostics/iterations"].values.tolist() == [1]
+    assert filtered["diagnostics/converged"].values.tolist() == [False]
+    assert filtered["diagnostics/search_failed"].values.tolist() == [False]
+    assert filtered["diagnostics/invalid_direction"].values.tolist() == [False]

@@ -168,7 +168,8 @@ def run_filter(
         ``smoothed_covariances`` given all dates from :class:`RTSSmoother`, and the parameter
         predictive as ``predicted_observed_states`` and ``predicted_observed_covariances``. Group
         ``diagnostics`` holds each date's ``iterations``, ``evaluations``, ``search_failed``,
-        ``invalid_direction`` and ``converged`` from :class:`LaplaceMode`.
+        ``invalid_direction`` and ``converged`` from :class:`LaplaceMode`. The moments of a date
+        that did not converge are not at its mode, and every later date's moments start from them.
     """
     date_counts = {name: len(values) for name, values in data.items()}
     if set(date_counts.values()) != {len(dates)}:
