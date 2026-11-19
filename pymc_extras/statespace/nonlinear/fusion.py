@@ -7,6 +7,7 @@ import pytensor.tensor as pt
 
 from pymc.distributions.shape_utils import change_dist_size
 from pymc.logprob.basic import conditional_logp
+from pymc.logprob.transforms import Transform
 from pymc.model import Model
 from pymc.model.fgraph import (
     ModelDeterministic,
@@ -325,7 +326,11 @@ class FusedStateSpace:
             if isinstance(node.op, ModelFreeRV)
         }
         constrained = {
-            name: _backward_transform(free_rv=free_rvs[name], value=value)
+            name: _backward_transform(
+                transform=self.model.rvs_to_transforms[self.model[name]],
+                free_rv=free_rvs[name],
+                value=value,
+            )
             for name, value in self.unpack(parameters).items()
         }
         replacements = [
@@ -381,8 +386,9 @@ def _replace_data(*, fgraph: FunctionGraph, data: Mapping[str, TensorVariable]) 
     return FunctionGraph(outputs=outputs, clone=False)
 
 
-def _backward_transform(*, free_rv: TensorVariable, value: TensorVariable) -> TensorVariable:
-    transform = free_rv.owner.op.transform
+def _backward_transform(
+    *, transform: Transform | None, free_rv: TensorVariable, value: TensorVariable
+) -> TensorVariable:
     if transform is None:
         return value
     rv = free_rv.owner.inputs[0]
