@@ -185,9 +185,9 @@ class FusedStateSpace:
         logp : dict of str to tuple
             For each observed variable, the log-likelihood of each observation, shaped like its
             batch dims, and its distribution parameters that depend on ``parameters``, broadcast
-            to its batch dims and contained in that log-likelihood. The distribution parameters
-            are None for a distribution without separate parameters, whose curvature has to be
-            exact.
+            to the shape of its value and contained in that log-likelihood. The distribution
+            parameters exist only for a vector of scalar draws from a distribution with scalar
+            parameters, and are None otherwise, where the curvature has to be exact.
         """
         fgraph = self._rewrite(parameters=parameters, data=data)
 
@@ -199,15 +199,15 @@ class FusedStateSpace:
                 continue
             rv, value = node.inputs
             op = rv.owner.op
-            if isinstance(op, RandomVariable):
-                batch_shape = tuple(value.shape)[: value.ndim - op.ndim_supp]
+            if (
+                isinstance(op, RandomVariable)
+                and op.ndim_supp == 0
+                and not any(op.ndims_params)
+                and value.ndim == 1
+            ):
                 broadcast = [
-                    pt.broadcast_to(
-                        parameter, (*batch_shape, *tuple(parameter.shape)[parameter.ndim - core :])
-                    )
-                    for parameter, core in zip(
-                        op.dist_params(rv.owner), op.ndims_params, strict=True
-                    )
+                    pt.broadcast_to(parameter, value.shape)
+                    for parameter in op.dist_params(rv.owner)
                 ]
 
                 # conditional_logp rewrites the graph it is given, so its log-likelihood would not

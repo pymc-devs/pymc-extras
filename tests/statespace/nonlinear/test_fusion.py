@@ -499,3 +499,31 @@ def test_statespace_matrices_take_statespace_data():
         fused.statespace_matrices(
             statespace_parameters={"beta_exog": [0.5], "P0": [[1.0]]}, statespace_data={}
         )
+
+
+def test_observations_without_scalar_parameters_or_vector_batch_have_none():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.MvNormal("w", mu=alpha + np.zeros(2), cov=np.eye(2), observed=np.zeros((4, 2)))
+        pm.Normal("grid", alpha, 1, observed=np.zeros((3, 2)))
+        pm.Categorical("choice", p=pm.math.softmax(pt.stack([alpha, 0.0])), observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+    )
+
+    theta = pt.vector("theta", shape=(1,))
+    grid = pt.matrix("grid")
+    observation_logp = fused.observation_logp(
+        parameters=theta,
+        data={"w": pt.matrix("w"), "grid": grid, "choice": pt.lvector("choice")},
+    )
+    assert observation_logp["w"][1] is None
+    assert observation_logp["grid"][1] is None
+    assert observation_logp["choice"][1] is None
+
+    grid_logp, _ = observation_logp["grid"]
+    np.testing.assert_allclose(
+        grid_logp.eval({theta: [0.5], grid: np.ones((3, 2))}),
+        stats.norm.logpdf(np.ones((3, 2)), loc=0.5),
+    )
