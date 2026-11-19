@@ -8,6 +8,7 @@ import xarray as xr
 
 from numpy.typing import ArrayLike
 from pytensor.gradient import hessian
+from pytensor.tensor import TensorLike
 from pytensor.tensor.variable import TensorVariable
 from pytensor_ml.optim.line_search import LineSearch
 
@@ -185,7 +186,6 @@ def run_filter(
         for name in data
     }
     observation_logps = fused.observation_logp(parameters=parameters, data=placeholders)
-    logp = pt.sum([pointwise_logp.sum() for pointwise_logp, _ in observation_logps.values()])
 
     date_counts = {name: len(values) for name, values in data.items()}
     if set(date_counts.values()) != {len(dates)}:
@@ -221,43 +221,25 @@ def run_filter(
             "variable's integer or boolean dtype."
         )
 
-    initial_mean, initial_covariance, c, d, T, Z, R, H, Q = fused.statespace_matrices(
-        statespace_parameters=statespace_parameters, statespace_data=statespace_data
+    initial_mean, initial_covariance, matrices = _initial_moments_and_matrices(
+        fused=fused,
+        statespace_parameters=statespace_parameters,
+        statespace_data=statespace_data,
     )
-    matrices = {"c": c, "d": d, "T": T, "Z": Z, "R": R, "H": H, "Q": Q}
-    time_varying = [name for name, matrix in matrices.items() if matrix.ndim > _MATRIX_NDIMS[name]]
-    if time_varying:
-        raise ValueError(f"Statespace matrices {time_varying} vary over time.")
 
     predicted_mean = initial_mean.type()
     predicted_covariance = initial_covariance.type()
-    filtered_mean, filtered_covariance, next_mean, next_covariance, mode = filter_step(
-        logp=logp,
-        curvature=_curvature(
-            kind=curvature,
-            logp=logp,
-            observation_logps=observation_logps,
-            parameters=parameters,
-        ),
+    next_mean, next_covariance, recorded = _date_update(
+        observation_logps=observation_logps,
         parameters=parameters,
+        curvature=curvature,
         predicted_mean=predicted_mean,
         predicted_covariance=predicted_covariance,
-        **matrices,
+        matrices=matrices,
         line_search=line_search,
         tolerance=tolerance,
         max_iterations=max_iterations,
     )
-    recorded = {
-        "filtered_states": filtered_mean,
-        "filtered_covariances": filtered_covariance,
-        "predicted_observed_states": Z @ predicted_mean + d,
-        "predicted_observed_covariances": quad_form_sym(Z, predicted_covariance) + H,
-        "iterations": mode.iterations,
-        "evaluations": mode.evaluations,
-        "search_failed": mode.search_failed,
-        "invalid_direction": mode.invalid_direction,
-        "converged": mode.converged,
-    }
     step = pytensor.function(
         [predicted_mean, predicted_covariance, *placeholders.values()],
         [next_mean, next_covariance, *recorded.values()],
@@ -279,7 +261,7 @@ def run_filter(
     # outputs, and the transition, so it needs no observations.
     smoothed_states, smoothed_covariances = RTSSmoother(cov_jitter=0.0).build_graph(
         None,
-        [initial_mean, initial_covariance, c, d, T, Z, R, H, Q],
+        [initial_mean, initial_covariance, *(matrices[name] for name in _MATRIX_NDIMS)],
         [
             pt.as_tensor(stacked["filtered_states"]),
             None,
@@ -321,6 +303,77 @@ def run_filter(
 
 
 _MATRIX_NDIMS = {"c": 1, "d": 1, "T": 2, "Z": 2, "R": 2, "H": 2, "Q": 2}
+
+_RECORDED_NAMES = (
+    "filtered_states",
+    "filtered_covariances",
+    "predicted_observed_states",
+    "predicted_observed_covariances",
+    "iterations",
+    "evaluations",
+    "search_failed",
+    "invalid_direction",
+    "converged",
+)
+
+
+def _initial_moments_and_matrices(
+    *,
+    fused: FusedStateSpace,
+    statespace_parameters: Mapping[str, TensorLike],
+    statespace_data: Mapping[str, TensorLike],
+) -> tuple[TensorVariable, TensorVariable, dict[str, TensorVariable]]:
+    initial_mean, initial_covariance, *time_invariant = fused.statespace_matrices(
+        statespace_parameters=statespace_parameters, statespace_data=statespace_data
+    )
+    matrices = dict(zip(_MATRIX_NDIMS, time_invariant, strict=True))
+    time_varying = [name for name, matrix in matrices.items() if matrix.ndim > _MATRIX_NDIMS[name]]
+    if time_varying:
+        raise ValueError(f"Statespace matrices {time_varying} vary over time.")
+    return initial_mean, initial_covariance, matrices
+
+
+def _date_update(
+    *,
+    observation_logps: Mapping[str, tuple[TensorVariable, list[TensorVariable] | None]],
+    parameters: TensorVariable,
+    curvature: Literal["gauss_newton", "exact"],
+    predicted_mean: TensorVariable,
+    predicted_covariance: TensorVariable,
+    matrices: Mapping[str, TensorVariable],
+    line_search: LineSearch,
+    tolerance: float,
+    max_iterations: int,
+) -> tuple[TensorVariable, TensorVariable, dict[str, TensorVariable]]:
+    logp = pt.sum([pointwise_logp.sum() for pointwise_logp, _ in observation_logps.values()])
+    filtered_mean, filtered_covariance, next_mean, next_covariance, mode = filter_step(
+        logp=logp,
+        curvature=_curvature(
+            kind=curvature,
+            logp=logp,
+            observation_logps=observation_logps,
+            parameters=parameters,
+        ),
+        parameters=parameters,
+        predicted_mean=predicted_mean,
+        predicted_covariance=predicted_covariance,
+        **matrices,
+        line_search=line_search,
+        tolerance=tolerance,
+        max_iterations=max_iterations,
+    )
+    recorded = [
+        filtered_mean,
+        filtered_covariance,
+        matrices["Z"] @ predicted_mean + matrices["d"],
+        quad_form_sym(matrices["Z"], predicted_covariance) + matrices["H"],
+        mode.iterations,
+        mode.evaluations,
+        mode.search_failed,
+        mode.invalid_direction,
+        mode.converged,
+    ]
+    return next_mean, next_covariance, dict(zip(_RECORDED_NAMES, recorded, strict=True))
 
 
 def _curvature(
