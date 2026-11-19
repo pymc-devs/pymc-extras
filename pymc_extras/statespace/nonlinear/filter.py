@@ -302,6 +302,111 @@ def run_filter(
     )
 
 
+def scan_filter(
+    *,
+    fused: FusedStateSpace,
+    statespace_parameters: Mapping[str, TensorLike],
+    statespace_data: Mapping[str, TensorLike],
+    data: Mapping[str, TensorLike],
+    observed_masks: Mapping[str, TensorLike],
+    curvature: Literal["gauss_newton", "exact"],
+    line_search: LineSearch,
+    tolerance: float,
+    max_iterations: int,
+) -> dict[str, TensorVariable]:
+    r"""
+    Build the filter over dates as a ``scan`` over the step from :func:`filter_step`.
+
+    Each date's values are padded to a common size, and ``observed_masks`` marks the observations
+    that are real. A padded observation contributes nothing to its date's log-likelihood, but its
+    value has to have a finite log-likelihood. A date with no real observations is a pure
+    prediction.
+
+    Parameters
+    ----------
+    fused : FusedStateSpace
+        The model and the statespace over its parameters.
+    statespace_parameters : mapping of str to TensorLike
+        A value, constant or symbolic, for each name in the statespace's ``param_names``.
+    statespace_data : mapping of str to TensorLike
+        A value, constant or symbolic, for each name in the statespace's ``data_names``. The values
+        cannot make the statespace matrices vary over time.
+    data : mapping of str to TensorLike
+        For each data variable of the model and each observed variable whose observations are
+        constants, its padded values with the dates on the first axis.
+    observed_masks : mapping of str to TensorLike
+        For each observed variable, a boolean array with the dates on the first axis and the
+        variable's batch shape after it, True at its real observations.
+    curvature : {"gauss_newton", "exact"}
+        The curvature of the log-likelihood in the Newton iterations: the generalized Gauss-Newton
+        matrix of each observed variable, or the exact negative Hessian.
+    line_search : LineSearch
+        Search along each Newton direction.
+    tolerance : float
+        Largest absolute entry of the whitened Newton direction at which the iterations stop.
+    max_iterations : int
+        Most Newton iterations on each date.
+
+    Returns
+    -------
+    filtered : dict of str to TensorVariable
+        Stacked over dates, the outputs :func:`run_filter` returns in ``posterior_predictive``
+        except the smoothed ones, and the per-date diagnostics it returns in ``diagnostics``.
+    """
+    initial_mean, initial_covariance, matrices = _initial_moments_and_matrices(
+        fused=fused,
+        statespace_parameters=statespace_parameters,
+        statespace_data=statespace_data,
+    )
+    data_names, mask_names = list(data), list(observed_masks)
+
+    def step(*arguments):
+        date_data = dict(zip(data_names, arguments[: len(data_names)], strict=True))
+        date_masks = dict(zip(mask_names, arguments[len(data_names) : -2], strict=True))
+        predicted_mean, predicted_covariance = arguments[-2:]
+
+        parameters = pt.vector("parameters", shape=(len(fused.statespace.observed_states),))
+        observation_logps = fused.observation_logp(parameters=parameters, data=date_data)
+        if set(date_masks) != set(observation_logps):
+            raise ValueError(
+                f"observed_masks has to give a mask for exactly {sorted(observation_logps)}."
+            )
+        masked_logps = {
+            name: (pt.where(date_masks[name], pointwise_logp, 0.0), distribution_parameters)
+            for name, (pointwise_logp, distribution_parameters) in observation_logps.items()
+        }
+        next_mean, next_covariance, recorded = _date_update(
+            observation_logps=masked_logps,
+            parameters=parameters,
+            curvature=curvature,
+            predicted_mean=predicted_mean,
+            predicted_covariance=predicted_covariance,
+            matrices=matrices,
+            line_search=line_search,
+            tolerance=tolerance,
+            max_iterations=max_iterations,
+        )
+        return [next_mean, next_covariance, *recorded.values()]
+
+    next_means, next_covariances, *recorded = pytensor.scan(
+        step,
+        sequences=[
+            *(pt.as_tensor_variable(values) for values in data.values()),
+            *(pt.as_tensor_variable(masks) for masks in observed_masks.values()),
+        ],
+        outputs_info=[initial_mean, initial_covariance, *[None] * len(_RECORDED_NAMES)],
+        name="fused_filter",
+        return_updates=False,
+    )
+    return {
+        "predicted_states": pt.concatenate([initial_mean[None], next_means[:-1]], axis=0),
+        "predicted_covariances": pt.concatenate(
+            [initial_covariance[None], next_covariances[:-1]], axis=0
+        ),
+        **dict(zip(_RECORDED_NAMES, recorded, strict=True)),
+    }
+
+
 _MATRIX_NDIMS = {"c": 1, "d": 1, "T": 2, "Z": 2, "R": 2, "H": 2, "Q": 2}
 
 _RECORDED_NAMES = (
