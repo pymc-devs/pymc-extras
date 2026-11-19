@@ -12,6 +12,7 @@ from pytensor.tensor.variable import TensorVariable
 from pytensor_ml.optim.line_search import LineSearch
 
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter
+from pymc_extras.statespace.filters.kalman_smoother import RTSSmoother
 from pymc_extras.statespace.filters.utilities import quad_form_sym
 from pymc_extras.statespace.nonlinear.fusion import FusedStateSpace
 from pymc_extras.statespace.nonlinear.laplace_update import (
@@ -128,7 +129,7 @@ def run_filter(
     max_iterations: int,
 ) -> xr.DataTree:
     r"""
-    Filter the states of a fused model over dates whose numbers of observations differ.
+    Filter and smooth the states of a fused model over dates whose numbers of observations differ.
 
     The step from :func:`filter_step` is compiled once and called on each date, starting from the
     statespace's initial state. A date whose observed values are empty is a pure prediction.
@@ -163,8 +164,9 @@ def run_filter(
         Group ``posterior_predictive`` holds the filter outputs under the names and dims of
         :meth:`PyMCStateSpace.sample_filter_outputs`, with one chain and one draw:
         ``predicted_states`` and ``predicted_covariances`` before each date's observations,
-        ``filtered_states`` and ``filtered_covariances`` after them, and the parameter predictive
-        as ``predicted_observed_states`` and ``predicted_observed_covariances``. Group
+        ``filtered_states`` and ``filtered_covariances`` after them, ``smoothed_states`` and
+        ``smoothed_covariances`` given all dates from :class:`RTSSmoother`, and the parameter
+        predictive as ``predicted_observed_states`` and ``predicted_observed_covariances``. Group
         ``diagnostics`` holds each date's ``iterations``, ``evaluations``, ``search_failed``,
         ``invalid_direction`` and ``converged`` from :class:`LaplaceMode`.
     """
@@ -240,12 +242,29 @@ def run_filter(
         for name, value in zip(recorded, values, strict=True):
             history[name].append(value)
 
+    stacked = {name: np.stack(values) for name, values in history.items()}
+    # The backward recursion reads only the filtered moments, at positions 0 and 3 of the filter
+    # outputs, and the transition, so it needs no observations.
+    smoothed_states, smoothed_covariances = RTSSmoother().build_graph(
+        None,
+        [initial_mean, initial_covariance, c, d, T, Z, R, H, Q],
+        [
+            pt.as_tensor(stacked["filtered_states"]),
+            None,
+            None,
+            pt.as_tensor(stacked["filtered_covariances"]),
+        ],
+    )
+    stacked["smoothed_states"], stacked["smoothed_covariances"] = pytensor.function(
+        [], [smoothed_states, smoothed_covariances]
+    )()
+
     state_names = list(fused.statespace.state_names)
     observed_states = list(fused.statespace.observed_states)
     filter_outputs = xr.Dataset(
         {
-            name: (FILTER_OUTPUT_DIMS[name], np.stack(values))
-            for name, values in history.items()
+            name: (FILTER_OUTPUT_DIMS[name], values)
+            for name, values in stacked.items()
             if name in FILTER_OUTPUT_DIMS
         },
         coords={
@@ -258,8 +277,8 @@ def run_filter(
     ).expand_dims(chain=[0], draw=[0])
     diagnostics = xr.Dataset(
         {
-            name: (TIME_DIM, np.stack(values))
-            for name, values in history.items()
+            name: (TIME_DIM, values)
+            for name, values in stacked.items()
             if name not in FILTER_OUTPUT_DIMS
         },
         coords={TIME_DIM: dates},

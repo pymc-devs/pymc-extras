@@ -10,6 +10,7 @@ from pytensor_ml.optim import zoom_line_search
 
 from pymc_extras.statespace import structural as st
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter, StandardFilter
+from pymc_extras.statespace.filters.kalman_smoother import DisturbanceSmoother
 from pymc_extras.statespace.nonlinear import (
     FusedStateSpace,
     filter_step,
@@ -389,9 +390,7 @@ def test_filter_output_coords():
 
     outputs = filtered["posterior_predictive"]
     assert {name: outputs[name].dims for name in outputs.data_vars} == {
-        name: ("chain", "draw", *dims)
-        for name, dims in FILTER_OUTPUT_DIMS.items()
-        if not name.startswith("smoothed")
+        name: ("chain", "draw", *dims) for name, dims in FILTER_OUTPUT_DIMS.items()
     }
     assert outputs.sizes["chain"] == outputs.sizes["draw"] == 1
     pd.testing.assert_index_equal(outputs.indexes["time"], dates, check_names=False)
@@ -442,3 +441,70 @@ def test_data_with_another_number_of_dates_raises():
             tolerance=1e-10,
             max_iterations=10,
         )
+
+
+def test_smoother_matches_linear_smoother_with_a_missing_date():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((3, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        pm.Normal("y", mu=X @ beta, sigma=0.5, observed=np.zeros(3))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = (
+        st.LevelTrend(order=1, innovations_order=1, observed_state_names=names["beta"])
+        + st.Autoregressive(order=1, observed_state_names=names["beta"])
+    ).build(verbose=False)
+    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    statespace_parameters = {
+        "initial_level_trend": np.array([[0.3], [-0.1]]),
+        "sigma_level_trend": np.full((2, 1), 0.3),
+        "params_auto_regressive": np.array([[0.7], [-0.4]]),
+        "sigma_auto_regressive": np.array([0.5, 0.1]),
+        "P0": np.eye(4),
+    }
+
+    rng = np.random.default_rng(0)
+    X_dates = rng.normal(size=(4, 3, 2))
+    y_dates = rng.normal(size=(4, 3))
+    y_dates[2] = np.nan
+    filtered = run_filter(
+        fused=fused,
+        statespace_parameters=statespace_parameters,
+        statespace_data={},
+        data={
+            "X": [X_dates[0], X_dates[1], np.zeros((0, 2)), X_dates[3]],
+            "y": [y_dates[0], y_dates[1], np.zeros(0), y_dates[3]],
+        },
+        dates=np.arange(4),
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
+    outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
+
+    x0, P0, c, d, T, Z, R, H, Q = fused.statespace_matrices(
+        statespace_parameters=statespace_parameters, statespace_data={}
+    )
+    time_varying_names = ["design", "obs_intercept"]
+    observation_matrices = [
+        x0,
+        P0,
+        c,
+        pt.as_tensor(X_dates) @ d,
+        T,
+        pt.as_tensor(X_dates) @ Z,
+        R,
+        0.25 * pt.eye(3),
+        Q,
+    ]
+    data = pt.as_tensor(y_dates)
+    filter_outputs = StandardFilter(
+        time_varying_names=time_varying_names, cov_jitter=0.0
+    ).build_graph(data, *observation_matrices)
+    smoothed_states, smoothed_covariances = DisturbanceSmoother(
+        time_varying_names=time_varying_names, cov_jitter=0.0
+    ).build_graph(data, observation_matrices, filter_outputs)
+
+    assert_allclose(outputs["smoothed_states"].values, smoothed_states.eval(), atol=1e-6)
+    assert_allclose(outputs["smoothed_covariances"].values, smoothed_covariances.eval(), atol=1e-6)
