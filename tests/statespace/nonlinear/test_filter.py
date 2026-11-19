@@ -131,6 +131,7 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
     statespace = (
         st.LevelTrend(order=1, innovations_order=1, observed_state_names=names["beta"])
         + st.Autoregressive(order=1, observed_state_names=names["beta"])
+        + st.MeasurementError(name="noise", observed_state_names=names["beta"])
     ).build(verbose=False)
     fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
     statespace_parameters = {
@@ -138,6 +139,7 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
         "sigma_level_trend": np.full((2, 1), 0.3),
         "params_auto_regressive": np.array([[0.7], [-0.4]]),
         "sigma_auto_regressive": np.array([0.5, 0.1]),
+        "sigma_noise": np.array([0.2, 0.4]),
         "P0": np.eye(4),
     }
 
@@ -172,7 +174,7 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
         y=y,
         d=X_data @ d,
         Z=X_data @ Z,
-        H=0.25 * pt.eye(y.shape[0]),
+        H=0.25 * pt.eye(y.shape[0]) + X_data @ H @ X_data.T,
         nan_mask=pt.zeros_like(y, dtype=bool),
     )
     reference_step = pytensor.function(
@@ -508,3 +510,48 @@ def test_smoother_matches_linear_smoother_with_a_missing_date():
 
     assert_allclose(outputs["smoothed_states"].values, smoothed_states.eval(), atol=1e-6)
     assert_allclose(outputs["smoothed_covariances"].values, smoothed_covariances.eval(), atol=1e-6)
+
+
+def test_exact_and_gauss_newton_curvatures_differ_at_the_same_mode():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", pm.math.exp(alpha), 1, observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=st.LevelTrend(
+            order=1, innovations_order=1, observed_state_names=["alpha"]
+        ).build(verbose=False),
+        rv_names=["alpha"],
+        frozen={},
+    )
+
+    y = np.array([1.5, 1.2, 1.4])
+    modes, variances = {}, {}
+    for curvature in ["exact", "gauss_newton"]:
+        filtered = run_filter(
+            fused=fused,
+            statespace_parameters={
+                "initial_level_trend": [0.0],
+                "sigma_level_trend": [0.3],
+                "P0": [[1.0]],
+            },
+            statespace_data={},
+            data={"y": [y]},
+            dates=np.arange(1),
+            curvature=curvature,
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=50,
+        )
+        assert filtered["diagnostics/converged"].values.all()
+        outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
+        modes[curvature] = outputs["filtered_states"].values[0, 0]
+        variances[curvature] = outputs["filtered_covariances"].values[0, 0, 0]
+
+    mode = modes["exact"]
+    assert_allclose(modes["gauss_newton"], mode, atol=1e-8)
+    residual_term = np.sum((y - np.exp(mode)) * np.exp(mode))
+    assert_allclose(mode, residual_term, atol=1e-8)
+    assert_allclose(variances["gauss_newton"], 1 / (1 + 3 * np.exp(2 * mode)))
+    assert_allclose(variances["exact"], 1 / (1 + 3 * np.exp(2 * mode) - residual_term))
