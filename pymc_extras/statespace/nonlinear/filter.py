@@ -145,7 +145,8 @@ def run_filter(
         statespace matrices vary over time.
     data : mapping of str to sequence of ArrayLike
         For each data variable of the model and each observed variable whose observations are
-        constants, its value on each date.
+        constants, its finite value on each date, cast to the variable's dtype. Missing
+        observations are left out of a date's arrays.
     dates : ArrayLike
         Label of each date.
     curvature : {"gauss_newton", "exact"}
@@ -171,21 +172,9 @@ def run_filter(
         ``invalid_direction`` and ``converged`` from :class:`LaplaceMode`. The moments of a date
         that did not converge are not at its mode, and every later date's moments start from them.
     """
-    date_counts = {name: len(values) for name, values in data.items()}
-    if set(date_counts.values()) != {len(dates)}:
-        raise ValueError(
-            f"data has to give a value on each of the {len(dates)} dates for each name: "
-            f"{date_counts}."
-        )
-
-    initial_mean, initial_covariance, c, d, T, Z, R, H, Q = fused.statespace_matrices(
-        statespace_parameters=statespace_parameters, statespace_data=statespace_data
-    )
-    matrices = {"c": c, "d": d, "T": T, "Z": Z, "R": R, "H": H, "Q": Q}
-    time_varying = [name for name, matrix in matrices.items() if matrix.ndim > _MATRIX_NDIMS[name]]
-    if time_varying:
-        raise ValueError(f"Statespace matrices {time_varying} vary over time.")
-
+    not_variables = sorted(set(data) - set(fused.model.named_vars))
+    if not_variables:
+        raise ValueError(f"data names {not_variables} are not variables of the model.")
     parameters = pt.vector("parameters", shape=(len(fused.statespace.observed_states),))
     placeholders = {
         name: pt.tensor(
@@ -197,6 +186,48 @@ def run_filter(
     }
     observation_logps = fused.observation_logp(parameters=parameters, data=placeholders)
     logp = pt.sum([pointwise_logp.sum() for pointwise_logp, _ in observation_logps.values()])
+
+    date_counts = {name: len(values) for name, values in data.items()}
+    if set(date_counts.values()) != {len(dates)}:
+        raise ValueError(
+            f"data has to give a value on each of the {len(dates)} dates for each name: "
+            f"{date_counts}."
+        )
+    non_finite = [
+        (name, date)
+        for name, values in data.items()
+        for date, value in enumerate(values)
+        if not np.isfinite(value).all()
+    ]
+    if non_finite:
+        raise ValueError(
+            f"data has non-finite values at (name, date) {non_finite}. Leave missing observations "
+            "out of a date's arrays."
+        )
+    cast_data = {
+        name: [np.asarray(value, dtype=placeholders[name].dtype) for value in values]
+        for name, values in data.items()
+    }
+    inexact = [
+        (name, date)
+        for name, values in data.items()
+        if np.dtype(placeholders[name].dtype).kind in "iub"
+        for date, value in enumerate(values)
+        if not np.array_equal(cast_data[name][date], value)
+    ]
+    if inexact:
+        raise ValueError(
+            f"data values at (name, date) {inexact} are not exactly representable as their "
+            "variable's integer or boolean dtype."
+        )
+
+    initial_mean, initial_covariance, c, d, T, Z, R, H, Q = fused.statespace_matrices(
+        statespace_parameters=statespace_parameters, statespace_data=statespace_data
+    )
+    matrices = {"c": c, "d": d, "T": T, "Z": Z, "R": R, "H": H, "Q": Q}
+    time_varying = [name for name, matrix in matrices.items() if matrix.ndim > _MATRIX_NDIMS[name]]
+    if time_varying:
+        raise ValueError(f"Statespace matrices {time_varying} vary over time.")
 
     predicted_mean = initial_mean.type()
     predicted_covariance = initial_covariance.type()
@@ -238,7 +269,7 @@ def run_filter(
         history["predicted_states"].append(mean)
         history["predicted_covariances"].append(covariance)
         mean, covariance, *values = step(
-            mean, covariance, *[values_by_date[date] for values_by_date in data.values()]
+            mean, covariance, *[values_by_date[date] for values_by_date in cast_data.values()]
         )
         for name, value in zip(recorded, values, strict=True):
             history[name].append(value)

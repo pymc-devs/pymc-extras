@@ -590,3 +590,114 @@ def test_date_out_of_iterations_is_not_converged():
     assert filtered["diagnostics/converged"].values.tolist() == [False]
     assert filtered["diagnostics/search_failed"].values.tolist() == [False]
     assert filtered["diagnostics/invalid_direction"].values.tolist() == [False]
+
+
+def test_non_finite_observations_raise():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", alpha, 1, observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=st.LevelTrend(
+            order=1, innovations_order=1, observed_state_names=["alpha"]
+        ).build(verbose=False),
+        rv_names=["alpha"],
+        frozen={},
+    )
+
+    with pytest.raises(ValueError, match=r"non-finite values at \(name, date\) \[\('y', 1\)\]"):
+        run_filter(
+            fused=fused,
+            statespace_parameters={
+                "initial_level_trend": [0.0],
+                "sigma_level_trend": [0.3],
+                "P0": [[1.0]],
+            },
+            statespace_data={},
+            data={"y": [np.array([1.0]), np.array([np.nan, 1.0])]},
+            dates=np.arange(2),
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
+        )
+
+
+def test_data_names_that_are_not_model_variables_raise():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", alpha, 1, observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=st.LevelTrend(
+            order=1, innovations_order=1, observed_state_names=["alpha"]
+        ).build(verbose=False),
+        rv_names=["alpha"],
+        frozen={},
+    )
+
+    with pytest.raises(ValueError, match=r"data names \['bogus'\] are not variables"):
+        run_filter(
+            fused=fused,
+            statespace_parameters={
+                "initial_level_trend": [0.0],
+                "sigma_level_trend": [0.3],
+                "P0": [[1.0]],
+            },
+            statespace_data={},
+            data={"y": [np.zeros(1)], "bogus": [np.zeros(1)]},
+            dates=np.arange(1),
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
+        )
+
+
+def test_integer_observations_take_whole_numbers_and_reject_fractions():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Poisson("counts", pm.math.exp(alpha), observed=np.array([1, 2, 3]))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=st.LevelTrend(
+            order=1, innovations_order=1, observed_state_names=["alpha"]
+        ).build(verbose=False),
+        rv_names=["alpha"],
+        frozen={},
+    )
+    statespace_parameters = {
+        "initial_level_trend": [0.0],
+        "sigma_level_trend": [0.3],
+        "P0": [[1.0]],
+    }
+
+    filtered = run_filter(
+        fused=fused,
+        statespace_parameters=statespace_parameters,
+        statespace_data={},
+        data={"counts": [np.array([1.0, 2.0]), np.zeros(0)]},
+        dates=np.arange(2),
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=20,
+    )
+    outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
+    assert_allclose(outputs["filtered_states"].values[1], outputs["predicted_states"].values[1])
+
+    with pytest.raises(ValueError, match=r"\[\('counts', 0\)\] are not exactly representable"):
+        run_filter(
+            fused=fused,
+            statespace_parameters=statespace_parameters,
+            statespace_data={},
+            data={"counts": [np.array([1.5])]},
+            dates=np.arange(1),
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=20,
+        )
