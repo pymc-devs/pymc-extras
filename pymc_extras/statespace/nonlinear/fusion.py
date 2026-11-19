@@ -237,35 +237,47 @@ class FusedStateSpace:
         }
 
     def statespace_matrices(
-        self, *, statespace_parameters: Mapping[str, TensorLike]
+        self,
+        *,
+        statespace_parameters: Mapping[str, TensorLike],
+        statespace_data: Mapping[str, TensorLike],
     ) -> list[TensorVariable]:
         """
-        Return the statespace matrices at given values of the statespace's parameters.
+        Return the statespace matrices at given values of the statespace's parameters and data.
 
         Parameters
         ----------
         statespace_parameters : mapping of str to TensorLike
             A value, constant or symbolic, for each name in the statespace's ``param_names``.
+        statespace_data : mapping of str to TensorLike
+            A value, constant or symbolic, for each name in the statespace's ``data_names``.
 
         Returns
         -------
         matrices : list of TensorVariable
             The matrices ``x0, P0, c, d, T, Z, R, H, Q``.
         """
-        placeholders = self.statespace._name_to_variable
-        if set(statespace_parameters) != set(placeholders):
-            raise ValueError(
-                f"statespace_parameters has to give a value for exactly {sorted(placeholders)}; "
-                f"missing: {sorted(set(placeholders) - set(statespace_parameters))}, unexpected: "
-                f"{sorted(set(statespace_parameters) - set(placeholders))}."
+        replacements = {}
+        for argument, values, placeholders in [
+            ("statespace_parameters", statespace_parameters, self.statespace._name_to_variable),
+            ("statespace_data", statespace_data, self.statespace._name_to_data),
+        ]:
+            if set(values) != set(placeholders):
+                raise ValueError(
+                    f"{argument} has to give a value for exactly {sorted(placeholders)}; missing: "
+                    f"{sorted(set(placeholders) - set(values))}, unexpected: "
+                    f"{sorted(set(values) - set(placeholders))}."
+                )
+            replacements.update(
+                {
+                    placeholder: placeholder.type.filter_variable(values[name])
+                    for name, placeholder in placeholders.items()
+                }
             )
 
         return graph_replace(
             list(self.statespace._unpack_statespace_with_placeholders()),
-            replace={
-                placeholder: placeholder.type.filter_variable(statespace_parameters[name])
-                for name, placeholder in placeholders.items()
-            },
+            replace=replacements,
             strict=True,
         )
 

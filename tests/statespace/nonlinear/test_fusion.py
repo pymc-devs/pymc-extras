@@ -430,7 +430,8 @@ def test_statespace_matrices_at_given_parameters():
 
     initial_covariance = [[2.0, 0.3], [0.3, 1.0]]
     x0, P0, c, d, T, Z, R, H, Q = fused.statespace_matrices(
-        statespace_parameters={"params_ar": [0.5, -0.2], "sigma_ar": 0.5, "P0": initial_covariance}
+        statespace_parameters={"params_ar": [0.5, -0.2], "sigma_ar": 0.5, "P0": initial_covariance},
+        statespace_data={},
     )
     np.testing.assert_allclose(x0.eval(), [0.0, 0.0])
     np.testing.assert_allclose(P0.eval(), initial_covariance)
@@ -455,7 +456,8 @@ def test_statespace_matrices_accept_symbolic_parameters():
 
     rho = pt.vector("rho", shape=(1,))
     x0, P0, c, d, T, Z, R, H, Q = fused.statespace_matrices(
-        statespace_parameters={"params_ar": rho, "sigma_ar": 0.5, "P0": [[2.0]]}
+        statespace_parameters={"params_ar": rho, "sigma_ar": 0.5, "P0": [[2.0]]},
+        statespace_data={},
     )
     np.testing.assert_allclose(T.eval({rho: [-0.3]}), [[-0.3]])
 
@@ -472,5 +474,28 @@ def test_statespace_matrices_with_other_names_raise():
 
     with pytest.raises(ValueError, match=r"missing: \['P0'\], unexpected: \['rho'\]"):
         fused.statespace_matrices(
-            statespace_parameters={"params_ar": [0.8], "sigma_ar": 0.5, "rho": 1.0}
+            statespace_parameters={"params_ar": [0.8], "sigma_ar": 0.5, "rho": 1.0},
+            statespace_data={},
+        )
+
+
+def test_statespace_matrices_take_statespace_data():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", alpha, 1, observed=np.zeros(3))
+
+    statespace = st.Regression(
+        name="exog", state_names=["x1"], observed_state_names=["alpha"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["alpha"], frozen={})
+
+    exog = pt.matrix("exog", shape=(None, 1))
+    x0, P0, c, d, T, Z, R, H, Q = fused.statespace_matrices(
+        statespace_parameters={"beta_exog": [0.5], "P0": [[1.0]]},
+        statespace_data={"data_exog": exog},
+    )
+    np.testing.assert_allclose(Z.eval({exog: [[2.0], [3.0]]}), [[[2.0]], [[3.0]]])
+    with pytest.raises(ValueError, match=r"statespace_data .* missing: \['data_exog'\]"):
+        fused.statespace_matrices(
+            statespace_parameters={"beta_exog": [0.5], "P0": [[1.0]]}, statespace_data={}
         )
