@@ -62,6 +62,9 @@ class FusedStateSpace:
     a vector in that layout as the variables' own shapes. Every other free random variable is
     held at a value given in ``frozen``.
 
+    The model's likelihood has to consist of observed variables that do not depend on each other,
+    without potentials or imputed observations.
+
     Parameters
     ----------
     model : Model
@@ -88,7 +91,37 @@ class FusedStateSpace:
         self.rv_names = list(rv_names)
         self.frozen = dict(frozen)
 
+        if model.potentials:
+            raise ValueError(
+                f"Potentials {[potential.name for potential in model.potentials]} are not part of "
+                "the observation log-likelihood."
+            )
+
+        dependent_observations = {}
+        for rv in model.observed_RVs:
+            rv_ancestors = set(ancestors(rv.owner.inputs))
+            others = [other.name for other in model.observed_RVs if other in rv_ancestors]
+            if others:
+                dependent_observations[rv.name] = others
+        if dependent_observations:
+            raise ValueError(
+                "Observed variables depend on other observed variables (variable: the ones it "
+                f"depends on): {dependent_observations}."
+            )
+
         free_names = [rv.name for rv in model.free_RVs]
+        observed_names = [rv.name for rv in model.observed_RVs]
+        imputed = [
+            name
+            for name in free_names
+            if name.endswith("_unobserved")
+            and f"{name.removesuffix('_unobserved')}_observed" in observed_names
+        ]
+        if imputed:
+            raise ValueError(
+                f"{imputed} impute missing observations, whose number is fixed by the model's data."
+            )
+
         not_free = [name for name in [*self.rv_names, *frozen] if name not in free_names]
         if not_free:
             raise ValueError(f"{not_free} are not free random variables of the model.")

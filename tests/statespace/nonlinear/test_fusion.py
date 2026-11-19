@@ -3,6 +3,7 @@ import pymc as pm
 import pytensor.tensor as pt
 import pytest
 
+from pymc.exceptions import ImputationWarning
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.traversal import graph_inputs
 from scipy import stats
@@ -527,3 +528,41 @@ def test_observations_without_scalar_parameters_or_vector_batch_have_none():
         grid_logp.eval({theta: [0.5], grid: np.ones((3, 2))}),
         stats.norm.logpdf(np.ones((3, 2)), loc=0.5),
     )
+
+
+def test_potentials_raise():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Potential("penalty", -(alpha**2))
+        pm.Normal("y", alpha, 1, observed=np.zeros(3))
+
+    with pytest.raises(ValueError, match=r"Potentials \['penalty'\]"):
+        FusedStateSpace(
+            model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+        )
+
+
+def test_observed_rv_depending_on_another_raises():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        total = pm.Normal("total", alpha, 1, observed=np.zeros(3))
+        pm.Normal("share", total, 1, observed=np.zeros(3))
+
+    with pytest.raises(ValueError, match=r"\{'share': \['total'\]\}"):
+        FusedStateSpace(
+            model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+        )
+
+
+def test_imputed_observations_raise():
+    with pm.Model() as model, pytest.warns(ImputationWarning):
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", alpha, 1, observed=np.array([1.0, np.nan, 2.0]))
+
+    with pytest.raises(ValueError, match=r"\['y_unobserved'\] impute missing observations"):
+        FusedStateSpace(
+            model=model,
+            statespace=level_statespace(["alpha"]),
+            rv_names=["alpha"],
+            frozen={"y_unobserved": np.zeros(1)},
+        )
