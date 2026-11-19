@@ -4,7 +4,7 @@ import pytensor.tensor as pt
 import pytest
 
 from pymc.exceptions import ImputationWarning
-from pytensor.compile.sharedvalue import SharedVariable
+from pytensor.graph.basic import Constant
 from pytensor.graph.traversal import graph_inputs
 from scipy import stats
 
@@ -128,10 +128,8 @@ def test_frozen_rvs_are_constants():
         logp.eval({theta: [0.5], y: np.zeros(3)}),
         stats.norm.logpdf(np.zeros(3), loc=4.5, scale=2.0),
     )
-    shared_names = {
-        variable.name for variable in graph_inputs([logp]) if isinstance(variable, SharedVariable)
-    }
-    assert not shared_names & {"sigma", "weights"}
+    inputs = [variable for variable in graph_inputs([logp]) if not isinstance(variable, Constant)]
+    assert set(inputs) == {theta, y}
 
 
 def test_rv_both_mapped_and_frozen_raises():
@@ -308,7 +306,7 @@ def test_data_with_other_names_raises():
         )
 
 
-def test_observation_logp_matches_model_logp():
+def test_deterministics_are_inlined():
     with pm.Model(coords={"obs": range(3)}) as model:
         x = pm.Data("x", np.ones(3), dims="obs")
         y_data = pm.Data("y_data", np.zeros(3), dims="obs")
