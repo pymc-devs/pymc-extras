@@ -277,7 +277,7 @@ def run_filter(
     stacked = {name: np.stack(values) for name, values in history.items()}
     # The backward recursion reads only the filtered moments, at positions 0 and 3 of the filter
     # outputs, and the transition, so it needs no observations.
-    smoothed_states, smoothed_covariances = RTSSmoother().build_graph(
+    smoothed_states, smoothed_covariances = RTSSmoother(cov_jitter=0.0).build_graph(
         None,
         [initial_mean, initial_covariance, c, d, T, Z, R, H, Q],
         [

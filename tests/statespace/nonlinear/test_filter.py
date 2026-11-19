@@ -508,8 +508,8 @@ def test_smoother_matches_linear_smoother_with_a_missing_date():
         time_varying_names=time_varying_names, cov_jitter=0.0
     ).build_graph(data, observation_matrices, filter_outputs)
 
-    assert_allclose(outputs["smoothed_states"].values, smoothed_states.eval(), atol=1e-6)
-    assert_allclose(outputs["smoothed_covariances"].values, smoothed_covariances.eval(), atol=1e-6)
+    assert_allclose(outputs["smoothed_states"].values, smoothed_states.eval(), atol=1e-10)
+    assert_allclose(outputs["smoothed_covariances"].values, smoothed_covariances.eval(), atol=1e-10)
 
 
 def test_exact_and_gauss_newton_curvatures_differ_at_the_same_mode():
