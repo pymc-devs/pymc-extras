@@ -4,6 +4,7 @@ from typing import Literal
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
+import xarray as xr
 
 from numpy.typing import ArrayLike
 from pytensor.gradient import hessian
@@ -18,6 +19,14 @@ from pymc_extras.statespace.nonlinear.laplace_update import (
     gauss_newton_curvature,
     laplace_mode,
     state_posterior,
+)
+from pymc_extras.statespace.utils.constants import (
+    ALL_STATE_AUX_DIM,
+    ALL_STATE_DIM,
+    FILTER_OUTPUT_DIMS,
+    OBS_STATE_AUX_DIM,
+    OBS_STATE_DIM,
+    TIME_DIM,
 )
 
 
@@ -112,11 +121,12 @@ def run_filter(
     statespace_parameters: Mapping[str, ArrayLike],
     statespace_data: Mapping[str, ArrayLike],
     data: Mapping[str, Sequence[ArrayLike]],
+    dates: ArrayLike,
     curvature: Literal["gauss_newton", "exact"],
     line_search: LineSearch,
     tolerance: float,
     max_iterations: int,
-) -> dict[str, np.ndarray]:
+) -> xr.DataTree:
     r"""
     Filter the states of a fused model over dates whose numbers of observations differ.
 
@@ -135,6 +145,8 @@ def run_filter(
     data : mapping of str to sequence of ArrayLike
         For each data variable of the model and each observed variable whose observations are
         constants, its value on each date.
+    dates : ArrayLike
+        Label of each date.
     curvature : {"gauss_newton", "exact"}
         The curvature of the log-likelihood in the Newton iterations: the generalized Gauss-Newton
         matrix of each observed variable, or the exact negative Hessian.
@@ -147,16 +159,21 @@ def run_filter(
 
     Returns
     -------
-    filtered : dict of str to np.ndarray
-        Stacked over dates: ``predicted_mean`` and ``predicted_covariance`` before each date's
-        observations, ``filtered_mean`` and ``filtered_covariance`` after them, and the Newton
-        diagnostics ``iterations``, ``evaluations``, ``search_failed``, ``invalid_direction`` and
-        ``converged``.
+    filtered : xr.DataTree
+        Group ``posterior_predictive`` holds the filter outputs under the names and dims of
+        :meth:`PyMCStateSpace.sample_filter_outputs`, with one chain and one draw:
+        ``predicted_states`` and ``predicted_covariances`` before each date's observations,
+        ``filtered_states`` and ``filtered_covariances`` after them, and the parameter predictive
+        as ``predicted_observed_states`` and ``predicted_observed_covariances``. Group
+        ``diagnostics`` holds each date's ``iterations``, ``evaluations``, ``search_failed``,
+        ``invalid_direction`` and ``converged`` from :class:`LaplaceMode`.
     """
-    date_counts = {name: len(dates) for name, dates in data.items()}
-    if len(set(date_counts.values())) != 1:
-        raise ValueError(f"data has to give the same number of dates for each name: {date_counts}.")
-    [n_dates] = set(date_counts.values())
+    date_counts = {name: len(values) for name, values in data.items()}
+    if set(date_counts.values()) != {len(dates)}:
+        raise ValueError(
+            f"data has to give a value on each of the {len(dates)} dates for each name: "
+            f"{date_counts}."
+        )
 
     initial_mean, initial_covariance, c, d, T, Z, R, H, Q = fused.statespace_matrices(
         statespace_parameters=statespace_parameters, statespace_data=statespace_data
@@ -197,8 +214,10 @@ def run_filter(
         max_iterations=max_iterations,
     )
     recorded = {
-        "filtered_mean": filtered_mean,
-        "filtered_covariance": filtered_covariance,
+        "filtered_states": filtered_mean,
+        "filtered_covariances": filtered_covariance,
+        "predicted_observed_states": Z @ predicted_mean + d,
+        "predicted_observed_covariances": quad_form_sym(Z, predicted_covariance) + H,
         "iterations": mode.iterations,
         "evaluations": mode.evaluations,
         "search_failed": mode.search_failed,
@@ -210,18 +229,44 @@ def run_filter(
         [next_mean, next_covariance, *recorded.values()],
     )
 
-    history = {name: [] for name in ["predicted_mean", "predicted_covariance", *recorded]}
+    history = {name: [] for name in ["predicted_states", "predicted_covariances", *recorded]}
     mean, covariance = pytensor.function([], [initial_mean, initial_covariance])()
-    for date in range(n_dates):
-        history["predicted_mean"].append(mean)
-        history["predicted_covariance"].append(covariance)
+    for date in range(len(dates)):
+        history["predicted_states"].append(mean)
+        history["predicted_covariances"].append(covariance)
         mean, covariance, *values = step(
-            mean, covariance, *[dates[date] for dates in data.values()]
+            mean, covariance, *[values_by_date[date] for values_by_date in data.values()]
         )
         for name, value in zip(recorded, values, strict=True):
             history[name].append(value)
 
-    return {name: np.stack(values) for name, values in history.items()}
+    state_names = list(fused.statespace.state_names)
+    observed_states = list(fused.statespace.observed_states)
+    filter_outputs = xr.Dataset(
+        {
+            name: (FILTER_OUTPUT_DIMS[name], np.stack(values))
+            for name, values in history.items()
+            if name in FILTER_OUTPUT_DIMS
+        },
+        coords={
+            TIME_DIM: dates,
+            ALL_STATE_DIM: state_names,
+            ALL_STATE_AUX_DIM: state_names,
+            OBS_STATE_DIM: observed_states,
+            OBS_STATE_AUX_DIM: observed_states,
+        },
+    ).expand_dims(chain=[0], draw=[0])
+    diagnostics = xr.Dataset(
+        {
+            name: (TIME_DIM, np.stack(values))
+            for name, values in history.items()
+            if name not in FILTER_OUTPUT_DIMS
+        },
+        coords={TIME_DIM: dates},
+    )
+    return xr.DataTree.from_dict(
+        {"posterior_predictive": filter_outputs, "diagnostics": diagnostics}
+    )
 
 
 _MATRIX_NDIMS = {"c": 1, "d": 1, "T": 2, "Z": 2, "R": 2, "H": 2, "Q": 2}

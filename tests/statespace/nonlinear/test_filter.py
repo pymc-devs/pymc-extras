@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
@@ -16,6 +17,7 @@ from pymc_extras.statespace.nonlinear import (
     observed_state_names,
     run_filter,
 )
+from pymc_extras.statespace.utils.constants import FILTER_OUTPUT_DIMS
 
 
 def test_step_matches_standard_filter_linear_case():
@@ -147,11 +149,13 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
         statespace_parameters=statespace_parameters,
         statespace_data={},
         data={"X": X_dates, "y": y_dates},
+        dates=np.arange(3),
         curvature=curvature,
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
     )
+    outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
 
     x0, P0, c, d, T, Z, R, H, Q = fused.statespace_matrices(
         statespace_parameters=statespace_parameters, statespace_data={}
@@ -181,15 +185,28 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
         ],
     )
     mean, covariance = x0.eval(), P0.eval()
+    design, observed_intercept, observed_covariance = Z.eval(), d.eval(), H.eval()
     for date in range(len(sizes)):
-        assert_allclose(filtered["predicted_mean"][date], mean, atol=1e-10)
-        assert_allclose(filtered["predicted_covariance"][date], covariance, atol=1e-10)
+        assert_allclose(outputs["predicted_states"].values[date], mean, atol=1e-10)
+        assert_allclose(outputs["predicted_covariances"].values[date], covariance, atol=1e-10)
+        assert_allclose(
+            outputs["predicted_observed_states"].values[date],
+            design @ mean + observed_intercept,
+            atol=1e-10,
+        )
+        assert_allclose(
+            outputs["predicted_observed_covariances"].values[date],
+            design @ covariance @ design.T + observed_covariance,
+            atol=1e-10,
+        )
         filtered_mean, filtered_covariance, mean, covariance = reference_step(
             mean, covariance, y_dates[date], X_dates[date]
         )
-        assert_allclose(filtered["filtered_mean"][date], filtered_mean, atol=1e-10)
-        assert_allclose(filtered["filtered_covariance"][date], filtered_covariance, atol=1e-10)
-    assert filtered["converged"].all()
+        assert_allclose(outputs["filtered_states"].values[date], filtered_mean, atol=1e-10)
+        assert_allclose(
+            outputs["filtered_covariances"].values[date], filtered_covariance, atol=1e-10
+        )
+    assert filtered["diagnostics/converged"].values.all()
 
 
 def test_missing_date_is_predict_only():
@@ -221,22 +238,32 @@ def test_missing_date_is_predict_only():
             "X": [rng.normal(size=(3, 2)), np.zeros((0, 2)), rng.normal(size=(2, 2))],
             "y": [rng.normal(size=3), np.zeros(0), rng.normal(size=2)],
         },
+        dates=np.arange(3),
         curvature="gauss_newton",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
     )
+    outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
 
     _, _, c, _, T, _, R, _, Q = fused.statespace_matrices(
         statespace_parameters=statespace_parameters, statespace_data={}
     )
-    assert_allclose(filtered["filtered_mean"][1], filtered["predicted_mean"][1])
-    assert_allclose(filtered["filtered_covariance"][1], filtered["predicted_covariance"][1])
-    next_mean, next_covariance = BaseFilter.predict(
-        a=filtered["filtered_mean"][1], P=filtered["filtered_covariance"][1], c=c, T=T, R=R, Q=Q
+    assert_allclose(outputs["filtered_states"].values[1], outputs["predicted_states"].values[1])
+    assert_allclose(
+        outputs["filtered_covariances"].values[1],
+        outputs["predicted_covariances"].values[1],
     )
-    assert_allclose(filtered["predicted_mean"][2], next_mean.eval())
-    assert_allclose(filtered["predicted_covariance"][2], next_covariance.eval())
+    next_mean, next_covariance = BaseFilter.predict(
+        a=outputs["filtered_states"].values[1],
+        P=outputs["filtered_covariances"].values[1],
+        c=c,
+        T=T,
+        R=R,
+        Q=Q,
+    )
+    assert_allclose(outputs["predicted_states"].values[2], next_mean.eval())
+    assert_allclose(outputs["predicted_covariances"].values[2], next_covariance.eval())
 
 
 def test_time_varying_statespace_matrices_raise():
@@ -255,6 +282,7 @@ def test_time_varying_statespace_matrices_raise():
             statespace_parameters={"beta_exog": [0.5], "P0": [[1.0]]},
             statespace_data={"data_exog": np.ones((2, 1))},
             data={"y": [np.zeros(3), np.zeros(2)]},
+            dates=np.arange(2),
             curvature="gauss_newton",
             line_search=zoom_line_search(),
             tolerance=1e-10,
@@ -286,6 +314,7 @@ def test_gauss_newton_without_distribution_parameters_raises():
             },
             statespace_data={},
             data={"w": [np.zeros((4, 2))]},
+            dates=np.arange(1),
             curvature="gauss_newton",
             line_search=zoom_line_search(),
             tolerance=1e-10,
@@ -318,10 +347,98 @@ def test_gauss_newton_ignores_observations_that_do_not_depend_on_the_states():
         },
         statespace_data={},
         data={"y": [np.ones(3)], "z": [np.ones(2)]},
+        dates=np.arange(1),
         curvature="gauss_newton",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
     )
-    assert_allclose(filtered["filtered_mean"], [[0.75]])
-    assert_allclose(filtered["filtered_covariance"], [[[0.25]]])
+    outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
+    assert_allclose(outputs["filtered_states"].values, [[0.75]])
+    assert_allclose(outputs["filtered_covariances"].values, [[[0.25]]])
+
+
+def test_filter_output_coords():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        pm.Normal("y", mu=X @ beta, sigma=0.5, observed=np.zeros(4))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+
+    dates = pd.date_range("2024-01-01", periods=2, freq="D")
+    filtered = run_filter(
+        fused=fused,
+        statespace_parameters={
+            "initial_level_trend": np.zeros((2, 1)),
+            "sigma_level_trend": np.full((2, 1), 0.3),
+            "P0": np.eye(2),
+        },
+        statespace_data={},
+        data={"X": [np.ones((3, 2)), np.ones((1, 2))], "y": [np.zeros(3), np.zeros(1)]},
+        dates=dates,
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
+
+    outputs = filtered["posterior_predictive"]
+    assert {name: outputs[name].dims for name in outputs.data_vars} == {
+        name: ("chain", "draw", *dims)
+        for name, dims in FILTER_OUTPUT_DIMS.items()
+        if not name.startswith("smoothed")
+    }
+    assert outputs.sizes["chain"] == outputs.sizes["draw"] == 1
+    pd.testing.assert_index_equal(outputs.indexes["time"], dates, check_names=False)
+    state_names = ["level[beta[x1]]", "level[beta[x2]]"]
+    assert list(outputs.coords["state"].values) == state_names
+    assert list(outputs.coords["state_aux"].values) == state_names
+    assert list(outputs.coords["observed_state"].values) == ["beta[x1]", "beta[x2]"]
+    assert list(outputs.coords["observed_state_aux"].values) == ["beta[x1]", "beta[x2]"]
+
+    diagnostics = filtered["diagnostics"]
+    assert set(diagnostics.data_vars) == {
+        "iterations",
+        "evaluations",
+        "search_failed",
+        "invalid_direction",
+        "converged",
+    }
+    assert all(variable.dims == ("time",) for variable in diagnostics.data_vars.values())
+
+
+def test_data_with_another_number_of_dates_raises():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", alpha, 1, observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=st.LevelTrend(
+            order=1, innovations_order=1, observed_state_names=["alpha"]
+        ).build(verbose=False),
+        rv_names=["alpha"],
+        frozen={},
+    )
+
+    with pytest.raises(ValueError, match=r"each of the 3 dates for each name: \{'y': 2\}"):
+        run_filter(
+            fused=fused,
+            statespace_parameters={
+                "initial_level_trend": [0.0],
+                "sigma_level_trend": [0.3],
+                "P0": [[1.0]],
+            },
+            statespace_data={},
+            data={"y": [np.zeros(3), np.zeros(2)]},
+            dates=np.arange(3),
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
+        )
