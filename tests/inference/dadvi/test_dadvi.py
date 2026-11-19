@@ -48,6 +48,32 @@ def test_fit_dadvi_basic(mode, gradient_backend):
     np.testing.assert_allclose(idata["posterior"]["logsigma"].mean(), bda_map[1], atol=1, rtol=1e-1)
 
 
+def test_fit_dadvi_vectorize_hessian():
+    with pm.Model() as m:
+        mu = pm.Normal("mu")
+        sigma = pm.Exponential("sigma", 1)
+        pm.Normal("y_hat", mu=mu, sigma=sigma, observed=np.array([1.2, 2.5, 3.1, 2.2]))
+
+    idatas = [
+        fit_dadvi(
+            model=m,
+            n_fixed_draws=10,
+            n_draws=10,
+            optimizer_method="trust-exact",
+            use_grad=True,
+            use_hess=True,
+            vectorize_hessian=vectorize_hessian,
+            random_seed=1,
+            progressbar=False,
+        )
+        for vectorize_hessian in (False, True)
+    ]
+
+    scan_posterior, vectorized_posterior = (idata["posterior"] for idata in idatas)
+    np.testing.assert_allclose(vectorized_posterior["mu"], scan_posterior["mu"])
+    np.testing.assert_allclose(vectorized_posterior["sigma"], scan_posterior["sigma"])
+
+
 def test_fit_dadvi_outside_model_context():
     with pm.Model() as m:
         mu = pm.Normal("mu", 0, 1)

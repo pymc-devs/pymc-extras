@@ -164,6 +164,7 @@ def find_MAP(
     use_grad: bool | None = None,
     use_hessp: bool | None = None,
     use_hess: bool | None = None,
+    vectorize_hessian: bool = False,
     initvals: dict | None = None,
     random_seed: int | np.random.Generator | None = None,
     jitter_rvs: list[TensorVariable] | None = None,
@@ -196,6 +197,10 @@ def find_MAP(
     use_hess : bool | None, optional
         Whether to use the Hessian matrix in the optimization. Defaults to None, which determines this automatically based on
         the ``method``.
+    vectorize_hessian : bool, optional
+        If True, build the Hessian with ``jacobian(..., vectorize=True)`` instead of a ``Scan`` over the gradient
+        entries. This allows compiling on backends without ``Scan`` support (e.g. MLX) and trades higher memory for
+        parallel compute. Only used when the Hessian is computed with ``gradient_backend="pytensor"``. Default False.
     initvals : None | dict, optional
         Initial values for the model parameters, as str:ndarray key-value pairs. Partial initialization is permitted.
          If None, the model's default initial values are used.
@@ -260,6 +265,7 @@ def find_MAP(
         use_grad=use_grad,
         use_hess=use_hess,
         use_hessp=use_hessp,
+        vectorize_hessian=vectorize_hessian,
         gradient_backend=gradient_backend,
         compile_kwargs=compile_kwargs,
     )
