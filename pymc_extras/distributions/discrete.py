@@ -369,12 +369,10 @@ class Skellam:
 
     @staticmethod
     def skellam_logp(value, mu1, mu2):
-        res = (
-            -mu1
-            - mu2
-            + 0.5 * value * (pt.log(mu1) - pt.log(mu2))
-            + pt.log(pt.iv(value, 2 * pt.sqrt(mu1 * mu2)))
-        )
+        # Use the exponentially scaled Bessel function, log(iv(v, z)) = log(ive(v, z)) + z,
+        # because iv overflows for large mu1 * mu2
+        z = 2 * pt.sqrt(mu1 * mu2)
+        res = -mu1 - mu2 + 0.5 * value * (pt.log(mu1) - pt.log(mu2)) + pt.log(pt.ive(value, z)) + z
         return check_parameters(
             res,
             mu1 >= 0,
