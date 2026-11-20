@@ -9,6 +9,7 @@ from pytensor_ml.optim import zoom_line_search
 
 from pymc_extras.statespace.nonlinear import (
     gauss_newton_curvature,
+    implicit_mode,
     laplace_mode,
     parameter_posterior,
     state_posterior,
@@ -724,3 +725,96 @@ def test_laplace_mode_factor_has_orthogonal_columns():
     gram = factor.T @ factor
     assert_allclose(gram - np.diag(np.diag(gram)), 0.0, atol=ATOL)
     assert_allclose(factor @ factor.T, predictive_covariance, atol=ATOL, rtol=RTOL)
+
+
+@pytest.mark.parametrize(
+    "base_covariance",
+    [[[1.0, 0.0], [0.0, 1.0]], [[1.0, 1.0], [1.0, 1.0]]],
+    ids=["isotropic", "singular"],
+)
+def test_implicit_gradient_matches_finite_differences(base_covariance):
+    rng = np.random.default_rng(19)
+    design = rng.normal(scale=0.5, size=(6, 2)).astype(floatX)
+    weights = rng.normal(size=2).astype(floatX)
+
+    predictive_mean = pt.vector("predictive_mean", shape=(2,))
+    scale = pt.scalar("scale")
+    observed = pt.vector("observed", shape=(6,))
+    predictive_covariance = scale**2 * pt.as_tensor(np.array(base_covariance, dtype=floatX))
+
+    parameters = pt.vector("parameters", shape=(2,))
+    logp = -0.5 * pt.sum((observed - pt.exp(design @ parameters)) ** 2) / NOISE_SIGMA**2
+    mode = laplace_mode(
+        logp=logp,
+        parameters=parameters,
+        curvature=-hessian(logp, parameters),
+        predictive_mean=predictive_mean,
+        predictive_covariance=predictive_covariance,
+        line_search=zoom_line_search(),
+        tolerance=1e-12,
+        max_iterations=50,
+    )
+    differentiable_mode = implicit_mode(
+        mode=predictive_mean + mode.predictive_factor @ mode.whitened,
+        logp=logp,
+        parameters=parameters,
+        predictive_mean=predictive_mean,
+        predictive_covariance=predictive_covariance,
+    )
+    loss = weights @ differentiable_mode
+    inputs = [predictive_mean, scale, observed]
+    loss_and_gradients = pytensor.function(inputs, [loss, *pytensor.grad(loss, inputs)])
+
+    point = [
+        np.array([0.2, -0.3], dtype=floatX),
+        np.array(0.8, dtype=floatX),
+        rng.normal(loc=1.5, size=6).astype(floatX),
+    ]
+    _, *gradients = loss_and_gradients(*point)
+
+    step = 1e-5
+    for position, gradient in enumerate(gradients):
+        finite_differences = np.zeros_like(point[position])
+        for index in np.ndindex(point[position].shape):
+            shifted = [value.copy() for value in point]
+            shifted[position][index] += step
+            loss_up = loss_and_gradients(*shifted)[0]
+            shifted[position][index] -= 2 * step
+            loss_down = loss_and_gradients(*shifted)[0]
+            finite_differences[index] = (loss_up - loss_down) / (2 * step)
+        assert_allclose(gradient, finite_differences, atol=1e-7)
+
+
+def test_implicit_mode_keeps_the_value_of_an_unconverged_mode():
+    rng = np.random.default_rng(23)
+    design = rng.normal(scale=0.5, size=(6, 2)).astype(floatX)
+    observed = rng.normal(loc=3.0, size=6).astype(floatX)
+    predictive_mean = pt.as_tensor(np.zeros(2, dtype=floatX))
+    predictive_covariance = pt.as_tensor(np.eye(2, dtype=floatX))
+
+    parameters = pt.vector("parameters", shape=(2,))
+    logp = -0.5 * pt.sum((observed - pt.exp(design @ parameters)) ** 2) / NOISE_SIGMA**2
+    mode = laplace_mode(
+        logp=logp,
+        parameters=parameters,
+        curvature=-hessian(logp, parameters),
+        predictive_mean=predictive_mean,
+        predictive_covariance=predictive_covariance,
+        line_search=zoom_line_search(),
+        tolerance=1e-12,
+        max_iterations=1,
+    )
+    iterate = predictive_mean + mode.predictive_factor @ mode.whitened
+    differentiable_mode = implicit_mode(
+        mode=iterate,
+        logp=logp,
+        parameters=parameters,
+        predictive_mean=predictive_mean,
+        predictive_covariance=predictive_covariance,
+    )
+    iterate, differentiable_mode, converged = pytensor.function(
+        [], [iterate, differentiable_mode, mode.converged]
+    )()
+
+    assert not converged
+    np.testing.assert_array_equal(differentiable_mode, iterate)

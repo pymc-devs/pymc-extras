@@ -5,7 +5,13 @@ import pytensor
 import pytensor.tensor as pt
 
 from pytensor.assumptions import assume
-from pytensor.gradient import grad, hessian_vector_product, pushforward
+from pytensor.gradient import (
+    disconnected_grad,
+    grad,
+    hessian,
+    hessian_vector_product,
+    pushforward,
+)
 from pytensor.graph.replace import graph_replace, vectorize_graph
 from pytensor.graph.traversal import ancestors
 from pytensor.scan.utils import until
@@ -187,6 +193,69 @@ def laplace_mode(
         invalid_direction=invalid_directions.any(),
         converged=(pt.max(pt.abs(direction_trace[-1])) <= tolerance) & ~failures[-1],
     )
+
+
+def implicit_mode(
+    *,
+    mode: TensorVariable,
+    logp: TensorVariable,
+    parameters: TensorVariable,
+    predictive_mean: TensorVariable,
+    predictive_covariance: TensorVariable,
+) -> TensorVariable:
+    r"""
+    Return the mode of the parameters' log posterior with its gradient from the implicit function.
+
+    The mode :math:`\hat\theta` solves
+
+    .. math::
+
+        F(\hat\theta) = \hat\theta - \mu - \Sigma \nabla \ell(\hat\theta) = 0,
+
+    which holds for a singular predictive covariance :math:`\Sigma` as well. Its derivative with
+    respect to :math:`\mu`, :math:`\Sigma` and the other inputs of :math:`\ell` is
+    :math:`-(\partial F / \partial \theta)^{-1}` times the derivative of :math:`F` in them, with
+    :math:`\partial F / \partial \theta = I - \Sigma \nabla^2 \ell(\hat\theta)` [1]_. The
+    gradient does not pass through the iterations that found the mode or through the
+    factorization of :math:`\Sigma`, and it is exact only where ``mode`` is the mode.
+
+    Parameters
+    ----------
+    mode : TensorVariable
+        The mode :math:`\hat\theta`, shape ``(k,)``.
+    logp : TensorVariable
+        Scalar log-likelihood of the observations, a graph of ``parameters``.
+    parameters : TensorVariable
+        Input vector of the parameters, shape ``(k,)``, that ``logp`` is built on.
+    predictive_mean : TensorVariable
+        Predictive mean :math:`\mu` of the parameters, shape ``(k,)``.
+    predictive_covariance : TensorVariable
+        Symmetric positive semidefinite predictive covariance :math:`\Sigma` of the parameters,
+        shape ``(k, k)``.
+
+    Returns
+    -------
+    mode : TensorVariable
+        The value of ``mode``, with the gradient of the implicit function, shape ``(k,)``.
+
+    References
+    ----------
+    .. [1] Blondel, M., Q. Berthet, M. Cuturi, R. Frostig, S. Hoyer, F. Llinares-Lopez,
+           F. Pedregosa, and J.-P. Vert. Efficient and modular implicit differentiation.
+           Advances in Neural Information Processing Systems 35, 2022.
+    """
+    fixed_mode = disconnected_grad(mode)
+    gradient_at, hessian_at = graph_replace(
+        [grad(logp, parameters), hessian(cost=logp, wrt=parameters)], {parameters: fixed_mode}
+    )
+    residual = fixed_mode - predictive_mean - predictive_covariance @ gradient_at
+    residual_jacobian = disconnected_grad(
+        pt.eye(mode.shape[0]) - predictive_covariance @ hessian_at
+    )
+
+    # The correction is zero in value, and its gradient is the implicit function's.
+    correction = -pt.linalg.solve(residual_jacobian, residual)
+    return fixed_mode + correction - disconnected_grad(correction)
 
 
 def gauss_newton_curvature(

@@ -3,6 +3,7 @@ from pymc_extras.statespace.nonlinear.fusion import FusedStateSpace, observed_st
 from pymc_extras.statespace.nonlinear.laplace_update import (
     LaplaceMode,
     gauss_newton_curvature,
+    implicit_mode,
     laplace_mode,
     parameter_posterior,
     state_posterior,
@@ -13,6 +14,7 @@ __all__ = [
     "LaplaceMode",
     "filter_step",
     "gauss_newton_curvature",
+    "implicit_mode",
     "laplace_mode",
     "observed_state_names",
     "parameter_posterior",
