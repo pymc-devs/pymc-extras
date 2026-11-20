@@ -120,7 +120,10 @@ def laplace_mode(
            MIT Press, 2006. Section 3.4.3.
     """
     eigenvalues, eigenvectors = pt.linalg.eigh(predictive_covariance)
-    predictive_factor = eigenvectors * pt.sqrt(pt.maximum(eigenvalues, 0.0))
+    positive = eigenvalues > 0
+    predictive_factor = eigenvectors * pt.where(
+        positive, pt.sqrt(pt.where(positive, eigenvalues, 1.0)), 0.0
+    )
 
     gradient = grad(logp, parameters)
 
