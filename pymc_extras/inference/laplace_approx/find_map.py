@@ -14,6 +14,7 @@ from pymc.model.transform.optimization import freeze_dims_and_data
 from pymc.util import get_default_varnames
 from pytensor.tensor import TensorVariable
 from scipy.optimize import OptimizeResult
+from xarray import DataTree
 
 from pymc_extras.inference.laplace_approx.idata import (
     add_data_to_inference_data,
@@ -173,14 +174,9 @@ def find_MAP(
     compile_kwargs: dict | None = None,
     compute_hessian: bool = False,
     **optimizer_kwargs,
-) -> (
-    dict[str, np.ndarray]
-    | tuple[dict[str, np.ndarray], np.ndarray]
-    | tuple[dict[str, np.ndarray], OptimizeResult]
-    | tuple[dict[str, np.ndarray], OptimizeResult, np.ndarray]
-):
+) -> DataTree:
     """
-    Fit a PyMC model via maximum a posteriori (MAP) estimation using JAX and scipy.optimize.
+    Fit a PyMC model via maximum a posteriori (MAP) estimation using scipy.optimize.
 
     Parameters
     ----------
@@ -210,7 +206,7 @@ def find_MAP(
     progressbar : bool, optional
         Whether to display a progress bar during optimization. Defaults to True.
     include_transformed: bool, optional
-        Whether to include transformed variable values in the returned dictionary. Defaults to True.
+        Whether to include transformed variable values in the returned DataTree. Defaults to True.
     freeze_model: bool, optional
         If True, freeze_dims_and_data will be called on the model before compiling the loss functions. This is
         sometimes necessary for JAX, and can sometimes improve performance by allowing constant folding. Defaults to

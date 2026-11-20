@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import numpy as np
-import xarray as xr
 
 from pymc import Model, modelcontext
 from pytensor_ml.optim import Transform
@@ -59,8 +58,8 @@ def fit_advi(
     Returns
     -------
     DataTree
-        Posterior draws from the fitted guide, with the negative loss history in the
-        ``fit`` group (as ``elbo``).
+        Posterior draws from the fitted guide, the guide's mean and standard deviation in
+        the ``fit`` group, and the ELBO trace in ``fit_stats``.
     """
     model = modelcontext(model)
 
@@ -78,7 +77,5 @@ def fit_advi(
         compile_kwargs=compile_kwargs,
         random_seed=init_seed,
     )
-    state = trainer.fit(n_steps, model=model, random_seed=train_seed)
-    idata = trainer.sample_posterior(draws, model=model, random_seed=sampling_seed)
-    idata["fit"] = DataTree(dataset=xr.Dataset({"elbo": ("step", -state.loss_history)}))
-    return idata
+    trainer.fit(n_steps, model=model, random_seed=train_seed)
+    return trainer.sample_posterior(draws, model=model, random_seed=sampling_seed)

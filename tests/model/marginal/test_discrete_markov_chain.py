@@ -457,3 +457,29 @@ def test_conditional_discrete_markov_chain_time_varying_P():
         recover(idata, model=marginal_m, random_seed=0).posterior["states"].mean(("chain", "draw"))
     )
     np.testing.assert_allclose(recovered, brute_marginal, atol=0.02)
+
+
+def test_grad_stability():
+    K = 2
+    T = 512
+
+    coords = {
+        "t": np.arange(T),
+        "k": np.arange(K),
+        "k_": np.arange(K),
+    }
+    with pm.Model(coords=coords) as m:
+        P = pm.Dirichlet("P", [[20.0, 2.0], [2.0, 20.0]], dims=("k", "k_"), default_transform=None)
+        mu = pm.Normal("mu", 0.0, 0.05, dims=("k",))
+        sigma = pm.HalfNormal("sigma", 0.10, dims=("k",))
+        rp = DiscreteMarkovChain("rp", P=P, init_dist=pm.Categorical.dist(p=[0.8, 0.2]), dims="t")
+        pm.Normal("y", mu[rp], sigma[rp], observed=np.zeros(T), dims=("t",))
+
+    mm = marginalize(m, ["rp"])
+    grad_fn = pm.compile(mm.value_vars, pt.pack(mm.dlogp())[0])
+    test_point = {
+        "P": np.array([[0.95, 0.05], [0.15, 0.85]]),  # Todo use simplex space
+        "mu": np.array([0.009, -0.018]),
+        "sigma_log__": np.log([0.032, 0.070]),
+    }
+    assert np.isfinite(grad_fn(**test_point)).all()

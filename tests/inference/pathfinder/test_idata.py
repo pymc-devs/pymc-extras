@@ -4,6 +4,7 @@ from collections import Counter
 
 import numpy as np
 import pymc as pm
+import pytensor.tensor as pt
 import pytest
 import xarray as xr
 
@@ -247,11 +248,6 @@ def test_mock_result_is_subset_of_real_schema():
     )
 
 
-# ---------------------------------------------------------------------------
-# pathfinder_report
-# ---------------------------------------------------------------------------
-
-
 def test_pathfinder_report_smoke():
     """pathfinder_report prints without raising on a fully populated idata."""
     posterior = xr.Dataset({"x": (["chain", "draw"], np.random.normal(0, 1, (1, 100)))})
@@ -268,10 +264,6 @@ def test_pathfinder_report_missing_group():
     with pytest.raises(ValueError, match="missing the 'pathfinder' group"):
         pathfinder_report(idata)
 
-
-# ---------------------------------------------------------------------------
-# convert_flat_trace_to_idata
-# ---------------------------------------------------------------------------
 
 _POSTPROC_N = 3  # a (scalar) + b (shape 2)
 
@@ -310,3 +302,33 @@ def test_convert_flat_trace_keeps_paths(postproc_model, vectorize):
 
     assert idata.posterior["a"].shape == (num_paths, num_pdraws)
     assert idata.posterior["b"].shape == (num_paths, num_pdraws, 2)
+
+
+def test_convert_flat_trace_jax_postprocessing_with_dynamic_shape():
+    """``repeat`` reshapes the batched Deterministic, which JAX lowers only with static batch dims."""
+    pytest.importorskip("jax")
+
+    rows, cols, num_draws, repeats = 4, 3, 7, 2
+    with pm.Model() as model:
+        weight = pm.Normal("weight", 0, 1, shape=(rows, cols))
+        pm.Deterministic("weight_repeated", pt.repeat(weight, repeats, axis=0))
+
+    samples = np.random.default_rng(0).normal(size=(num_draws, rows * cols))
+
+    default_idata = convert_flat_trace_to_idata(
+        samples, model=model, importance_sampling="psis", vectorize=True
+    )
+    jax_idata = convert_flat_trace_to_idata(
+        samples,
+        model=model,
+        importance_sampling="psis",
+        vectorize=True,
+        compile_kwargs={"mode": "JAX"},
+    )
+
+    assert jax_idata.posterior["weight_repeated"].shape == (1, num_draws, rows * repeats, cols)
+    np.testing.assert_allclose(
+        jax_idata.posterior["weight_repeated"].values,
+        default_idata.posterior["weight_repeated"].values,
+        rtol=1e-6,
+    )

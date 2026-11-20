@@ -8,6 +8,7 @@ import pymc.dims as pmd
 import pytensor
 import pytensor.tensor as pt
 import pytest
+import scipy.stats
 import xarray as xr
 
 from preliz.distributions import distributions as preliz_distributions
@@ -152,6 +153,30 @@ def test_doesnt_check_validity_values() -> None:
         Prior("Normal", mu=0, sigma=-1)
     except Exception as e:
         pytest.fail(f"Unexpected exception: {e}")
+
+
+def test_preliz_nested_prior() -> None:
+    var = Prior("Truncated", dist=Prior("Normal", mu=2, sigma=3), lower=0, upper=10)
+    dist = var.preliz
+
+    assert isinstance(dist, preliz_distributions.Distribution)
+    assert (dist.mu, dist.sigma, dist.lower, dist.upper) == (2, 3, 0, 10)
+
+
+def test_preliz_hurdle() -> None:
+    dist = Prior("HurdleGamma", psi=0.5, alpha=2, beta=1).preliz
+
+    assert isinstance(dist, preliz_distributions.Distribution)
+    assert dist.params_dict == {"alpha": 2, "beta": 1, "psi": 0.5}
+
+
+def test_preliz_mixture() -> None:
+    components = [Prior("Normal", mu=0, sigma=1), Prior("Normal", mu=3, sigma=2)]
+    dist = Prior("Mixture", w=[0.25, 0.75], comp_dists=components).preliz
+
+    assert isinstance(dist, preliz_distributions.Distribution)
+    np.testing.assert_allclose(dist.weights, [0.25, 0.75])
+    np.testing.assert_allclose(dist.mean(), 2.25)
 
 
 def test_preliz() -> None:
@@ -589,6 +614,18 @@ def test_deepcopy_memo() -> None:
     assert len(memo) == 1
 
 
+def test_deepcopy_keeps_core_dims() -> None:
+    prior = Prior("ZeroSumNormal", sigma=1, core_dims=("city",), dims=("country", "city"))
+    copied = prior.deepcopy()
+
+    assert copied == prior
+
+    with pm.Model(coords={"country": range(2), "city": range(3)}) as model:
+        copied.create_variable("x", xdist=True)
+
+    assert model["x"].dims == ("country", "city")
+
+
 def test_create_likelihood_variable() -> None:
     distribution = Prior("Normal", sigma=Prior("HalfNormal"))
 
@@ -599,6 +636,47 @@ def test_create_likelihood_variable() -> None:
 
     assert model.observed_RVs == [data]
     assert "data_sigma" in model
+
+
+@pytest.mark.parametrize("xdist", [False, True], ids=["tensor", "xtensor"])
+@pytest.mark.parametrize("censored", [False, True], ids=["prior", "censored"])
+def test_create_likelihood_variable_keeps_data_parameter(censored, xdist) -> None:
+    observed_values = np.ones(3)
+    mu, observed = np.zeros(3), observed_values
+    if xdist:
+        mu, observed = pmd.as_xtensor(mu, dims=("T",)), pmd.as_xtensor(observed, dims=("T",))
+
+    with pm.Model(coords={"T": range(3)}) as model:
+        sigma = pm.Data("sigma", 2.0)
+        normal = Prior("Normal", sigma=sigma, dims="T")
+        distribution = Censored(normal, lower=0) if censored else normal
+        distribution.create_likelihood_variable("y", mu=mu, observed=observed, xdist=xdist)
+
+    assert list(normal.parameters) == ["sigma"]
+
+    logp = model.compile_logp()
+    with model:
+        pm.set_data({"sigma": 50.0})
+
+    expected = scipy.stats.norm.logpdf(observed_values, loc=0, scale=50).sum()
+    np.testing.assert_allclose(logp({}), expected)
+
+
+def test_create_likelihood_variable_keeps_core_dims() -> None:
+    mu, cov, observed = np.zeros(3), np.eye(3), np.ones(3)
+    core_dims = ("city", "city_aux")
+    distribution = Prior("MvNormal", cov=pmd.as_xtensor(cov, dims=core_dims), core_dims=core_dims)
+
+    with pm.Model(coords={"city": range(3), "city_aux": range(3)}) as model:
+        distribution.create_likelihood_variable(
+            "y",
+            mu=pmd.as_xtensor(mu, dims=("city",)),
+            observed=pmd.as_xtensor(observed, dims=("city",)),
+            xdist=True,
+        )
+
+    expected = scipy.stats.multivariate_normal.logpdf(observed, mean=mu, cov=cov)
+    np.testing.assert_allclose(model.compile_logp()({}), expected)
 
 
 def test_create_likelihood_variable_already_has_mu() -> None:

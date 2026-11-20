@@ -1053,7 +1053,7 @@ class Prior:
         """
         import preliz as pz
 
-        return getattr(pz, self.distribution)(**self.parameters)
+        return pz.from_prior(self)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the prior to dictionary format.
@@ -1346,6 +1346,7 @@ class Prior:
             dims=copy.copy(self.dims),
             centered=self.centered,
             transform=self.transform,
+            core_dims=self.core_dims,
             **copy.deepcopy(self.parameters),
         )
         memo[id(self)] = copy_obj
@@ -1448,9 +1449,8 @@ class Prior:
         if "mu" in self.parameters:
             raise MuAlreadyExistsError(self)
 
-        distribution = self.deepcopy()
-        distribution.parameters["mu"] = mu
-        distribution.parameters["observed"] = observed
+        distribution = copy.copy(self)
+        distribution.parameters = {**self.parameters, "mu": mu, "observed": observed}
         return distribution.create_variable(name, xdist=xdist)
 
 
@@ -1694,8 +1694,8 @@ class Censored:
         if "mu" in self.distribution.parameters:
             raise MuAlreadyExistsError(self.distribution)
 
-        distribution = self.distribution.deepcopy()
-        distribution.parameters["mu"] = mu
+        distribution = copy.copy(self.distribution)
+        distribution.parameters = {**self.distribution.parameters, "mu": mu}
         dist = distribution.create_variable(name, xdist=xdist)
         _remove_random_variable(var=dist)
 

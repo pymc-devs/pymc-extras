@@ -3,6 +3,7 @@ from functools import partial
 import numpy as np
 import pandas as pd
 import pymc as pm
+import pytensor.tensor as pt
 import pytest
 import xarray as xr
 
@@ -12,6 +13,7 @@ from pytensor.compile import SharedVariable
 from pytensor.graph.traversal import graph_inputs
 from xarray import DataTree
 
+from pymc_extras.statespace.models import structural as st
 from tests.statespace.test_utilities import (
     load_nile_test_data,
     make_statespace_mod,
@@ -457,6 +459,68 @@ def test_invalid_scenarios():
             "b": pd.DataFrame(np.zeros((11, 2)), columns=coords["features_b"]),
         }
         ss_mod._validate_scenario_data(scenario, coords)
+
+
+@pytest.mark.parametrize("verbose", [True, False], ids=["verbose", "quiet"])
+def test_validate_scenario_reorders_columns(verbose, caplog):
+    ss_mod = make_statespace_mod(
+        k_endog=1,
+        k_posdef=1,
+        k_states=2,
+        filter_type="standard",
+        verbose=False,
+        data_info={"a": {"shape": (None, 2), "dims": ("time", "features_a")}},
+    )
+    coords = {"features_a": ["column_1", "column_2"]}
+
+    scenario = {"a": pd.DataFrame({"column_2": np.zeros(10), "column_1": np.ones(10)})}
+    scenario = ss_mod._validate_scenario_data(scenario, coords, verbose=verbose)
+
+    assert scenario["a"].columns.tolist() == coords["features_a"]
+    assert_allclose(scenario["a"]["column_1"].values, 1.0)
+    assert any("different column order" in message for message in caplog.messages) == verbose
+
+
+@pytest.mark.filterwarnings("ignore:The RandomType SharedVariables")
+@pytest.mark.filterwarnings("ignore:Skipping `CheckAndRaise` Op")
+def test_forecast_aligns_scenario_columns_by_name(rng):
+    index = pd.date_range(start="2023-05-01", periods=10, freq="D")
+    exog = pd.DataFrame(rng.normal(size=(10, 2)), index=index, columns=["x1", "x2"])
+    data = pd.Series(rng.normal(size=10), index=index, name="y")
+
+    trend = st.LevelTrend(name="trend", order=1, innovations_order=[0])
+    regression = st.Regression(name="exog", innovations=False, state_names=["x1", "x2"])
+    ss_mod = (trend + regression).build(verbose=False)
+
+    with pm.Model(coords=ss_mod.coords):
+        P0_diag = pm.Gamma("P0_diag", alpha=2, beta=4, dims=["state"])
+        pm.Deterministic("P0", pt.diag(P0_diag), dims=["state", "state_aux"])
+        pm.Normal("initial_trend", dims=["state_trend"])
+        pm.Data("data_exog", exog.values, dims=["time", "state_exog"])
+        pm.Normal("beta_exog", dims=["state_exog"])
+
+        ss_mod.build_statespace_graph(data)
+        idata = pm.sample_prior_predictive(draws=5, random_seed=rng)
+
+    scenario = pd.DataFrame(
+        {"x1": np.zeros(5), "x2": np.ones(5)},
+        index=pd.date_range(start="2023-05-11", periods=5, freq="D"),
+    )
+
+    def forecast(columns):
+        return ss_mod.forecast(
+            idata,
+            scenario={"data_exog": scenario[columns]},
+            use_scenario_index=True,
+            group="prior",
+            random_seed=0,
+            verbose=False,
+        )
+
+    assert_allclose(
+        forecast(["x2", "x1"]).forecast_observed.values,
+        forecast(["x1", "x2"]).forecast_observed.values,
+    )
 
 
 @pytest.mark.filterwarnings("ignore:No time index found on the supplied data.")

@@ -1,3 +1,5 @@
+import pymc_extras.statespace.filters.rewrites  # noqa: F401  # registers graph rewrites on import
+
 from pymc_extras.statespace.filters.distributions import (
     LinearGaussianStateSpace,
     SimulationSmoother,

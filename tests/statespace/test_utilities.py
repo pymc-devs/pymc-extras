@@ -198,6 +198,21 @@ def nile_test_test_helper(rng, n_missing=0):
     return res, inputs
 
 
+def assert_psd(covariances, err_msg=""):
+    """
+    Assert every matrix in a stack is positive semi-definite up to rounding.
+
+    An eigenvalue may fall below zero by 100 machine epsilons times the largest eigenvalue magnitude
+    in the stack.
+    """
+    covariances = np.asarray(covariances)
+    eigenvalues = np.linalg.eigvalsh(0.5 * (covariances + np.swapaxes(covariances, -2, -1)))
+    # Scaled to the whole stack because a recursion carries rounding from its largest covariances
+    # into later, smaller ones.
+    tolerance = 100 * np.finfo(covariances.dtype).eps * np.abs(eigenvalues).max()
+    assert np.all(eigenvalues >= -tolerance), f"{err_msg}: smallest eigenvalue {eigenvalues.min()}"
+
+
 def fast_eval(var):
     return pytensor.function([], var, mode="FAST_COMPILE")()
 
