@@ -137,7 +137,10 @@ def test_line_search_decreases_objective_far_from_mode():
         tolerance=1e-10,
         max_iterations=1,
     )
-    damped, search_failed = pytensor.function([], [mode.whitened, mode.search_failed])()
+    step, search_failed = pytensor.function(
+        [], [mode.predictive_factor @ mode.whitened, mode.search_failed]
+    )()
+    damped = step / predictive_sd
 
     start_residuals = observed - design @ predictive_mean
     logp_gradient = design.T @ ((nu + 1) * start_residuals / (nu + start_residuals**2))
