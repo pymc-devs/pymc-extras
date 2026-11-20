@@ -168,20 +168,23 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
     y = pt.vector("y")
     X_data = pt.matrix("X")
     reference_filter = StandardFilter(cov_jitter=0.0)
-    reference_filtered_mean, reference_filtered_covariance, *_ = reference_filter.update(
-        a=a,
-        P=P,
-        y=y,
-        d=X_data @ d,
-        Z=X_data @ Z,
-        H=0.25 * pt.eye(y.shape[0]) + X_data @ H @ X_data.T,
-        nan_mask=pt.zeros_like(y, dtype=bool),
+    reference_filtered_mean, reference_filtered_covariance, _, _, reference_loglike = (
+        reference_filter.update(
+            a=a,
+            P=P,
+            y=y,
+            d=X_data @ d,
+            Z=X_data @ Z,
+            H=0.25 * pt.eye(y.shape[0]) + X_data @ H @ X_data.T,
+            nan_mask=pt.zeros_like(y, dtype=bool),
+        )
     )
     reference_step = pytensor.function(
         [a, P, y, X_data],
         [
             reference_filtered_mean,
             reference_filtered_covariance,
+            reference_loglike,
             *BaseFilter.predict(
                 a=reference_filtered_mean, P=reference_filtered_covariance, c=c, T=T, R=R, Q=Q
             ),
@@ -202,13 +205,14 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
             design @ covariance @ design.T + observed_covariance,
             atol=1e-10,
         )
-        filtered_mean, filtered_covariance, mean, covariance = reference_step(
+        filtered_mean, filtered_covariance, loglike, mean, covariance = reference_step(
             mean, covariance, y_dates[date], X_dates[date]
         )
         assert_allclose(outputs["filtered_states"].values[date], filtered_mean, atol=1e-10)
         assert_allclose(
             outputs["filtered_covariances"].values[date], filtered_covariance, atol=1e-10
         )
+        assert_allclose(filtered["diagnostics/loglike_obs"].values[date], loglike, atol=1e-10)
     assert filtered["diagnostics/converged"].values.all()
 
 
@@ -404,6 +408,7 @@ def test_filter_output_coords():
 
     diagnostics = filtered["diagnostics"]
     assert set(diagnostics.data_vars) == {
+        "loglike_obs",
         "iterations",
         "evaluations",
         "search_failed",

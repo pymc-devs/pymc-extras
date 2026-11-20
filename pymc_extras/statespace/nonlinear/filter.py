@@ -19,6 +19,8 @@ from pymc_extras.statespace.nonlinear.fusion import FusedStateSpace
 from pymc_extras.statespace.nonlinear.laplace_update import (
     LaplaceMode,
     gauss_newton_curvature,
+    implicit_mode,
+    laplace_log_likelihood,
     laplace_mode,
     state_posterior,
 )
@@ -169,9 +171,10 @@ def run_filter(
         ``filtered_states`` and ``filtered_covariances`` after them, ``smoothed_states`` and
         ``smoothed_covariances`` given all dates from :class:`RTSSmoother`, and the parameter
         predictive as ``predicted_observed_states`` and ``predicted_observed_covariances``. Group
-        ``diagnostics`` holds each date's ``iterations``, ``evaluations``, ``search_failed``,
-        ``invalid_direction`` and ``converged`` from :class:`LaplaceMode`. The moments of a date
-        that did not converge are not at its mode, and every later date's moments start from them.
+        ``diagnostics`` holds each date's ``loglike_obs`` from :func:`laplace_log_likelihood`, and
+        its ``iterations``, ``evaluations``, ``search_failed``, ``invalid_direction`` and
+        ``converged`` from :class:`LaplaceMode`. The moments of a date that did not converge are
+        not at its mode, and every later date's moments start from them.
     """
     not_variables = sorted(set(data) - set(fused.model.named_vars))
     if not_variables:
@@ -414,6 +417,7 @@ _RECORDED_NAMES = (
     "filtered_covariances",
     "predicted_observed_states",
     "predicted_observed_covariances",
+    "loglike_obs",
     "iterations",
     "evaluations",
     "search_failed",
@@ -451,14 +455,15 @@ def _date_update(
     max_iterations: int,
 ) -> tuple[TensorVariable, TensorVariable, dict[str, TensorVariable]]:
     logp = pt.sum([pointwise_logp.sum() for pointwise_logp, _ in observation_logps.values()])
+    curvature_matrix = _curvature(
+        kind=curvature,
+        logp=logp,
+        observation_logps=observation_logps,
+        parameters=parameters,
+    )
     filtered_mean, filtered_covariance, next_mean, next_covariance, mode = filter_step(
         logp=logp,
-        curvature=_curvature(
-            kind=curvature,
-            logp=logp,
-            observation_logps=observation_logps,
-            parameters=parameters,
-        ),
+        curvature=curvature_matrix,
         parameters=parameters,
         predicted_mean=predicted_mean,
         predicted_covariance=predicted_covariance,
@@ -467,11 +472,29 @@ def _date_update(
         tolerance=tolerance,
         max_iterations=max_iterations,
     )
+
+    parameter_mean = matrices["Z"] @ predicted_mean + matrices["d"]
+    parameter_covariance = quad_form_sym(matrices["Z"], predicted_covariance) + matrices["H"]
+    parameter_mode = implicit_mode(
+        mode=parameter_mean + mode.predictive_factor @ mode.whitened,
+        logp=logp,
+        parameters=parameters,
+        predictive_mean=parameter_mean,
+        predictive_covariance=parameter_covariance,
+    )
+    loglike = laplace_log_likelihood(
+        mode=parameter_mode,
+        logp=logp,
+        curvature=curvature_matrix,
+        parameters=parameters,
+        predictive_covariance=parameter_covariance,
+    )
     recorded = [
         filtered_mean,
         filtered_covariance,
-        matrices["Z"] @ predicted_mean + matrices["d"],
-        quad_form_sym(matrices["Z"], predicted_covariance) + matrices["H"],
+        parameter_mean,
+        parameter_covariance,
+        loglike,
         mode.iterations,
         mode.evaluations,
         mode.search_failed,

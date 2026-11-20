@@ -87,6 +87,7 @@ def test_scan_matches_driver():
         "predicted_observed_covariances",
     ]:
         assert_allclose(values[name], driver_outputs[name].values, atol=1e-10)
+    assert_allclose(values["loglike_obs"], driver["diagnostics/loglike_obs"].values, atol=1e-10)
     for name in ["iterations", "search_failed", "invalid_direction", "converged"]:
         assert_allclose(values[name], driver[f"diagnostics/{name}"].values)
     assert values["converged"].all()
