@@ -10,6 +10,7 @@ from pytensor_ml.optim import zoom_line_search
 from pymc_extras.statespace.nonlinear import (
     gauss_newton_curvature,
     implicit_mode,
+    laplace_log_likelihood,
     laplace_mode,
     parameter_posterior,
     state_posterior,
@@ -818,3 +819,113 @@ def test_implicit_mode_keeps_the_value_of_an_unconverged_mode():
 
     assert not converged
     np.testing.assert_array_equal(differentiable_mode, iterate)
+
+
+@pytest.mark.parametrize(
+    "base_covariance",
+    [[[1.0, 0.3], [0.3, 0.5]], [[1.0, 1.0], [1.0, 1.0]]],
+    ids=["full_rank", "singular"],
+)
+def test_laplace_log_likelihood_matches_gaussian_marginal(base_covariance):
+    design, observed, _ = regression_data(n_observations=5, n_parameters=2, seed=29)
+    predictive_mean = pt.vector("predictive_mean", shape=(2,))
+    scale = pt.scalar("scale")
+    predictive_covariance = scale**2 * pt.as_tensor(np.array(base_covariance, dtype=floatX))
+
+    parameters = pt.vector("parameters", shape=(2,))
+    residuals = observed - design @ parameters
+    logp = pt.sum(-0.5 * (residuals / NOISE_SIGMA) ** 2 - np.log(NOISE_SIGMA * np.sqrt(2 * np.pi)))
+    curvature = -hessian(logp, parameters)
+    mode = laplace_mode(
+        logp=logp,
+        parameters=parameters,
+        curvature=curvature,
+        predictive_mean=predictive_mean,
+        predictive_covariance=predictive_covariance,
+        line_search=zoom_line_search(),
+        tolerance=1e-12,
+        max_iterations=10,
+    )
+    differentiable_mode = implicit_mode(
+        mode=predictive_mean + mode.predictive_factor @ mode.whitened,
+        logp=logp,
+        parameters=parameters,
+        predictive_mean=predictive_mean,
+        predictive_covariance=predictive_covariance,
+    )
+    log_likelihood = laplace_log_likelihood(
+        mode=differentiable_mode,
+        logp=logp,
+        curvature=curvature,
+        parameters=parameters,
+        predictive_covariance=predictive_covariance,
+    )
+
+    marginal_covariance = design @ predictive_covariance @ design.T + NOISE_SIGMA**2 * pt.eye(5)
+    innovation = observed - design @ predictive_mean
+    _, log_determinant = pt.linalg.slogdet(2 * np.pi * marginal_covariance)
+    marginal_log_likelihood = -0.5 * (
+        log_determinant + innovation @ pt.linalg.solve(marginal_covariance, innovation)
+    )
+
+    inputs = [predictive_mean, scale]
+    outputs = [
+        expression
+        for target in [log_likelihood, marginal_log_likelihood]
+        for expression in [target, *pytensor.grad(target, inputs)]
+    ]
+    values = pytensor.function(inputs, outputs)(
+        np.array([0.4, -0.2], dtype=floatX), np.array(0.7, dtype=floatX)
+    )
+
+    laplace_values, marginal_values = values[:3], values[3:]
+    for laplace_value, marginal_value in zip(laplace_values, marginal_values, strict=True):
+        assert_allclose(laplace_value, marginal_value, atol=ATOL, rtol=RTOL)
+
+
+def test_laplace_log_likelihood_evaluates_curvature_at_the_mode():
+    rng = np.random.default_rng(31)
+    design = rng.normal(scale=0.5, size=(6, 2)).astype(floatX)
+    observed = (np.exp(design @ np.array([0.5, -0.3])) + 0.1 * rng.normal(size=6)).astype(floatX)
+    predictive_mean = np.array([0.1, 0.2], dtype=floatX)
+    predictive_covariance = np.array([[0.8, 0.2], [0.2, 0.5]], dtype=floatX)
+
+    parameters = pt.vector("parameters", shape=(2,))
+    logp = -0.5 * pt.sum((observed - pt.exp(design @ parameters)) ** 2) / NOISE_SIGMA**2
+    curvature = -hessian(logp, parameters)
+    mode = laplace_mode(
+        logp=logp,
+        parameters=parameters,
+        curvature=curvature,
+        predictive_mean=pt.as_tensor(predictive_mean),
+        predictive_covariance=pt.as_tensor(predictive_covariance),
+        line_search=zoom_line_search(),
+        tolerance=1e-12,
+        max_iterations=20,
+    )
+    mode_value = pt.as_tensor(predictive_mean) + mode.predictive_factor @ mode.whitened
+    log_likelihood = laplace_log_likelihood(
+        mode=mode_value,
+        logp=logp,
+        curvature=curvature,
+        parameters=parameters,
+        predictive_covariance=pt.as_tensor(predictive_covariance),
+    )
+    mode_value, log_likelihood, converged = pytensor.function(
+        [], [mode_value, log_likelihood, mode.converged]
+    )()
+
+    mean = np.exp(design @ mode_value)
+    observation_logp = -0.5 * np.sum((observed - mean) ** 2) / NOISE_SIGMA**2
+    observation_curvature = design.T @ (((2 * mean - observed) * mean)[:, None] * design)
+    observation_curvature /= NOISE_SIGMA**2
+    predictive_precision = np.linalg.inv(predictive_covariance)
+    deviation = mode_value - predictive_mean
+    expected = (
+        observation_logp
+        - 0.5 * deviation @ predictive_precision @ deviation
+        - 0.5 * np.linalg.slogdet(predictive_covariance)[1]
+        - 0.5 * np.linalg.slogdet(observation_curvature + predictive_precision)[1]
+    )
+    assert converged
+    assert_allclose(log_likelihood, expected, atol=ATOL, rtol=RTOL)

@@ -258,6 +258,66 @@ def implicit_mode(
     return fixed_mode + correction - disconnected_grad(correction)
 
 
+def laplace_log_likelihood(
+    *,
+    mode: TensorVariable,
+    logp: TensorVariable,
+    curvature: TensorVariable,
+    parameters: TensorVariable,
+    predictive_covariance: TensorVariable,
+) -> TensorVariable:
+    r"""
+    Return the Laplace approximation to the log marginal likelihood of the observations.
+
+    The parameters have the Gaussian predictive :math:`N(\mu, \Sigma)` and the observations
+    contribute :math:`\ell(\theta)`. At the mode :math:`\hat\theta` of the log posterior,
+
+    .. math::
+
+        \log p(y) \approx \ell(\hat\theta)
+        - \tfrac{1}{2} \nabla \ell(\hat\theta)^\top \Sigma \nabla \ell(\hat\theta)
+        - \tfrac{1}{2} \log \det \left(I + \Sigma \Lambda(\hat\theta)\right),
+
+    where the quadratic term equals :math:`(\hat\theta - \mu)^\top \Sigma^{-1} (\hat\theta - \mu)`
+    at the mode and the determinant equals :math:`\det B` [1]_. It is exact when :math:`\ell` is
+    quadratic and :math:`\Lambda` is its negative Hessian. It depends on :math:`\Sigma` and not on
+    a factor of it, so with the mode from :func:`implicit_mode` its gradient does not pass through a
+    factorization of :math:`\Sigma`.
+
+    Parameters
+    ----------
+    mode : TensorVariable
+        The mode :math:`\hat\theta`, shape ``(k,)``.
+    logp : TensorVariable
+        Scalar log-likelihood of the observations, a graph of ``parameters``.
+    curvature : TensorVariable
+        Positive semidefinite approximation :math:`\Lambda` to the negative Hessian of ``logp``, a
+        graph of ``parameters``, shape ``(k, k)``.
+    parameters : TensorVariable
+        Input vector of the parameters, shape ``(k,)``, that ``logp`` and ``curvature`` are built on.
+    predictive_covariance : TensorVariable
+        Symmetric positive semidefinite predictive covariance :math:`\Sigma` of the parameters,
+        shape ``(k, k)``.
+
+    Returns
+    -------
+    log_likelihood : TensorVariable
+        Scalar approximate log marginal likelihood.
+
+    References
+    ----------
+    .. [1] Rasmussen, C. E., and C. K. I. Williams. Gaussian Processes for Machine Learning.
+           MIT Press, 2006. Equation 3.32.
+    """
+    logp_at, gradient_at, curvature_at = graph_replace(
+        [logp, grad(logp, parameters), curvature], {parameters: mode}
+    )
+    _, log_determinant = pt.linalg.slogdet(
+        pt.eye(mode.shape[0]) + predictive_covariance @ curvature_at
+    )
+    return logp_at - 0.5 * gradient_at @ predictive_covariance @ gradient_at - 0.5 * log_determinant
+
+
 def gauss_newton_curvature(
     *,
     pointwise_logp: TensorVariable,
