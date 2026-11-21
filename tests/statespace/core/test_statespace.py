@@ -21,6 +21,7 @@ from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     JITTER_DEFAULT,
+    LONG_MATRIX_NAMES,
     MISSING_FILL,
 )
 from tests.statespace.shared_fixtures import (
@@ -652,12 +653,14 @@ def test_post_estimation_leaves_template_matrices_alone(
     substituted matrices would still compare equal element-wise while pointing at nodes bound to a
     model that has gone out of scope.
     """
-    before = list(ss_mod._unpack_statespace_with_placeholders())
+    before = [ss_mod.ssm[name] for name in LONG_MATRIX_NAMES]
     getattr(ss_mod, method_name)(idata, random_seed=rng, **kwargs)
-    after = list(ss_mod._unpack_statespace_with_placeholders())
+    after = [ss_mod.ssm[name] for name in LONG_MATRIX_NAMES]
 
     assert all(x is y for x, y in zip(before, after, strict=True))
     assert not set(pymc_mod.basic_RVs).intersection(ancestors(after))
+    unpacked = list(ss_mod._unpack_statespace_with_placeholders())
+    assert not set(pymc_mod.basic_RVs).intersection(ancestors(unpacked))
 
 
 def test_a_plain_model_is_filtered():

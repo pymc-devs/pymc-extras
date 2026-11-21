@@ -585,8 +585,6 @@ class BayesianDynamicFactor(PyMCStateSpace):
         self.ssm["initial_state_cov"] = P0
 
         self.ssm["design"] = self._build_design_matrix()
-        if self.has_exog:
-            self.ssm.declare_time_varying("design")
 
         self.ssm["transition"] = pt.linalg.block_diag(*self._build_transition_blocks())
 

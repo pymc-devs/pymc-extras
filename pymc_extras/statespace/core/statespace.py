@@ -60,6 +60,7 @@ from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     JITTER_DEFAULT,
     LOGLIKELIHOOD_BURN_NAME,
+    LONG_MATRIX_NAMES,
     MISSING_FILL,
     OBS_STATE_DIM,
     OBSERVED_DATA_NAME,
@@ -552,17 +553,7 @@ class PyMCStateSpace:
         method will include pytensor placeholders.
         """
 
-        a0 = self.ssm["initial_state"]
-        P0 = self.ssm["initial_state_cov"]
-        c = self.ssm["state_intercept"]
-        d = self.ssm["obs_intercept"]
-        T = self.ssm["transition"]
-        Z = self.ssm["design"]
-        R = self.ssm["selection"]
-        H = self.ssm["obs_cov"]
-        Q = self.ssm["state_cov"]
-
-        return a0, P0, c, d, T, Z, R, H, Q
+        return tuple(self.ssm.to_tensor(name) for name in LONG_MATRIX_NAMES)
 
     def unpack_statespace(self) -> list[pt.TensorVariable]:
         r"""

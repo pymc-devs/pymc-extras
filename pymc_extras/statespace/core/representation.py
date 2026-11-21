@@ -1,36 +1,55 @@
-import copy
-
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
+from pytensor.graph.rewriting.utils import rewrite_graph
+from pytensor.xtensor import as_xtensor
+from pytensor.xtensor.type import XTensorVariable
+
+from pymc_extras.statespace.utils.constants import (
+    LONG_MATRIX_NAMES,
+    LONG_NAME_TO_SHORT,
+    MATRIX_DIMS,
+    RESERVED_DIMS,
+    TIME_DIM,
+)
+
 floatX = pytensor.config.floatX
 KeyLike = tuple[str | int, ...] | str
 
-# Number of trailing dims that define each matrix's "core" shape (1 for vectors, 2 for
-# matrices). Anything to the left is a time and/or batch dim; downstream consumers
-# distinguish them by consulting ``Representation.time_varying_names``.
-_CORE_NDIM: dict[str, int] = {
-    "design": 2,
-    "obs_intercept": 1,
-    "obs_cov": 2,
-    "transition": 2,
-    "state_intercept": 1,
-    "selection": 2,
-    "state_cov": 2,
-    "initial_state": 1,
-    "initial_state_cov": 2,
+CORE_DIMS: dict[str, tuple[str, ...]] = {
+    name: MATRIX_DIMS[LONG_NAME_TO_SHORT[name]] for name in LONG_MATRIX_NAMES
 }
+
+# Several array indices select pointwise in numpy but orthogonally in xtensor, unless they share a
+# dim. This is the dim they share.
+POINTWISE_INDEX_DIM = "pointwise_index"
+
+
+def is_array_index(index) -> bool:
+    """Return whether ``index`` selects with an array, as opposed to an integer or a slice."""
+    if isinstance(index, list | np.ndarray):
+        return True
+    return isinstance(index, pt.TensorVariable) and index.ndim > 0
+
+
+def pointwise_index(index: tuple) -> tuple:
+    """Give the array indices in ``index`` a shared dim, so they select pointwise as in numpy."""
+    if sum(is_array_index(entry) for entry in index) < 2:
+        return index
+    return tuple(
+        as_xtensor(entry, dims=(POINTWISE_INDEX_DIM,)) if is_array_index(entry) else entry
+        for entry in index
+    )
 
 
 class PytensorRepresentation:
     r"""
     Container for the nine state-space matrices of a linear Gaussian model.
 
-    Each matrix is stored in its *natural* shape: ``core_shape`` if static, or
-    ``(time, *core_shape)`` if time-varying. Optional leading batch dims are accepted and
-    propagate untouched -- use ``vectorize_graph`` if a downstream consumer needs to lift
-    over them.
+    Each matrix is stored as an xtensor with the core dims given in ``MATRIX_DIMS``. A matrix with
+    a ``time`` dim is time-varying, and the Kalman filter scans over it. Every other dim is a
+    batch dim.
 
     Parameters
     ----------
@@ -98,18 +117,9 @@ class PytensorRepresentation:
     | ``state_cov``       | ``(r, r)``              |
     +---------------------+-------------------------+
 
-    Any matrix may carry a leading dim of length ``n`` (the number of observations) to
-    make it time-varying. The model is responsible for declaring which matrices vary over
-    time via :meth:`declare_time_varying`; downstream consumers (filter, smoother, etc.)
-    read :attr:`time_varying_names` to dispatch.
-
-    .. warning::
-
-        The time dim must always be the **leftmost** axis of a time-varying matrix. The
-        Kalman filter scan iterates over axis 0, ``pm.Deterministic`` registration prepends
-        a ``TIME_DIM`` coord to the dim list, and forecast slicing reads ``matrix[n_train:]``
-        — all of these assume the time axis sits in front of the core dims. Optional batch
-        dims may sit even further left (``(*batch, time, *core)``).
+    A matrix assigned as a tensor or array gets the core dims, plus a leading ``time`` dim when
+    it has one more axis than the core shape. To add batch dims, assign an xtensor that names
+    them.
 
     Examples
     --------
@@ -134,8 +144,8 @@ class PytensorRepresentation:
 
         import numpy as np
         ssm["obs_intercept"] = np.arange(10)[:, None]    # 10 timesteps, k_endog=1
-        ssm["obs_intercept"].type.shape
-        # (10, 1)
+        ssm["obs_intercept"].dims
+        # ('time', 'observed_state')
 
     References
     ----------
@@ -145,7 +155,6 @@ class PytensorRepresentation:
     """
 
     __slots__ = (
-        "_time_varying_names",
         "design",
         "initial_state",
         "initial_state_cov",
@@ -191,17 +200,11 @@ class PytensorRepresentation:
             "initial_state_cov": initial_state_cov,
         }
 
-        self._time_varying_names: set[str] = set()
-
-        for name in _CORE_NDIM:
+        for name in CORE_DIMS:
             value = provided[name]
             if value is None:
-                tensor = pt.as_tensor_variable(
-                    np.zeros(self._core_shape(name), dtype=floatX), name=name
-                )
-            else:
-                tensor = self._coerce(name, value)
-            setattr(self, name, tensor)
+                value = np.zeros(self._core_shape(name), dtype=floatX)
+            setattr(self, name, self._coerce(name, value))
 
     def _core_shape(self, name: str) -> tuple[int, ...]:
         k_endog, k_states, k_posdef = self.k_endog, self.k_states, self.k_posdef
@@ -218,65 +221,86 @@ class PytensorRepresentation:
         }[name]
 
     def _validate_name(self, name: str) -> None:
-        if name not in _CORE_NDIM:
+        if name not in CORE_DIMS:
             raise IndexError(f"{name!r} is an invalid state space matrix name")
 
     def _coerce(
-        self, name: str, value: np.ndarray | pt.TensorVariable | float | int
-    ) -> pt.TensorVariable:
-        """Wrap ``value`` as a named TensorVariable after validating the trailing core dims.
-
-        Anything to the left of the core dims is accepted unchanged -- ``core``,
-        ``(time, *core)``, ``(*batch, *core)``, and ``(*batch, time, *core)`` are all valid.
-        Whether a leading dim is "time" or "batch" is the model's decision, recorded via
-        ``declare_time_varying``; the rep itself does not guess.
-        """
-        core_ndim = _CORE_NDIM[name]
+        self, name: str, value: np.ndarray | pt.TensorVariable | XTensorVariable | float | int
+    ) -> XTensorVariable:
+        """Wrap ``value`` as a named XTensorVariable after validating its core dims."""
+        core_dims = CORE_DIMS[name]
         core_shape = self._core_shape(name)
 
-        if isinstance(value, np.ndarray):
-            tensor = pt.as_tensor_variable(value.astype(floatX), name=name)
-        elif isinstance(value, int | float):
-            tensor = pt.as_tensor_variable(np.asarray(value, dtype=floatX), name=name)
+        if isinstance(value, XTensorVariable):
+            missing_dims = [dim for dim in core_dims if dim not in value.dims]
+            if missing_dims:
+                raise ValueError(f"{name} must have dims {core_dims}, got {value.dims}")
+            foreign_dims = [
+                dim
+                for dim in value.dims
+                if dim in RESERVED_DIMS and dim not in (TIME_DIM, *core_dims)
+            ]
+            if foreign_dims:
+                raise ValueError(
+                    f"{name} has the reserved dims {foreign_dims}, which are core dims of other "
+                    f"matrices and so cannot be batch dims"
+                )
+            # Name a copy, never the caller's own variable: model parameters are looked up by name.
+            matrix = value.copy(name=name)
         else:
-            # Name a derived variable, never the caller's own: model parameters are looked up by
-            # name, so renaming one here would quietly break that lookup. ``copy`` drops tags, so
-            # carry them across by hand.
-            given = pt.as_tensor_variable(value)
-            tensor = given.copy(name=name)
-            tensor.tag = copy.copy(given.tag)
+            if isinstance(value, np.ndarray | int | float):
+                tensor = pt.as_tensor_variable(np.asarray(value, dtype=floatX))
+            else:
+                tensor = pt.as_tensor_variable(value)
 
-        if tensor.ndim < core_ndim:
-            raise ValueError(
-                f"{name} must have at least {core_ndim} dimension(s); got ndim={tensor.ndim}"
-            )
+            if tensor.ndim == len(core_dims):
+                dims = core_dims
+            elif tensor.ndim == len(core_dims) + 1:
+                dims = (TIME_DIM, *core_dims)
+            else:
+                raise ValueError(
+                    f"{name} must have the {len(core_dims)} core dims {core_dims}, optionally "
+                    f"after a leading time dim, but got ndim={tensor.ndim}. Assign an xtensor to "
+                    f"add batch dims."
+                )
+            matrix = as_xtensor(tensor, dims=dims, name=name)
 
-        trailing = tensor.type.shape[-core_ndim:]
-        for got, want in zip(trailing, core_shape, strict=True):
-            # A None entry in ``tensor.type.shape`` is a runtime-only dim (pytensor doesn't
-            # know its size at graph time). Skip; let it fail at runtime if wrong.
-            if got is not None and got != want:
-                raise ValueError(f"Trailing dims of {name} are {trailing}, expected {core_shape}")
+        sizes = dict(zip(matrix.dims, matrix.type.shape, strict=True))
+        for dim, want in zip(core_dims, core_shape, strict=True):
+            # A None size is only known at runtime. Let it fail there if wrong.
+            if sizes[dim] is not None and sizes[dim] != want:
+                raise ValueError(
+                    f"Core dims of {name} have sizes {[sizes[dim] for dim in core_dims]}, "
+                    f"expected {core_shape}"
+                )
 
-        return tensor
+        return matrix
 
     @property
     def time_varying_names(self) -> frozenset[str]:
-        """Names of matrices the model declared as time-varying.
+        """Names of the matrices that have a ``time`` dim."""
+        return frozenset(name for name in CORE_DIMS if TIME_DIM in getattr(self, name).dims)
 
-        The Kalman filter iterates over the leading dim of these tensors at scan time;
-        all other matrices are passed in as scan non-sequences (i.e. used unchanged at
-        every step).
-        """
-        return frozenset(self._time_varying_names)
+    def batch_dims(self, name: str) -> tuple[str, ...]:
+        """Return the dims of matrix ``name`` that are not reserved."""
+        return tuple(dim for dim in self[name].dims if dim not in RESERVED_DIMS)
 
-    def declare_time_varying(self, *names: str) -> None:
-        """Mark matrices as time-varying. The filter will iterate over the leading dim."""
-        for name in names:
-            self._validate_name(name)
-            self._time_varying_names.add(name)
+    def to_tensor(self, name: str) -> pt.TensorVariable:
+        """Return matrix ``name`` as a differentiable tensor laid out as ``(time?, *core)``."""
+        batch_dims = self.batch_dims(name)
+        if batch_dims:
+            raise NotImplementedError(
+                f"{name} has batch dims {batch_dims}, but batch dims on statespace matrices "
+                f"are not supported yet"
+            )
 
-    def __getitem__(self, key: KeyLike) -> pt.TensorVariable:
+        matrix = self[name]
+        time_dims = (TIME_DIM,) if TIME_DIM in matrix.dims else ()
+        tensor = matrix.transpose(*time_dims, *CORE_DIMS[name]).values
+        # Lowering can reduce the graph to a model parameter itself, so name a copy.
+        return rewrite_graph(tensor, include=("lower_xtensor",)).copy(name=name)
+
+    def __getitem__(self, key: KeyLike) -> XTensorVariable:
         if isinstance(key, str):
             self._validate_name(key)
             return getattr(self, key)
@@ -284,15 +308,15 @@ class PytensorRepresentation:
         if isinstance(key, tuple) and isinstance(key[0], str):
             name, *idx = key
             self._validate_name(name)
-            tensor = getattr(self, name)
+            matrix = getattr(self, name)
             if not idx:
-                return tensor
-            return tensor[tuple(idx)]
+                return matrix
+            return matrix[pointwise_index(tuple(idx))]
 
         raise IndexError("First index must the name of a valid state space matrix.")
 
     def __setitem__(
-        self, key: KeyLike, value: float | int | np.ndarray | pt.TensorVariable
+        self, key: KeyLike, value: float | int | np.ndarray | pt.TensorVariable | XTensorVariable
     ) -> None:
         if isinstance(key, str):
             self._validate_name(key)
@@ -303,9 +327,13 @@ class PytensorRepresentation:
             name, *idx = key
             self._validate_name(name)
             existing = getattr(self, name)
-            updated = pt.set_subtensor(existing[tuple(idx)], value)
+            target = existing[pointwise_index(tuple(idx))]
+            if not isinstance(value, XTensorVariable):
+                # Numpy broadcasting aligns a value with the trailing dims of its target.
+                value = pt.as_tensor_variable(value)
+                value = as_xtensor(value, dims=target.dims[target.ndim - value.ndim :])
+            updated = target.set(value)
             updated.name = existing.name
-            updated.tag = copy.copy(existing.tag)
             setattr(self, name, updated)
             return
 

@@ -213,7 +213,6 @@ def test_sample_conditional_with_time_varying():
 
             sigma_cov = self.make_and_register_variable("sigma_cov", (None,))
             self.ssm["state_cov"] = sigma_cov[:, None, None] ** 2
-            self.ssm.declare_time_varying("state_cov")
 
         @property
         def param_names(self) -> list[str]:
@@ -274,7 +273,6 @@ def test_impulse_response_with_time_varying_transition_and_selection(rng):
             t = pt.arange(self.n_timesteps)
             self.ssm["transition"] = (rho + 0.1 * t)[:, None, None]
             self.ssm["selection"] = (1.0 + t)[:, None, None]
-            self.ssm.declare_time_varying("transition", "selection")
 
         @property
         def param_names(self) -> list[str]:
