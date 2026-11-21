@@ -15,8 +15,10 @@ from pymc.model import Model, modelcontext
 from pymc.util import RandomState
 from pytensor.graph.basic import Variable
 from pytensor.graph.replace import graph_replace
+from pytensor.graph.rewriting.utils import rewrite_graph
 from pytensor.graph.traversal import explicit_graph_inputs
 from pytensor.raise_op import Assert
+from pytensor.xtensor import as_xtensor
 from rich.box import SIMPLE_HEAD
 from rich.console import Console
 from rich.table import Table
@@ -40,7 +42,7 @@ from pymc_extras.statespace.core.properties import (
     SymbolicVariable,
     SymbolicVariableInfo,
 )
-from pymc_extras.statespace.core.representation import PytensorRepresentation
+from pymc_extras.statespace.core.representation import CORE_DIMS, PytensorRepresentation
 from pymc_extras.statespace.filters import (
     ConvergentFilter,
     DisturbanceSmoother,
@@ -49,6 +51,7 @@ from pymc_extras.statespace.filters import (
     StandardFilter,
     UnivariateFilter,
 )
+from pymc_extras.statespace.filters.batched import build_batched_filter_graph
 from pymc_extras.statespace.filters.distributions import (
     InnovationsStateSpaceRV,
     KalmanFilterRV,
@@ -1035,9 +1038,10 @@ class PyMCStateSpace:
 
         Parameters
         ----------
-        data : numpy array, pandas DataFrame, or pytensor tensor
-            The observed data used to fit the state space model. It can be a NumPy array, a Pandas DataFrame,
-            or a Pytensor tensor variable.
+        data : numpy array, pandas DataFrame, pytensor tensor, or xr.DataArray
+            The observed data used to fit the state space model. A DataArray needs ``time`` and
+            ``observed_state`` dims, and every other dim it carries is a batch dim that the Kalman filter
+            runs over independently.
         loglikelihood_burn : int, optional
             Number of initial periods the Kalman filter runs through without adding them to the log-likelihood, as
             in statsmodels. Every later period is still scored conditional on them. Defaults to 0.
@@ -1045,7 +1049,7 @@ class PyMCStateSpace:
         pm_mod = modelcontext(None)
 
         obs_coords = pm_mod.coords.get(OBS_STATE_DIM, None)
-        filled_values, index, missing = prepare_data_for_pymc(
+        filled_values, index, missing, batch_coords = prepare_data_for_pymc(
             data,
             n_obs=self.ssm.k_endog,
             obs_coords=obs_coords,
@@ -1060,6 +1064,11 @@ class PyMCStateSpace:
             )
 
         if _has_statespace_graph(pm_mod):
+            if batch_coords:
+                raise NotImplementedError(
+                    "Rebuilding a model with data that has batch dims is not supported yet. Build "
+                    "into a fresh pm.Model instead."
+                )
             self._reenter_statespace_graph(filled_values, index, missing, loglikelihood_burn)
             return
 
@@ -1074,17 +1083,26 @@ class PyMCStateSpace:
         matrices = self._insert_random_variables()
         matrices = self._insert_data_variables(matrices)
 
-        data_variable = add_data_to_active_model(filled_values, index)
+        data_variable = add_data_to_active_model(filled_values, index, batch_coords=batch_coords)
 
         # Order is important here: only call _insert_data_shape_into_n_timesteps after data has been registered.
         matrices = self._insert_data_shape_into_n_timesteps(matrices, data_variable)
 
-        obs_dims = FILTER_OUTPUT_DIMS["predicted_observed_states"]
+        obs_dims = (TIME_DIM, *batch_coords, OBS_STATE_DIM)
         obs_dims = obs_dims if all([dim in pm_mod.coords.keys() for dim in obs_dims]) else None
 
-        self.make_likelihood(
-            data_variable, matrices, obs_dims, missing, loglikelihood_burn=loglikelihood_burn
-        )
+        if batch_coords:
+            self._make_batched_likelihood(
+                data_variable,
+                matrices,
+                obs_dims,
+                batch_dims=tuple(batch_coords),
+                loglikelihood_burn=loglikelihood_burn,
+            )
+        else:
+            self.make_likelihood(
+                data_variable, matrices, obs_dims, missing, loglikelihood_burn=loglikelihood_burn
+            )
         if loglikelihood_burn and LOGLIKELIHOOD_BURN_NAME not in pm_mod.named_vars:
             raise ValueError(
                 f"{type(self).__name__}.make_likelihood registered a likelihood that ignores "
@@ -1136,6 +1154,99 @@ class PyMCStateSpace:
         *_, observed_states = filter_outputs[:3]
         *_, observed_covariances = filter_outputs[3:]
 
+        return self._register_filter_likelihood(
+            data,
+            observed_states=observed_states,
+            observed_covariances=observed_covariances,
+            logp=logp,
+            dims=dims,
+            loglikelihood_burn=loglikelihood_burn,
+        )
+
+    def _make_batched_likelihood(
+        self,
+        data: pt.TensorVariable,
+        matrices: list[pt.TensorVariable],
+        dims: tuple[str, ...] | None,
+        batch_dims: tuple[str, ...],
+        loglikelihood_burn: int,
+    ) -> pt.TensorVariable:
+        """
+        Register a Kalman filter likelihood over data with batch dims and return it.
+
+        Parameters
+        ----------
+        data : TensorVariable
+            Observed data laid out as ``(time, *batch_dims, observed_state)``, already registered in
+            the active model.
+        matrices : list of TensorVariable
+            The state space matrices, with the model's variables and data substituted in.
+        dims : tuple of str, optional
+            Dims for the likelihood, or None when the model declares no matching coords.
+        batch_dims : tuple of str
+            Names of the batch dims of ``data``, in order.
+        loglikelihood_burn : int
+            Number of initial periods filtered but left out of the log-likelihood.
+
+        Returns
+        -------
+        likelihood : TensorVariable
+            The registered observed variable.
+        """
+        if self.filter_type != "standard":
+            raise NotImplementedError(
+                f"Data with batch dims needs filter_type='standard', got {self.filter_type!r}"
+            )
+        kalman_filter, _ = self.make_filters()
+
+        time_varying_names = self.ssm.time_varying_names
+        matrices = [
+            as_xtensor(
+                matrix,
+                dims=(TIME_DIM, *CORE_DIMS[name])
+                if name in time_varying_names
+                else CORE_DIMS[name],
+            )
+            for name, matrix in zip(LONG_MATRIX_NAMES, matrices, strict=True)
+        ]
+        data = pt.as_tensor_variable(data)
+        outputs = build_batched_filter_graph(
+            kalman_filter, as_xtensor(data, dims=(TIME_DIM, *batch_dims, OBS_STATE_DIM)), *matrices
+        )
+
+        # PyMC differentiates the likelihood as given, and xtensor ops have no pullback.
+        observed_states, observed_covariances, logp = rewrite_graph(
+            [
+                outputs[name].values
+                for name in (
+                    "predicted_observed_states",
+                    "predicted_observed_covariances",
+                    "loglike_obs",
+                )
+            ],
+            include=("lower_xtensor",),
+        )
+
+        return self._register_filter_likelihood(
+            data,
+            observed_states=observed_states,
+            observed_covariances=observed_covariances,
+            logp=logp,
+            dims=dims,
+            loglikelihood_burn=loglikelihood_burn,
+        )
+
+    @staticmethod
+    def _register_filter_likelihood(
+        data: pt.TensorVariable,
+        *,
+        observed_states: pt.TensorVariable,
+        observed_covariances: pt.TensorVariable,
+        logp: pt.TensorVariable,
+        dims: tuple[str, ...] | None,
+        loglikelihood_burn: int,
+    ) -> pt.TensorVariable:
+        """Register the filter's pointwise log-likelihood as ``obs``, burning its first periods."""
         burn = pm.Data(LOGLIKELIHOOD_BURN_NAME, np.int64(loglikelihood_burn))
         logp = assert_burn_leaves_periods_to_score(logp, pt.ge(burn, 0), pt.lt(burn, data.shape[0]))
         logp = pt.set_subtensor(logp[:burn], 0.0)
@@ -1360,12 +1471,15 @@ class PyMCStateSpace:
                 )
             data = pymc_model[OBSERVED_DATA_NAME]
 
+        data = pt.as_tensor_variable(data)
+        if data.ndim > 2:
+            raise NotImplementedError("Filter outputs do not support data with batch dims yet")
+
         x0, P0, c, d, T, Z, R, H, Q = self.unpack_statespace()
         kalman_filter, kalman_smoother = self.make_filters()
 
         # The last output is the pointwise log-likelihood, which the likelihood term owns; every
         # other output carries its canonical name, so key them by it rather than by position.
-        data = pt.as_tensor_variable(data)
         *filter_outputs, _ = kalman_filter.build_graph(data, x0, P0, c, d, T, Z, R, H, Q)
         outputs = {output.name: output for output in filter_outputs}
 

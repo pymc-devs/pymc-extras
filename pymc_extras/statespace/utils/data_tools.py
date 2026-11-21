@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
+import xarray as xr
 
 from pymc import modelcontext
 from pymc.exceptions import ImputationWarning
@@ -13,6 +14,7 @@ from pymc_extras.statespace.utils.constants import (
     MISSING_FILL,
     OBS_STATE_DIM,
     OBSERVED_DATA_NAME,
+    RESERVED_DIMS,
     TIME_DIM,
 )
 
@@ -91,30 +93,39 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
     col_names = data.columns
     _validate_data_shape(data.shape, n_obs, obs_coords, check_column_names, col_names)
 
-    if isinstance(data.index, pd.DatetimeIndex):
-        if data.index.freq is None:
+    return data.values, resolve_time_index(data.index, obs_coords)
+
+
+def resolve_time_index(index, obs_coords=None):
+    """
+    Validate the time index of observed data and return the index the model uses.
+
+    Parameters
+    ----------
+    index : pd.Index
+        Time index of the data.
+    obs_coords : sequence of str, optional
+        Names of the observed states. When given, an index that carries no dates gets a warning.
+
+    Returns
+    -------
+    index : pd.DatetimeIndex or numpy array
+        The index itself if it holds dates, with its frequency inferred when missing, and an integer
+        range otherwise.
+    """
+    if isinstance(index, pd.DatetimeIndex):
+        if index.freq is None:
             warnings.warn(NO_FREQ_INFO_WARNING)
-            data.index.freq = pd.DatetimeIndex(data.index, freq="infer").freq
+            index.freq = pd.DatetimeIndex(index, freq="infer").freq
+        return index
 
-        index = data.index
-        return data.values, index
+    if obs_coords is not None:
+        warnings.warn(NO_TIME_INDEX_WARNING)
 
-    elif isinstance(data.index, pd.RangeIndex):
-        if obs_coords is not None:
-            warnings.warn(NO_TIME_INDEX_WARNING)
-        return preprocess_numpy_data(data.values, n_obs, obs_coords)
-
-    elif isinstance(data.index, pd.MultiIndex):
-        if obs_coords is not None:
-            warnings.warn(NO_TIME_INDEX_WARNING)
-
+    if isinstance(index, pd.MultiIndex):
         raise NotImplementedError("MultiIndex panel data is not currently supported.")
 
-    else:
-        if obs_coords is not None:
-            warnings.warn(NO_TIME_INDEX_WARNING)
-
-        index = data.index
+    if not isinstance(index, pd.RangeIndex):
         if not np.issubdtype(index.dtype, np.integer):
             raise IndexError("Provided index is not an integer index.")
 
@@ -122,14 +133,88 @@ def preprocess_pandas_data(data, n_obs, obs_coords=None, check_column_names=Fals
         if not (index_diff == 1).all():
             raise IndexError("Provided index is not monotonic increasing.")
 
-        return preprocess_numpy_data(data.values, n_obs, obs_coords)
+    return np.arange(len(index), dtype="int")
 
 
-def add_data_to_active_model(values, index, data_dims=None):
+def preprocess_xarray_data(data, n_obs, obs_coords=None):
+    """
+    Lay out a DataArray as ``(time, *batch, observed_state)``.
+
+    Parameters
+    ----------
+    data : xr.DataArray
+        Observed data with ``time`` and ``observed_state`` dims, plus any batch dims.
+    n_obs : int
+        Number of observed states the model expects.
+    obs_coords : sequence of str, optional
+        Names of the observed states. When given, ``data`` is reordered to match them if it labels
+        its observed states.
+
+    Returns
+    -------
+    values : numpy array
+        The data with its dims transposed.
+    index : pandas Index or numpy array
+        Time index of the data, a range index when ``data`` has no ``time`` coord.
+    batch_coords : dict of str to numpy array
+        Coords of each batch dim in order, a range when ``data`` has no coord for it.
+    """
+    missing_dims = {TIME_DIM, OBS_STATE_DIM} - set(data.dims)
+    if missing_dims:
+        raise ValueError(
+            f"DataArray data must have {TIME_DIM!r} and {OBS_STATE_DIM!r} dims, got {data.dims}"
+        )
+    reserved_batch_dims = sorted(RESERVED_DIMS.intersection(data.dims) - {TIME_DIM, OBS_STATE_DIM})
+    if reserved_batch_dims:
+        raise ValueError(
+            f"DataArray data cannot have the dims {reserved_batch_dims}, which statespace models "
+            f"reserve. Rename them to use them as batch dims."
+        )
+    if data.sizes[OBS_STATE_DIM] != n_obs:
+        raise ValueError(
+            f"Shape of data does not match model output. Expected {n_obs} observed states, "
+            f"found {data.sizes[OBS_STATE_DIM]}."
+        )
+
+    if obs_coords is not None and OBS_STATE_DIM in data.coords:
+        labels = list(data.indexes[OBS_STATE_DIM])
+        if set(labels) != set(obs_coords):
+            raise ValueError(
+                f"DataArray data labels its observed states {labels}, but the model's are "
+                f"{list(obs_coords)}"
+            )
+        data = data.sel({OBS_STATE_DIM: list(obs_coords)})
+
+    data = data.transpose(TIME_DIM, ..., OBS_STATE_DIM)
+    batch_dims = data.dims[1:-1]
+
+    def coord_values(dim):
+        if dim in data.coords:
+            return data.indexes[dim]
+        return pd.RangeIndex(data.sizes[dim])
+
+    batch_coords = {dim: np.asarray(coord_values(dim)) for dim in batch_dims}
+    return data.values, resolve_time_index(coord_values(TIME_DIM), obs_coords), batch_coords
+
+
+def add_data_to_active_model(values, index, data_dims=None, batch_coords=None):
     pymc_mod = modelcontext(None)
+    if batch_coords is None:
+        batch_coords = {}
     if data_dims is None:
-        data_dims = [TIME_DIM, OBS_STATE_DIM]
+        data_dims = [TIME_DIM, *batch_coords, OBS_STATE_DIM]
     time_dim = data_dims[0]
+
+    for dim, labels in batch_coords.items():
+        if dim not in pymc_mod.coords:
+            pymc_mod.add_coord(dim, labels)
+        elif pymc_mod.coords[dim] is None:
+            pymc_mod.coords.update({dim: labels})
+        elif not np.array_equal(pymc_mod.coords[dim], tuple(labels)):
+            raise ValueError(
+                f"Provided data has different {dim!r} coords than the model. Please ensure that "
+                f"the {dim!r} values set on coords match those of the data."
+            )
 
     if isinstance(index, pd.Index):
         index = index.rename(time_dim)
@@ -146,12 +231,9 @@ def add_data_to_active_model(values, index, data_dims=None):
                 "set on coords matches that of the exogenous data."
             )
 
-    # If the data has just one column, we need to specify the shape as (None, 1), or else the JAX backend will
-    # raise a broadcasting error.
-    if values.shape[-1] == 1 or values.ndim == 1:
-        data_shape = (None, 1)
-    else:
-        data_shape = (None, values.shape[-1])
+    # Every dim but time is fixed, so that a single observed state is known to have size 1. The JAX
+    # backend raises a broadcasting error otherwise.
+    data_shape = (None, *values.shape[1:])
 
     data = pm.Data(OBSERVED_DATA_NAME, values, dims=data_dims, shape=data_shape)
 
@@ -221,8 +303,8 @@ def prepare_data_for_pymc(data, n_obs, obs_coords, missing_fill_value=None):
 
     Parameters
     ----------
-    data : pytensor tensor, numpy array, or pandas DataFrame or Series
-        Observed data to prepare.
+    data : pytensor tensor, numpy array, pandas DataFrame or Series, or xr.DataArray
+        Observed data to prepare. Only a DataArray can carry batch dims.
     n_obs : int
         Number of observed states the model expects.
     obs_coords : sequence of str, optional
@@ -238,25 +320,35 @@ def prepare_data_for_pymc(data, n_obs, obs_coords, missing_fill_value=None):
         Time index of the data.
     nan_mask : numpy array
         Boolean mask that is True where the data was missing.
+    batch_coords : dict of str to numpy array
+        Coords of each batch dim of the data, empty unless ``data`` is a DataArray with batch dims.
     """
-    if isinstance(data, pt.TensorVariable | TensorSharedVariable):
+    batch_coords = {}
+    if isinstance(data, xr.DataArray):
+        values, index, batch_coords = preprocess_xarray_data(data, n_obs, obs_coords)
+    elif isinstance(data, pt.TensorVariable | TensorSharedVariable):
         values, index = preprocess_tensor_data(data, n_obs, obs_coords)
     elif isinstance(data, np.ndarray):
         values, index = preprocess_numpy_data(data, n_obs, obs_coords)
     elif isinstance(data, pd.DataFrame | pd.Series):
         values, index = preprocess_pandas_data(data, n_obs, obs_coords)
     else:
-        raise ValueError("Data should be one of pytensor tensor, numpy array, or pandas dataframe")
+        raise ValueError(
+            "Data should be one of pytensor tensor, numpy array, pandas dataframe, or xarray "
+            "DataArray"
+        )
 
     filled_values, nan_mask = mask_missing_values_in_data(values, missing_fill_value)
 
-    return filled_values, index, nan_mask
+    return filled_values, index, nan_mask, batch_coords
 
 
 def register_data_with_pymc(data, n_obs, obs_coords, missing_fill_value=None, data_dims=None):
-    filled_values, index, nan_mask = prepare_data_for_pymc(
+    filled_values, index, nan_mask, batch_coords = prepare_data_for_pymc(
         data, n_obs, obs_coords, missing_fill_value
     )
+    if batch_coords:
+        raise NotImplementedError("Post-estimation does not support data with batch dims yet")
     data_variable = add_data_to_active_model(filled_values, index, data_dims)
 
     return data_variable, nan_mask
