@@ -87,7 +87,7 @@ def split_vars_into_seq_and_nonseq(params, param_names, time_varying_names: Iter
 
 
 def stabilize(cov, jitter):
-    cov = cov + pt.identity_like(cov) * jitter
+    cov = cov + pt.eye(dim_of(cov, -2), dim_of(cov, -1)) * jitter
 
     return cov
 

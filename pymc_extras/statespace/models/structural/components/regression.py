@@ -248,7 +248,6 @@ class Regression(Component):
             self.ssm["design"] = pt.linalg.block_diag(
                 *[pt.expand_dims(regression_data, 1) for _ in range(k_endog)]
             )
-        self.ssm.declare_time_varying("design")
 
         if self.innovations:
             sigma_beta = self.make_and_register_variable(

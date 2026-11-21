@@ -69,6 +69,10 @@ MATRIX_DIMS = {
     "Q": (SHOCK_DIM, SHOCK_AUX_DIM),
 }
 
+# Dims with a fixed meaning in a statespace graph. Every other dim of the data or a matrix is a
+# batch dim.
+RESERVED_DIMS = frozenset({TIME_DIM, OBS_STATE_DIM}.union(*MATRIX_DIMS.values()))
+
 
 def static_matrix_shapes(m: int, p: int, r: int) -> dict[str, tuple[int, ...]]:
     """Concrete shapes of the static (non-time-varying) state-space matrices.

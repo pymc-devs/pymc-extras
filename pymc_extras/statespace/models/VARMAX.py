@@ -702,7 +702,6 @@ class BayesianVARMAX(PyMCStateSpace):
 
             if self.exog_in_observation:
                 self.ssm["obs_intercept"] = exog_effect
-                self.ssm.declare_time_varying("obs_intercept")
             else:
                 state_intercept_terms.append(self._shift_exog_effect(exog_effect))
 
@@ -714,15 +713,14 @@ class BayesianVARMAX(PyMCStateSpace):
             padding = [(0, self.k_states - self.k_endog)]
             if effect.ndim == 2:
                 padding = [(0, 0), *padding]
-                self.ssm.declare_time_varying("state_intercept")
             self.ssm["state_intercept"] = pt.pad(effect, padding)
 
         if self.stationary_initialization:
             # Solve for matrix quadratic for P0
-            T = self.ssm["transition"]
-            R = self.ssm["selection"]
-            Q = self.ssm["state_cov"]
-            c = self.ssm["state_intercept"]
+            T = self.ssm.to_tensor("transition")
+            R = self.ssm.to_tensor("selection")
+            Q = self.ssm.to_tensor("state_cov")
+            c = self.ssm.to_tensor("state_intercept")
             if "state_intercept" in self.ssm.time_varying_names:
                 c = c[0]
 

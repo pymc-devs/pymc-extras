@@ -452,6 +452,10 @@ class BaseFilter(ABC):
         raise NotImplementedError
 
     def kalman_step(self, *args) -> tuple:
+        """Run :meth:`filter_step` on the scan inner-function arguments, in scan's order."""
+        return self.filter_step(*self.unpack_args(args))
+
+    def filter_step(self, y, a, P, c, d, T, Z, R, H, Q) -> tuple:
         """
         Performs a single iteration of the Kalman filter, which is composed of two steps : an update step and a
         prediction step. The timing convention follows [1], in which initial state and covariance estimates a0 and P0
@@ -522,7 +526,6 @@ class BaseFilter(ABC):
         .. [1] Durbin, J., and S. J. Koopman. Time Series Analysis by State Space Methods.
                2nd ed, Oxford University Press, 2012.
         """
-        y, a, P, c, d, T, Z, R, H, Q = self.unpack_args(args)
         y_masked, Z_masked, H_masked, d_masked, nan_mask = self.handle_missing_values(y, Z, H, d)
 
         a_filtered, P_filtered, obs_mu, obs_cov, ll = self.update(

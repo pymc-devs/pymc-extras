@@ -489,8 +489,8 @@ class BayesianETS(PyMCStateSpace):
 
     def _stationary_initialization(self):
         r"""Steady-state covariance of the one-step-ahead prediction, :math:`R Q R^T`."""
-        R = self.ssm["selection"]
-        Q = self.ssm["state_cov"]
+        R = self.ssm.to_tensor("selection")
+        Q = self.ssm.to_tensor("state_cov")
 
         return R @ Q @ R.T
 

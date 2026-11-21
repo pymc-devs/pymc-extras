@@ -590,12 +590,7 @@ class TimeSeasonality(Component):
         k_unique_params = self.n_seasons
 
         # Transition matrix
-        T = self._build_transition_matrix()
-        if T.ndim == 3:
-            self.ssm["transition"] = T
-            self.ssm.declare_time_varying("transition")
-        else:
-            self.ssm["transition"] = T
+        self.ssm["transition"] = self._build_transition_matrix()
 
         # Design matrix
         self.ssm["design"] = self._build_design_matrix()

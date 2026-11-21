@@ -3,8 +3,11 @@ import unittest
 import numpy as np
 import pytensor
 import pytensor.tensor as pt
+import pytest
 
 from numpy.testing import assert_allclose
+from pytensor.xtensor import as_xtensor
+from pytensor.xtensor.type import XTensorVariable
 
 from pymc_extras.statespace.core.representation import PytensorRepresentation
 from tests.statespace.shared_fixtures import TEST_SEED
@@ -29,7 +32,8 @@ class BasicFunctionality(unittest.TestCase):
     def test_assign_numpy_matrix(self):
         ssm = PytensorRepresentation(k_endog=3, k_states=5, k_posdef=1)
         ssm["transition"] = np.eye(5)
-        assert isinstance(ssm["transition"], pt.TensorVariable)
+        assert isinstance(ssm["transition"], XTensorVariable)
+        assert ssm["transition"].dims == ("state", "state_aux")
         assert_allclose(ssm["transition"].type.shape, (5, 5))
         assert ssm["transition"].name == "transition"
 
@@ -174,7 +178,55 @@ class BasicFunctionality(unittest.TestCase):
         with self.assertRaises(ValueError) as e:
             ssm["transition"] = T
         msg = str(e.exception)
-        self.assertEqual(msg, "Trailing dims of transition are (10, 10), expected (5, 5)")
+        self.assertEqual(msg, "Core dims of transition have sizes [10, 10], expected (5, 5)")
+
+
+def test_extra_leading_axis_is_time():
+    ssm = PytensorRepresentation(k_endog=1, k_states=2, k_posdef=1)
+    ssm["state_intercept"] = np.ones((10, 2))
+
+    assert ssm["state_intercept"].dims == ("time", "state")
+    assert ssm.time_varying_names == {"state_intercept"}
+    assert ssm.to_tensor("state_intercept").type.shape == (10, 2)
+
+
+def test_tensor_with_unnamed_batch_axis_raises():
+    ssm = PytensorRepresentation(k_endog=1, k_states=2, k_posdef=1)
+    with pytest.raises(ValueError, match="Assign an xtensor to add batch dims"):
+        ssm["state_intercept"] = np.ones((3, 10, 2))
+
+
+def test_batch_dims_are_kept_but_cannot_be_lowered():
+    ssm = PytensorRepresentation(k_endog=1, k_states=2, k_posdef=1)
+    ssm["transition"] = as_xtensor(np.ones((4, 2, 2)), dims=("series", "state", "state_aux"))
+
+    assert ssm.batch_dims("transition") == ("series",)
+    assert ssm.time_varying_names == frozenset()
+    with pytest.raises(NotImplementedError, match="batch dims"):
+        ssm.to_tensor("transition")
+
+
+def test_core_dim_of_another_matrix_cannot_be_a_batch_dim():
+    ssm = PytensorRepresentation(k_endog=1, k_states=2, k_posdef=1)
+    with pytest.raises(ValueError, match="reserved dims"):
+        ssm["obs_intercept"] = as_xtensor(np.ones((2, 1)), dims=("state", "observed_state"))
+
+
+def test_to_tensor_puts_time_first():
+    ssm = PytensorRepresentation(k_endog=1, k_states=2, k_posdef=1)
+    design = np.arange(20.0).reshape(1, 2, 10)
+    ssm["design"] = as_xtensor(design, dims=("observed_state", "state", "time"))
+
+    assert_allclose(fast_eval(ssm.to_tensor("design")), design.transpose(2, 0, 1))
+
+
+def test_array_indices_select_pointwise():
+    ssm = PytensorRepresentation(k_endog=1, k_states=3, k_posdef=3)
+    sigma = pt.vector("sigma", shape=(2,))
+    ssm["state_cov", [0, 2], [0, 2]] = sigma
+
+    assert_allclose(ssm["state_cov"].eval({sigma: [1.0, 2.0]}), np.diag([1.0, 0.0, 2.0]))
+    assert_allclose(ssm["state_cov", [0, 2], [0, 2]].eval({sigma: [1.0, 2.0]}), [1.0, 2.0])
 
 
 if __name__ == "__main__":

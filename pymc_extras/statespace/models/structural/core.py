@@ -279,7 +279,6 @@ class StructuralTimeSeries(PyMCStateSpace):
         self.ssm = PytensorRepresentation(
             k_endog=ssm.k_endog, k_states=ssm.k_states, k_posdef=self.k_posdef, **matrices
         )
-        self.ssm.declare_time_varying(*ssm.time_varying_names)
 
     def _populate_properties(self) -> None:
         # The base class method needs to be overridden because we directly set properties in
@@ -862,9 +861,9 @@ class Component:
         self_observed_states = self.observed_state_names
         other_observed_states = other.observed_state_names
 
-        x0, P0, c, d, T, Z, R, H, Q = (self.ssm[name] for name in LONG_MATRIX_NAMES)
+        x0, P0, c, d, T, Z, R, H, Q = (self.ssm.to_tensor(name) for name in LONG_MATRIX_NAMES)
         o_x0, o_P0, o_c, o_d, o_T, o_Z, o_R, o_H, o_Q = (
-            other.ssm[name] for name in LONG_MATRIX_NAMES
+            other.ssm.to_tensor(name) for name in LONG_MATRIX_NAMES
         )
 
         initial_state = pt.concatenate(conform_time_varying_and_time_invariant_matrices(x0, o_x0))
@@ -926,7 +925,6 @@ class Component:
             obs_cov=obs_cov,
             state_cov=state_cov,
         )
-        new_ssm.declare_time_varying(*(self.ssm.time_varying_names | other.ssm.time_varying_names))
 
         return new_ssm
 

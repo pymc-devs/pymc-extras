@@ -1,10 +1,13 @@
 import pickle
 
+from contextlib import nullcontext
+
 import numpy as np
 import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import pytest
+import xarray as xr
 
 from numpy.testing import assert_allclose
 from pymc.exceptions import ImputationWarning
@@ -21,8 +24,10 @@ from pymc_extras.statespace.models.DFM import BayesianDynamicFactor
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_DIMS,
     JITTER_DEFAULT,
+    LONG_MATRIX_NAMES,
     MISSING_FILL,
 )
+from pymc_extras.statespace.utils.data_tools import NO_TIME_INDEX_WARNING
 from tests.statespace.shared_fixtures import (
     rng,
 )
@@ -652,12 +657,14 @@ def test_post_estimation_leaves_template_matrices_alone(
     substituted matrices would still compare equal element-wise while pointing at nodes bound to a
     model that has gone out of scope.
     """
-    before = list(ss_mod._unpack_statespace_with_placeholders())
+    before = [ss_mod.ssm[name] for name in LONG_MATRIX_NAMES]
     getattr(ss_mod, method_name)(idata, random_seed=rng, **kwargs)
-    after = list(ss_mod._unpack_statespace_with_placeholders())
+    after = [ss_mod.ssm[name] for name in LONG_MATRIX_NAMES]
 
     assert all(x is y for x, y in zip(before, after, strict=True))
     assert not set(pymc_mod.basic_RVs).intersection(ancestors(after))
+    unpacked = list(ss_mod._unpack_statespace_with_placeholders())
+    assert not set(pymc_mod.basic_RVs).intersection(ancestors(unpacked))
 
 
 def test_a_plain_model_is_filtered():
@@ -778,3 +785,111 @@ def test_rebuilding_a_closed_form_likelihood_with_a_burn_raises():
 
         with pytest.raises(ValueError, match="closed-form"):
             mod.build_statespace_graph(data, loglikelihood_burn=5)
+
+
+def build_local_level_model(data, filter_type="standard", loglikelihood_burn=0):
+    mod = (st.LevelTrend(order=1, innovations_order=1) + st.MeasurementError()).build(
+        verbose=False, filter_type=filter_type
+    )
+    with pm.Model(coords=mod.coords) as pymc_model:
+        pm.Normal("initial_level_trend", dims=mod.param_dims["initial_level_trend"])
+        pm.Exponential("sigma_level_trend", 1.0, dims=mod.param_dims["sigma_level_trend"])
+        pm.Exponential("sigma_MeasurementError", 1.0)
+        pm.Deterministic("P0", pt.eye(mod.k_states), dims=mod.param_dims["P0"])
+        with pytest.warns(UserWarning, match=NO_TIME_INDEX_WARNING):
+            mod.build_statespace_graph(data, loglikelihood_burn=loglikelihood_burn)
+    return mod, pymc_model
+
+
+def obs_logp_and_grad(model):
+    """Compile the pointwise log-likelihood and its gradient with respect to the model's values."""
+    obs_logp = model.logp(vars=[model["obs"]], sum=False)[0]
+    grads = pt.grad(obs_logp.sum(), model.value_vars)
+    return model.compile_fn([obs_logp, pt.concatenate([grad.ravel() for grad in grads])])
+
+
+# The batched gradient runs some Blockwise linalg ops in numba object mode, slow but correct.
+@pytest.mark.filterwarnings("ignore:Numba will use object mode:UserWarning")
+def test_batched_data_logp_matches_each_series_filtered_alone(rng):
+    values = rng.normal(size=(3, 20)).cumsum(axis=1)
+    values[1, 5:8] = np.nan
+    data = xr.DataArray(
+        values[..., None],
+        dims=("series", "time", "observed_state"),
+        coords={"series": ["a", "b", "c"]},
+    )
+
+    with pytest.warns(ImputationWarning):
+        _, batched_model = build_local_level_model(data, loglikelihood_burn=2)
+    point = batched_model.initial_point()
+    # A failed rewrite is only logged, so make it raise to keep the batched graph rewritable.
+    with pytensor.config.change_flags(on_opt_error="raise"):
+        batched_logp, batched_grad = obs_logp_and_grad(batched_model)(point)
+
+    assert batched_model.named_vars_to_dims["obs"] == ("time", "series", "observed_state")
+    assert batched_logp.shape == (20, 3)
+    summed_grad = 0
+    for series, series_values in enumerate(values):
+        with pytest.warns(ImputationWarning) if np.isnan(series_values).any() else nullcontext():
+            _, model = build_local_level_model(data.isel(series=series), loglikelihood_burn=2)
+        logp, grad = obs_logp_and_grad(model)(point)
+        assert_allclose(batched_logp[:, series], logp)
+        summed_grad = summed_grad + grad
+
+    assert_allclose(batched_grad, summed_grad)
+
+
+def test_batched_data_scans_a_time_varying_design(rng):
+    exog = rng.normal(size=(20, 1))
+    data = xr.DataArray(
+        rng.normal(size=(3, 20, 1)).cumsum(axis=1), dims=("series", "time", "observed_state")
+    )
+
+    def build(observed):
+        mod = (
+            st.LevelTrend(order=1, innovations_order=1)
+            + st.Regression(name="exog", state_names=["x"])
+            + st.MeasurementError()
+        ).build(verbose=False)
+        with pm.Model(coords={**mod.coords, "time": np.arange(20)}) as pymc_model:
+            pm.Normal("initial_level_trend", dims=mod.param_dims["initial_level_trend"])
+            pm.Exponential("sigma_level_trend", 1.0, dims=mod.param_dims["sigma_level_trend"])
+            pm.Normal("beta_exog", dims=mod.param_dims["beta_exog"])
+            pm.Exponential("sigma_MeasurementError", 1.0)
+            pm.Deterministic("P0", pt.eye(mod.k_states), dims=mod.param_dims["P0"])
+            pm.Data("data_exog", exog, dims=("time", "state_exog"))
+            with pytest.warns(UserWarning, match=NO_TIME_INDEX_WARNING):
+                mod.build_statespace_graph(observed)
+        assert mod.ssm.time_varying_names == {"design"}
+        return pymc_model
+
+    batched_model = build(data)
+    point = batched_model.initial_point()
+    batched_logp = batched_model.compile_logp(vars=[batched_model["obs"]], sum=False)(point)[0]
+
+    for series in range(3):
+        model = build(data.isel(series=series))
+        logp = model.compile_logp(vars=[model["obs"]], sum=False)(point)[0]
+        assert_allclose(batched_logp[:, series], logp)
+
+
+@pytest.mark.parametrize("filter_type", ["univariate", "cholesky", "convergent"])
+def test_batched_data_needs_the_standard_filter(filter_type):
+    data = xr.DataArray(np.zeros((2, 10, 1)), dims=("series", "time", "observed_state"))
+    with pytest.raises(NotImplementedError, match="filter_type='standard'"):
+        build_local_level_model(data, filter_type=filter_type)
+
+
+def test_rebuild_with_batched_data_raises():
+    data = xr.DataArray(np.zeros((2, 10, 1)), dims=("series", "time", "observed_state"))
+    mod, pymc_model = build_local_level_model(data)
+    with pymc_model, pytest.raises(NotImplementedError, match=r"fresh pm\.Model"):
+        with pytest.warns(UserWarning, match=NO_TIME_INDEX_WARNING):
+            mod.build_statespace_graph(data)
+
+
+def test_make_filter_outputs_rejects_batched_data():
+    data = xr.DataArray(np.zeros((2, 10, 1)), dims=("series", "time", "observed_state"))
+    mod, pymc_model = build_local_level_model(data)
+    with pymc_model, pytest.raises(NotImplementedError, match="batch dims"):
+        mod.make_filter_outputs()

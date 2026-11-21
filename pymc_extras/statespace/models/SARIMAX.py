@@ -538,10 +538,10 @@ class BayesianSARIMAX(PyMCStateSpace):
 
     def _stationary_initialization(self):
         # Solve for matrix quadratic for P0
-        T = self.ssm["transition"]
-        R = self.ssm["selection"]
-        Q = self.ssm["state_cov"]
-        c = self.ssm["state_intercept"]
+        T = self.ssm.to_tensor("transition")
+        R = self.ssm.to_tensor("selection")
+        Q = self.ssm.to_tensor("state_cov")
+        c = self.ssm.to_tensor("state_intercept")
         if "state_intercept" in self.ssm.time_varying_names:
             c = c[0]
 
@@ -623,7 +623,6 @@ class BayesianSARIMAX(PyMCStateSpace):
         design = trend_design(self.trend_powers, self.n_timesteps, self.trend_offset + 1)
         intercept = pt.zeros((self.n_timesteps, self.k_states), dtype=floatX)
         self.ssm["state_intercept"] = pt.set_subtensor(intercept[:, row], design @ trend_params)
-        self.ssm.declare_time_varying("state_intercept")
 
     def make_symbolic_graph(self) -> None:
         p, d, q = self.p, self.d, self.q
@@ -757,7 +756,6 @@ class BayesianSARIMAX(PyMCStateSpace):
             )
 
             self.ssm["obs_intercept"] = (exog_data @ exog_beta)[:, None]
-            self.ssm.declare_time_varying("obs_intercept")
 
         if self.trend_powers:
             self._register_trend()
