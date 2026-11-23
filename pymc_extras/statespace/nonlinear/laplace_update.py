@@ -1,14 +1,11 @@
 from collections.abc import Sequence
 from typing import NamedTuple
 
-import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
 from pytensor.assumptions import assume
-from pytensor.compile.builders import OpFromGraph
 from pytensor.gradient import (
-    DisconnectedType,
     disconnected_grad,
     grad,
     hessian,
@@ -124,11 +121,8 @@ def laplace_mode(
     .. [1] Rasmussen, C. E., and C. K. I. Williams. Gaussian Processes for Machine Learning.
            MIT Press, 2006. Section 3.4.3.
     """
-    eigenvalues, eigenvectors = _eigh(predictive_covariance)
-    positive = eigenvalues > 0
-    predictive_factor = eigenvectors * pt.where(
-        positive, pt.sqrt(pt.where(positive, eigenvalues, 1.0)), 0.0
-    )
+    eigenvalues, eigenvectors = pt.linalg.eigh(predictive_covariance)
+    predictive_factor = eigenvectors * pt.sqrt(pt.maximum(eigenvalues, 0.0))
 
     gradient = grad(logp, parameters)
 
@@ -530,46 +524,6 @@ def state_posterior(
     whitened_variance_reduction = pt.eye(whitened.shape[0]) - pt.linalg.inv(whitened_curvature)
     covariance = state_covariance - quad_form_sym(gain, whitened_variance_reduction)
     return mean, covariance
-
-
-def _eigh(matrix: TensorVariable) -> tuple[TensorVariable, TensorVariable]:
-    """Return ``pt.linalg.eigh(matrix)``, whose gradient drops the terms between equal eigenvalues."""
-    inner_matrix = matrix.type()
-    eigh = OpFromGraph(
-        [inner_matrix],
-        pt.linalg.eigh(inner_matrix),
-        pullback=_eigh_pullback,
-        name="eigh",
-    )
-    eigenvalues, eigenvectors = eigh(matrix)
-    return eigenvalues, eigenvectors
-
-
-def _eigh_pullback(inputs, outputs, output_grads):
-    r"""
-    Pull back through ``eigh`` with the eigenvector terms between equal eigenvalues set to zero.
-
-    The pullback of :math:`A = V \operatorname{diag}(w) V^\top` is
-    :math:`V (\operatorname{diag}(g_w) + F \odot V^\top g_V) V^\top` with
-    :math:`F_{ij} = 1 / (w_j - w_i)`. Rotating the eigenvectors of a repeated eigenvalue among
-    themselves changes nothing in :func:`laplace_mode`, so the antisymmetric part of
-    :math:`V^\top g_V` within that eigenspace is zero and the exact term there is zero. Eigenvalues
-    count as equal when they differ by at most a few hundred ulps of the largest.
-    """
-    eigenvalues, eigenvectors = outputs
-    eigenvalue_grad, eigenvector_grad = (
-        pt.zeros_like(output) if isinstance(output_grad.type, DisconnectedType) else output_grad
-        for output, output_grad in zip(outputs, output_grads, strict=True)
-    )
-
-    gaps = eigenvalues[None, :] - eigenvalues[:, None]
-    resolution = 256 * np.finfo(eigenvalues.dtype).eps * pt.max(pt.abs(eigenvalues))
-    distinct = pt.abs(gaps) > resolution
-    inverse_gaps = pt.where(distinct, 1 / pt.where(distinct, gaps, 1.0), 0.0)
-
-    inner = pt.diag(eigenvalue_grad) + inverse_gaps * (eigenvectors.T @ eigenvector_grad)
-    gradient = eigenvectors @ inner @ eigenvectors.T
-    return [pt.tril(gradient) + pt.triu(gradient, k=1).T]
 
 
 def stationary_state_posterior(
