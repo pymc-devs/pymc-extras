@@ -2,11 +2,13 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 
 import numpy as np
+import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import xarray as xr
 
 from numpy.typing import ArrayLike
+from pymc.model import modelcontext
 from pytensor.gradient import disconnected_grad, hessian
 from pytensor.tensor import TensorLike
 from pytensor.tensor.variable import TensorVariable
@@ -450,6 +452,67 @@ def scan_filter(
         ),
         **dict(zip(_RECORDED_NAMES, recorded, strict=True)),
     }
+
+
+def register_fused_likelihood(
+    *,
+    name: str,
+    fused: FusedStateSpace,
+    data: Mapping[str, TensorLike],
+    observed_masks: Mapping[str, TensorLike],
+    curvature: Literal["gauss_newton", "exact"],
+    line_search: LineSearch,
+    tolerance: float,
+    max_iterations: int,
+) -> TensorVariable:
+    r"""
+    Add the log-likelihood of the filter from :func:`scan_filter` to the active model.
+
+    The statespace's parameters and data are the active model's variables with the names in its
+    ``param_names`` and ``data_names``, as in :meth:`PyMCStateSpace.build_statespace_graph`.
+
+    Parameters
+    ----------
+    name : str
+        Name of the potential that holds the log-likelihood.
+    fused : FusedStateSpace
+        The model and the statespace over its parameters.
+    data : mapping of str to TensorLike
+        For each data variable of the model and each observed variable whose observations are
+        constants, its padded values with the dates on the first axis.
+    observed_masks : mapping of str to TensorLike
+        For each observed variable, a boolean array with the dates on the first axis and the
+        variable's batch shape after it, True at its real observations.
+    curvature : {"gauss_newton", "exact"}
+        The curvature of the log-likelihood in the Newton iterations: the generalized Gauss-Newton
+        matrix of each observed variable, or the exact negative Hessian.
+    line_search : LineSearch
+        Search along each Newton direction.
+    tolerance : float
+        Largest absolute entry of the whitened Newton direction at which the iterations stop.
+    max_iterations : int
+        Most Newton iterations on each date.
+
+    Returns
+    -------
+    loglike : TensorVariable
+        The potential, the sum over dates of the ``loglike_obs`` from :func:`scan_filter`.
+    """
+    model = modelcontext(None)
+    scanned = scan_filter(
+        fused=fused,
+        statespace_parameters={
+            parameter: model[parameter] for parameter in fused.statespace.param_names
+        },
+        statespace_data={variable: model[variable] for variable in fused.statespace.data_names},
+        data=data,
+        observed_masks=observed_masks,
+        curvature=curvature,
+        line_search=line_search,
+        tolerance=tolerance,
+        max_iterations=max_iterations,
+    )
+    return pm.Potential(name, scanned["loglike_obs"].sum())
 
 
 _MATRIX_NDIMS = {"c": 1, "d": 1, "T": 2, "Z": 2, "R": 2, "H": 2, "Q": 2}

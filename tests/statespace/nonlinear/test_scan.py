@@ -11,6 +11,7 @@ from pymc_extras.statespace import structural as st
 from pymc_extras.statespace.nonlinear import (
     FusedStateSpace,
     observed_state_names,
+    register_fused_likelihood,
     run_filter,
     scan_filter,
 )
@@ -219,3 +220,89 @@ def test_loglike_gradient_with_parameters_sharing_a_state():
     loglike_up = loglike_and_gradient(point + step)[0]
     loglike_down = loglike_and_gradient(point - step)[0]
     assert_allclose(gradient, (loglike_up - loglike_down) / (2 * step), atol=1e-6)
+
+
+def test_model_logp_matches_build_statespace_graph():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        beta = pm.Normal("beta", dims="coef")
+        pm.Normal("y", mu=beta, sigma=0.5, observed=np.zeros(2))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    linear = (
+        st.LevelTrend(order=1, innovations_order=1, observed_state_names=["x1", "x2"])
+        + st.MeasurementError(name="noise", observed_state_names=["x1", "x2"])
+    ).build(verbose=False)
+
+    y = np.random.default_rng(0).normal(size=(6, 2))
+    with pm.Model() as fused_model:
+        pm.Normal("initial_level_trend", shape=(2, 1))
+        pm.HalfNormal("sigma_level_trend", shape=(2, 1))
+        pm.Deterministic("P0", pt.eye(2))
+        register_fused_likelihood(
+            name="loglike",
+            fused=fused,
+            data={"y": y},
+            observed_masks={"y": np.ones((6, 2), dtype=bool)},
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
+        )
+    with pm.Model() as linear_model:
+        pm.Normal("initial_level_trend", shape=(2, 1))
+        pm.HalfNormal("sigma_level_trend", shape=(2, 1))
+        pm.Deterministic("P0", pt.eye(2))
+        pm.Deterministic("sigma_noise", pt.as_tensor([0.5, 0.5]))
+        linear.build_statespace_graph(data=y)
+
+    fused_logp, linear_logp = fused_model.compile_logp(), linear_model.compile_logp()
+    point = {
+        "initial_level_trend": np.array([[0.3], [-0.2]]),
+        "sigma_level_trend_log__": np.log([[0.4], [0.2]]),
+    }
+    assert_allclose(fused_logp(point), linear_logp(point), atol=1e-10)
+
+
+def test_dlogp_vanishes_at_stored_mode():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        pm.Poisson("y", mu=pm.math.exp(X @ beta), observed=np.zeros(4, dtype=int))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+
+    rng = np.random.default_rng(0)
+    beta_path = np.cumsum(np.array([0.2, 0.4]) * rng.normal(size=(20, 2)), axis=0)
+    X_dates = rng.normal(scale=0.5, size=(20, 20, 2))
+    y_dates = rng.poisson(lam=np.exp(np.einsum("tnk,tk->tn", X_dates, beta_path)))
+    with pm.Model() as fused_model:
+        pm.Normal("initial_level_trend", shape=(2, 1))
+        pm.HalfNormal("sigma_level_trend", shape=(2, 1))
+        pm.Deterministic("P0", pt.eye(2))
+        register_fused_likelihood(
+            name="loglike",
+            fused=fused,
+            data={"X": X_dates, "y": y_dates},
+            observed_masks={"y": np.ones((20, 20), dtype=bool)},
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=50,
+        )
+
+    # The mode find_MAP reached with BFGS at tol=1e-12. Shifting both log scales by 0.01 moves
+    # their gradients to 0.04 or more.
+    mode = {
+        "initial_level_trend": np.array([[0.063079986435], [0.019299647647]]),
+        "sigma_level_trend_log__": np.log([[0.185623519401], [0.140406251664]]),
+    }
+    dlogp = fused_model.compile_dlogp(jacobian=False)
+    assert_allclose(dlogp(mode), 0.0, atol=1e-6)
