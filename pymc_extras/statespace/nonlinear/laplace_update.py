@@ -88,7 +88,9 @@ def laplace_mode(
     direction fails, when :math:`d` is not finite, or after ``max_iterations`` iterations. A
     direction within the tolerance is not taken. A ``scan`` that stops early cannot be compiled to
     JAX, so this runs on the numba and C backends. The predictive covariance is factored once, by
-    an eigendecomposition, so it may be singular.
+    an eigendecomposition, so it may be singular. The outputs carry no gradient:
+    :func:`implicit_mode` and :func:`stationary_state_posterior` differentiate the mode without
+    the iterations or the factorization.
 
     Parameters
     ----------
@@ -190,9 +192,9 @@ def laplace_mode(
     )
 
     return LaplaceMode(
-        whitened=whitened_trace[-1],
-        predictive_factor=predictive_factor,
-        whitened_curvature=assume(curvature_trace[-1], positive_definite=True),
+        whitened=disconnected_grad(whitened_trace[-1]),
+        predictive_factor=disconnected_grad(predictive_factor),
+        whitened_curvature=disconnected_grad(assume(curvature_trace[-1], positive_definite=True)),
         iterations=whitened_trace.shape[0],
         evaluations=evaluations.sum(),
         search_failed=failures.any(),

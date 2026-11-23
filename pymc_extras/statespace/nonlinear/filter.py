@@ -7,7 +7,7 @@ import pytensor.tensor as pt
 import xarray as xr
 
 from numpy.typing import ArrayLike
-from pytensor.gradient import hessian
+from pytensor.gradient import disconnected_grad, hessian
 from pytensor.tensor import TensorLike
 from pytensor.tensor.variable import TensorVariable
 from pytensor_ml.optim.line_search import LineSearch
@@ -23,6 +23,7 @@ from pymc_extras.statespace.nonlinear.laplace_update import (
     laplace_log_likelihood,
     laplace_mode,
     state_posterior,
+    stationary_state_posterior,
 )
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
@@ -51,14 +52,19 @@ def filter_step(
     line_search: LineSearch,
     tolerance: float,
     max_iterations: int,
-) -> tuple[TensorVariable, TensorVariable, TensorVariable, TensorVariable, LaplaceMode]:
+) -> tuple[
+    TensorVariable, TensorVariable, TensorVariable, TensorVariable, LaplaceMode, TensorVariable
+]:
     r"""
     Update the state on one date's observations by the Laplace approximation, then predict the next.
 
     The state predictive :math:`N(a, P)` implies the parameter predictive
     :math:`N(Z a + d, Z P Z^\top + H)`. :func:`laplace_mode` finds the mode of the parameters'
-    posterior under ``logp``, and :func:`state_posterior` lifts it to the state. The filtered state
-    is then predicted to the next date with :meth:`BaseFilter.predict`.
+    posterior under ``logp``. The filtered moments take their values from :func:`state_posterior`,
+    which lifts the mode to the state, and their gradients from
+    :func:`stationary_state_posterior` at the mode from :func:`implicit_mode`, so no gradient passes
+    through the iterations or the factorization of the parameter predictive. The filtered state is
+    then predicted to the next date with :meth:`BaseFilter.predict`.
 
     Parameters
     ----------
@@ -94,17 +100,29 @@ def filter_step(
         State covariance predicted for the next date, shape ``(m, m)``.
     mode : LaplaceMode
         The parameters' mode and the iteration diagnostics.
+    parameter_mode : TensorVariable
+        The parameters' mode from :func:`implicit_mode`, shape ``(k,)``.
     """
+    parameter_mean = Z @ predicted_mean + d
+    parameter_covariance = quad_form_sym(Z, predicted_covariance) + H
     mode = laplace_mode(
         logp=logp,
         parameters=parameters,
         curvature=curvature,
-        predictive_mean=Z @ predicted_mean + d,
-        predictive_covariance=quad_form_sym(Z, predicted_covariance) + H,
+        predictive_mean=parameter_mean,
+        predictive_covariance=parameter_covariance,
         line_search=line_search,
         tolerance=tolerance,
         max_iterations=max_iterations,
     )
+    parameter_mode = implicit_mode(
+        mode=parameter_mean + mode.predictive_factor @ mode.whitened,
+        logp=logp,
+        parameters=parameters,
+        predictive_mean=parameter_mean,
+        predictive_covariance=parameter_covariance,
+    )
+
     filtered_mean, filtered_covariance = state_posterior(
         whitened=mode.whitened,
         predictive_factor=mode.predictive_factor,
@@ -113,10 +131,32 @@ def filter_step(
         state_covariance=predicted_covariance,
         design=Z,
     )
+    stationary_mean, stationary_covariance = stationary_state_posterior(
+        mode=parameter_mode,
+        logp=logp,
+        curvature=curvature,
+        parameters=parameters,
+        predictive_covariance=parameter_covariance,
+        state_mean=predicted_mean,
+        state_covariance=predicted_covariance,
+        design=Z,
+    )
+    filtered_mean = _value_with_gradient_of(value=filtered_mean, gradient=stationary_mean)
+    filtered_covariance = _value_with_gradient_of(
+        value=filtered_covariance, gradient=stationary_covariance
+    )
+
     next_predicted_mean, next_predicted_covariance = BaseFilter.predict(
         a=filtered_mean, P=filtered_covariance, c=c, T=T, R=R, Q=Q
     )
-    return filtered_mean, filtered_covariance, next_predicted_mean, next_predicted_covariance, mode
+    return (
+        filtered_mean,
+        filtered_covariance,
+        next_predicted_mean,
+        next_predicted_covariance,
+        mode,
+        parameter_mode,
+    )
 
 
 def run_filter(
@@ -461,27 +501,22 @@ def _date_update(
         observation_logps=observation_logps,
         parameters=parameters,
     )
-    filtered_mean, filtered_covariance, next_mean, next_covariance, mode = filter_step(
-        logp=logp,
-        curvature=curvature_matrix,
-        parameters=parameters,
-        predicted_mean=predicted_mean,
-        predicted_covariance=predicted_covariance,
-        **matrices,
-        line_search=line_search,
-        tolerance=tolerance,
-        max_iterations=max_iterations,
+    filtered_mean, filtered_covariance, next_mean, next_covariance, mode, parameter_mode = (
+        filter_step(
+            logp=logp,
+            curvature=curvature_matrix,
+            parameters=parameters,
+            predicted_mean=predicted_mean,
+            predicted_covariance=predicted_covariance,
+            **matrices,
+            line_search=line_search,
+            tolerance=tolerance,
+            max_iterations=max_iterations,
+        )
     )
 
     parameter_mean = matrices["Z"] @ predicted_mean + matrices["d"]
     parameter_covariance = quad_form_sym(matrices["Z"], predicted_covariance) + matrices["H"]
-    parameter_mode = implicit_mode(
-        mode=parameter_mean + mode.predictive_factor @ mode.whitened,
-        logp=logp,
-        parameters=parameters,
-        predictive_mean=parameter_mean,
-        predictive_covariance=parameter_covariance,
-    )
     loglike = laplace_log_likelihood(
         mode=parameter_mode,
         logp=logp,
@@ -502,6 +537,11 @@ def _date_update(
         mode.converged,
     ]
     return next_mean, next_covariance, dict(zip(_RECORDED_NAMES, recorded, strict=True))
+
+
+def _value_with_gradient_of(*, value: TensorVariable, gradient: TensorVariable) -> TensorVariable:
+    """Return the value of ``value`` with the gradient of ``gradient``."""
+    return gradient + disconnected_grad(value - gradient)
 
 
 def _curvature(

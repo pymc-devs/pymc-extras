@@ -57,7 +57,7 @@ def test_step_matches_standard_filter_linear_case():
 
     predicted_mean = pt.vector("predicted_mean", shape=(4,))
     predicted_covariance = pt.matrix("predicted_covariance", shape=(4, 4))
-    filtered_mean, filtered_covariance, next_mean, next_covariance, mode = filter_step(
+    filtered_mean, filtered_covariance, next_mean, next_covariance, mode, _ = filter_step(
         logp=pointwise_logp.sum(),
         curvature=gauss_newton_curvature(
             pointwise_logp=pointwise_logp,
@@ -595,6 +595,17 @@ def test_date_out_of_iterations_is_not_converged():
     assert filtered["diagnostics/converged"].values.tolist() == [False]
     assert filtered["diagnostics/search_failed"].values.tolist() == [False]
     assert filtered["diagnostics/invalid_direction"].values.tolist() == [False]
+
+    # With one state equal to the parameter and no parameter noise, the filtered mean is the
+    # iterate itself, and the covariance is the Laplace posterior's at that iterate, whose
+    # Gauss-Newton curvature for three unit-variance observations of exp(alpha) is 3 exp(2 alpha).
+    outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
+    iterate = outputs["filtered_states"].values[0, 0]
+    assert_allclose(
+        outputs["filtered_covariances"].values[0, 0, 0],
+        1 / (1 / 1.0 + 3 * np.exp(2 * iterate)),
+        atol=1e-10,
+    )
 
 
 def test_non_finite_observations_raise():

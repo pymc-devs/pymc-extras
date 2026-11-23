@@ -123,3 +123,99 @@ def test_masks_for_other_observed_variables_raise():
             tolerance=1e-10,
             max_iterations=10,
         )
+
+
+@pytest.mark.parametrize(
+    "base_covariance",
+    [[[1.0, 0.3], [0.3, 0.5]], [[1.0, 0.0], [0.0, 1.0]], [[1.0, 1.0], [1.0, 1.0]]],
+    ids=["full_rank", "isotropic", "singular"],
+)
+def test_loglike_gradient_matches_finite_differences(base_covariance):
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        pm.Poisson("y", mu=pm.math.exp(X @ beta), observed=np.zeros(4, dtype=int))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+
+    rng = np.random.default_rng(0)
+    sigma = pt.vector("sigma", shape=(2,))
+    initial_scale = pt.scalar("initial_scale")
+    scanned = scan_filter(
+        fused=fused,
+        statespace_parameters={
+            "initial_level_trend": np.zeros((2, 1)),
+            "sigma_level_trend": sigma[:, None],
+            "P0": initial_scale**2 * pt.as_tensor(np.array(base_covariance)),
+        },
+        statespace_data={},
+        data={"X": rng.normal(size=(3, 4, 2)), "y": rng.poisson(lam=2.0, size=(3, 4))},
+        observed_masks={"y": np.ones((3, 4), dtype=bool)},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=50,
+    )
+    loglike = scanned["loglike_obs"].sum()
+    inputs = [sigma, initial_scale]
+    loglike_and_gradients = pytensor.function(inputs, [loglike, *pytensor.grad(loglike, inputs)])
+
+    point = [np.array([0.3, 0.3]), np.array(0.8)]
+    _, *gradients = loglike_and_gradients(*point)
+
+    step = 1e-6
+    for position, gradient in enumerate(gradients):
+        finite_differences = np.zeros_like(point[position])
+        for index in np.ndindex(point[position].shape):
+            shifted = [value.copy() for value in point]
+            shifted[position][index] += step
+            loglike_up = loglike_and_gradients(*shifted)[0]
+            shifted[position][index] -= 2 * step
+            loglike_down = loglike_and_gradients(*shifted)[0]
+            finite_differences[index] = (loglike_up - loglike_down) / (2 * step)
+        assert_allclose(gradient, finite_differences, atol=1e-6)
+
+
+def test_loglike_gradient_with_parameters_sharing_a_state():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        pm.Poisson("y", mu=pm.math.exp(X @ beta), observed=np.zeros(4, dtype=int))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"], share_states=True
+    ).build(verbose=False)
+    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+
+    rng = np.random.default_rng(0)
+    sigma = pt.vector("sigma", shape=(1,))
+    scanned = scan_filter(
+        fused=fused,
+        statespace_parameters={
+            "initial_level_trend": np.zeros(1),
+            "sigma_level_trend": sigma,
+            "P0": np.eye(1),
+        },
+        statespace_data={},
+        data={"X": rng.normal(size=(3, 4, 2)), "y": rng.poisson(lam=2.0, size=(3, 4))},
+        observed_masks={"y": np.ones((3, 4), dtype=bool)},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=50,
+    )
+    loglike = scanned["loglike_obs"].sum()
+    loglike_and_gradient = pytensor.function([sigma], [loglike, pytensor.grad(loglike, sigma)])
+
+    point = np.array([0.3])
+    _, gradient = loglike_and_gradient(point)
+
+    step = 1e-6
+    loglike_up = loglike_and_gradient(point + step)[0]
+    loglike_down = loglike_and_gradient(point - step)[0]
+    assert_allclose(gradient, (loglike_up - loglike_down) / (2 * step), atol=1e-6)
