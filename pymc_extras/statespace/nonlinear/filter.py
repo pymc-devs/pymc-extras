@@ -404,9 +404,10 @@ def scan_filter(
     data_names, mask_names = list(data), list(observed_masks)
 
     def step(*arguments):
+        sequence_count = len(data_names) + len(mask_names)
         date_data = dict(zip(data_names, arguments[: len(data_names)], strict=True))
-        date_masks = dict(zip(mask_names, arguments[len(data_names) : -2], strict=True))
-        predicted_mean, predicted_covariance = arguments[-2:]
+        date_masks = dict(zip(mask_names, arguments[len(data_names) : sequence_count], strict=True))
+        predicted_mean, predicted_covariance, *date_matrices = arguments[sequence_count:]
 
         parameters = pt.vector("parameters", shape=(len(fused.statespace.observed_states),))
         observation_logps = fused.observation_logp(parameters=parameters, data=date_data)
@@ -424,7 +425,7 @@ def scan_filter(
             curvature=curvature,
             predicted_mean=predicted_mean,
             predicted_covariance=predicted_covariance,
-            matrices=matrices,
+            matrices=dict(zip(matrices, date_matrices, strict=True)),
             line_search=line_search,
             tolerance=tolerance,
             max_iterations=max_iterations,
@@ -438,6 +439,7 @@ def scan_filter(
             *(pt.as_tensor_variable(masks) for masks in observed_masks.values()),
         ],
         outputs_info=[initial_mean, initial_covariance, *[None] * len(_RECORDED_NAMES)],
+        non_sequences=list(matrices.values()),
         name="fused_filter",
         return_updates=False,
     )
