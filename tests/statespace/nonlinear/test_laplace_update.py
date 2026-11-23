@@ -14,6 +14,7 @@ from pymc_extras.statespace.nonlinear import (
     laplace_mode,
     parameter_posterior,
     state_posterior,
+    stationary_state_posterior,
 )
 
 floatX = pytensor.config.floatX
@@ -932,3 +933,66 @@ def test_laplace_log_likelihood_evaluates_curvature_at_the_mode():
     )
     assert converged
     assert_allclose(log_likelihood, expected, atol=ATOL, rtol=RTOL)
+
+
+@pytest.mark.parametrize(
+    "design, parameter_noise",
+    [
+        ([[1.0, 0.5], [0.2, -0.7]], [[0.3, 0.0], [0.0, 0.5]]),
+        ([[0.6], [0.8]], [[0.0, 0.0], [0.0, 0.0]]),
+    ],
+    ids=["full_rank", "parameters_sharing_a_state"],
+)
+def test_stationary_state_posterior_matches_state_posterior_at_the_mode(design, parameter_noise):
+    design = np.array(design, dtype=floatX)
+    n_states = design.shape[1]
+    rng = np.random.default_rng(37)
+    state_mean = rng.normal(scale=0.3, size=n_states).astype(floatX)
+    root = rng.normal(size=(n_states, n_states))
+    state_covariance = (root @ root.T + np.eye(n_states)).astype(floatX)
+    predictive_mean = design @ state_mean
+    predictive_covariance = design @ state_covariance @ design.T + np.array(parameter_noise)
+    observation_design = rng.normal(scale=0.5, size=(6, 2)).astype(floatX)
+    observed = (
+        np.exp(observation_design @ np.array([0.5, -0.3])) + 0.1 * rng.normal(size=6)
+    ).astype(floatX)
+
+    parameters = pt.vector("parameters", shape=(2,))
+    logp = -0.5 * pt.sum((observed - pt.exp(observation_design @ parameters)) ** 2) / NOISE_SIGMA**2
+    curvature = -hessian(logp, parameters)
+    mode = laplace_mode(
+        logp=logp,
+        parameters=parameters,
+        curvature=curvature,
+        predictive_mean=pt.as_tensor(predictive_mean),
+        predictive_covariance=pt.as_tensor(predictive_covariance),
+        line_search=zoom_line_search(),
+        tolerance=1e-12,
+        max_iterations=50,
+    )
+    whitened_moments = state_posterior(
+        whitened=mode.whitened,
+        predictive_factor=mode.predictive_factor,
+        whitened_curvature=mode.whitened_curvature,
+        state_mean=pt.as_tensor(state_mean),
+        state_covariance=pt.as_tensor(state_covariance),
+        design=pt.as_tensor(design),
+    )
+    stationary_moments = stationary_state_posterior(
+        mode=pt.as_tensor(predictive_mean) + mode.predictive_factor @ mode.whitened,
+        logp=logp,
+        curvature=curvature,
+        parameters=parameters,
+        predictive_covariance=pt.as_tensor(predictive_covariance),
+        state_mean=pt.as_tensor(state_mean),
+        state_covariance=pt.as_tensor(state_covariance),
+        design=pt.as_tensor(design),
+    )
+    *values, converged = pytensor.function(
+        [], [*whitened_moments, *stationary_moments, mode.converged]
+    )()
+
+    assert converged
+    whitened_mean, whitened_covariance, stationary_mean, stationary_covariance = values
+    assert_allclose(stationary_mean, whitened_mean, atol=ATOL, rtol=RTOL)
+    assert_allclose(stationary_covariance, whitened_covariance, atol=ATOL, rtol=RTOL)

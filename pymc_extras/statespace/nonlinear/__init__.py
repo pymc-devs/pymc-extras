@@ -8,6 +8,7 @@ from pymc_extras.statespace.nonlinear.laplace_update import (
     laplace_mode,
     parameter_posterior,
     state_posterior,
+    stationary_state_posterior,
 )
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "run_filter",
     "scan_filter",
     "state_posterior",
+    "stationary_state_posterior",
 ]

@@ -568,3 +568,75 @@ def _eigh_pullback(inputs, outputs, output_grads):
     inner = pt.diag(eigenvalue_grad) + inverse_gaps * (eigenvectors.T @ eigenvector_grad)
     gradient = eigenvectors @ inner @ eigenvectors.T
     return [pt.tril(gradient) + pt.triu(gradient, k=1).T]
+
+
+def stationary_state_posterior(
+    *,
+    mode: TensorVariable,
+    logp: TensorVariable,
+    curvature: TensorVariable,
+    parameters: TensorVariable,
+    predictive_covariance: TensorVariable,
+    state_mean: TensorVariable,
+    state_covariance: TensorVariable,
+    design: TensorVariable,
+) -> tuple[TensorVariable, TensorVariable]:
+    r"""
+    Return the Gaussian posterior of the state from the stationarity of the parameters' mode.
+
+    At the mode, :math:`\hat\theta - \mu = \Sigma g` with :math:`g = \nabla \ell(\hat\theta)`,
+    so the posterior of :func:`state_posterior` is [1]_
+
+    .. math::
+
+        a^+ = a + P Z^\top g, \qquad
+        P^+ = P - P Z^\top \Lambda (I + \Sigma \Lambda)^{-1} Z P,
+
+    with :math:`\Lambda` the curvature at :math:`\hat\theta`. Neither needs a factor or an
+    inverse of :math:`\Sigma`, so with the mode from :func:`implicit_mode` the gradient passes
+    through neither. Both equal :func:`state_posterior` only where ``mode`` is the mode.
+
+    Parameters
+    ----------
+    mode : TensorVariable
+        The mode :math:`\hat\theta`, shape ``(k,)``.
+    logp : TensorVariable
+        Scalar log-likelihood of the observations, a graph of ``parameters``.
+    curvature : TensorVariable
+        Positive semidefinite approximation :math:`\Lambda` to the negative Hessian of ``logp``, a
+        graph of ``parameters``, shape ``(k, k)``.
+    parameters : TensorVariable
+        Input vector of the parameters, shape ``(k,)``, that ``logp`` and ``curvature`` are built on.
+    predictive_covariance : TensorVariable
+        Predictive covariance :math:`\Sigma = Z P Z^\top + H` of the parameters, shape ``(k, k)``.
+    state_mean : TensorVariable
+        Predictive mean :math:`a` of the state, shape ``(m,)``.
+    state_covariance : TensorVariable
+        Predictive covariance :math:`P` of the state, shape ``(m, m)``.
+    design : TensorVariable
+        Design matrix :math:`Z` from the state to the parameters, shape ``(k, m)``.
+
+    Returns
+    -------
+    mean : TensorVariable
+        Posterior mean of the state, shape ``(m,)``.
+    covariance : TensorVariable
+        Posterior covariance of the state, shape ``(m, m)``.
+
+    References
+    ----------
+    .. [1] Rasmussen, C. E., and C. K. I. Williams. Gaussian Processes for Machine Learning.
+           MIT Press, 2006. Equations 3.21 and 3.24.
+    """
+    gradient_at, curvature_at = graph_replace(
+        [grad(logp, parameters), curvature], {parameters: mode}
+    )
+    cross_covariance = state_covariance @ design.T
+    # Lambda (I + Sigma Lambda)^{-1} equals (I + Lambda Sigma)^{-1} Lambda.
+    precision_gain = pt.linalg.solve(
+        pt.eye(mode.shape[0]) + curvature_at @ predictive_covariance, curvature_at
+    )
+
+    mean = state_mean + cross_covariance @ gradient_at
+    covariance = state_covariance - quad_form_sym(cross_covariance, precision_gain)
+    return mean, covariance
