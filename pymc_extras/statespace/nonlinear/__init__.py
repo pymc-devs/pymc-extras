@@ -1,3 +1,4 @@
+from pymc_extras.statespace.nonlinear.cubature import cubature_points
 from pymc_extras.statespace.nonlinear.filter import (
     filter_step,
     register_fused_likelihood,
@@ -19,6 +20,7 @@ from pymc_extras.statespace.nonlinear.laplace_update import (
 __all__ = [
     "FusedStateSpace",
     "LaplaceMode",
+    "cubature_points",
     "filter_step",
     "gauss_newton_curvature",
     "implicit_mode",
