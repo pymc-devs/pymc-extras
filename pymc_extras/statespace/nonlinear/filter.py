@@ -113,6 +113,7 @@ def filter_step(
         curvature=curvature,
         predictive_mean=parameter_mean,
         predictive_covariance=parameter_covariance,
+        expectation="point",
         line_search=line_search,
         tolerance=tolerance,
         max_iterations=max_iterations,

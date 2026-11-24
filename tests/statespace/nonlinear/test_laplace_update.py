@@ -32,7 +32,8 @@ def regression_data(*, n_observations, n_parameters, seed):
     return design, observed, predictive_mean
 
 
-def test_newton_site_matches_conjugate_posterior():
+@pytest.mark.parametrize("expectation", ["point", "cubature"])
+def test_newton_site_matches_conjugate_posterior(expectation):
     design, observed, predictive_mean = regression_data(n_observations=10, n_parameters=3, seed=1)
     root = np.random.default_rng(2).normal(size=(3, 3))
     predictive_covariance = (root @ root.T + np.eye(3)).astype(floatX)
@@ -43,9 +44,10 @@ def test_newton_site_matches_conjugate_posterior():
     mode = newton_site(
         logp=logp,
         parameters=parameters,
-        curvature=-hessian(logp, parameters),
+        curvature=pt.as_tensor(design.T @ design / NOISE_SIGMA**2),
         predictive_mean=pt.as_tensor(predictive_mean),
         predictive_covariance=pt.as_tensor(predictive_covariance),
+        expectation=expectation,
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -73,6 +75,50 @@ def test_newton_site_matches_conjugate_posterior():
     assert evaluations == 1
 
 
+def test_cubature_site_matches_posterior_mean_of_a_scale_parameter():
+    observed = np.random.default_rng(0).normal(loc=1.0, scale=2.0, size=20)
+    parameters = pt.vector("parameters", shape=(2,))
+    location, log_scale = parameters[0], parameters[1]
+    logp = pt.sum(-log_scale - 0.5 * (observed - location) ** 2 * pt.exp(-2 * log_scale))
+    site = newton_site(
+        logp=logp,
+        parameters=parameters,
+        curvature=-hessian(logp, parameters),
+        predictive_mean=pt.zeros(2),
+        predictive_covariance=pt.eye(2),
+        expectation="cubature",
+        line_search=zoom_line_search(),
+        tolerance=1e-8,
+        max_iterations=50,
+    )
+    mean, _ = parameter_posterior(
+        whitened=site.whitened,
+        predictive_mean=pt.zeros(2),
+        predictive_factor=site.predictive_factor,
+        whitened_curvature=site.whitened_curvature,
+    )
+    mean, converged = pytensor.function([], [mean, site.converged])()
+
+    # The posterior mean on a grid. The Laplace site's log-scale mean is 0.045 below it.
+    grid_location, grid_log_scale = np.meshgrid(
+        np.linspace(-4, 5, 600), np.linspace(-3, 3, 600), indexing="ij"
+    )
+    log_posterior = (
+        -0.5 * grid_location**2
+        - 0.5 * grid_log_scale**2
+        - len(observed) * grid_log_scale
+        - 0.5
+        * ((observed[:, None, None] - grid_location) ** 2).sum(axis=0)
+        * np.exp(-2 * grid_log_scale)
+    )
+    weights = np.exp(log_posterior - log_posterior.max())
+    weights /= weights.sum()
+    posterior_mean = [(weights * grid_location).sum(), (weights * grid_log_scale).sum()]
+
+    assert converged
+    assert_allclose(mean, posterior_mean, atol=5e-3)
+
+
 def test_newton_site_handles_singular_predictive_covariance():
     design, observed, predictive_mean = regression_data(n_observations=10, n_parameters=2, seed=3)
     direction = np.array([0.6, 0.8], dtype=floatX)
@@ -92,6 +138,7 @@ def test_newton_site_handles_singular_predictive_covariance():
         predictive_covariance=pt.as_tensor(
             (direction_sd**2 * np.outer(direction, direction)).astype(floatX)
         ),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -134,6 +181,7 @@ def test_line_search_decreases_objective_far_from_mode():
         curvature=pt.as_tensor(curvature),
         predictive_mean=pt.as_tensor(predictive_mean),
         predictive_covariance=predictive_sd**2 * pt.eye(2),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=1,
@@ -172,6 +220,7 @@ def test_newton_site_reports_failed_line_search():
         curvature=pt.as_tensor(curvature),
         predictive_mean=pt.as_tensor(np.array([4.0, -4.0], dtype=floatX)),
         predictive_covariance=25.0 * pt.eye(2),
+        expectation="point",
         line_search=zoom_line_search(max_steps=1),
         tolerance=1e-10,
         max_iterations=10,
@@ -205,6 +254,7 @@ def test_newton_site_converges_to_student_t_mode():
         curvature=(design.T * weights) @ design,
         predictive_mean=pt.zeros(2),
         predictive_covariance=predictive_variance * pt.eye(2),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=50,
@@ -255,6 +305,7 @@ def test_newton_site_reports_unconverged_at_iteration_budget():
         curvature=(design.T * weights) @ design,
         predictive_mean=pt.zeros(2),
         predictive_covariance=25.0 * pt.eye(2),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=1,
@@ -279,6 +330,7 @@ def test_newton_site_stays_at_predictive_mean_when_it_is_the_mode():
         curvature=-hessian(logp, parameters),
         predictive_mean=pt.as_tensor(predictive_mean),
         predictive_covariance=pt.eye(2),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -305,6 +357,7 @@ def test_newton_site_stops_on_indefinite_curvature():
         curvature=-hessian(logp, parameters),
         predictive_mean=pt.as_tensor(np.array([0.3, -0.2], dtype=floatX)),
         predictive_covariance=4.0 * pt.eye(2),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-8,
         max_iterations=20,
@@ -384,6 +437,7 @@ def test_gauss_newton_moves_log_sigma():
         ),
         predictive_mean=pt.zeros(2),
         predictive_covariance=predictive_variance * pt.eye(2),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=50,
@@ -490,6 +544,7 @@ def lifted_posterior(*, logp, parameters, state_mean, state_covariance, design, 
         curvature=-hessian(logp, parameters),
         predictive_mean=pt.as_tensor(design @ state_mean + offset),
         predictive_covariance=pt.as_tensor(design @ state_covariance @ design.T + noise),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -695,6 +750,7 @@ def test_newton_site_reports_invalid_direction_after_a_step():
         curvature=pt.atleast_2d(9.0 - 200.0 * parameters[0] ** 2),
         predictive_mean=pt.zeros(1),
         predictive_covariance=pt.eye(1),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -721,6 +777,7 @@ def test_newton_site_factor_has_orthogonal_columns():
         curvature=-hessian(logp, parameters),
         predictive_mean=pt.zeros(3),
         predictive_covariance=pt.as_tensor(predictive_covariance),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -755,6 +812,7 @@ def test_implicit_gradient_matches_finite_differences(base_covariance):
         curvature=-hessian(logp, parameters),
         predictive_mean=predictive_mean,
         predictive_covariance=predictive_covariance,
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-12,
         max_iterations=50,
@@ -805,6 +863,7 @@ def test_implicit_mode_keeps_the_value_of_an_unconverged_mode():
         curvature=-hessian(logp, parameters),
         predictive_mean=predictive_mean,
         predictive_covariance=predictive_covariance,
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-12,
         max_iterations=1,
@@ -846,6 +905,7 @@ def test_laplace_log_likelihood_matches_gaussian_marginal(base_covariance):
         curvature=curvature,
         predictive_mean=predictive_mean,
         predictive_covariance=predictive_covariance,
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-12,
         max_iterations=10,
@@ -903,6 +963,7 @@ def test_laplace_log_likelihood_evaluates_curvature_at_the_mode():
         curvature=curvature,
         predictive_mean=pt.as_tensor(predictive_mean),
         predictive_covariance=pt.as_tensor(predictive_covariance),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-12,
         max_iterations=20,
@@ -966,6 +1027,7 @@ def test_stationary_state_posterior_matches_state_posterior_at_the_mode(design, 
         curvature=curvature,
         predictive_mean=pt.as_tensor(predictive_mean),
         predictive_covariance=pt.as_tensor(predictive_covariance),
+        expectation="point",
         line_search=zoom_line_search(),
         tolerance=1e-12,
         max_iterations=50,

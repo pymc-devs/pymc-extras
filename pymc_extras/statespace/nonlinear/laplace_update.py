@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import pytensor
 import pytensor.tensor as pt
@@ -19,11 +19,12 @@ from pytensor.tensor.variable import TensorVariable
 from pytensor_ml.optim.line_search import LineSearch, search_along
 
 from pymc_extras.statespace.filters.utilities import quad_form_sym
+from pymc_extras.statespace.nonlinear.cubature import cubature_points
 
 
 class NewtonSite(NamedTuple):
     r"""
-    The mode of the parameters' log posterior in whitened coordinates, and how it was found.
+    The Gaussian site on the parameters in whitened coordinates, and how it was found.
 
     Attributes
     ----------
@@ -33,7 +34,8 @@ class NewtonSite(NamedTuple):
         Factor :math:`L = V \operatorname{diag}(\sqrt{\max(\lambda, 0)})` of the predictive
         covariance from its eigendecomposition, so its columns are orthogonal, shape ``(k, k)``.
     whitened_curvature : TensorVariable
-        :math:`B` at :math:`\hat u`, shape ``(k, k)``, marked positive definite.
+        :math:`B` at :math:`\hat u`, shape ``(k, k)``, marked positive definite. The posterior of
+        :math:`u` is :math:`N(\hat u, B^{-1})`.
     iterations : TensorVariable
         Number of loop iterations, each of which searches along one Newton direction.
     evaluations : TensorVariable
@@ -45,8 +47,8 @@ class NewtonSite(NamedTuple):
         direction. A ``curvature`` that is not positive semidefinite can produce one, and then
         ``whitened_curvature`` may not be positive definite either.
     converged : TensorVariable
-        Whether the Newton direction at :math:`\hat u` is within the tolerance and the last search
-        did not fail.
+        Whether the Newton direction at :math:`\hat u` is within the tolerance, :math:`B` changed by
+        at most the tolerance in its last update, and the last search did not fail.
     """
 
     whitened: TensorVariable
@@ -66,28 +68,36 @@ def newton_site(
     curvature: TensorVariable,
     predictive_mean: TensorVariable,
     predictive_covariance: TensorVariable,
+    expectation: Literal["point", "cubature"],
     line_search: LineSearch,
     tolerance: float,
     max_iterations: int,
 ) -> NewtonSite:
     r"""
-    Find the mode of the parameters' log posterior by damped Newton steps from the predictive mean.
+    Find a Gaussian site on the parameters by damped Newton steps from the predictive mean.
 
     The parameters :math:`\theta` have the Gaussian predictive :math:`N(\mu, L L^\top)` and the
-    observations contribute :math:`\ell(\theta)`. Writing :math:`\theta = \mu + L u`, the iterations
-    minimize :math:`J(u) = -\ell(\mu + L u) + \tfrac{1}{2} u^\top u`, whose curvature
-    :math:`B = I + L^\top \Lambda L` is at least the identity whenever :math:`\Lambda` is positive
-    semidefinite [1]_. Each iteration searches along the Newton direction
-    :math:`d = -B^{-1} \nabla J(u)`, starting from the full step.
+    observations contribute :math:`\ell(\theta)`. Writing :math:`\theta = \mu + L u`, the posterior
+    of :math:`u` is approximated by :math:`N(m, B^{-1})`. With ``expectation="point"`` the
+    iterations minimize :math:`J(m) = -\ell(\mu + L m) + \tfrac{1}{2} m^\top m`, whose minimizer is
+    the mode at the center of the Laplace approximation [1]_. With ``expectation="cubature"`` they minimize
+    :math:`J(m) = -E[\ell(\mu + L u)] + \tfrac{1}{2} m^\top m` over :math:`u \sim N(m, B^{-1})`
+    with :math:`B` from the previous iterate, computed with :func:`cubature_points`, which is
+    natural-gradient variational inference [2]_. In both, :math:`B = I + L^\top \bar\Lambda L`
+    with :math:`\bar\Lambda` the curvature at the point or its expectation, at least the identity
+    whenever :math:`\Lambda` is positive semidefinite, and each iteration searches along the Newton
+    direction :math:`d = -B^{-1} \nabla J(m)`, starting from the full step. The cubature iterations
+    start from :math:`B = I`, the predictive.
 
     The iterations run inside the graph as a ``scan`` that stops when the largest entry of
-    :math:`d` at the current iterate is at most ``tolerance``, when a line search along a larger
-    direction fails, when :math:`d` is not finite, or after ``max_iterations`` iterations. A
-    direction within the tolerance is not taken. A ``scan`` that stops early cannot be compiled to
-    JAX, so this runs on the numba and C backends. The predictive covariance is factored once, by
-    an eigendecomposition, so it may be singular. The outputs carry no gradient:
-    :func:`implicit_mode` and :func:`stationary_state_posterior` differentiate the mode without
-    the iterations or the factorization.
+    :math:`d` at the current iterate is at most ``tolerance`` and the last update changed no entry
+    of :math:`B` by more than ``tolerance``, when a line search along a larger direction fails,
+    when :math:`d` is not finite, or after ``max_iterations`` iterations. A direction within the
+    tolerance is not taken. A ``scan`` that stops early cannot be compiled to JAX, so this runs on
+    the numba and C backends. The predictive covariance is factored once, by an
+    eigendecomposition, so it may be singular. The outputs carry no gradient:
+    :func:`implicit_mode` and :func:`stationary_state_posterior` differentiate the Laplace mode
+    without the iterations or the factorization.
 
     Parameters
     ----------
@@ -102,12 +112,15 @@ def newton_site(
         Predictive mean :math:`\mu` of the parameters, shape ``(k,)``.
     predictive_covariance : TensorVariable
         Symmetric positive semidefinite predictive covariance of the parameters, shape ``(k, k)``.
+    expectation : {"point", "cubature"}
+        Evaluate ``logp``, its gradient and ``curvature`` at the iterate, or average them over the
+        cubature points of the current Gaussian.
     line_search : LineSearch
         Search along each Newton direction, for example
         :func:`pytensor_ml.optim.zoom_line_search`.
     tolerance : float
-        Largest absolute entry of the undamped whitened Newton direction at which the iterations
-        stop.
+        Largest absolute entry of the undamped whitened Newton direction, and of the last change in
+        :math:`B`, at which the iterations stop.
     max_iterations : int
         Most loop iterations.
 
@@ -120,26 +133,45 @@ def newton_site(
     ----------
     .. [1] Rasmussen, C. E., and C. K. I. Williams. Gaussian Processes for Machine Learning.
            MIT Press, 2006. Section 3.4.3.
+    .. [2] Wilkinson, W. J., S. Sarkka, and A. Solin. Bayes-Newton Methods for Approximate
+           Bayesian Inference with PSD Guarantees. Journal of Machine Learning Research 24, 2023.
+           Equations 14 and 15.
     """
     eigenvalues, eigenvectors = pt.linalg.eigh(predictive_covariance)
     predictive_factor = eigenvectors * pt.sqrt(pt.maximum(eigenvalues, 0.0))
 
     gradient = grad(logp, parameters)
 
-    def newton_terms_at(whitened):
-        at_iterate = {parameters: predictive_mean + predictive_factor @ whitened}
-        logp_at, gradient_at, curvature_at = graph_replace([logp, gradient, curvature], at_iterate)
+    def expected_terms(whitened, whitened_curvature):
+        mean = predictive_mean + predictive_factor @ whitened
+        if expectation == "point":
+            return graph_replace([logp, gradient, curvature], {parameters: mean})
+        # With B = C C^T, the transpose of C^{-1} factors B^{-1}.
+        whitened_factor = pt.linalg.solve_triangular(
+            pt.linalg.cholesky(whitened_curvature), pt.eye(whitened.shape[0]), lower=True
+        ).T
+        points = cubature_points(mean=mean, factor=predictive_factor @ whitened_factor)
+        terms = [logp, gradient, curvature]
+        at_points = vectorize_graph(terms, {parameters: points})
+        # A term that does not depend on the parameters gets no axis over the points.
+        return [
+            values.mean(axis=0) if values.ndim > term.ndim else values
+            for term, values in zip(terms, at_points, strict=True)
+        ]
+
+    def newton_terms_at(whitened, whitened_curvature):
+        logp_at, gradient_at, curvature_at = expected_terms(whitened, whitened_curvature)
         objective = -logp_at + 0.5 * whitened @ whitened
         objective_gradient = whitened - predictive_factor.T @ gradient_at
-        whitened_curvature = assume(
+        next_curvature = assume(
             pt.eye(whitened.shape[0]) + predictive_factor.T @ curvature_at @ predictive_factor,
             positive_definite=True,
         )
-        direction = pt.linalg.solve(whitened_curvature, -objective_gradient)
-        return objective, objective_gradient, whitened_curvature, direction
+        direction = pt.linalg.solve(next_curvature, -objective_gradient)
+        return objective, objective_gradient, next_curvature, direction
 
-    def iterate(whitened, direction):
-        objective, objective_gradient, *_ = newton_terms_at(whitened)
+    def iterate(whitened, direction, whitened_curvature):
+        objective, objective_gradient, *_ = newton_terms_at(whitened, whitened_curvature)
         search = search_along(
             loss=objective,
             parameters=[whitened],
@@ -151,12 +183,15 @@ def newton_site(
         next_whitened = pt.switch(moving, whitened + search.step_size * direction, whitened)
         failed = search.failed & moving
 
-        _, next_gradient, next_curvature, next_direction = newton_terms_at(next_whitened)
-        ascending = (next_gradient @ next_direction >= 0) & (
-            pt.max(pt.abs(next_direction)) > tolerance
+        _, _, next_curvature, _ = newton_terms_at(next_whitened, whitened_curvature)
+        _, next_gradient, settled_curvature, next_direction = newton_terms_at(
+            next_whitened, next_curvature
         )
+        settled = pt.max(pt.abs(settled_curvature - next_curvature)) <= tolerance
+        negligible_direction = pt.max(pt.abs(next_direction)) <= tolerance
+        ascending = (next_gradient @ next_direction >= 0) & ~negligible_direction
         invalid = ~pt.all(pt.isfinite(next_direction)) | ascending
-        stop = (pt.max(pt.abs(next_direction)) <= tolerance) | failed | invalid
+        stop = (negligible_direction & settled) | failed | invalid
         outputs = (
             next_whitened,
             next_direction,
@@ -164,11 +199,13 @@ def newton_site(
             search.evaluations,
             failed,
             invalid,
+            settled,
         )
         return outputs, until(stop)
 
     initial_whitened = pt.zeros_like(predictive_mean)
-    *_, initial_direction = newton_terms_at(initial_whitened)
+    _, _, initial_curvature, _ = newton_terms_at(initial_whitened, pt.eye(predictive_mean.shape[0]))
+    *_, initial_direction = newton_terms_at(initial_whitened, initial_curvature)
 
     (
         whitened_trace,
@@ -177,9 +214,18 @@ def newton_site(
         evaluations,
         failures,
         invalid_directions,
+        settled_trace,
     ) = pytensor.scan(
         iterate,
-        outputs_info=[initial_whitened, initial_direction, None, None, None, None],
+        outputs_info=[
+            initial_whitened,
+            initial_direction,
+            initial_curvature,
+            None,
+            None,
+            None,
+            None,
+        ],
         n_steps=max_iterations,
         name="newton_site",
         return_updates=False,
@@ -193,7 +239,9 @@ def newton_site(
         evaluations=evaluations.sum(),
         search_failed=failures.any(),
         invalid_direction=invalid_directions.any(),
-        converged=(pt.max(pt.abs(direction_trace[-1])) <= tolerance) & ~failures[-1],
+        converged=(pt.max(pt.abs(direction_trace[-1])) <= tolerance)
+        & settled_trace[-1]
+        & ~failures[-1],
     )
 
 
