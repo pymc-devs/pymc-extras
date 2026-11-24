@@ -48,7 +48,8 @@ class NewtonSite(NamedTuple):
         ``whitened_curvature`` may not be positive definite either.
     converged : TensorVariable
         Whether the Newton direction at :math:`\hat u` is within the tolerance, :math:`B` changed by
-        at most the tolerance in its last update, and the last search did not fail.
+        at most the tolerance relative to its largest entry in its last update, and the last search
+        did not fail.
     """
 
     whitened: TensorVariable
@@ -91,7 +92,7 @@ def newton_site(
 
     The iterations run inside the graph as a ``scan`` that stops when the largest entry of
     :math:`d` at the current iterate is at most ``tolerance`` and the last update changed no entry
-    of :math:`B` by more than ``tolerance``, when a line search along a larger direction fails,
+    of :math:`B` by more than ``tolerance`` times its largest entry, when a line search along a larger direction fails,
     when :math:`d` is not finite, or after ``max_iterations`` iterations. A direction within the
     tolerance is not taken. A ``scan`` that stops early cannot be compiled to JAX, so this runs on
     the numba and C backends. The predictive covariance is factored once, by an
@@ -120,7 +121,7 @@ def newton_site(
         :func:`pytensor_ml.optim.zoom_line_search`.
     tolerance : float
         Largest absolute entry of the undamped whitened Newton direction, and of the last change in
-        :math:`B`, at which the iterations stop.
+        :math:`B` relative to its largest entry, at which the iterations stop.
     max_iterations : int
         Most loop iterations.
 
@@ -187,7 +188,9 @@ def newton_site(
         _, next_gradient, settled_curvature, next_direction = newton_terms_at(
             next_whitened, next_curvature
         )
-        settled = pt.max(pt.abs(settled_curvature - next_curvature)) <= tolerance
+        settled = pt.max(pt.abs(settled_curvature - next_curvature)) <= tolerance * pt.max(
+            pt.abs(next_curvature)
+        )
         negligible_direction = pt.max(pt.abs(next_direction)) <= tolerance
         ascending = (next_gradient @ next_direction >= 0) & ~negligible_direction
         invalid = ~pt.all(pt.isfinite(next_direction)) | ascending
