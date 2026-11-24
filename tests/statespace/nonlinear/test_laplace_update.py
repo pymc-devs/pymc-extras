@@ -11,7 +11,7 @@ from pymc_extras.statespace.nonlinear import (
     gauss_newton_curvature,
     implicit_mode,
     laplace_log_likelihood,
-    laplace_mode,
+    newton_site,
     parameter_posterior,
     state_posterior,
     stationary_state_posterior,
@@ -32,7 +32,7 @@ def regression_data(*, n_observations, n_parameters, seed):
     return design, observed, predictive_mean
 
 
-def test_laplace_mode_matches_conjugate_posterior():
+def test_newton_site_matches_conjugate_posterior():
     design, observed, predictive_mean = regression_data(n_observations=10, n_parameters=3, seed=1)
     root = np.random.default_rng(2).normal(size=(3, 3))
     predictive_covariance = (root @ root.T + np.eye(3)).astype(floatX)
@@ -40,7 +40,7 @@ def test_laplace_mode_matches_conjugate_posterior():
     parameters = pt.vector("parameters", shape=(3,))
     residuals = observed - design @ parameters
     logp = -0.5 * pt.sum(residuals**2) / NOISE_SIGMA**2
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=-hessian(logp, parameters),
@@ -73,7 +73,7 @@ def test_laplace_mode_matches_conjugate_posterior():
     assert evaluations == 1
 
 
-def test_laplace_mode_handles_singular_predictive_covariance():
+def test_newton_site_handles_singular_predictive_covariance():
     design, observed, predictive_mean = regression_data(n_observations=10, n_parameters=2, seed=3)
     direction = np.array([0.6, 0.8], dtype=floatX)
     direction_sd = 1.5
@@ -84,7 +84,7 @@ def test_laplace_mode_handles_singular_predictive_covariance():
 
     # The predictive confines the parameters to predictive_mean + direction * z with
     # z ~ N(0, direction_sd**2), so the posterior is the conjugate one for the scalar z.
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=-hessian(logp, parameters),
@@ -128,7 +128,7 @@ def test_line_search_decreases_objective_far_from_mode():
     # A hundredth of the Student-t Fisher information: positive definite, but so small that the
     # full Newton step overshoots.
     curvature = 0.01 * (nu + 1) / (nu + 3) * design.T @ design
-    mode = laplace_mode(
+    mode = newton_site(
         logp=-0.5 * (nu + 1) * pt.sum(pt.log1p(residuals**2 / nu)),
         parameters=parameters,
         curvature=pt.as_tensor(curvature),
@@ -157,7 +157,7 @@ def test_line_search_decreases_objective_far_from_mode():
     assert_allclose(damped, step_size * newton_direction, atol=ATOL, rtol=RTOL)
 
 
-def test_laplace_mode_reports_failed_line_search():
+def test_newton_site_reports_failed_line_search():
     nu = 3.0
     design, observed, _ = regression_data(n_observations=20, n_parameters=2, seed=4)
 
@@ -166,7 +166,7 @@ def test_laplace_mode_reports_failed_line_search():
 
     # The same overshooting curvature, with a search allowed one trial: the full step fails it.
     curvature = 0.01 * (nu + 1) / (nu + 3) * design.T @ design
-    mode = laplace_mode(
+    mode = newton_site(
         logp=-0.5 * (nu + 1) * pt.sum(pt.log1p(residuals**2 / nu)),
         parameters=parameters,
         curvature=pt.as_tensor(curvature),
@@ -185,7 +185,7 @@ def test_laplace_mode_reports_failed_line_search():
     assert not converged
 
 
-def test_laplace_mode_converges_to_student_t_mode():
+def test_newton_site_converges_to_student_t_mode():
     nu = 3.0
     predictive_variance = 25.0
     design, _, _ = regression_data(n_observations=20, n_parameters=2, seed=5)
@@ -199,7 +199,7 @@ def test_laplace_mode_converges_to_student_t_mode():
     # The iteratively reweighted least-squares weights: positive, and dependent on the parameters,
     # so the returned curvature has to be the one at the mode.
     weights = (nu + 1) / (nu + residuals**2)
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=(design.T * weights) @ design,
@@ -240,7 +240,7 @@ def test_laplace_mode_converges_to_student_t_mode():
     assert_allclose(covariance, expected_covariance, atol=ATOL, rtol=1e-6)
 
 
-def test_laplace_mode_reports_unconverged_at_iteration_budget():
+def test_newton_site_reports_unconverged_at_iteration_budget():
     nu = 3.0
     design, _, _ = regression_data(n_observations=20, n_parameters=2, seed=5)
     noise = np.random.default_rng(6).standard_t(df=nu, size=20)
@@ -249,7 +249,7 @@ def test_laplace_mode_reports_unconverged_at_iteration_budget():
     parameters = pt.vector("parameters", shape=(2,))
     residuals = observed - design @ parameters
     weights = (nu + 1) / (nu + residuals**2)
-    mode = laplace_mode(
+    mode = newton_site(
         logp=-0.5 * (nu + 1) * pt.sum(pt.log1p(residuals**2 / nu)),
         parameters=parameters,
         curvature=(design.T * weights) @ design,
@@ -268,12 +268,12 @@ def test_laplace_mode_reports_unconverged_at_iteration_budget():
     assert not search_failed
 
 
-def test_laplace_mode_stays_at_predictive_mean_when_it_is_the_mode():
+def test_newton_site_stays_at_predictive_mean_when_it_is_the_mode():
     predictive_mean = np.array([0.3, -0.2], dtype=floatX)
 
     parameters = pt.vector("parameters", shape=(2,))
     logp = -0.5 * pt.sum((parameters - predictive_mean) ** 2)
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=-hessian(logp, parameters),
@@ -294,12 +294,12 @@ def test_laplace_mode_stays_at_predictive_mean_when_it_is_the_mode():
     assert not search_failed
 
 
-def test_laplace_mode_stops_on_indefinite_curvature():
+def test_newton_site_stops_on_indefinite_curvature():
     parameters = pt.vector("parameters", shape=(2,))
     logp = -0.25 * pt.sum((parameters**2 - 1.0) ** 2)
 
     # Near the origin the double-well logp is convex, so its negative Hessian is indefinite.
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=-hessian(logp, parameters),
@@ -374,7 +374,7 @@ def test_gauss_newton_moves_log_sigma():
     mean = pt.broadcast_to(parameters[0], (n_observations,))
     sigma = pt.broadcast_to(pt.exp(parameters[1]), (n_observations,))
     pointwise_logp = -0.5 * ((observed - mean) / sigma) ** 2 - pt.log(sigma)
-    mode = laplace_mode(
+    mode = newton_site(
         logp=pointwise_logp.sum(),
         parameters=parameters,
         curvature=gauss_newton_curvature(
@@ -483,8 +483,8 @@ def kalman_update(
 
 
 def lifted_posterior(*, logp, parameters, state_mean, state_covariance, design, offset, noise):
-    """Return the state posterior from laplace_mode followed by state_posterior."""
-    mode = laplace_mode(
+    """Return the state posterior from newton_site followed by state_posterior."""
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=-hessian(logp, parameters),
@@ -683,13 +683,13 @@ def test_gauss_newton_rejects_logp_outside_distribution_parameters():
         )
 
 
-def test_laplace_mode_reports_invalid_direction_after_a_step():
+def test_newton_site_reports_invalid_direction_after_a_step():
     parameters = pt.vector("parameters", shape=(1,))
     logp = -0.5 * pt.sum((parameters - 3.0) ** 2)
 
     # The curvature is positive at the predictive mean and turns negative a short step away, so the
     # first step is taken and the direction at the new iterate is invalid.
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=pt.atleast_2d(9.0 - 200.0 * parameters[0] ** 2),
@@ -709,13 +709,13 @@ def test_laplace_mode_reports_invalid_direction_after_a_step():
     assert not converged
 
 
-def test_laplace_mode_factor_has_orthogonal_columns():
+def test_newton_site_factor_has_orthogonal_columns():
     root = np.random.default_rng(17).normal(size=(3, 3))
     predictive_covariance = (root @ root.T).astype(floatX)
 
     parameters = pt.vector("parameters", shape=(3,))
     logp = -0.5 * pt.sum(parameters**2)
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=-hessian(logp, parameters),
@@ -749,7 +749,7 @@ def test_implicit_gradient_matches_finite_differences(base_covariance):
 
     parameters = pt.vector("parameters", shape=(2,))
     logp = -0.5 * pt.sum((observed - pt.exp(design @ parameters)) ** 2) / NOISE_SIGMA**2
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=-hessian(logp, parameters),
@@ -799,7 +799,7 @@ def test_implicit_mode_keeps_the_value_of_an_unconverged_mode():
 
     parameters = pt.vector("parameters", shape=(2,))
     logp = -0.5 * pt.sum((observed - pt.exp(design @ parameters)) ** 2) / NOISE_SIGMA**2
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=-hessian(logp, parameters),
@@ -840,7 +840,7 @@ def test_laplace_log_likelihood_matches_gaussian_marginal(base_covariance):
     residuals = observed - design @ parameters
     logp = pt.sum(-0.5 * (residuals / NOISE_SIGMA) ** 2 - np.log(NOISE_SIGMA * np.sqrt(2 * np.pi)))
     curvature = -hessian(logp, parameters)
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=curvature,
@@ -897,7 +897,7 @@ def test_laplace_log_likelihood_evaluates_curvature_at_the_mode():
     parameters = pt.vector("parameters", shape=(2,))
     logp = -0.5 * pt.sum((observed - pt.exp(design @ parameters)) ** 2) / NOISE_SIGMA**2
     curvature = -hessian(logp, parameters)
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=curvature,
@@ -960,7 +960,7 @@ def test_stationary_state_posterior_matches_state_posterior_at_the_mode(design, 
     parameters = pt.vector("parameters", shape=(2,))
     logp = -0.5 * pt.sum((observed - pt.exp(observation_design @ parameters)) ** 2) / NOISE_SIGMA**2
     curvature = -hessian(logp, parameters)
-    mode = laplace_mode(
+    mode = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=curvature,

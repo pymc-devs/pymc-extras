@@ -7,11 +7,11 @@ from pymc_extras.statespace.nonlinear.filter import (
 )
 from pymc_extras.statespace.nonlinear.fusion import FusedStateSpace, observed_state_names
 from pymc_extras.statespace.nonlinear.laplace_update import (
-    LaplaceMode,
+    NewtonSite,
     gauss_newton_curvature,
     implicit_mode,
     laplace_log_likelihood,
-    laplace_mode,
+    newton_site,
     parameter_posterior,
     state_posterior,
     stationary_state_posterior,
@@ -19,13 +19,13 @@ from pymc_extras.statespace.nonlinear.laplace_update import (
 
 __all__ = [
     "FusedStateSpace",
-    "LaplaceMode",
+    "NewtonSite",
     "cubature_points",
     "filter_step",
     "gauss_newton_curvature",
     "implicit_mode",
     "laplace_log_likelihood",
-    "laplace_mode",
+    "newton_site",
     "observed_state_names",
     "parameter_posterior",
     "register_fused_likelihood",

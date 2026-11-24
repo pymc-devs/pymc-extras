@@ -19,11 +19,11 @@ from pymc_extras.statespace.filters.kalman_smoother import RTSSmoother
 from pymc_extras.statespace.filters.utilities import quad_form_sym
 from pymc_extras.statespace.nonlinear.fusion import FusedStateSpace
 from pymc_extras.statespace.nonlinear.laplace_update import (
-    LaplaceMode,
+    NewtonSite,
     gauss_newton_curvature,
     implicit_mode,
     laplace_log_likelihood,
-    laplace_mode,
+    newton_site,
     state_posterior,
     stationary_state_posterior,
 )
@@ -55,13 +55,13 @@ def filter_step(
     tolerance: float,
     max_iterations: int,
 ) -> tuple[
-    TensorVariable, TensorVariable, TensorVariable, TensorVariable, LaplaceMode, TensorVariable
+    TensorVariable, TensorVariable, TensorVariable, TensorVariable, NewtonSite, TensorVariable
 ]:
     r"""
     Update the state on one date's observations by the Laplace approximation, then predict the next.
 
     The state predictive :math:`N(a, P)` implies the parameter predictive
-    :math:`N(Z a + d, Z P Z^\top + H)`. :func:`laplace_mode` finds the mode of the parameters'
+    :math:`N(Z a + d, Z P Z^\top + H)`. :func:`newton_site` finds the mode of the parameters'
     posterior under ``logp``. The filtered moments take their values from :func:`state_posterior`,
     which lifts the mode to the state, and their gradients from
     :func:`stationary_state_posterior` at the mode from :func:`implicit_mode`, so no gradient passes
@@ -100,14 +100,14 @@ def filter_step(
         State mean predicted for the next date, shape ``(m,)``.
     next_predicted_covariance : TensorVariable
         State covariance predicted for the next date, shape ``(m, m)``.
-    mode : LaplaceMode
-        The parameters' mode and the iteration diagnostics.
+    site : NewtonSite
+        The parameters' Laplace site and the iteration diagnostics.
     parameter_mode : TensorVariable
         The parameters' mode from :func:`implicit_mode`, shape ``(k,)``.
     """
     parameter_mean = Z @ predicted_mean + d
     parameter_covariance = quad_form_sym(Z, predicted_covariance) + H
-    mode = laplace_mode(
+    site = newton_site(
         logp=logp,
         parameters=parameters,
         curvature=curvature,
@@ -118,7 +118,7 @@ def filter_step(
         max_iterations=max_iterations,
     )
     parameter_mode = implicit_mode(
-        mode=parameter_mean + mode.predictive_factor @ mode.whitened,
+        mode=parameter_mean + site.predictive_factor @ site.whitened,
         logp=logp,
         parameters=parameters,
         predictive_mean=parameter_mean,
@@ -126,9 +126,9 @@ def filter_step(
     )
 
     filtered_mean, filtered_covariance = state_posterior(
-        whitened=mode.whitened,
-        predictive_factor=mode.predictive_factor,
-        whitened_curvature=mode.whitened_curvature,
+        whitened=site.whitened,
+        predictive_factor=site.predictive_factor,
+        whitened_curvature=site.whitened_curvature,
         state_mean=predicted_mean,
         state_covariance=predicted_covariance,
         design=Z,
@@ -156,7 +156,7 @@ def filter_step(
         filtered_covariance,
         next_predicted_mean,
         next_predicted_covariance,
-        mode,
+        site,
         parameter_mode,
     )
 
@@ -215,7 +215,7 @@ def run_filter(
         predictive as ``predicted_observed_states`` and ``predicted_observed_covariances``. Group
         ``diagnostics`` holds each date's ``loglike_obs`` from :func:`laplace_log_likelihood`, and
         its ``iterations``, ``evaluations``, ``search_failed``, ``invalid_direction`` and
-        ``converged`` from :class:`LaplaceMode`. The moments of a date that did not converge are
+        ``converged`` from :class:`NewtonSite`. The moments of a date that did not converge are
         not at its mode, and every later date's moments start from them.
     """
     not_variables = sorted(set(data) - set(fused.model.named_vars))
@@ -566,7 +566,7 @@ def _date_update(
         observation_logps=observation_logps,
         parameters=parameters,
     )
-    filtered_mean, filtered_covariance, next_mean, next_covariance, mode, parameter_mode = (
+    filtered_mean, filtered_covariance, next_mean, next_covariance, site, parameter_mode = (
         filter_step(
             logp=logp,
             curvature=curvature_matrix,
@@ -595,11 +595,11 @@ def _date_update(
         parameter_mean,
         parameter_covariance,
         loglike,
-        mode.iterations,
-        mode.evaluations,
-        mode.search_failed,
-        mode.invalid_direction,
-        mode.converged,
+        site.iterations,
+        site.evaluations,
+        site.search_failed,
+        site.invalid_direction,
+        site.converged,
     ]
     return next_mean, next_covariance, dict(zip(_RECORDED_NAMES, recorded, strict=True))
 

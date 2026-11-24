@@ -21,7 +21,7 @@ from pytensor_ml.optim.line_search import LineSearch, search_along
 from pymc_extras.statespace.filters.utilities import quad_form_sym
 
 
-class LaplaceMode(NamedTuple):
+class NewtonSite(NamedTuple):
     r"""
     The mode of the parameters' log posterior in whitened coordinates, and how it was found.
 
@@ -59,7 +59,7 @@ class LaplaceMode(NamedTuple):
     converged: TensorVariable
 
 
-def laplace_mode(
+def newton_site(
     *,
     logp: TensorVariable,
     parameters: TensorVariable,
@@ -69,7 +69,7 @@ def laplace_mode(
     line_search: LineSearch,
     tolerance: float,
     max_iterations: int,
-) -> LaplaceMode:
+) -> NewtonSite:
     r"""
     Find the mode of the parameters' log posterior by damped Newton steps from the predictive mean.
 
@@ -113,7 +113,7 @@ def laplace_mode(
 
     Returns
     -------
-    mode : LaplaceMode
+    site : NewtonSite
         The final iterate, the curvature there, and the iteration diagnostics.
 
     References
@@ -181,11 +181,11 @@ def laplace_mode(
         iterate,
         outputs_info=[initial_whitened, initial_direction, None, None, None, None],
         n_steps=max_iterations,
-        name="laplace_mode",
+        name="newton_site",
         return_updates=False,
     )
 
-    return LaplaceMode(
+    return NewtonSite(
         whitened=disconnected_grad(whitened_trace[-1]),
         predictive_factor=disconnected_grad(predictive_factor),
         whitened_curvature=disconnected_grad(assume(curvature_trace[-1], positive_definite=True)),
@@ -437,7 +437,7 @@ def parameter_posterior(
     Return the Gaussian approximation to the parameters' posterior at a whitened iterate.
 
     The mean is :math:`\mu + L u` and the covariance is :math:`L B^{-1} L^\top`, with :math:`B`
-    evaluated at :math:`u`, as :class:`LaplaceMode` returns them.
+    evaluated at :math:`u`, as :class:`NewtonSite` returns them.
 
     Parameters
     ----------
@@ -476,7 +476,7 @@ def state_posterior(
 
     The state has the predictive :math:`N(a, P)` and the parameters are
     :math:`\theta = Z x + d + \eta` with :math:`\eta \sim N(0, H)`, so their predictive is
-    :math:`N(Z a + d, Z P Z^\top + H)`, factored as :math:`L L^\top` by :func:`laplace_mode`. The
+    :math:`N(Z a + d, Z P Z^\top + H)`, factored as :math:`L L^\top` by :func:`newton_site`. The
     observations depend on the state only through :math:`\theta`, so conditioning the joint
     Gaussian of :math:`(x, \theta)` on the parameter posterior gives
 
@@ -493,12 +493,12 @@ def state_posterior(
     Parameters
     ----------
     whitened : TensorVariable
-        Whitened mode :math:`\hat u` from :func:`laplace_mode`, shape ``(k,)``.
+        Whitened mode :math:`\hat u` from :func:`newton_site`, shape ``(k,)``.
     predictive_factor : TensorVariable
-        Factor :math:`L` of the parameter predictive covariance from :func:`laplace_mode`, with
+        Factor :math:`L` of the parameter predictive covariance from :func:`newton_site`, with
         orthogonal columns, shape ``(k, k)``.
     whitened_curvature : TensorVariable
-        Positive definite :math:`B` at :math:`\hat u` from :func:`laplace_mode`, shape ``(k, k)``.
+        Positive definite :math:`B` at :math:`\hat u` from :func:`newton_site`, shape ``(k, k)``.
     state_mean : TensorVariable
         Predictive mean :math:`a` of the state, shape ``(m,)``.
     state_covariance : TensorVariable
