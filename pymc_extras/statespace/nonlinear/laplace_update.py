@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from typing import Literal, NamedTuple
 
+import numpy as np
 import pytensor
 import pytensor.tensor as pt
 
@@ -369,8 +370,8 @@ def laplace_log_likelihood(
     logp : TensorVariable
         Scalar log-likelihood of the observations, a graph of ``parameters``.
     curvature : TensorVariable
-        Positive semidefinite approximation :math:`\Lambda` to the negative Hessian of ``logp``, a
-        graph of ``parameters``, shape ``(k, k)``.
+        Symmetric approximation :math:`\Lambda` to the negative Hessian of ``logp``, a graph of
+        ``parameters``, shape ``(k, k)``.
     parameters : TensorVariable
         Input vector of the parameters, shape ``(k,)``, that ``logp`` and ``curvature`` are built on.
     predictive_covariance : TensorVariable
@@ -380,7 +381,8 @@ def laplace_log_likelihood(
     Returns
     -------
     log_likelihood : TensorVariable
-        Scalar approximate log marginal likelihood.
+        Scalar approximate log marginal likelihood, :math:`-\infty` where
+        :math:`\det(I + \Sigma \Lambda)` is not positive, which happens only away from a mode.
 
     References
     ----------
@@ -390,10 +392,13 @@ def laplace_log_likelihood(
     logp_at, gradient_at, curvature_at = graph_replace(
         [logp, grad(logp, parameters), curvature], {parameters: mode}
     )
-    _, log_determinant = pt.linalg.slogdet(
+    sign, log_determinant = pt.linalg.slogdet(
         pt.eye(mode.shape[0]) + predictive_covariance @ curvature_at
     )
-    return logp_at - 0.5 * gradient_at @ predictive_covariance @ gradient_at - 0.5 * log_determinant
+    log_likelihood = (
+        logp_at - 0.5 * gradient_at @ predictive_covariance @ gradient_at - 0.5 * log_determinant
+    )
+    return pt.switch(sign > 0, log_likelihood, -np.inf)
 
 
 def positive_semidefinite_part(matrix: TensorVariable) -> TensorVariable:

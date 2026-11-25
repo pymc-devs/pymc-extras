@@ -896,6 +896,20 @@ def test_laplace_log_likelihood_matches_gaussian_marginal(base_covariance):
         assert_allclose(laplace_value, marginal_value, atol=ATOL, rtol=RTOL)
 
 
+def test_laplace_log_likelihood_is_minus_infinity_where_the_determinant_is_not_positive():
+    parameters = pt.vector("parameters", shape=(1,))
+    logp = pt.sum(parameters**2)
+    log_likelihood = laplace_log_likelihood(
+        mode=pt.zeros(1),
+        logp=logp,
+        curvature=-hessian(logp, parameters),
+        parameters=parameters,
+        predictive_covariance=pt.eye(1),
+    )
+
+    assert log_likelihood.eval() == -np.inf
+
+
 def test_laplace_log_likelihood_evaluates_curvature_at_the_mode():
     rng = np.random.default_rng(31)
     design = rng.normal(scale=0.5, size=(6, 2)).astype(floatX)
