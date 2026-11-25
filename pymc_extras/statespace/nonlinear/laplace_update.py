@@ -116,13 +116,15 @@ def newton_site(
 
     The iterations run inside the graph as a ``scan`` that stops when the largest entry of
     :math:`d` at the current iterate is at most ``tolerance`` and the last update changed no entry
-    of :math:`B` by more than ``tolerance`` times its largest entry, when a line search along a larger direction fails,
-    when :math:`d` is not finite, or after ``max_iterations`` iterations. A direction within the
-    tolerance is not taken. A ``scan`` that stops early cannot be compiled to JAX, so this runs on
-    the numba and C backends. The predictive covariance is factored once, by an
-    eigendecomposition, so it may be singular. The outputs carry no gradient:
-    :func:`implicit_mode` and :func:`stationary_state_posterior` differentiate the Laplace mode
-    without the iterations or the factorization.
+    of :math:`B` by more than ``tolerance`` times its largest entry, when a line search along a
+    larger direction fails, when :math:`d` is not finite, or after ``max_iterations`` iterations. A
+    direction within the tolerance is not taken. A ``scan`` that stops early cannot be compiled to
+    JAX, so this runs on the numba and C backends. On the C backend a ``logp`` over zero
+    observations raises at evaluation, because PyTensor's Python ``Blockwise`` does not evaluate
+    a size-zero batch. The predictive covariance is factored once, by an eigendecomposition, so it
+    may be singular. The outputs carry no gradient: :func:`implicit_mode` and
+    :func:`stationary_state_posterior` differentiate the Laplace mode without the iterations or
+    the factorization.
 
     Parameters
     ----------
