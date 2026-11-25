@@ -1,7 +1,7 @@
 import itertools
 
 from collections.abc import Mapping, Sequence
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, NoReturn
 
 import numpy as np
 import pymc as pm
@@ -367,6 +367,13 @@ class FusedStateSpace(PyMCStateSpace):
             dtype="float64",
             observed=observations,
             dims=(TIME_DIM, f"{OBSERVED_LIKELIHOOD_NAME}_dim_1"),
+        )
+
+    def sample_filter_outputs(self, *args, **kwargs) -> NoReturn:
+        """Raise, because the filter outputs come from :func:`run_filter` or the conditional samplers."""
+        raise NotImplementedError(
+            f"{type(self).__name__} draws its filter outputs with run_filter or "
+            "sample_conditional_posterior."
         )
 
     def _fit_data(self, idata: DataTree) -> FusedFitData:

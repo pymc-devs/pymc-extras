@@ -316,6 +316,27 @@ def test_prior_logp_with_a_frozen_transform_depending_on_another_frozen_rv():
     )
 
 
+def test_filter_output_sampling_is_not_implemented():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Normal("y", alpha, 1.0, observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=level_statespace(["alpha"]),
+        rv_names=["alpha"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+        prior_weight=0.0,
+    )
+
+    with pytest.raises(NotImplementedError, match="run_filter or sample_conditional_posterior"):
+        fused.sample_filter_outputs(None)
+
+
 def test_transform_depending_on_another_rv():
     with pm.Model() as model:
         alpha = pm.Normal("alpha")
