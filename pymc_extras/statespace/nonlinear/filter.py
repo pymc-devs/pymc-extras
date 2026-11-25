@@ -17,7 +17,7 @@ from pymc_extras.statespace.filters.kalman_smoother import RTSSmoother
 from pymc_extras.statespace.filters.utilities import quad_form_sym
 from pymc_extras.statespace.nonlinear.laplace_update import (
     NewtonSite,
-    gauss_newton_curvature,
+    fisher_curvature,
     implicit_mode,
     laplace_log_likelihood,
     newton_site,
@@ -36,7 +36,7 @@ from pymc_extras.statespace.utils.constants import (
 )
 
 if TYPE_CHECKING:
-    from pymc_extras.statespace.nonlinear.fusion import FusedStateSpace
+    from pymc_extras.statespace.nonlinear.fusion import FisherTerms, FusedStateSpace
 
 
 def filter_step(
@@ -362,8 +362,11 @@ def scan_filter(
                 f"observed_masks has to give a mask for exactly {sorted(observation_logps)}."
             )
         masked_logps = {
-            name: (pt.where(date_masks[name], pointwise_logp, 0.0), distribution_parameters)
-            for name, (pointwise_logp, distribution_parameters) in observation_logps.items()
+            name: (
+                pt.where(date_masks[name], pointwise_logp, 0.0),
+                _masked_fisher_terms(fisher_terms=fisher_terms, mask=date_masks[name]),
+            )
+            for name, (pointwise_logp, fisher_terms) in observation_logps.items()
         }
         next_mean, next_covariance, recorded = _date_update(
             observation_logps=masked_logps,
@@ -503,10 +506,10 @@ def _initial_moments_and_matrices(
 
 def _date_update(
     *,
-    observation_logps: Mapping[str, tuple[TensorVariable, list[TensorVariable] | None]],
+    observation_logps: Mapping[str, tuple[TensorVariable, "FisherTerms | None"]],
     prior_logp: TensorVariable | None,
     parameters: TensorVariable,
-    curvature: Literal["gauss_newton", "exact"],
+    curvature: Literal["fisher", "exact"],
     predicted_mean: TensorVariable,
     predicted_covariance: TensorVariable,
     matrices: Mapping[str, TensorVariable],
@@ -562,6 +565,16 @@ def _date_update(
     return next_mean, next_covariance, dict(zip(_RECORDED_NAMES, recorded, strict=True))
 
 
+def _masked_fisher_terms(
+    *, fisher_terms: "FisherTerms | None", mask: TensorVariable
+) -> "FisherTerms | None":
+    if fisher_terms is None:
+        return None
+    return fisher_terms._replace(
+        information=pt.where(mask[:, None, None], fisher_terms.information, 0.0)
+    )
+
+
 def _weighted_prior_logp(
     *, fused: "FusedStateSpace", parameters: TensorVariable
 ) -> TensorVariable | None:
@@ -577,36 +590,34 @@ def _value_with_gradient_of(*, value: TensorVariable, gradient: TensorVariable) 
 
 def _curvature(
     *,
-    kind: Literal["gauss_newton", "exact"],
+    kind: Literal["fisher", "exact"],
     logp: TensorVariable,
-    observation_logps: Mapping[str, tuple[TensorVariable, list[TensorVariable] | None]],
+    observation_logps: Mapping[str, tuple[TensorVariable, "FisherTerms | None"]],
     prior_logp: TensorVariable | None,
     parameters: TensorVariable,
 ) -> TensorVariable:
     if kind == "exact":
         return -hessian(cost=logp, wrt=parameters)
 
-    without_parameters = [
-        name
-        for name, (_, distribution_parameters) in observation_logps.items()
-        if distribution_parameters is None
+    without_information = [
+        name for name, (_, fisher_terms) in observation_logps.items() if fisher_terms is None
     ]
-    if without_parameters:
+    if without_information:
         raise ValueError(
-            f"Observed variables {without_parameters} have no distribution parameters for the "
-            "Gauss-Newton curvature."
+            f"Observed variables {without_information} have no closed-form Fisher information. "
+            "Use curvature='exact'."
         )
     # An observed variable none of whose distribution parameters depends on the parameters has no
     # curvature in them.
     observation_curvature = sum(
         (
-            gauss_newton_curvature(
-                pointwise_logp=pointwise_logp,
-                distribution_parameters=distribution_parameters,
+            fisher_curvature(
+                information=fisher_terms.information,
+                distribution_parameters=fisher_terms.distribution_parameters,
                 parameters=parameters,
             )
-            for pointwise_logp, distribution_parameters in observation_logps.values()
-            if distribution_parameters
+            for _, fisher_terms in observation_logps.values()
+            if fisher_terms.distribution_parameters
         ),
         start=pt.zeros((parameters.shape[0], parameters.shape[0])),
     )

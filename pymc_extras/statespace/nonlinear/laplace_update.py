@@ -9,7 +9,6 @@ from pytensor.compile.builders import OpFromGraph
 from pytensor.gradient import (
     grad,
     hessian,
-    hessian_vector_product,
     pushforward,
 )
 from pytensor.graph.replace import graph_replace, vectorize_graph
@@ -403,35 +402,35 @@ def positive_semidefinite_part(matrix: TensorVariable) -> TensorVariable:
     return (eigenvectors * pt.maximum(eigenvalues, 0.0)[..., None, :]) @ eigenvectors.mT
 
 
-def gauss_newton_curvature(
+def fisher_curvature(
     *,
-    pointwise_logp: TensorVariable,
+    information: TensorVariable,
     distribution_parameters: Sequence[TensorVariable],
     parameters: TensorVariable,
 ) -> TensorVariable:
     r"""
-    Return a generalized Gauss-Newton approximation to the negative Hessian of a log-likelihood.
+    Return the Fisher information of a log-likelihood in its parameters.
 
-    Observation :math:`i` has log-likelihood :math:`\ell_i(\eta_i)` in its distribution parameters
-    :math:`\eta_i = \eta_i(\theta)`. The curvature is
+    Observation :math:`i` has distribution parameters :math:`\eta_i = \eta_i(\theta)` and Fisher
+    information :math:`F_i` in them, the expected negative Hessian of its log-density. The
+    curvature is
 
     .. math::
 
-        \Lambda = \sum_i J_i^\top \left[-\nabla^2_{\eta_i} \ell_i\right]_+ J_i,
+        \Lambda = \sum_i J_i^\top F_i J_i,
 
-    where :math:`J_i` is the Jacobian of :math:`\eta_i` with respect to :math:`\theta` and
-    :math:`[\cdot]_+` clips each block's eigenvalues at zero, so :math:`\Lambda` is positive
-    semidefinite. It drops the second derivatives of :math:`\eta` from the exact Hessian [1]_ [2]_.
+    where :math:`J_i` is the Jacobian of :math:`\eta_i` with respect to :math:`\theta`. It is the
+    expected negative Hessian of the log-likelihood in :math:`\theta`, whatever parameterization
+    :math:`\eta` the distribution uses, and the Hessian of Fisher scoring [1]_.
 
     Parameters
     ----------
-    pointwise_logp : TensorVariable
-        Log-likelihood of each observation, shape ``(n,)``. Entry :math:`i` depends on the
-        parameters only through entry :math:`i` of each distribution parameter.
+    information : TensorVariable
+        Positive semidefinite Fisher information :math:`F_i` of each observation in its
+        ``distribution_parameters``, shape ``(n, p, p)``.
     distribution_parameters : sequence of TensorVariable
-        The distribution parameters :math:`\eta` that depend on ``parameters``, each of shape
-        ``(n,)``. A parameter shared across observations has to be broadcast to ``(n,)``, and one
-        that does not depend on ``parameters`` has to be left out.
+        The ``p`` distribution parameters :math:`\eta` that depend on ``parameters``, each of shape
+        ``(n,)``. A parameter shared across observations has to be broadcast to ``(n,)``.
     parameters : TensorVariable
         Input vector of the parameters, shape ``(k,)``.
 
@@ -442,10 +441,8 @@ def gauss_newton_curvature(
 
     References
     ----------
-    .. [1] Schraudolph, N. N. Fast curvature matrix-vector products for second-order gradient
-           descent. Neural Computation 14(7), 2002.
-    .. [2] Martens, J. New insights and perspectives on the natural gradient method. Journal of
-           Machine Learning Research 21(146), 2020.
+    .. [1] McCullagh, P., and J. A. Nelder. Generalized Linear Models, 2nd ed. Chapman and Hall,
+           1989. Section 2.5.
     """
     constant_positions = [
         position
@@ -455,44 +452,8 @@ def gauss_newton_curvature(
     if constant_positions:
         raise ValueError(
             f"distribution_parameters at positions {constant_positions} do not depend on "
-            "parameters. "
-            "Leave them out: they would distort each observation's curvature block without "
-            "contributing to the Jacobian."
+            "parameters. Leave them out, along with their rows and columns of information."
         )
-
-    # Differentiating with respect to the distribution parameters themselves would give total
-    # derivatives, which count a parameter computed from another one twice. Placeholders make the
-    # Hessian partial in the distribution parameters, as the Gauss-Newton matrix needs.
-    placeholders = [eta.type() for eta in distribution_parameters]
-    to_placeholders = dict(zip(distribution_parameters, placeholders, strict=True))
-    detached_logp = graph_replace(pointwise_logp.sum(), to_placeholders)
-    if parameters in ancestors([detached_logp]):
-        raise ValueError(
-            "pointwise_logp depends on parameters other than through distribution_parameters."
-        )
-
-    # The Hessian in the stacked distribution parameters is block diagonal across observations, so
-    # its product with the indicator of parameter j holds column j of every observation's block.
-    hessian_columns = [
-        pt.stack(
-            hessian_vector_product(
-                cost=detached_logp,
-                wrt=placeholders,
-                p=[
-                    pt.ones_like(placeholder) if position == column else pt.zeros_like(placeholder)
-                    for position, placeholder in enumerate(placeholders)
-                ],
-                disconnected_inputs="ignore",
-            ),
-            axis=-1,
-        )
-        for column in range(len(placeholders))
-    ]
-    negative_hessian = graph_replace(
-        -pt.stack(hessian_columns, axis=-1),
-        dict(zip(placeholders, distribution_parameters, strict=True)),
-    )
-    projected = positive_semidefinite_part(negative_hessian)
 
     # One pushforward per distribution parameter: a joint pushforward drops the dependence of one
     # output on another when one is computed from the other.
@@ -505,7 +466,7 @@ def gauss_newton_curvature(
     )
     jacobian = jacobian.transpose(2, 1, 0)
 
-    return pt.einsum("npk,npq,nql->kl", jacobian, projected, jacobian)
+    return (jacobian.mT @ information @ jacobian).sum(axis=0)
 
 
 def parameter_posterior(

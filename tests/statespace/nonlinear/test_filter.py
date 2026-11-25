@@ -14,7 +14,7 @@ from pymc_extras.statespace.filters.kalman_smoother import DisturbanceSmoother
 from pymc_extras.statespace.nonlinear import (
     FusedStateSpace,
     filter_step,
-    gauss_newton_curvature,
+    fisher_curvature,
     observed_state_names,
     run_filter,
     scan_filter,
@@ -39,7 +39,7 @@ def test_step_matches_standard_filter_linear_case():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -49,7 +49,7 @@ def test_step_matches_standard_filter_linear_case():
     theta = pt.vector("theta", shape=(2,))
     y = pt.vector("y")
     X_data = pt.matrix("X")
-    pointwise_logp, distribution_parameters = fused.observation_logp(
+    pointwise_logp, fisher_terms = fused.observation_logp(
         parameters=theta, data={"y": y, "X": X_data}
     )["y"]
     _, _, c, d, T, Z, R, H, Q = fused.statespace_matrices(
@@ -70,9 +70,9 @@ def test_step_matches_standard_filter_linear_case():
     predicted_covariance = pt.matrix("predicted_covariance", shape=(4, 4))
     filtered_mean, filtered_covariance, next_mean, next_covariance, mode, _ = filter_step(
         logp=pointwise_logp.sum(),
-        curvature=gauss_newton_curvature(
-            pointwise_logp=pointwise_logp,
-            distribution_parameters=distribution_parameters,
+        curvature=fisher_curvature(
+            information=fisher_terms.information,
+            distribution_parameters=fisher_terms.distribution_parameters,
             parameters=theta,
         ),
         parameters=theta,
@@ -131,7 +131,7 @@ def test_step_matches_standard_filter_linear_case():
         assert_allclose(fused_value, reference_value, atol=1e-10)
 
 
-@pytest.mark.parametrize("curvature", ["gauss_newton", "exact"])
+@pytest.mark.parametrize("curvature", ["fisher", "exact"])
 def test_filter_matches_standard_filter_over_ragged_dates(curvature):
     with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
         X = pm.Data("X", np.zeros((4, 2)))
@@ -233,7 +233,7 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
     assert filtered["diagnostics/converged"].values.all()
 
 
-@pytest.mark.parametrize("curvature", ["gauss_newton", "exact"])
+@pytest.mark.parametrize("curvature", ["fisher", "exact"])
 def test_weighted_gaussian_prior_is_a_pseudo_observation_of_the_states(curvature):
     prior_mean, prior_sigma, prior_weight = np.array([1.0, -0.5]), np.array([2.0, 0.8]), 3.0
     with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
@@ -348,7 +348,7 @@ def test_missing_date_is_predict_only():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -408,7 +408,7 @@ def test_time_varying_statespace_matrices_raise():
         statespace=statespace,
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -425,7 +425,7 @@ def test_time_varying_statespace_matrices_raise():
         )
 
 
-def test_gauss_newton_without_distribution_parameters_raises():
+def test_fisher_curvature_without_closed_form_information_raises():
     with pm.Model() as model:
         alpha = pm.Normal("alpha")
         pm.MvNormal("w", mu=alpha + np.zeros(2), cov=np.eye(2), observed=np.zeros((4, 2)))
@@ -437,14 +437,16 @@ def test_gauss_newton_without_distribution_parameters_raises():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
         prior_weight=0.0,
     )
 
-    with pytest.raises(ValueError, match=r"Observed variables \['w'\] have no distribution"):
+    with pytest.raises(
+        ValueError, match=r"Observed variables \['w'\] have no closed-form Fisher information"
+    ):
         run_filter(
             fused=fused,
             statespace_parameters={
@@ -458,7 +460,7 @@ def test_gauss_newton_without_distribution_parameters_raises():
         )
 
 
-def test_gauss_newton_ignores_observations_that_do_not_depend_on_the_states():
+def test_fisher_curvature_ignores_observations_that_do_not_depend_on_the_states():
     with pm.Model() as model:
         alpha = pm.Normal("alpha")
         sigma = pm.HalfNormal("sigma")
@@ -472,7 +474,7 @@ def test_gauss_newton_ignores_observations_that_do_not_depend_on_the_states():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={"sigma": 1.0},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -510,7 +512,7 @@ def test_filter_output_coords():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -566,7 +568,7 @@ def test_data_with_another_number_of_dates_raises():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -603,7 +605,7 @@ def test_smoother_matches_linear_smoother_with_a_missing_date():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -660,7 +662,7 @@ def test_smoother_matches_linear_smoother_with_a_missing_date():
     assert_allclose(outputs["smoothed_covariances"].values, smoothed_covariances.eval(), atol=1e-10)
 
 
-def test_exact_and_gauss_newton_curvatures_differ_at_the_same_mode():
+def test_exact_and_fisher_curvatures_differ_at_the_same_mode_for_a_noncanonical_link():
     with pm.Model() as model:
         alpha = pm.Normal("alpha")
         pm.Normal("y", pm.math.exp(alpha), 1, observed=np.zeros(3))
@@ -671,7 +673,7 @@ def test_exact_and_gauss_newton_curvatures_differ_at_the_same_mode():
 
     y = np.array([1.5, 1.2, 1.4])
     modes, variances = {}, {}
-    for curvature in ["exact", "gauss_newton"]:
+    for curvature in ["exact", "fisher"]:
         fused = FusedStateSpace(
             model=model,
             statespace=statespace,
@@ -700,11 +702,51 @@ def test_exact_and_gauss_newton_curvatures_differ_at_the_same_mode():
         variances[curvature] = outputs["filtered_covariances"].values[0, 0, 0]
 
     mode = modes["exact"]
-    assert_allclose(modes["gauss_newton"], mode, atol=1e-8)
+    assert_allclose(modes["fisher"], mode, atol=1e-8)
     residual_term = np.sum((y - np.exp(mode)) * np.exp(mode))
     assert_allclose(mode, residual_term, atol=1e-8)
-    assert_allclose(variances["gauss_newton"], 1 / (1 + 3 * np.exp(2 * mode)))
+    assert_allclose(variances["fisher"], 1 / (1 + 3 * np.exp(2 * mode)))
     assert_allclose(variances["exact"], 1 / (1 + 3 * np.exp(2 * mode) - residual_term))
+
+
+def test_fisher_curvature_equals_the_exact_one_for_a_canonical_link():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        pm.Poisson("y", pm.math.exp(alpha), observed=np.zeros(5, dtype=int))
+
+    statespace = st.LevelTrend(order=1, innovations_order=1, observed_state_names=["alpha"]).build(
+        verbose=False
+    )
+
+    counts = np.array([0, 0, 3, 0, 1])
+    covariances = {}
+    for curvature in ["exact", "fisher"]:
+        fused = FusedStateSpace(
+            model=model,
+            statespace=statespace,
+            rv_names=["alpha"],
+            frozen={},
+            curvature=curvature,
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=50,
+            prior_weight=0.0,
+        )
+        filtered = run_filter(
+            fused=fused,
+            statespace_parameters={
+                "initial_level_trend": [0.0],
+                "sigma_level_trend": [0.3],
+                "P0": [[1.0]],
+            },
+            statespace_data={},
+            data={"y": [counts]},
+            dates=np.arange(1),
+        )
+        assert filtered["diagnostics/converged"].values.all()
+        covariances[curvature] = filtered["posterior_predictive"]["filtered_covariances"].values
+
+    assert_allclose(covariances["fisher"], covariances["exact"], atol=1e-8)
 
 
 def test_date_out_of_iterations_is_not_converged():
@@ -719,7 +761,7 @@ def test_date_out_of_iterations_is_not_converged():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=1,
@@ -744,7 +786,7 @@ def test_date_out_of_iterations_is_not_converged():
 
     # With one state equal to the parameter and no parameter noise, the filtered mean is the
     # iterate itself, and the covariance is the Laplace posterior's at that iterate, whose
-    # Gauss-Newton curvature for three unit-variance observations of exp(alpha) is 3 exp(2 alpha).
+    # Fisher information for three unit-variance observations of exp(alpha) is 3 exp(2 alpha).
     outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
     iterate = outputs["filtered_states"].values[0, 0]
     assert_allclose(
@@ -766,7 +808,7 @@ def test_non_finite_observations_raise():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -799,7 +841,7 @@ def test_data_names_that_are_not_model_variables_raise():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -832,7 +874,7 @@ def test_integer_observations_take_whole_numbers_and_reject_fractions():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
@@ -882,7 +924,7 @@ def test_scan_matches_driver(prior_weight):
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
@@ -956,7 +998,7 @@ def test_masks_for_other_observed_variables_raise():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -997,7 +1039,7 @@ def test_loglike_gradient_matches_finite_differences(base_covariance):
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=50,
@@ -1053,7 +1095,7 @@ def test_loglike_gradient_with_parameters_sharing_a_state():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=50,

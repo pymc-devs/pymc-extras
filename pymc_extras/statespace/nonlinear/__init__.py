@@ -7,7 +7,7 @@ from pymc_extras.statespace.nonlinear.filter import (
 from pymc_extras.statespace.nonlinear.fusion import FusedStateSpace, observed_state_names
 from pymc_extras.statespace.nonlinear.laplace_update import (
     NewtonSite,
-    gauss_newton_curvature,
+    fisher_curvature,
     implicit_mode,
     laplace_log_likelihood,
     newton_site,
@@ -21,7 +21,7 @@ __all__ = [
     "NewtonSite",
     "cubature_points",
     "filter_step",
-    "gauss_newton_curvature",
+    "fisher_curvature",
     "implicit_mode",
     "laplace_log_likelihood",
     "newton_site",

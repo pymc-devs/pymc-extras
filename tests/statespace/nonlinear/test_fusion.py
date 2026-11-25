@@ -15,7 +15,7 @@ from scipy import stats
 from pymc_extras.statespace.models import structural as st
 from pymc_extras.statespace.nonlinear import (
     FusedStateSpace,
-    gauss_newton_curvature,
+    fisher_curvature,
     observed_state_names,
     run_filter,
 )
@@ -62,7 +62,7 @@ def test_unpack_follows_the_statespace_order():
         statespace=level_statespace(shuffled),
         rv_names=["alpha", "matrix"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -88,7 +88,7 @@ def test_unlisted_free_rv_raises():
             statespace=level_statespace(["alpha"]),
             rv_names=["alpha"],
             frozen={},
-            curvature="gauss_newton",
+            curvature="fisher",
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
@@ -107,7 +107,7 @@ def test_statespace_with_other_observed_states_raises():
             statespace=level_statespace(["beta[a]", "delta"]),
             rv_names=["beta"],
             frozen={},
-            curvature="gauss_newton",
+            curvature="fisher",
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
@@ -127,7 +127,7 @@ def test_rv_names_that_are_not_free_raise():
             statespace=level_statespace(["alpha", "double"]),
             rv_names=["alpha", "double"],
             frozen={},
-            curvature="gauss_newton",
+            curvature="fisher",
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
@@ -150,7 +150,7 @@ def test_frozen_rvs_are_constants():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={"sigma": 2.0, "weights": np.ones((2, 2))},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -179,7 +179,7 @@ def test_rv_both_mapped_and_frozen_raises():
             statespace=level_statespace(["alpha"]),
             rv_names=["alpha"],
             frozen={"alpha": 0.0},
-            curvature="gauss_newton",
+            curvature="fisher",
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
@@ -200,7 +200,7 @@ def test_frozen_value_with_wrong_shape_raises():
             statespace=level_statespace(["alpha"]),
             rv_names=["alpha"],
             frozen={"beta": np.ones(3), "sigma": np.ones(2)},
-            curvature="gauss_newton",
+            curvature="fisher",
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
@@ -220,7 +220,7 @@ def test_frozen_value_may_be_symbolic():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={"sigma": sigma_value},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -248,7 +248,7 @@ def test_positive_rv_state_is_log_scale():
         statespace=level_statespace(["sigma", "alpha"]),
         rv_names=["alpha", "sigma"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -278,7 +278,7 @@ def test_prior_logp_is_on_the_unconstrained_scale_with_frozen_values():
         statespace=level_statespace(["sigma", "alpha"]),
         rv_names=["alpha", "sigma"],
         frozen={"mu": 0.5, "offset": 0.3},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -307,7 +307,7 @@ def test_prior_logp_with_a_frozen_transform_depending_on_another_frozen_rv():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={"upper": 3.0, "location": 1.5},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -330,7 +330,7 @@ def test_filter_output_sampling_is_not_implemented():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -352,7 +352,7 @@ def test_transform_depending_on_another_rv():
         statespace=level_statespace(["alpha", "beta"]),
         rv_names=["alpha", "beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -381,7 +381,7 @@ def test_transform_that_changes_shape_raises():
             statespace=level_statespace(names["weights"]),
             rv_names=["weights"],
             frozen={},
-            curvature="gauss_newton",
+            curvature="fisher",
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
@@ -401,7 +401,7 @@ def test_observed_length_follows_data():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -430,7 +430,7 @@ def test_raw_numpy_observed_is_replaced():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -458,7 +458,7 @@ def test_data_with_other_names_raises():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -486,7 +486,7 @@ def test_deterministics_are_inlined():
         statespace=level_statespace(["sigma", "alpha"]),
         rv_names=["alpha", "sigma"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -517,7 +517,7 @@ def test_distribution_parameters_are_those_that_depend_on_theta():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={"sigma": 2.0},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -527,12 +527,11 @@ def test_distribution_parameters_are_those_that_depend_on_theta():
     theta = pt.vector("theta", shape=(1,))
     x_input = pt.vector("x")
     y = pt.vector("y")
-    logp, distribution_parameters = fused.observation_logp(
-        parameters=theta, data={"x": x_input, "y": y}
-    )["y"]
-    [mean] = distribution_parameters
-    curvature = gauss_newton_curvature(
-        pointwise_logp=logp, distribution_parameters=[mean], parameters=theta
+    _, fisher_terms = fused.observation_logp(parameters=theta, data={"x": x_input, "y": y})["y"]
+    curvature = fisher_curvature(
+        information=fisher_terms.information,
+        distribution_parameters=fisher_terms.distribution_parameters,
+        parameters=theta,
     )
     x_values = np.arange(4.0)
     np.testing.assert_allclose(
@@ -541,7 +540,7 @@ def test_distribution_parameters_are_those_that_depend_on_theta():
     )
 
 
-def test_opaque_likelihood_has_no_distribution_parameters():
+def test_opaque_likelihood_has_no_fisher_information():
     with pm.Model() as model:
         alpha = pm.Normal("alpha")
         pm.Censored("y", pm.Normal.dist(alpha, 1), lower=-1, upper=1, observed=np.zeros(2))
@@ -551,7 +550,7 @@ def test_opaque_likelihood_has_no_distribution_parameters():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -560,8 +559,8 @@ def test_opaque_likelihood_has_no_distribution_parameters():
 
     theta = pt.vector("theta", shape=(1,))
     y = pt.vector("y")
-    logp, distribution_parameters = fused.observation_logp(parameters=theta, data={"y": y})["y"]
-    assert distribution_parameters is None
+    logp, fisher_terms = fused.observation_logp(parameters=theta, data={"y": y})["y"]
+    assert fisher_terms is None
     y_values = np.array([-1.0, 0.2, 1.0])
     expected = pm.logp(pm.Censored.dist(pm.Normal.dist(0.5, 1), lower=-1, upper=1), y_values)
     np.testing.assert_allclose(logp.eval({theta: [0.5], y: y_values}), expected.eval())
@@ -579,7 +578,7 @@ def test_each_observed_rv_gets_its_own_logp():
         statespace=level_statespace(["alpha", "sigma"]),
         rv_names=["alpha", "sigma"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -591,7 +590,8 @@ def test_each_observed_rv_gets_its_own_logp():
     counts = pt.vector("counts", dtype="int64")
     observation_logp = fused.observation_logp(parameters=theta, data={"y": y, "counts": counts})
     y_logp, _ = observation_logp["y"]
-    counts_logp, [counts_rate] = observation_logp["counts"]
+    counts_logp, counts_terms = observation_logp["counts"]
+    [counts_rate] = counts_terms.distribution_parameters
     theta_values = [0.5, np.log(2.0)]
     np.testing.assert_allclose(
         y_logp.eval({theta: theta_values, y: [0.3, -1.0, 2.0]}),
@@ -619,7 +619,7 @@ def test_statespace_matrices_at_given_parameters():
         statespace=statespace,
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -655,7 +655,7 @@ def test_statespace_matrices_accept_symbolic_parameters():
         statespace=statespace,
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -683,7 +683,7 @@ def test_statespace_matrices_with_other_names_raise():
         statespace=statespace,
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -710,7 +710,7 @@ def test_statespace_matrices_take_statespace_data():
         statespace=statespace,
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -741,7 +741,7 @@ def test_observations_without_scalar_parameters_or_vector_batch_have_none():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -777,7 +777,7 @@ def test_potentials_raise():
             statespace=level_statespace(["alpha"]),
             rv_names=["alpha"],
             frozen={},
-            curvature="gauss_newton",
+            curvature="fisher",
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
@@ -797,7 +797,7 @@ def test_observed_rv_depending_on_another_raises():
             statespace=level_statespace(["alpha"]),
             rv_names=["alpha"],
             frozen={},
-            curvature="gauss_newton",
+            curvature="fisher",
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
@@ -816,7 +816,7 @@ def test_imputed_observations_raise():
             statespace=level_statespace(["alpha"]),
             rv_names=["alpha"],
             frozen={"y_unobserved": np.zeros(1)},
-            curvature="gauss_newton",
+            curvature="fisher",
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
@@ -838,7 +838,7 @@ def test_model_logp_matches_build_statespace_graph():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
@@ -885,7 +885,7 @@ def test_dlogp_vanishes_at_stored_mode():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=50,
@@ -905,10 +905,10 @@ def test_dlogp_vanishes_at_stored_mode():
         )
 
     # The mode find_MAP reached with BFGS at tol=1e-12. Shifting both log scales by 0.01 moves
-    # their gradients to 0.04 or more.
+    # their gradients to 0.03 or more.
     mode = {
-        "initial_level_trend": np.array([[0.063079986435], [0.019299647647]]),
-        "sigma_level_trend_log__": np.log([[0.185623519401], [0.140406251664]]),
+        "initial_level_trend": np.array([[0.041505064578], [0.003765545203]]),
+        "sigma_level_trend_log__": np.log([[0.181112767003], [0.137329842762]]),
     }
     dlogp = fused_model.compile_dlogp(jacobian=False)
     assert_allclose(dlogp(mode), 0.0, atol=1e-6)
@@ -929,7 +929,7 @@ def test_conditional_posterior_draws_match_run_filter():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
@@ -997,7 +997,7 @@ def test_conditional_observations_follow_the_observation_model_at_each_draw():
         statespace=statespace,
         rv_names=["beta"],
         frozen={"sigma": 1e-8},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
@@ -1047,7 +1047,7 @@ def test_conditional_observations_carry_independent_observation_noise_on_each_da
         statespace=statespace,
         rv_names=["beta"],
         frozen={"sigma": 0.5},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
@@ -1103,7 +1103,7 @@ def test_forecast_propagates_the_smoothed_moments_through_the_dynamics():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
@@ -1174,7 +1174,7 @@ def test_forecast_observations_follow_the_observation_model_with_the_scenario_da
         statespace=statespace,
         rv_names=["beta"],
         frozen={"sigma": 1e-8},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
@@ -1232,7 +1232,7 @@ def test_large_integer_observations_survive_packing_in_float32():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
@@ -1268,7 +1268,7 @@ def test_prior_predictive_observations_have_the_statespace_moments():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
@@ -1357,7 +1357,7 @@ def test_model_gradient_matches_finite_differences():
         statespace=statespace,
         rv_names=["beta"],
         frozen={},
-        curvature="gauss_newton",
+        curvature="fisher",
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=50,

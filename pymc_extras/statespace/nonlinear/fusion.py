@@ -37,6 +37,7 @@ from pymc_extras.statespace.core import dummy_graph
 from pymc_extras.statespace.core.properties import Coord, Data, Parameter, Shock, State
 from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.nonlinear.filter import scan_filter, validated_data
+from pymc_extras.statespace.nonlinear.fisher import fisher_information
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_TYPES,
     OBS_STATE_DIM,
@@ -52,6 +53,13 @@ class FusedFitData(NamedTuple):
 
     data: dict[str, np.ndarray]
     masks: dict[str, np.ndarray]
+
+
+class FisherTerms(NamedTuple):
+    """The ``p`` distribution parameters, each ``(n,)``, that depend on theta, and their ``(n, p, p)`` information."""
+
+    distribution_parameters: list[TensorVariable]
+    information: TensorVariable
 
 
 def observed_state_names(*, model: Model, rv_names: Sequence[str]) -> dict[str, list[str]]:
@@ -116,9 +124,10 @@ class FusedStateSpace(PyMCStateSpace):
     frozen : mapping of str to TensorLike
         Values for the free random variables that are not observed states, each on its
         variable's constrained scale and shaped like it.
-    curvature : {"gauss_newton", "exact"}
-        The curvature of the log-likelihood in the Newton iterations: the generalized Gauss-Newton
-        matrix of each observed variable, or the exact negative Hessian.
+    curvature : {"fisher", "exact"}
+        The curvature of the log-likelihood in the Newton iterations: its Fisher information, from
+        the closed-form information of each observed variable's distribution, or the exact negative
+        Hessian.
     line_search : LineSearch
         Search along each Newton direction.
     tolerance : float
@@ -137,7 +146,7 @@ class FusedStateSpace(PyMCStateSpace):
         statespace: PyMCStateSpace,
         rv_names: Sequence[str],
         frozen: Mapping[str, TensorLike],
-        curvature: Literal["gauss_newton", "exact"],
+        curvature: Literal["fisher", "exact"],
         line_search: LineSearch,
         tolerance: float,
         max_iterations: int,
@@ -901,7 +910,7 @@ class FusedStateSpace(PyMCStateSpace):
 
     def observation_logp(
         self, *, parameters: TensorVariable, data: Mapping[str, TensorVariable]
-    ) -> dict[str, tuple[TensorVariable, list[TensorVariable] | None]]:
+    ) -> dict[str, tuple[TensorVariable, FisherTerms | None]]:
         r"""
         Return the log-likelihood of each observed variable.
 
@@ -917,56 +926,56 @@ class FusedStateSpace(PyMCStateSpace):
         -------
         logp : dict of str to tuple
             For each observed variable, the log-likelihood of each observation, shaped like its
-            batch dims, and its distribution parameters that depend on ``parameters``, broadcast
-            to the shape of its value and contained in that log-likelihood. The distribution
-            parameters exist only for a vector of scalar draws from a distribution with scalar
-            parameters, and are None otherwise, where the curvature has to be exact.
+            batch dims, and its :class:`FisherTerms`. The terms exist only for a vector of scalar
+            draws from a distribution with scalar parameters whose Fisher information
+            :func:`fisher_information` gives, and are None otherwise, where the curvature has to be
+            exact.
         """
         fgraph = self._rewrite(parameters=parameters, data=data)
 
         observations = {}
-        distribution_parameters = {}
-        stand_ins = {}
+        fisher_terms = {}
         for node in fgraph.toposort():
             if not isinstance(node.op, ModelObservedRV):
                 continue
             rv, value = node.inputs
+            observations[node.op.name] = (rv, value)
             op = rv.owner.op
-            if (
+            fisher_terms[node.op.name] = None
+            if not (
                 isinstance(op, RandomVariable)
                 and op.ndim_supp == 0
                 and not any(op.ndims_params)
                 and value.ndim == 1
             ):
-                broadcast = [
-                    pt.broadcast_to(parameter, value.shape)
-                    for parameter in op.dist_params(rv.owner)
-                ]
+                continue
 
-                # conditional_logp rewrites the graph it is given, so its log-likelihood would not
-                # contain these parameters. Building the variable on stand-ins and substituting
-                # the parameters afterwards keeps them in it, where the Gauss-Newton curvature
-                # cuts the graph.
-                parameter_stand_ins = [parameter.type() for parameter in broadcast]
-                stand_ins.update(zip(parameter_stand_ins, broadcast, strict=True))
-                rng, size, *_ = rv.owner.inputs
-                rv = op.make_node(rng, size, *parameter_stand_ins).default_output()
-                distribution_parameters[node.op.name] = [
-                    parameter for parameter in broadcast if parameters in ancestors([parameter])
-                ]
-            else:
-                distribution_parameters[node.op.name] = None
-            observations[node.op.name] = (rv, value)
+            broadcast = [
+                pt.broadcast_to(parameter, value.shape) for parameter in op.dist_params(rv.owner)
+            ]
+            positions = [
+                position
+                for position, parameter in enumerate(broadcast)
+                if parameters in ancestors([parameter])
+            ]
+            if not positions:
+                fisher_terms[node.op.name] = FisherTerms(
+                    distribution_parameters=[], information=pt.zeros((value.shape[0], 0, 0))
+                )
+                continue
+            information = fisher_information(
+                op=op, distribution_parameters=broadcast, positions=positions
+            )
+            if information is not None:
+                fisher_terms[node.op.name] = FisherTerms(
+                    distribution_parameters=[broadcast[position] for position in positions],
+                    information=information,
+                )
 
         value_logps = conditional_logp(dict(observations.values()))
-        pointwise_logps = graph_replace(
-            [value_logps[value] for _, value in observations.values()],
-            replace=stand_ins,
-            strict=False,
-        )
         return {
-            name: (pointwise_logp, distribution_parameters[name])
-            for name, pointwise_logp in zip(observations, pointwise_logps, strict=True)
+            name: (value_logps[value], fisher_terms[name])
+            for name, (_, value) in observations.items()
         }
 
     def statespace_matrices(

@@ -8,7 +8,7 @@ from pytensor.gradient import hessian
 from pytensor_ml.optim import zoom_line_search
 
 from pymc_extras.statespace.nonlinear import (
-    gauss_newton_curvature,
+    fisher_curvature,
     implicit_mode,
     laplace_log_likelihood,
     newton_site,
@@ -371,25 +371,25 @@ def test_newton_site_stops_on_indefinite_curvature():
     assert not converged
 
 
-def test_gauss_newton_equals_hessian_for_normal_mean():
+def test_fisher_curvature_equals_hessian_for_normal_mean():
     design, observed, point = regression_data(n_observations=10, n_parameters=3, seed=7)
 
     parameters = pt.vector("parameters", shape=(3,))
     mean = design @ parameters
     pointwise_logp = -0.5 * ((observed - mean) / NOISE_SIGMA) ** 2
-    curvature = gauss_newton_curvature(
-        pointwise_logp=pointwise_logp,
+    curvature = fisher_curvature(
+        information=pt.full((10, 1, 1), 1 / NOISE_SIGMA**2),
         distribution_parameters=[mean],
         parameters=parameters,
     )
 
-    gauss_newton, exact = pytensor.function(
+    fisher, exact = pytensor.function(
         [parameters], [curvature, -hessian(pointwise_logp.sum(), parameters)]
     )(point)
-    assert_allclose(gauss_newton, exact, atol=ATOL, rtol=RTOL)
+    assert_allclose(fisher, exact, atol=ATOL, rtol=RTOL)
 
 
-def test_gauss_newton_psd_far_from_mode():
+def test_fisher_curvature_is_positive_definite_where_the_hessian_is_not():
     nu = 3.0
     design, observed, _ = regression_data(n_observations=20, n_parameters=2, seed=8)
     far_point = np.array([4.0, -4.0], dtype=floatX)
@@ -397,26 +397,21 @@ def test_gauss_newton_psd_far_from_mode():
     parameters = pt.vector("parameters", shape=(2,))
     mean = design @ parameters
     pointwise_logp = -0.5 * (nu + 1) * pt.log1p((observed - mean) ** 2 / nu)
-    curvature = gauss_newton_curvature(
-        pointwise_logp=pointwise_logp,
+    location_information = (nu + 1) / (nu + 3)
+    curvature = fisher_curvature(
+        information=pt.full((20, 1, 1), location_information),
         distribution_parameters=[mean],
         parameters=parameters,
     )
-    gauss_newton, exact = pytensor.function(
+    fisher, exact = pytensor.function(
         [parameters], [curvature, -hessian(pointwise_logp.sum(), parameters)]
     )(far_point)
 
-    # The Student-t log-likelihood is concave in the location only for residuals below sqrt(nu),
-    # so each observation's curvature block is clipped at zero beyond that.
-    residuals = observed - design @ far_point
-    location_curvature = (nu + 1) * (nu - residuals**2) / (nu + residuals**2) ** 2
-    expected = (design.T * np.maximum(location_curvature, 0.0)) @ design
-
     assert np.linalg.eigvalsh(exact).min() < 0
-    assert_allclose(gauss_newton, expected, atol=ATOL, rtol=RTOL)
+    assert_allclose(fisher, location_information * design.T @ design, atol=ATOL, rtol=RTOL)
 
 
-def test_gauss_newton_moves_log_sigma():
+def test_fisher_curvature_moves_log_sigma():
     n_observations = 50
     observed = np.random.default_rng(9).normal(loc=1.5, scale=2.0, size=n_observations)
     observed = observed.astype(floatX)
@@ -427,11 +422,18 @@ def test_gauss_newton_moves_log_sigma():
     mean = pt.broadcast_to(parameters[0], (n_observations,))
     sigma = pt.broadcast_to(pt.exp(parameters[1]), (n_observations,))
     pointwise_logp = -0.5 * ((observed - mean) / sigma) ** 2 - pt.log(sigma)
+    information = pt.stack(
+        [
+            pt.stack([1 / sigma**2, pt.zeros_like(sigma)], axis=-1),
+            pt.stack([pt.zeros_like(sigma), 2 / sigma**2], axis=-1),
+        ],
+        axis=-2,
+    )
     mode = newton_site(
         logp=pointwise_logp.sum(),
         parameters=parameters,
-        curvature=gauss_newton_curvature(
-            pointwise_logp=pointwise_logp,
+        curvature=fisher_curvature(
+            information=information,
             distribution_parameters=[mean, sigma],
             parameters=parameters,
         ),
@@ -460,53 +462,17 @@ def test_gauss_newton_moves_log_sigma():
     assert_allclose([location_gradient, log_scale_gradient], 0.0, atol=1e-6)
 
 
-def test_gauss_newton_rejects_constant_distribution_parameter():
+def test_fisher_curvature_rejects_constant_distribution_parameter():
     parameters = pt.vector("parameters", shape=(2,))
     mean = pt.broadcast_to(parameters[0], (5,))
     sigma = pt.ones(5)
-    pointwise_logp = -0.5 * ((np.zeros(5) - mean) / sigma) ** 2
 
     with pytest.raises(ValueError, match="positions \\[1\\]"):
-        gauss_newton_curvature(
-            pointwise_logp=pointwise_logp,
+        fisher_curvature(
+            information=pt.ones((5, 2, 2)),
             distribution_parameters=[mean, sigma],
             parameters=parameters,
         )
-
-
-def test_gauss_newton_projects_location_scale_blocks():
-    scale_slope = 0.7
-    design, observed, point = regression_data(n_observations=8, n_parameters=2, seed=10)
-
-    parameters = pt.vector("parameters", shape=(2,))
-    mean = design @ parameters
-    sigma = pt.broadcast_to(pt.exp(scale_slope * parameters[1]), (8,))
-    pointwise_logp = -0.5 * ((observed - mean) / sigma) ** 2 - pt.log(sigma)
-    curvature = gauss_newton_curvature(
-        pointwise_logp=pointwise_logp,
-        distribution_parameters=[mean, sigma],
-        parameters=parameters,
-    )
-    gauss_newton = pytensor.function([parameters], curvature)(point)
-
-    # Each observation's negative Hessian in (mean, sigma) has a negative determinant, so every
-    # block is indefinite and its projection keeps only the positive eigenvalue.
-    residuals = observed - design @ point
-    scale = np.exp(scale_slope * point[1])
-    expected = np.zeros((2, 2))
-    for design_row, residual in zip(design, residuals):
-        negative_hessian = np.array(
-            [
-                [1 / scale**2, 2 * residual / scale**3],
-                [2 * residual / scale**3, 3 * residual**2 / scale**4 - 1 / scale**2],
-            ]
-        )
-        eigenvalues, eigenvectors = np.linalg.eigh(negative_hessian)
-        projected = (eigenvectors * np.maximum(eigenvalues, 0.0)) @ eigenvectors.T
-        jacobian = np.array([design_row, [0.0, scale_slope * scale]])
-        expected += jacobian.T @ projected @ jacobian
-
-    assert_allclose(gauss_newton, expected, atol=ATOL, rtol=RTOL)
 
 
 def kalman_update(
@@ -689,53 +655,36 @@ def test_state_posterior_handles_parameter_with_zero_predictive_variance():
     assert_allclose(covariance, expected_covariance, atol=ATOL, rtol=RTOL)
 
 
-def test_gauss_newton_partial_in_dependent_distribution_parameters():
+def test_fisher_curvature_carries_dependent_distribution_parameters_in_the_jacobian():
     scale_slope = 0.5
-    design, observed, point = regression_data(n_observations=8, n_parameters=2, seed=16)
+    design, _, point = regression_data(n_observations=8, n_parameters=2, seed=16)
 
-    # The scale is computed from the mean, so the curvature block has to hold partial derivatives
-    # in (mean, sigma) while the Jacobian carries sigma's dependence on the mean.
+    # The scale is computed from the mean, so the Jacobian has to carry sigma's dependence on the
+    # mean while the information stays the one in (mean, sigma).
     parameters = pt.vector("parameters", shape=(2,))
     mean = design @ parameters
     sigma = pt.exp(scale_slope * mean)
-    pointwise_logp = -0.5 * ((observed - mean) / sigma) ** 2 - pt.log(sigma)
-    curvature = gauss_newton_curvature(
-        pointwise_logp=pointwise_logp,
+    information = pt.stack(
+        [
+            pt.stack([1 / sigma**2, pt.zeros_like(sigma)], axis=-1),
+            pt.stack([pt.zeros_like(sigma), 2 / sigma**2], axis=-1),
+        ],
+        axis=-2,
+    )
+    curvature = fisher_curvature(
+        information=information,
         distribution_parameters=[mean, sigma],
         parameters=parameters,
     )
-    gauss_newton = pytensor.function([parameters], curvature)(point)
+    fisher = pytensor.function([parameters], curvature)(point)
 
-    location = design @ point
-    residuals = observed - location
-    scale = np.exp(scale_slope * location)
+    scale = np.exp(scale_slope * design @ point)
     expected = np.zeros((2, 2))
-    for design_row, residual, row_scale in zip(design, residuals, scale):
-        negative_hessian = np.array(
-            [
-                [1 / row_scale**2, 2 * residual / row_scale**3],
-                [2 * residual / row_scale**3, 3 * residual**2 / row_scale**4 - 1 / row_scale**2],
-            ]
-        )
-        eigenvalues, eigenvectors = np.linalg.eigh(negative_hessian)
-        projected = (eigenvectors * np.maximum(eigenvalues, 0.0)) @ eigenvectors.T
+    for design_row, row_scale in zip(design, scale):
         jacobian = np.array([design_row, scale_slope * row_scale * design_row])
-        expected += jacobian.T @ projected @ jacobian
+        expected += jacobian.T @ np.diag([1 / row_scale**2, 2 / row_scale**2]) @ jacobian
 
-    assert_allclose(gauss_newton, expected, atol=ATOL, rtol=RTOL)
-
-
-def test_gauss_newton_rejects_logp_outside_distribution_parameters():
-    parameters = pt.vector("parameters", shape=(2,))
-    mean = pt.broadcast_to(parameters[0], (5,))
-    pointwise_logp = -0.5 * mean**2 + parameters[1]
-
-    with pytest.raises(ValueError, match="other than through distribution_parameters"):
-        gauss_newton_curvature(
-            pointwise_logp=pointwise_logp,
-            distribution_parameters=[mean],
-            parameters=parameters,
-        )
+    assert_allclose(fisher, expected, atol=ATOL, rtol=RTOL)
 
 
 def test_newton_site_reports_invalid_direction_after_a_step():
