@@ -154,6 +154,8 @@ class FusedStateSpace(PyMCStateSpace):
     ):
         if prior_weight < 0:
             raise ValueError(f"prior_weight has to be nonnegative, not {prior_weight}.")
+        if curvature not in ("fisher", "exact"):
+            raise ValueError(f"curvature has to be 'fisher' or 'exact', not {curvature!r}.")
 
         self.model = model
         self.statespace = statespace
