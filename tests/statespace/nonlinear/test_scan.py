@@ -17,7 +17,8 @@ from pymc_extras.statespace.nonlinear import (
 )
 
 
-def test_scan_matches_driver():
+@pytest.mark.parametrize("prior_weight", [0.0, 1.0])
+def test_scan_matches_driver(prior_weight):
     with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
         X = pm.Data("X", np.zeros((4, 2)))
         beta = pm.Normal("beta", dims="coef")
@@ -38,6 +39,7 @@ def test_scan_matches_driver():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
+        prior_weight=prior_weight,
     )
     statespace_parameters = {
         "initial_level_trend": np.array([[0.3], [-0.1]]),
@@ -111,6 +113,7 @@ def test_masks_for_other_observed_variables_raise():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     with pytest.raises(ValueError, match=r"mask for exactly \['y'\]"):
@@ -151,6 +154,7 @@ def test_loglike_gradient_matches_finite_differences(base_covariance):
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=50,
+        prior_weight=0.0,
     )
 
     rng = np.random.default_rng(0)
@@ -206,6 +210,7 @@ def test_loglike_gradient_with_parameters_sharing_a_state():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=50,
+        prior_weight=0.0,
     )
 
     rng = np.random.default_rng(0)
@@ -251,6 +256,7 @@ def test_model_logp_matches_build_statespace_graph():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
     linear = (
         st.LevelTrend(order=1, innovations_order=1, observed_state_names=["x1", "x2"])
@@ -297,6 +303,7 @@ def test_dlogp_vanishes_at_stored_mode():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=50,
+        prior_weight=0.0,
     )
 
     rng = np.random.default_rng(0)
@@ -340,6 +347,7 @@ def test_conditional_posterior_draws_match_run_filter():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
+        prior_weight=0.0,
     )
 
     rng = np.random.default_rng(0)
@@ -412,6 +420,7 @@ def test_large_integer_observations_survive_packing_in_float32():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
+        prior_weight=0.0,
     )
 
     # 2**24 + 1 is the smallest positive integer float32 cannot represent.
@@ -447,6 +456,7 @@ def test_prior_predictive_observations_have_the_statespace_moments():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
+        prior_weight=0.0,
     )
 
     design = np.array([[1.0, 0.5], [1.0, -1.0], [0.0, 1.0]])
@@ -489,6 +499,7 @@ def test_per_date_logp_with_several_observed_variables_matches_run_filter():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
+        prior_weight=0.0,
     )
     rng = np.random.default_rng(0)
     counts_sizes, sizes_sizes = [3, 1, 0, 2], [2, 0, 1, 2]
@@ -534,6 +545,7 @@ def test_model_gradient_matches_finite_differences():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=50,
+        prior_weight=0.0,
     )
 
     rng = np.random.default_rng(0)

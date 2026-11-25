@@ -42,6 +42,7 @@ def test_step_matches_standard_filter_linear_case():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(2,))
@@ -151,6 +152,7 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
     statespace_parameters = {
         "initial_level_trend": np.array([[0.3], [-0.1]]),
@@ -230,6 +232,105 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
     assert filtered["diagnostics/converged"].values.all()
 
 
+@pytest.mark.parametrize("curvature", ["gauss_newton", "exact"])
+def test_weighted_gaussian_prior_is_a_pseudo_observation_of_the_states(curvature):
+    prior_mean, prior_sigma, prior_weight = np.array([1.0, -0.5]), np.array([2.0, 0.8]), 3.0
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", mu=prior_mean, sigma=prior_sigma, dims="coef")
+        pm.Normal("y", mu=X @ beta, sigma=0.5, observed=np.zeros(4))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature=curvature,
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+        prior_weight=prior_weight,
+    )
+    statespace_parameters = {
+        "initial_level_trend": np.array([[0.3], [-0.1]]),
+        "sigma_level_trend": np.full((2, 1), 0.3),
+        "P0": np.eye(2),
+    }
+
+    rng = np.random.default_rng(0)
+    sizes = [3, 0, 5]
+    X_dates = [rng.normal(size=(size, 2)) for size in sizes]
+    y_dates = [rng.normal(size=size) for size in sizes]
+    filtered = run_filter(
+        fused=fused,
+        statespace_parameters=statespace_parameters,
+        statespace_data={},
+        data={"X": X_dates, "y": y_dates},
+        dates=np.arange(3),
+    )
+    outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
+
+    x0, P0, c, d, T, Z, R, H, Q = fused.statespace_matrices(
+        statespace_parameters=statespace_parameters, statespace_data={}
+    )
+    a = pt.vector("a", shape=(2,))
+    P = pt.matrix("P", shape=(2, 2))
+    y = pt.vector("y")
+    X_data = pt.matrix("X")
+    # The weighted prior density is the density of the prior mean observed with variance
+    # prior_sigma**2 / prior_weight, up to a constant.
+    pseudo_design = pt.concatenate([X_data, pt.eye(2)], axis=0)
+    pseudo_observations = pt.concatenate([y, prior_mean])
+    pseudo_noise = pt.linalg.block_diag(
+        0.25 * pt.eye(y.shape[0]), pt.diag(prior_sigma**2 / prior_weight)
+    )
+    reference_filtered_mean, reference_filtered_covariance, _, _, reference_loglike = (
+        StandardFilter(cov_jitter=0.0).update(
+            a=a,
+            P=P,
+            y=pseudo_observations,
+            d=pseudo_design @ d,
+            Z=pseudo_design @ Z,
+            H=pseudo_noise + pseudo_design @ H @ pseudo_design.T,
+            nan_mask=pt.zeros_like(pseudo_observations, dtype=bool),
+        )
+    )
+    reference_step = pytensor.function(
+        [a, P, y, X_data],
+        [
+            reference_filtered_mean,
+            reference_filtered_covariance,
+            reference_loglike,
+            *BaseFilter.predict(
+                a=reference_filtered_mean, P=reference_filtered_covariance, c=c, T=T, R=R, Q=Q
+            ),
+        ],
+    )
+    normalizing_difference = np.sum(
+        -prior_weight / 2 * np.log(2 * np.pi * prior_sigma**2)
+        + np.log(2 * np.pi * prior_sigma**2 / prior_weight) / 2
+    )
+    mean, covariance = x0.eval(), P0.eval()
+    for date in range(len(sizes)):
+        filtered_mean, filtered_covariance, loglike, mean, covariance = reference_step(
+            mean, covariance, y_dates[date], X_dates[date].reshape(-1, 2)
+        )
+        assert_allclose(outputs["filtered_states"].values[date], filtered_mean, atol=1e-10)
+        assert_allclose(
+            outputs["filtered_covariances"].values[date], filtered_covariance, atol=1e-10
+        )
+        assert_allclose(
+            filtered["diagnostics/loglike_obs"].values[date],
+            loglike + normalizing_difference,
+            atol=1e-10,
+        )
+    assert filtered["diagnostics/converged"].values.all()
+
+
 def test_missing_date_is_predict_only():
     with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
         X = pm.Data("X", np.zeros((4, 2)))
@@ -250,6 +351,7 @@ def test_missing_date_is_predict_only():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
     statespace_parameters = {
         "initial_level_trend": np.array([[0.3], [-0.1]]),
@@ -309,6 +411,7 @@ def test_time_varying_statespace_matrices_raise():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     with pytest.raises(ValueError, match=r"Statespace matrices \['Z'\] vary over time"):
@@ -337,6 +440,7 @@ def test_gauss_newton_without_distribution_parameters_raises():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     with pytest.raises(ValueError, match=r"Observed variables \['w'\] have no distribution"):
@@ -371,6 +475,7 @@ def test_gauss_newton_ignores_observations_that_do_not_depend_on_the_states():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     filtered = run_filter(
@@ -408,6 +513,7 @@ def test_filter_output_coords():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     dates = pd.date_range("2024-01-01", periods=2, freq="D")
@@ -463,6 +569,7 @@ def test_data_with_another_number_of_dates_raises():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     with pytest.raises(ValueError, match=r"each of the 3 dates for each name: \{'y': 2\}"):
@@ -499,6 +606,7 @@ def test_smoother_matches_linear_smoother_with_a_missing_date():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
     statespace_parameters = {
         "initial_level_trend": np.array([[0.3], [-0.1]]),
@@ -572,6 +680,7 @@ def test_exact_and_gauss_newton_curvatures_differ_at_the_same_mode():
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=50,
+            prior_weight=0.0,
         )
         filtered = run_filter(
             fused=fused,
@@ -613,6 +722,7 @@ def test_date_out_of_iterations_is_not_converged():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=1,
+        prior_weight=0.0,
     )
 
     filtered = run_filter(
@@ -659,6 +769,7 @@ def test_non_finite_observations_raise():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     with pytest.raises(ValueError, match=r"non-finite values at \(name, date\) \[\('y', 1\)\]"):
@@ -691,6 +802,7 @@ def test_data_names_that_are_not_model_variables_raise():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     with pytest.raises(ValueError, match=r"data names \['bogus'\] are not variables"):
@@ -723,6 +835,7 @@ def test_integer_observations_take_whole_numbers_and_reject_fractions():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=20,
+        prior_weight=0.0,
     )
     statespace_parameters = {
         "initial_level_trend": [0.0],

@@ -21,6 +21,7 @@ from pymc_extras.statespace.nonlinear.laplace_update import (
     implicit_mode,
     laplace_log_likelihood,
     newton_site,
+    positive_semidefinite_part,
     state_posterior,
     stationary_state_posterior,
     stop_gradient,
@@ -175,7 +176,8 @@ def run_filter(
     Filter and smooth the states of a fused model over dates whose numbers of observations differ.
 
     The step from :func:`filter_step` is compiled once and called on each date, starting from the
-    statespace's initial state. A date whose observed values are empty is a pure prediction.
+    statespace's initial state. A date whose observed values are empty is a pure prediction when
+    the fused model's ``prior_weight`` is 0.
 
     Parameters
     ----------
@@ -229,6 +231,7 @@ def run_filter(
     predicted_covariance = initial_covariance.type()
     next_mean, next_covariance, recorded = _date_update(
         observation_logps=observation_logps,
+        prior_logp=_weighted_prior_logp(fused=fused, parameters=parameters),
         parameters=parameters,
         curvature=fused.curvature,
         predicted_mean=predicted_mean,
@@ -315,7 +318,7 @@ def scan_filter(
     Each date's values are padded to a common size, and ``observed_masks`` marks the observations
     that are real. A padded observation contributes nothing to its date's log-likelihood, but its
     value has to have a finite log-likelihood. A date with no real observations is a pure
-    prediction.
+    prediction when the fused model's ``prior_weight`` is 0.
 
     Parameters
     ----------
@@ -364,6 +367,7 @@ def scan_filter(
         }
         next_mean, next_covariance, recorded = _date_update(
             observation_logps=masked_logps,
+            prior_logp=_weighted_prior_logp(fused=fused, parameters=parameters),
             parameters=parameters,
             curvature=fused.curvature,
             predicted_mean=predicted_mean,
@@ -500,6 +504,7 @@ def _initial_moments_and_matrices(
 def _date_update(
     *,
     observation_logps: Mapping[str, tuple[TensorVariable, list[TensorVariable] | None]],
+    prior_logp: TensorVariable | None,
     parameters: TensorVariable,
     curvature: Literal["gauss_newton", "exact"],
     predicted_mean: TensorVariable,
@@ -510,10 +515,13 @@ def _date_update(
     max_iterations: int,
 ) -> tuple[TensorVariable, TensorVariable, dict[str, TensorVariable]]:
     logp = pt.sum([pointwise_logp.sum() for pointwise_logp, _ in observation_logps.values()])
+    if prior_logp is not None:
+        logp = logp + prior_logp
     curvature_matrix = _curvature(
         kind=curvature,
         logp=logp,
         observation_logps=observation_logps,
+        prior_logp=prior_logp,
         parameters=parameters,
     )
     filtered_mean, filtered_covariance, next_mean, next_covariance, site, parameter_mode = (
@@ -554,6 +562,14 @@ def _date_update(
     return next_mean, next_covariance, dict(zip(_RECORDED_NAMES, recorded, strict=True))
 
 
+def _weighted_prior_logp(
+    *, fused: "FusedStateSpace", parameters: TensorVariable
+) -> TensorVariable | None:
+    if fused.prior_weight == 0:
+        return None
+    return fused.prior_weight * fused.prior_logp(parameters)
+
+
 def _value_with_gradient_of(*, value: TensorVariable, gradient: TensorVariable) -> TensorVariable:
     """Return the value of ``value`` with the gradient of ``gradient``."""
     return gradient + stop_gradient(value - gradient)
@@ -564,6 +580,7 @@ def _curvature(
     kind: Literal["gauss_newton", "exact"],
     logp: TensorVariable,
     observation_logps: Mapping[str, tuple[TensorVariable, list[TensorVariable] | None]],
+    prior_logp: TensorVariable | None,
     parameters: TensorVariable,
 ) -> TensorVariable:
     if kind == "exact":
@@ -581,7 +598,7 @@ def _curvature(
         )
     # An observed variable none of whose distribution parameters depends on the parameters has no
     # curvature in them.
-    return sum(
+    observation_curvature = sum(
         (
             gauss_newton_curvature(
                 pointwise_logp=pointwise_logp,
@@ -592,4 +609,9 @@ def _curvature(
             if distribution_parameters
         ),
         start=pt.zeros((parameters.shape[0], parameters.shape[0])),
+    )
+    if prior_logp is None:
+        return observation_curvature
+    return observation_curvature + positive_semidefinite_part(
+        -hessian(cost=prior_logp, wrt=parameters)
     )

@@ -397,6 +397,12 @@ def laplace_log_likelihood(
     return logp_at - 0.5 * gradient_at @ predictive_covariance @ gradient_at - 0.5 * log_determinant
 
 
+def positive_semidefinite_part(matrix: TensorVariable) -> TensorVariable:
+    """Return the symmetric part of ``matrix`` with its negative eigenvalues set to zero."""
+    eigenvalues, eigenvectors = pt.linalg.eigh(0.5 * (matrix + matrix.mT))
+    return (eigenvectors * pt.maximum(eigenvalues, 0.0)[..., None, :]) @ eigenvectors.mT
+
+
 def gauss_newton_curvature(
     *,
     pointwise_logp: TensorVariable,
@@ -486,8 +492,7 @@ def gauss_newton_curvature(
         -pt.stack(hessian_columns, axis=-1),
         dict(zip(placeholders, distribution_parameters, strict=True)),
     )
-    eigenvalues, eigenvectors = pt.linalg.eigh(0.5 * (negative_hessian + negative_hessian.mT))
-    projected = (eigenvectors * pt.maximum(eigenvalues, 0.0)[..., None, :]) @ eigenvectors.mT
+    projected = positive_semidefinite_part(negative_hessian)
 
     # One pushforward per distribution parameter: a joint pushforward drops the dependence of one
     # output on another when one is computed from the other.

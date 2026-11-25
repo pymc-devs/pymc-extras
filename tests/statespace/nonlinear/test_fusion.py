@@ -62,6 +62,7 @@ def test_unpack_follows_the_statespace_order():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(5,))
@@ -87,6 +88,7 @@ def test_unlisted_free_rv_raises():
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
+            prior_weight=0.0,
         )
 
 
@@ -105,6 +107,7 @@ def test_statespace_with_other_observed_states_raises():
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
+            prior_weight=0.0,
         )
 
 
@@ -124,6 +127,7 @@ def test_rv_names_that_are_not_free_raise():
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
+            prior_weight=0.0,
         )
 
 
@@ -146,6 +150,7 @@ def test_frozen_rvs_are_constants():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -174,6 +179,7 @@ def test_rv_both_mapped_and_frozen_raises():
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
+            prior_weight=0.0,
         )
 
 
@@ -194,6 +200,7 @@ def test_frozen_value_with_wrong_shape_raises():
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
+            prior_weight=0.0,
         )
 
 
@@ -213,6 +220,7 @@ def test_frozen_value_may_be_symbolic():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -240,6 +248,7 @@ def test_positive_rv_state_is_log_scale():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(2,))
@@ -249,6 +258,61 @@ def test_positive_rv_state_is_log_scale():
     np.testing.assert_allclose(
         logp.eval({theta: [np.log(3.0), 0.5], y: y_values}),
         stats.norm.logpdf(y_values, loc=0.5, scale=3.0),
+    )
+
+
+def test_prior_logp_is_on_the_unconstrained_scale_with_frozen_values():
+    with pm.Model() as model:
+        mu = pm.Normal("mu")
+        alpha = pm.Normal("alpha", mu=mu, sigma=2.0)
+        sigma = pm.HalfNormal("sigma", sigma=1.5)
+        offset = pm.HalfNormal("offset")
+        pm.Normal("y", alpha + offset, sigma, observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=level_statespace(["sigma", "alpha"]),
+        rv_names=["alpha", "sigma"],
+        frozen={"mu": 0.5, "offset": 0.3},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+        prior_weight=1.0,
+    )
+
+    theta = pt.vector("theta", shape=(2,))
+    log_sigma, alpha_value = np.log(0.7), -1.2
+    np.testing.assert_allclose(
+        fused.prior_logp(theta).eval({theta: [log_sigma, alpha_value]}),
+        stats.norm.logpdf(alpha_value, loc=0.5, scale=2.0)
+        + stats.halfnorm.logpdf(0.7, scale=1.5)
+        + log_sigma,
+    )
+
+
+def test_prior_logp_with_a_frozen_transform_depending_on_another_frozen_rv():
+    with pm.Model() as model:
+        upper = pm.HalfNormal("upper")
+        location = pm.Uniform("location", lower=0.0, upper=upper)
+        alpha = pm.Normal("alpha", mu=location, sigma=2.0)
+        pm.Normal("y", alpha, 1.0, observed=np.zeros(3))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=level_statespace(["alpha"]),
+        rv_names=["alpha"],
+        frozen={"upper": 3.0, "location": 1.5},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+        prior_weight=1.0,
+    )
+
+    theta = pt.vector("theta", shape=(1,))
+    np.testing.assert_allclose(
+        fused.prior_logp(theta).eval({theta: [0.4]}), stats.norm.logpdf(0.4, loc=1.5, scale=2.0)
     )
 
 
@@ -267,6 +331,7 @@ def test_transform_depending_on_another_rv():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(2,))
@@ -295,6 +360,7 @@ def test_transform_that_changes_shape_raises():
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
+            prior_weight=0.0,
         )
 
 
@@ -314,6 +380,7 @@ def test_observed_length_follows_data():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -342,6 +409,7 @@ def test_raw_numpy_observed_is_replaced():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -369,6 +437,7 @@ def test_data_with_other_names_raises():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     with pytest.raises(ValueError, match=r"missing: \['y'\], unexpected: \['z'\]"):
@@ -396,6 +465,7 @@ def test_deterministics_are_inlined():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(2,))
@@ -426,6 +496,7 @@ def test_distribution_parameters_are_those_that_depend_on_theta():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -459,6 +530,7 @@ def test_opaque_likelihood_has_no_distribution_parameters():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -486,6 +558,7 @@ def test_each_observed_rv_gets_its_own_logp():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(2,))
@@ -525,6 +598,7 @@ def test_statespace_matrices_at_given_parameters():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     initial_covariance = [[2.0, 0.3], [0.3, 1.0]]
@@ -560,6 +634,7 @@ def test_statespace_matrices_accept_symbolic_parameters():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     rho = pt.vector("rho", shape=(1,))
@@ -587,6 +662,7 @@ def test_statespace_matrices_with_other_names_raise():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     with pytest.raises(ValueError, match=r"missing: \['P0'\], unexpected: \['rho'\]"):
@@ -613,6 +689,7 @@ def test_statespace_matrices_take_statespace_data():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     exog = pt.matrix("exog", shape=(None, 1))
@@ -643,6 +720,7 @@ def test_observations_without_scalar_parameters_or_vector_batch_have_none():
         line_search=zoom_line_search(),
         tolerance=1e-10,
         max_iterations=10,
+        prior_weight=0.0,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -678,6 +756,7 @@ def test_potentials_raise():
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
+            prior_weight=0.0,
         )
 
 
@@ -697,6 +776,7 @@ def test_observed_rv_depending_on_another_raises():
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
+            prior_weight=0.0,
         )
 
 
@@ -715,4 +795,5 @@ def test_imputed_observations_raise():
             line_search=zoom_line_search(),
             tolerance=1e-10,
             max_iterations=10,
+            prior_weight=0.0,
         )

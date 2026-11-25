@@ -98,6 +98,11 @@ class FusedStateSpace(PyMCStateSpace):
     each parameter draw. Smoothed states
     are drawn from each date's marginal.
 
+    Each date's log-likelihood adds ``prior_weight`` times :meth:`prior_logp`, the prior of the
+    variables in ``rv_names``, as if the cross-sectional model were fitted anew on every date. The
+    observations that :meth:`build_statespace_graph` draws from the model's generator follow the
+    statespace dynamics alone, without that term.
+
     Parameters
     ----------
     model : Model
@@ -118,6 +123,9 @@ class FusedStateSpace(PyMCStateSpace):
         Largest absolute entry of the whitened Newton direction at which the iterations stop.
     max_iterations : int
         Most Newton iterations on each date.
+    prior_weight : float
+        Nonnegative weight on the prior of the variables in ``rv_names`` in each date's
+        log-likelihood. With a weight of 0 the statespace dynamics are their only prior.
     """
 
     def __init__(
@@ -131,7 +139,11 @@ class FusedStateSpace(PyMCStateSpace):
         line_search: LineSearch,
         tolerance: float,
         max_iterations: int,
+        prior_weight: float,
     ):
+        if prior_weight < 0:
+            raise ValueError(f"prior_weight has to be nonnegative, not {prior_weight}.")
+
         self.model = model
         self.statespace = statespace
         self.rv_names = list(rv_names)
@@ -140,6 +152,7 @@ class FusedStateSpace(PyMCStateSpace):
         self.line_search = line_search
         self.tolerance = tolerance
         self.max_iterations = max_iterations
+        self.prior_weight = prior_weight
 
         if model.potentials:
             raise ValueError(
@@ -596,6 +609,33 @@ class FusedStateSpace(PyMCStateSpace):
             For each variable in ``rv_names``, its entries of ``vector``.
         """
         return {name: vector[positions] for name, positions in self._theta_positions.items()}
+
+    def prior_logp(self, parameters: TensorVariable) -> TensorVariable:
+        r"""
+        Return the prior log-density of the variables in ``rv_names`` at a vector like :math:`\theta`.
+
+        The density is on each variable's unconstrained scale, with the Jacobian of its transform,
+        and the frozen variables at their values.
+
+        Parameters
+        ----------
+        parameters : TensorVariable
+            Vector laid out like :math:`\theta`.
+
+        Returns
+        -------
+        logp : TensorVariable
+            Scalar log-density.
+        """
+        model = pm.do(self.model, self.frozen) if self.frozen else self.model
+        replacements = {
+            model.rvs_to_values[model[name]]: model.rvs_to_values[model[name]].type.filter_variable(
+                value, allow_convert=True
+            )
+            for name, value in self.unpack(parameters).items()
+        }
+        logp = model.logp(vars=[model[name] for name in self.rv_names], jacobian=True)
+        return graph_replace(logp, replace=replacements, strict=True)
 
     def observation_logp(
         self, *, parameters: TensorVariable, data: Mapping[str, TensorVariable]
