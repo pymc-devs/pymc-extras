@@ -56,7 +56,7 @@ class FusedFitData(NamedTuple):
 
 
 class FisherTerms(NamedTuple):
-    """The ``p`` distribution parameters, each ``(n,)``, that depend on theta, and their ``(n, p, p)`` information."""
+    """Theta-dependent distribution parameters, each ``(n,)``, and their Fisher information."""
 
     distribution_parameters: list[TensorVariable]
     information: TensorVariable
