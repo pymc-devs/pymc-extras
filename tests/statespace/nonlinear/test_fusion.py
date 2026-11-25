@@ -1246,7 +1246,7 @@ def test_forecast_observations_follow_the_observation_model_with_the_scenario_da
         assert_allclose(draws[:, :, date, :size], theta[:, :, date] @ X_date.T, atol=1e-6)
         assert np.isnan(draws[:, :, date, size:]).all()
 
-    with pytest.raises(ValueError, match="exactly"):
+    with pytest.raises(ValueError, match=r"scenario has to give a value for exactly \['X'\]"):
         fused.forecast(idata, start=1, periods=3, scenario={"y": future_X}, progressbar=False)
 
 
