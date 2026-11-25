@@ -176,13 +176,15 @@ class FusedStateSpace:
             )
 
         state_positions = {state: position for position, state in enumerate(observed_states)}
-        # Packing the variables in rv_names order gives a vector whose entry i sits at
-        # _packed_order[i] in theta, which follows the statespace's order.
-        self._packed_order = np.array(
-            [state_positions[str(state)] for name in self.rv_names for state in labels[name].flat],
-            dtype=int,
-        )
-        self._packed_shapes = [labels[name].shape for name in self.rv_names]
+        # The position in theta of each element of each variable, in the variable's shape. Indexing
+        # theta with it gives the variable without a size-1 intermediate for a scalar, whose static
+        # shape would differ from the same value's inside a scan.
+        self._theta_positions = {
+            name: np.vectorize(lambda state: state_positions[str(state)], otypes=[int])(
+                labels[name]
+            )
+            for name in self.rv_names
+        }
 
     def unpack(self, vector: TensorVariable) -> dict[str, TensorVariable]:
         r"""
@@ -198,8 +200,7 @@ class FusedStateSpace:
         values : dict of str to TensorVariable
             For each variable in ``rv_names``, its entries of ``vector``.
         """
-        values = pt.unpack(vector[self._packed_order], packed_shapes=self._packed_shapes)
-        return dict(zip(self.rv_names, values, strict=True))
+        return {name: vector[positions] for name, positions in self._theta_positions.items()}
 
     def observation_logp(
         self, *, parameters: TensorVariable, data: Mapping[str, TensorVariable]
