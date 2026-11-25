@@ -7,7 +7,7 @@ import pytensor.tensor as pt
 import xarray as xr
 
 from numpy.typing import ArrayLike
-from pytensor.gradient import hessian
+from pytensor.gradient import disconnected_grad, hessian
 from pytensor.tensor import TensorLike
 from pytensor.tensor.variable import TensorVariable
 from pytensor_ml.optim.line_search import LineSearch
@@ -24,7 +24,6 @@ from pymc_extras.statespace.nonlinear.laplace_update import (
     positive_semidefinite_part,
     state_posterior,
     stationary_state_posterior,
-    stop_gradient,
 )
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
@@ -599,7 +598,7 @@ def _weighted_prior_logp(
 
 def _value_with_gradient_of(*, value: TensorVariable, gradient: TensorVariable) -> TensorVariable:
     """Return the value of ``value`` with the gradient of ``gradient``."""
-    return gradient + stop_gradient(value - gradient)
+    return gradient + disconnected_grad(value - gradient)
 
 
 def _curvature(
