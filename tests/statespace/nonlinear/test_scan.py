@@ -3,6 +3,7 @@ import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import pytest
+import xarray as xr
 
 from numpy.testing import assert_allclose
 from pytensor_ml.optim import zoom_line_search
@@ -11,7 +12,6 @@ from pymc_extras.statespace import structural as st
 from pymc_extras.statespace.nonlinear import (
     FusedStateSpace,
     observed_state_names,
-    register_fused_likelihood,
     run_filter,
     scan_filter,
 )
@@ -29,7 +29,16 @@ def test_scan_matches_driver():
         + st.Autoregressive(order=1, observed_state_names=names["beta"])
         + st.MeasurementError(name="noise", observed_state_names=names["beta"])
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=20,
+    )
     statespace_parameters = {
         "initial_level_trend": np.array([[0.3], [-0.1]]),
         "sigma_level_trend": np.full((2, 1), 0.3),
@@ -49,10 +58,6 @@ def test_scan_matches_driver():
         statespace_data={},
         data={"X": X_dates, "y": y_dates},
         dates=np.arange(len(sizes)),
-        curvature="gauss_newton",
-        line_search=zoom_line_search(),
-        tolerance=1e-10,
-        max_iterations=20,
     )
 
     width = max(sizes)
@@ -70,10 +75,6 @@ def test_scan_matches_driver():
         statespace_data={},
         data={"X": X_padded, "y": y_padded},
         observed_masks={"y": y_mask},
-        curvature="gauss_newton",
-        line_search=zoom_line_search(),
-        tolerance=1e-10,
-        max_iterations=20,
     )
     evaluate = pytensor.function([sigma_level_trend], list(scanned.values()))
     values = dict(zip(scanned, evaluate(statespace_parameters["sigma_level_trend"]), strict=True))
@@ -106,6 +107,10 @@ def test_masks_for_other_observed_variables_raise():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     with pytest.raises(ValueError, match=r"mask for exactly \['y'\]"):
@@ -119,10 +124,6 @@ def test_masks_for_other_observed_variables_raise():
             statespace_data={},
             data={"y": np.zeros((2, 3))},
             observed_masks={"z": np.ones((2, 3), dtype=bool)},
-            curvature="gauss_newton",
-            line_search=zoom_line_search(),
-            tolerance=1e-10,
-            max_iterations=10,
         )
 
 
@@ -141,7 +142,16 @@ def test_loglike_gradient_matches_finite_differences(base_covariance):
     statespace = st.LevelTrend(
         order=1, innovations_order=1, observed_state_names=names["beta"]
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=50,
+    )
 
     rng = np.random.default_rng(0)
     sigma = pt.vector("sigma", shape=(2,))
@@ -156,10 +166,6 @@ def test_loglike_gradient_matches_finite_differences(base_covariance):
         statespace_data={},
         data={"X": rng.normal(size=(3, 4, 2)), "y": rng.poisson(lam=2.0, size=(3, 4))},
         observed_masks={"y": np.ones((3, 4), dtype=bool)},
-        curvature="gauss_newton",
-        line_search=zoom_line_search(),
-        tolerance=1e-10,
-        max_iterations=50,
     )
     loglike = scanned["loglike_obs"].sum()
     inputs = [sigma, initial_scale]
@@ -191,7 +197,16 @@ def test_loglike_gradient_with_parameters_sharing_a_state():
     statespace = st.LevelTrend(
         order=1, innovations_order=1, observed_state_names=names["beta"], share_states=True
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=50,
+    )
 
     rng = np.random.default_rng(0)
     sigma = pt.vector("sigma", shape=(1,))
@@ -205,10 +220,6 @@ def test_loglike_gradient_with_parameters_sharing_a_state():
         statespace_data={},
         data={"X": rng.normal(size=(3, 4, 2)), "y": rng.poisson(lam=2.0, size=(3, 4))},
         observed_masks={"y": np.ones((3, 4), dtype=bool)},
-        curvature="gauss_newton",
-        line_search=zoom_line_search(),
-        tolerance=1e-10,
-        max_iterations=50,
     )
     loglike = scanned["loglike_obs"].sum()
     loglike_and_gradient = pytensor.function([sigma], [loglike, pytensor.grad(loglike, sigma)])
@@ -231,7 +242,16 @@ def test_model_logp_matches_build_statespace_graph():
     statespace = st.LevelTrend(
         order=1, innovations_order=1, observed_state_names=names["beta"]
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
     linear = (
         st.LevelTrend(order=1, innovations_order=1, observed_state_names=["x1", "x2"])
         + st.MeasurementError(name="noise", observed_state_names=["x1", "x2"])
@@ -242,16 +262,7 @@ def test_model_logp_matches_build_statespace_graph():
         pm.Normal("initial_level_trend", shape=(2, 1))
         pm.HalfNormal("sigma_level_trend", shape=(2, 1))
         pm.Deterministic("P0", pt.eye(2))
-        register_fused_likelihood(
-            name="loglike",
-            fused=fused,
-            data={"y": y},
-            observed_masks={"y": np.ones((6, 2), dtype=bool)},
-            curvature="gauss_newton",
-            line_search=zoom_line_search(),
-            tolerance=1e-10,
-            max_iterations=10,
-        )
+        fused.build_statespace_graph(data={"y": list(y)}, dates=np.arange(6))
     with pm.Model() as linear_model:
         pm.Normal("initial_level_trend", shape=(2, 1))
         pm.HalfNormal("sigma_level_trend", shape=(2, 1))
@@ -277,7 +288,16 @@ def test_dlogp_vanishes_at_stored_mode():
     statespace = st.LevelTrend(
         order=1, innovations_order=1, observed_state_names=names["beta"]
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=50,
+    )
 
     rng = np.random.default_rng(0)
     beta_path = np.cumsum(np.array([0.2, 0.4]) * rng.normal(size=(20, 2)), axis=0)
@@ -287,15 +307,8 @@ def test_dlogp_vanishes_at_stored_mode():
         pm.Normal("initial_level_trend", shape=(2, 1))
         pm.HalfNormal("sigma_level_trend", shape=(2, 1))
         pm.Deterministic("P0", pt.eye(2))
-        register_fused_likelihood(
-            name="loglike",
-            fused=fused,
-            data={"X": X_dates, "y": y_dates},
-            observed_masks={"y": np.ones((20, 20), dtype=bool)},
-            curvature="gauss_newton",
-            line_search=zoom_line_search(),
-            tolerance=1e-10,
-            max_iterations=50,
+        fused.build_statespace_graph(
+            data={"X": list(X_dates), "y": list(y_dates)}, dates=np.arange(20)
         )
 
     # The mode find_MAP reached with BFGS at tol=1e-12. Shifting both log scales by 0.01 moves
@@ -306,3 +319,254 @@ def test_dlogp_vanishes_at_stored_mode():
     }
     dlogp = fused_model.compile_dlogp(jacobian=False)
     assert_allclose(dlogp(mode), 0.0, atol=1e-6)
+
+
+def test_conditional_posterior_draws_match_run_filter():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        pm.Poisson("y", mu=pm.math.exp(X @ beta), observed=np.zeros(4, dtype=int))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=20,
+    )
+
+    rng = np.random.default_rng(0)
+    sizes = [3, 1, 0, 4]
+    data = {
+        "X": [rng.normal(size=(size, 2)) for size in sizes],
+        "y": [rng.poisson(lam=2.0, size=size) for size in sizes],
+    }
+    parameters = {
+        "initial_level_trend": np.array([[0.3], [-0.1]]),
+        "sigma_level_trend": np.array([[0.3], [0.2]]),
+        "P0": np.eye(2),
+    }
+    with pm.Model(coords=fused.coords):
+        pm.Normal("initial_level_trend", dims=fused.param_dims["initial_level_trend"])
+        pm.HalfNormal("sigma_level_trend", dims=fused.param_dims["sigma_level_trend"])
+        pm.Deterministic("P0", pt.eye(2), dims=fused.param_dims["P0"])
+        fused.build_statespace_graph(data=data, dates=np.arange(4))
+        idata = pm.sample_prior_predictive(draws=1, random_seed=0)
+
+    n_draws = 4000
+    idata["posterior"] = xr.Dataset(
+        {
+            name: (
+                ("chain", "draw", *fused.param_dims[name]),
+                np.broadcast_to(value, (1, n_draws, *value.shape)),
+            )
+            for name, value in parameters.items()
+        }
+    )
+    conditional = fused.sample_conditional_posterior(idata, random_seed=1, progressbar=False)
+    reference = run_filter(
+        fused=fused,
+        statespace_parameters=parameters,
+        statespace_data={},
+        data=data,
+        dates=np.arange(4),
+    )["posterior_predictive"].isel(chain=0, draw=0)
+
+    for kind in ["filtered", "smoothed"]:
+        draws = conditional[f"{kind}_posterior"].values[0]
+        mean = reference[f"{kind}_states"].values
+        sd = np.sqrt(np.diagonal(reference[f"{kind}_covariances"].values, axis1=1, axis2=2))
+        assert np.all(np.abs(draws.mean(axis=0) - mean) < 4 * sd / np.sqrt(n_draws))
+        assert_allclose(draws.std(axis=0), sd, rtol=0.05)
+
+
+@pytest.mark.xfail(
+    reason="statespace_matrices cannot convert float32 parameter values to the statespace's types",
+    raises=TypeError,
+    strict=True,
+)
+@pytensor.config.change_flags(floatX="float32")
+def test_large_integer_observations_survive_packing_in_float32():
+    with pm.Model(coords={"coef": ["x1"]}) as model:
+        X = pm.Data("X", np.zeros((2, 1)))
+        beta = pm.Normal("beta", dims="coef")
+        pm.Poisson("y", mu=pm.math.exp(X @ beta), observed=np.zeros(2, dtype=int))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=20,
+    )
+
+    # 2**24 + 1 is the smallest positive integer float32 cannot represent.
+    counts = np.array([2**24 + 1, 2**25 + 3])
+    with pm.Model(coords=fused.coords) as fused_model:
+        pm.Normal("initial_level_trend", dims=fused.param_dims["initial_level_trend"])
+        pm.HalfNormal("sigma_level_trend", dims=fused.param_dims["sigma_level_trend"])
+        pm.Deterministic("P0", pt.eye(1), dims=fused.param_dims["P0"])
+        fused.build_statespace_graph(
+            data={"X": [np.ones((2, 1))], "y": [counts]}, dates=np.arange(1)
+        )
+
+    observations = fused_model.rvs_to_values[fused_model["obs"]].data
+    np.testing.assert_array_equal(observations[0], counts)
+
+
+def test_prior_predictive_observations_have_the_statespace_moments():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        pm.Poisson("y", mu=pm.math.exp(X @ beta), observed=np.zeros(4, dtype=int))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=20,
+    )
+
+    design = np.array([[1.0, 0.5], [1.0, -1.0], [0.0, 1.0]])
+    mean = np.array([0.5, -0.3])
+    initial_covariance = np.array([[0.04, 0.01], [0.01, 0.09]])
+    sigma = np.array([0.4, 0.3])
+    with pm.Model(coords=fused.coords):
+        pm.Deterministic("initial_level_trend", pt.as_tensor(mean[:, None]))
+        pm.Deterministic("sigma_level_trend", pt.as_tensor(sigma[:, None]))
+        pm.Deterministic("P0", pt.as_tensor(initial_covariance))
+        fused.build_statespace_graph(
+            data={"X": [design, design], "y": [np.zeros(3, dtype=int)] * 2}, dates=np.arange(2)
+        )
+        draws = pm.sample_prior_predictive(draws=40_000, random_seed=1).prior_predictive["obs"]
+
+    # The coefficients on the first date have the initial covariance, and on the second the
+    # random walk has added its variance, so each station's count has a lognormal Poisson mean.
+    for date, covariance in enumerate([initial_covariance, initial_covariance + np.diag(sigma**2)]):
+        expected = np.exp(
+            design @ mean + 0.5 * np.einsum("ik,kl,il->i", design, covariance, design)
+        )
+        assert_allclose(draws.values[0, :, date].mean(axis=0), expected, rtol=0.02)
+
+
+def test_per_date_logp_with_several_observed_variables_matches_run_filter():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        x = pm.Data("x", np.zeros(3))
+        pm.Poisson("counts", mu=pm.math.exp(alpha + x), observed=np.zeros(3, dtype=int))
+        pm.Normal("sizes", mu=alpha, sigma=0.5, observed=np.zeros(2))
+
+    fused = FusedStateSpace(
+        model=model,
+        statespace=st.LevelTrend(
+            order=1, innovations_order=1, observed_state_names=["alpha"]
+        ).build(verbose=False),
+        rv_names=["alpha"],
+        frozen={},
+        curvature="exact",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=20,
+    )
+    rng = np.random.default_rng(0)
+    counts_sizes, sizes_sizes = [3, 1, 0, 2], [2, 0, 1, 2]
+    data = {
+        "x": [rng.normal(size=size) for size in counts_sizes],
+        "counts": [rng.poisson(lam=2.0, size=size) for size in counts_sizes],
+        "sizes": [rng.normal(size=size) for size in sizes_sizes],
+    }
+    parameters = {"initial_level_trend": [0.2], "sigma_level_trend": [0.3], "P0": [[1.0]]}
+
+    with pm.Model(coords=fused.coords) as fused_model:
+        for name, value in parameters.items():
+            pm.Deterministic(name, pt.as_tensor(np.array(value)))
+        fused.build_statespace_graph(data=data, dates=np.arange(4))
+    [per_date_logp] = fused_model.compile_logp(vars=[fused_model["obs"]], sum=False)({})
+
+    reference = run_filter(
+        fused=fused,
+        statespace_parameters=parameters,
+        statespace_data={},
+        data=data,
+        dates=np.arange(4),
+    )
+    assert_allclose(per_date_logp, reference["diagnostics/loglike_obs"].values, atol=1e-10)
+
+
+def test_model_gradient_matches_finite_differences():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        pm.Poisson("y", mu=pm.math.exp(X @ beta), observed=np.zeros(4, dtype=int))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=50,
+    )
+
+    rng = np.random.default_rng(0)
+    sizes = [6, 4, 0, 5, 6]
+    data = {
+        "X": [rng.normal(size=(size, 2)) for size in sizes],
+        "y": [rng.poisson(lam=3.0, size=size) for size in sizes],
+    }
+    with pm.Model(coords=fused.coords) as fused_model:
+        pm.Normal("initial_level_trend", dims=fused.param_dims["initial_level_trend"])
+        pm.HalfNormal("sigma_level_trend", sigma=0.5, dims=fused.param_dims["sigma_level_trend"])
+        pm.Deterministic("P0", pt.eye(2), dims=fused.param_dims["P0"])
+        fused.build_statespace_graph(data=data, dates=np.arange(len(sizes)))
+
+    # PyMC rewrites the log-probability before differentiating it, which is what this checks.
+    point = {
+        "initial_level_trend": np.array([[0.4], [-0.3]]),
+        "sigma_level_trend_log__": np.log([[0.3], [0.2]]),
+    }
+    logp, dlogp = fused_model.compile_logp(), fused_model.compile_dlogp()
+    flat = np.concatenate([value.ravel() for value in point.values()])
+
+    def logp_at(vector):
+        return logp(
+            {
+                "initial_level_trend": vector[:2].reshape(2, 1),
+                "sigma_level_trend_log__": vector[2:].reshape(2, 1),
+            }
+        )
+
+    step = 1e-6
+    finite_differences = [
+        (logp_at(flat + step * unit) - logp_at(flat - step * unit)) / (2 * step)
+        for unit in np.eye(flat.size)
+    ]
+    assert_allclose(dlogp(point), finite_differences, atol=1e-5)

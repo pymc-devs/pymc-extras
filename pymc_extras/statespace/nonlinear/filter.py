@@ -1,14 +1,12 @@
 from collections.abc import Mapping, Sequence
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-import pymc as pm
 import pytensor
 import pytensor.tensor as pt
 import xarray as xr
 
 from numpy.typing import ArrayLike
-from pymc.model import modelcontext
 from pytensor.gradient import hessian
 from pytensor.tensor import TensorLike
 from pytensor.tensor.variable import TensorVariable
@@ -17,7 +15,6 @@ from pytensor_ml.optim.line_search import LineSearch
 from pymc_extras.statespace.filters.kalman_filter import BaseFilter
 from pymc_extras.statespace.filters.kalman_smoother import RTSSmoother
 from pymc_extras.statespace.filters.utilities import quad_form_sym
-from pymc_extras.statespace.nonlinear.fusion import FusedStateSpace
 from pymc_extras.statespace.nonlinear.laplace_update import (
     NewtonSite,
     gauss_newton_curvature,
@@ -36,6 +33,9 @@ from pymc_extras.statespace.utils.constants import (
     OBS_STATE_DIM,
     TIME_DIM,
 )
+
+if TYPE_CHECKING:
+    from pymc_extras.statespace.nonlinear.fusion import FusedStateSpace
 
 
 def filter_step(
@@ -165,15 +165,11 @@ def filter_step(
 
 def run_filter(
     *,
-    fused: FusedStateSpace,
+    fused: "FusedStateSpace",
     statespace_parameters: Mapping[str, ArrayLike],
     statespace_data: Mapping[str, ArrayLike],
     data: Mapping[str, Sequence[ArrayLike]],
     dates: ArrayLike,
-    curvature: Literal["gauss_newton", "exact"],
-    line_search: LineSearch,
-    tolerance: float,
-    max_iterations: int,
 ) -> xr.DataTree:
     r"""
     Filter and smooth the states of a fused model over dates whose numbers of observations differ.
@@ -196,15 +192,6 @@ def run_filter(
         observations are left out of a date's arrays.
     dates : ArrayLike
         Label of each date.
-    curvature : {"gauss_newton", "exact"}
-        The curvature of the log-likelihood in the Newton iterations: the generalized Gauss-Newton
-        matrix of each observed variable, or the exact negative Hessian.
-    line_search : LineSearch
-        Search along each Newton direction.
-    tolerance : float
-        Largest absolute entry of the whitened Newton direction at which the iterations stop.
-    max_iterations : int
-        Most Newton iterations on each date.
 
     Returns
     -------
@@ -220,9 +207,7 @@ def run_filter(
         ``converged`` from :class:`NewtonSite`. The moments of a date that did not converge are
         not at its mode, and every later date's moments start from them.
     """
-    not_variables = sorted(set(data) - set(fused.model.named_vars))
-    if not_variables:
-        raise ValueError(f"data names {not_variables} are not variables of the model.")
+    cast_data = validated_data(fused=fused, data=data, n_dates=len(dates))
     parameters = pt.vector("parameters", shape=(len(fused.statespace.observed_states),))
     placeholders = {
         name: pt.tensor(
@@ -233,40 +218,6 @@ def run_filter(
         for name in data
     }
     observation_logps = fused.observation_logp(parameters=parameters, data=placeholders)
-
-    date_counts = {name: len(values) for name, values in data.items()}
-    if set(date_counts.values()) != {len(dates)}:
-        raise ValueError(
-            f"data has to give a value on each of the {len(dates)} dates for each name: "
-            f"{date_counts}."
-        )
-    non_finite = [
-        (name, date)
-        for name, values in data.items()
-        for date, value in enumerate(values)
-        if not np.isfinite(value).all()
-    ]
-    if non_finite:
-        raise ValueError(
-            f"data has non-finite values at (name, date) {non_finite}. Leave missing observations "
-            "out of a date's arrays."
-        )
-    cast_data = {
-        name: [np.asarray(value, dtype=placeholders[name].dtype) for value in values]
-        for name, values in data.items()
-    }
-    inexact = [
-        (name, date)
-        for name, values in data.items()
-        if np.dtype(placeholders[name].dtype).kind in "iub"
-        for date, value in enumerate(values)
-        if not np.array_equal(cast_data[name][date], value)
-    ]
-    if inexact:
-        raise ValueError(
-            f"data values at (name, date) {inexact} are not exactly representable as their "
-            "variable's integer or boolean dtype."
-        )
 
     initial_mean, initial_covariance, matrices = _initial_moments_and_matrices(
         fused=fused,
@@ -279,21 +230,22 @@ def run_filter(
     next_mean, next_covariance, recorded = _date_update(
         observation_logps=observation_logps,
         parameters=parameters,
-        curvature=curvature,
+        curvature=fused.curvature,
         predicted_mean=predicted_mean,
         predicted_covariance=predicted_covariance,
         matrices=matrices,
-        line_search=line_search,
-        tolerance=tolerance,
-        max_iterations=max_iterations,
+        line_search=fused.line_search,
+        tolerance=fused.tolerance,
+        max_iterations=fused.max_iterations,
     )
     step = pytensor.function(
         [predicted_mean, predicted_covariance, *placeholders.values()],
         [next_mean, next_covariance, *recorded.values()],
+        mode=fused.mode,
     )
 
     history = {name: [] for name in ["predicted_states", "predicted_covariances", *recorded]}
-    mean, covariance = pytensor.function([], [initial_mean, initial_covariance])()
+    mean, covariance = pytensor.function([], [initial_mean, initial_covariance], mode=fused.mode)()
     for date in range(len(dates)):
         history["predicted_states"].append(mean)
         history["predicted_covariances"].append(covariance)
@@ -317,7 +269,7 @@ def run_filter(
         ],
     )
     stacked["smoothed_states"], stacked["smoothed_covariances"] = pytensor.function(
-        [], [smoothed_states, smoothed_covariances]
+        [], [smoothed_states, smoothed_covariances], mode=fused.mode
     )()
 
     state_names = list(fused.statespace.state_names)
@@ -351,15 +303,11 @@ def run_filter(
 
 def scan_filter(
     *,
-    fused: FusedStateSpace,
+    fused: "FusedStateSpace",
     statespace_parameters: Mapping[str, TensorLike],
     statespace_data: Mapping[str, TensorLike],
     data: Mapping[str, TensorLike],
     observed_masks: Mapping[str, TensorLike],
-    curvature: Literal["gauss_newton", "exact"],
-    line_search: LineSearch,
-    tolerance: float,
-    max_iterations: int,
 ) -> dict[str, TensorVariable]:
     r"""
     Build the filter over dates as a ``scan`` over the step from :func:`filter_step`.
@@ -384,21 +332,12 @@ def scan_filter(
     observed_masks : mapping of str to TensorLike
         For each observed variable, a boolean array with the dates on the first axis and the
         variable's batch shape after it, True at its real observations.
-    curvature : {"gauss_newton", "exact"}
-        The curvature of the log-likelihood in the Newton iterations: the generalized Gauss-Newton
-        matrix of each observed variable, or the exact negative Hessian.
-    line_search : LineSearch
-        Search along each Newton direction.
-    tolerance : float
-        Largest absolute entry of the whitened Newton direction at which the iterations stop.
-    max_iterations : int
-        Most Newton iterations on each date.
 
     Returns
     -------
     filtered : dict of str to TensorVariable
-        Stacked over dates, the outputs :func:`run_filter` returns in ``posterior_predictive``
-        except the smoothed ones, and the per-date diagnostics it returns in ``diagnostics``.
+        Stacked over dates, the outputs :func:`run_filter` returns in ``posterior_predictive``,
+        and the per-date diagnostics it returns in ``diagnostics``.
     """
     initial_mean, initial_covariance, matrices = _initial_moments_and_matrices(
         fused=fused,
@@ -426,20 +365,20 @@ def scan_filter(
         next_mean, next_covariance, recorded = _date_update(
             observation_logps=masked_logps,
             parameters=parameters,
-            curvature=curvature,
+            curvature=fused.curvature,
             predicted_mean=predicted_mean,
             predicted_covariance=predicted_covariance,
             matrices=dict(zip(matrices, date_matrices, strict=True)),
-            line_search=line_search,
-            tolerance=tolerance,
-            max_iterations=max_iterations,
+            line_search=fused.line_search,
+            tolerance=fused.tolerance,
+            max_iterations=fused.max_iterations,
         )
         return [next_mean, next_covariance, *recorded.values()]
 
     next_means, next_covariances, *recorded = pytensor.scan(
         step,
         sequences=[
-            *(pt.as_tensor_variable(values) for values in data.values()),
+            *(pt.cast(values, fused.model[name].dtype) for name, values in data.items()),
             *(pt.as_tensor_variable(masks) for masks in observed_masks.values()),
         ],
         outputs_info=[initial_mean, initial_covariance, *[None] * len(_RECORDED_NAMES)],
@@ -447,74 +386,83 @@ def scan_filter(
         name="fused_filter",
         return_updates=False,
     )
-    return {
+    outputs = {
         "predicted_states": pt.concatenate([initial_mean[None], next_means[:-1]], axis=0),
         "predicted_covariances": pt.concatenate(
             [initial_covariance[None], next_covariances[:-1]], axis=0
         ),
         **dict(zip(_RECORDED_NAMES, recorded, strict=True)),
     }
+    # The backward recursion reads only the filtered moments, at positions 0 and 3 of the filter
+    # outputs, and the transition, so it needs no observations.
+    outputs["smoothed_states"], outputs["smoothed_covariances"] = RTSSmoother(
+        cov_jitter=0.0
+    ).build_graph(
+        None,
+        [initial_mean, initial_covariance, *(matrices[name] for name in _MATRIX_NDIMS)],
+        [outputs["filtered_states"], None, None, outputs["filtered_covariances"]],
+    )
+    return outputs
 
 
-def register_fused_likelihood(
-    *,
-    name: str,
-    fused: FusedStateSpace,
-    data: Mapping[str, TensorLike],
-    observed_masks: Mapping[str, TensorLike],
-    curvature: Literal["gauss_newton", "exact"],
-    line_search: LineSearch,
-    tolerance: float,
-    max_iterations: int,
-) -> TensorVariable:
-    r"""
-    Add the log-likelihood of the filter from :func:`scan_filter` to the active model.
-
-    The statespace's parameters and data are the active model's variables with the names in its
-    ``param_names`` and ``data_names``, as in :meth:`PyMCStateSpace.build_statespace_graph`.
+def validated_data(
+    *, fused: "FusedStateSpace", data: Mapping[str, Sequence[ArrayLike]], n_dates: int
+) -> dict[str, list[np.ndarray]]:
+    """
+    Return per-date data cast to each variable's dtype, after checking it can be filtered.
 
     Parameters
     ----------
-    name : str
-        Name of the potential that holds the log-likelihood.
     fused : FusedStateSpace
         The model and the statespace over its parameters.
-    data : mapping of str to TensorLike
+    data : mapping of str to sequence of ArrayLike
         For each data variable of the model and each observed variable whose observations are
-        constants, its padded values with the dates on the first axis.
-    observed_masks : mapping of str to TensorLike
-        For each observed variable, a boolean array with the dates on the first axis and the
-        variable's batch shape after it, True at its real observations.
-    curvature : {"gauss_newton", "exact"}
-        The curvature of the log-likelihood in the Newton iterations: the generalized Gauss-Newton
-        matrix of each observed variable, or the exact negative Hessian.
-    line_search : LineSearch
-        Search along each Newton direction.
-    tolerance : float
-        Largest absolute entry of the whitened Newton direction at which the iterations stop.
-    max_iterations : int
-        Most Newton iterations on each date.
+        constants, its finite value on each date. Missing observations are left out of a date's
+        arrays.
+    n_dates : int
+        Number of dates.
 
     Returns
     -------
-    loglike : TensorVariable
-        The potential, the sum over dates of the ``loglike_obs`` from :func:`scan_filter`.
+    cast_data : dict of str to list of np.ndarray
+        The values on each date, cast to their variable's dtype.
     """
-    model = modelcontext(None)
-    scanned = scan_filter(
-        fused=fused,
-        statespace_parameters={
-            parameter: model[parameter] for parameter in fused.statespace.param_names
-        },
-        statespace_data={variable: model[variable] for variable in fused.statespace.data_names},
-        data=data,
-        observed_masks=observed_masks,
-        curvature=curvature,
-        line_search=line_search,
-        tolerance=tolerance,
-        max_iterations=max_iterations,
-    )
-    return pm.Potential(name, scanned["loglike_obs"].sum())
+    not_variables = sorted(set(data) - set(fused.model.named_vars))
+    if not_variables:
+        raise ValueError(f"data names {not_variables} are not variables of the model.")
+    date_counts = {name: len(values) for name, values in data.items()}
+    if set(date_counts.values()) != {n_dates}:
+        raise ValueError(
+            f"data has to give a value on each of the {n_dates} dates for each name: {date_counts}."
+        )
+    non_finite = [
+        (name, date)
+        for name, values in data.items()
+        for date, value in enumerate(values)
+        if not np.isfinite(value).all()
+    ]
+    if non_finite:
+        raise ValueError(
+            f"data has non-finite values at (name, date) {non_finite}. Leave missing observations "
+            "out of a date's arrays."
+        )
+    cast_data = {
+        name: [np.asarray(value, dtype=fused.model[name].dtype) for value in values]
+        for name, values in data.items()
+    }
+    inexact = [
+        (name, date)
+        for name, values in data.items()
+        if np.dtype(fused.model[name].dtype).kind in "iub"
+        for date, value in enumerate(values)
+        if not np.array_equal(cast_data[name][date], value)
+    ]
+    if inexact:
+        raise ValueError(
+            f"data values at (name, date) {inexact} are not exactly representable as their "
+            "variable's integer or boolean dtype."
+        )
+    return cast_data
 
 
 _MATRIX_NDIMS = {"c": 1, "d": 1, "T": 2, "Z": 2, "R": 2, "H": 2, "Q": 2}
@@ -535,7 +483,7 @@ _RECORDED_NAMES = (
 
 def _initial_moments_and_matrices(
     *,
-    fused: FusedStateSpace,
+    fused: "FusedStateSpace",
     statespace_parameters: Mapping[str, TensorLike],
     statespace_data: Mapping[str, TensorLike],
 ) -> tuple[TensorVariable, TensorVariable, dict[str, TensorVariable]]:

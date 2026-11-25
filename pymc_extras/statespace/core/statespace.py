@@ -23,7 +23,11 @@ from rich.table import Table
 from xarray import DataTree
 
 from pymc_extras.statespace.core import dummy_graph, forecast, forward_sampling, irf
-from pymc_extras.statespace.core.fit_recovery import coords_from_idata, dims_from_idata
+from pymc_extras.statespace.core.fit_recovery import (
+    coords_from_idata,
+    data_from_idata,
+    dims_from_idata,
+)
 from pymc_extras.statespace.core.properties import (
     Coord,
     CoordInfo,
@@ -1411,6 +1415,10 @@ class PyMCStateSpace:
             coords=coords_from_idata(self, idata, "observed_data"),
             dims=dims_from_idata(self, idata, group),
         )
+
+    def _fit_data(self, idata: DataTree) -> pd.DataFrame:
+        """Return the observations the model was fit on, recovered from ``idata``."""
+        return data_from_idata(idata, "constant_data")
 
     def _kalman_filter_outputs_from_dummy_graph(
         self,

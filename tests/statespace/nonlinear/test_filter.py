@@ -33,7 +33,16 @@ def test_step_matches_standard_filter_linear_case():
         + st.Autoregressive(order=1, observed_state_names=names["beta"])
         + st.MeasurementError(name="noise", observed_state_names=names["beta"])
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
 
     theta = pt.vector("theta", shape=(2,))
     y = pt.vector("y")
@@ -133,7 +142,16 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
         + st.Autoregressive(order=1, observed_state_names=names["beta"])
         + st.MeasurementError(name="noise", observed_state_names=names["beta"])
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature=curvature,
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
     statespace_parameters = {
         "initial_level_trend": np.array([[0.3], [-0.1]]),
         "sigma_level_trend": np.full((2, 1), 0.3),
@@ -153,10 +171,6 @@ def test_filter_matches_standard_filter_over_ragged_dates(curvature):
         statespace_data={},
         data={"X": X_dates, "y": y_dates},
         dates=np.arange(3),
-        curvature=curvature,
-        line_search=zoom_line_search(),
-        tolerance=1e-10,
-        max_iterations=10,
     )
     outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
 
@@ -227,7 +241,16 @@ def test_missing_date_is_predict_only():
         st.LevelTrend(order=1, innovations_order=1, observed_state_names=names["beta"])
         + st.Autoregressive(order=1, observed_state_names=names["beta"])
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
     statespace_parameters = {
         "initial_level_trend": np.array([[0.3], [-0.1]]),
         "sigma_level_trend": np.full((2, 1), 0.3),
@@ -246,10 +269,6 @@ def test_missing_date_is_predict_only():
             "y": [rng.normal(size=3), np.zeros(0), rng.normal(size=2)],
         },
         dates=np.arange(3),
-        curvature="gauss_newton",
-        line_search=zoom_line_search(),
-        tolerance=1e-10,
-        max_iterations=10,
     )
     outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
 
@@ -281,7 +300,16 @@ def test_time_varying_statespace_matrices_raise():
     statespace = st.Regression(
         name="exog", state_names=["x1"], observed_state_names=["alpha"]
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["alpha"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["alpha"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
 
     with pytest.raises(ValueError, match=r"Statespace matrices \['Z'\] vary over time"):
         run_filter(
@@ -290,10 +318,6 @@ def test_time_varying_statespace_matrices_raise():
             statespace_data={"data_exog": np.ones((2, 1))},
             data={"y": [np.zeros(3), np.zeros(2)]},
             dates=np.arange(2),
-            curvature="gauss_newton",
-            line_search=zoom_line_search(),
-            tolerance=1e-10,
-            max_iterations=10,
         )
 
 
@@ -309,6 +333,10 @@ def test_gauss_newton_without_distribution_parameters_raises():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     with pytest.raises(ValueError, match=r"Observed variables \['w'\] have no distribution"):
@@ -322,10 +350,6 @@ def test_gauss_newton_without_distribution_parameters_raises():
             statespace_data={},
             data={"w": [np.zeros((4, 2))]},
             dates=np.arange(1),
-            curvature="gauss_newton",
-            line_search=zoom_line_search(),
-            tolerance=1e-10,
-            max_iterations=10,
         )
 
 
@@ -343,6 +367,10 @@ def test_gauss_newton_ignores_observations_that_do_not_depend_on_the_states():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={"sigma": 1.0},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     filtered = run_filter(
@@ -355,10 +383,6 @@ def test_gauss_newton_ignores_observations_that_do_not_depend_on_the_states():
         statespace_data={},
         data={"y": [np.ones(3)], "z": [np.ones(2)]},
         dates=np.arange(1),
-        curvature="gauss_newton",
-        line_search=zoom_line_search(),
-        tolerance=1e-10,
-        max_iterations=10,
     )
     outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
     assert_allclose(outputs["filtered_states"].values, [[0.75]])
@@ -375,7 +399,16 @@ def test_filter_output_coords():
     statespace = st.LevelTrend(
         order=1, innovations_order=1, observed_state_names=names["beta"]
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
 
     dates = pd.date_range("2024-01-01", periods=2, freq="D")
     filtered = run_filter(
@@ -388,10 +421,6 @@ def test_filter_output_coords():
         statespace_data={},
         data={"X": [np.ones((3, 2)), np.ones((1, 2))], "y": [np.zeros(3), np.zeros(1)]},
         dates=dates,
-        curvature="gauss_newton",
-        line_search=zoom_line_search(),
-        tolerance=1e-10,
-        max_iterations=10,
     )
 
     outputs = filtered["posterior_predictive"]
@@ -430,6 +459,10 @@ def test_data_with_another_number_of_dates_raises():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     with pytest.raises(ValueError, match=r"each of the 3 dates for each name: \{'y': 2\}"):
@@ -443,10 +476,6 @@ def test_data_with_another_number_of_dates_raises():
             statespace_data={},
             data={"y": [np.zeros(3), np.zeros(2)]},
             dates=np.arange(3),
-            curvature="gauss_newton",
-            line_search=zoom_line_search(),
-            tolerance=1e-10,
-            max_iterations=10,
         )
 
 
@@ -461,7 +490,16 @@ def test_smoother_matches_linear_smoother_with_a_missing_date():
         st.LevelTrend(order=1, innovations_order=1, observed_state_names=names["beta"])
         + st.Autoregressive(order=1, observed_state_names=names["beta"])
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["beta"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
     statespace_parameters = {
         "initial_level_trend": np.array([[0.3], [-0.1]]),
         "sigma_level_trend": np.full((2, 1), 0.3),
@@ -483,10 +521,6 @@ def test_smoother_matches_linear_smoother_with_a_missing_date():
             "y": [y_dates[0], y_dates[1], np.zeros(0), y_dates[3]],
         },
         dates=np.arange(4),
-        curvature="gauss_newton",
-        line_search=zoom_line_search(),
-        tolerance=1e-10,
-        max_iterations=10,
     )
     outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
 
@@ -522,18 +556,23 @@ def test_exact_and_gauss_newton_curvatures_differ_at_the_same_mode():
         alpha = pm.Normal("alpha")
         pm.Normal("y", pm.math.exp(alpha), 1, observed=np.zeros(3))
 
-    fused = FusedStateSpace(
-        model=model,
-        statespace=st.LevelTrend(
-            order=1, innovations_order=1, observed_state_names=["alpha"]
-        ).build(verbose=False),
-        rv_names=["alpha"],
-        frozen={},
+    statespace = st.LevelTrend(order=1, innovations_order=1, observed_state_names=["alpha"]).build(
+        verbose=False
     )
 
     y = np.array([1.5, 1.2, 1.4])
     modes, variances = {}, {}
     for curvature in ["exact", "gauss_newton"]:
+        fused = FusedStateSpace(
+            model=model,
+            statespace=statespace,
+            rv_names=["alpha"],
+            frozen={},
+            curvature=curvature,
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=50,
+        )
         filtered = run_filter(
             fused=fused,
             statespace_parameters={
@@ -544,10 +583,6 @@ def test_exact_and_gauss_newton_curvatures_differ_at_the_same_mode():
             statespace_data={},
             data={"y": [y]},
             dates=np.arange(1),
-            curvature=curvature,
-            line_search=zoom_line_search(),
-            tolerance=1e-10,
-            max_iterations=50,
         )
         assert filtered["diagnostics/converged"].values.all()
         outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
@@ -574,6 +609,10 @@ def test_date_out_of_iterations_is_not_converged():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=1,
     )
 
     filtered = run_filter(
@@ -586,10 +625,6 @@ def test_date_out_of_iterations_is_not_converged():
         statespace_data={},
         data={"y": [np.array([2.0, 3.0, 2.5])]},
         dates=np.arange(1),
-        curvature="gauss_newton",
-        line_search=zoom_line_search(),
-        tolerance=1e-10,
-        max_iterations=1,
     )
     assert filtered["diagnostics/iterations"].values.tolist() == [1]
     assert filtered["diagnostics/converged"].values.tolist() == [False]
@@ -620,6 +655,10 @@ def test_non_finite_observations_raise():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     with pytest.raises(ValueError, match=r"non-finite values at \(name, date\) \[\('y', 1\)\]"):
@@ -633,10 +672,6 @@ def test_non_finite_observations_raise():
             statespace_data={},
             data={"y": [np.array([1.0]), np.array([np.nan, 1.0])]},
             dates=np.arange(2),
-            curvature="gauss_newton",
-            line_search=zoom_line_search(),
-            tolerance=1e-10,
-            max_iterations=10,
         )
 
 
@@ -652,6 +687,10 @@ def test_data_names_that_are_not_model_variables_raise():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     with pytest.raises(ValueError, match=r"data names \['bogus'\] are not variables"):
@@ -665,10 +704,6 @@ def test_data_names_that_are_not_model_variables_raise():
             statespace_data={},
             data={"y": [np.zeros(1)], "bogus": [np.zeros(1)]},
             dates=np.arange(1),
-            curvature="gauss_newton",
-            line_search=zoom_line_search(),
-            tolerance=1e-10,
-            max_iterations=10,
         )
 
 
@@ -684,6 +719,10 @@ def test_integer_observations_take_whole_numbers_and_reject_fractions():
         ).build(verbose=False),
         rv_names=["alpha"],
         frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=20,
     )
     statespace_parameters = {
         "initial_level_trend": [0.0],
@@ -697,10 +736,6 @@ def test_integer_observations_take_whole_numbers_and_reject_fractions():
         statespace_data={},
         data={"counts": [np.array([1.0, 2.0]), np.zeros(0)]},
         dates=np.arange(2),
-        curvature="gauss_newton",
-        line_search=zoom_line_search(),
-        tolerance=1e-10,
-        max_iterations=20,
     )
     outputs = filtered["posterior_predictive"].isel(chain=0, draw=0)
     assert_allclose(outputs["filtered_states"].values[1], outputs["predicted_states"].values[1])
@@ -712,8 +747,4 @@ def test_integer_observations_take_whole_numbers_and_reject_fractions():
             statespace_data={},
             data={"counts": [np.array([1.5])]},
             dates=np.arange(1),
-            curvature="gauss_newton",
-            line_search=zoom_line_search(),
-            tolerance=1e-10,
-            max_iterations=20,
         )

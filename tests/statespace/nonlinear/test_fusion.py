@@ -6,6 +6,7 @@ import pytest
 from pymc.exceptions import ImputationWarning
 from pytensor.graph.basic import Constant
 from pytensor.graph.traversal import graph_inputs
+from pytensor_ml.optim import zoom_line_search
 from scipy import stats
 
 from pymc_extras.statespace.models import structural as st
@@ -53,7 +54,14 @@ def test_unpack_follows_the_statespace_order():
     names = observed_state_names(model=model, rv_names=["alpha", "matrix"])
     shuffled = [names["matrix"][3], *names["alpha"], *names["matrix"][:3]]
     fused = FusedStateSpace(
-        model=model, statespace=level_statespace(shuffled), rv_names=["alpha", "matrix"], frozen={}
+        model=model,
+        statespace=level_statespace(shuffled),
+        rv_names=["alpha", "matrix"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(5,))
@@ -71,7 +79,14 @@ def test_unlisted_free_rv_raises():
 
     with pytest.raises(ValueError, match=r"\['sigma'\] are neither in rv_names nor frozen"):
         FusedStateSpace(
-            model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+            model=model,
+            statespace=level_statespace(["alpha"]),
+            rv_names=["alpha"],
+            frozen={},
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
         )
 
 
@@ -86,6 +101,10 @@ def test_statespace_with_other_observed_states_raises():
             statespace=level_statespace(["beta[a]", "delta"]),
             rv_names=["beta"],
             frozen={},
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
         )
 
 
@@ -101,6 +120,10 @@ def test_rv_names_that_are_not_free_raise():
             statespace=level_statespace(["alpha", "double"]),
             rv_names=["alpha", "double"],
             frozen={},
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
         )
 
 
@@ -119,6 +142,10 @@ def test_frozen_rvs_are_constants():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={"sigma": 2.0, "weights": np.ones((2, 2))},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -143,6 +170,10 @@ def test_rv_both_mapped_and_frozen_raises():
             statespace=level_statespace(["alpha"]),
             rv_names=["alpha"],
             frozen={"alpha": 0.0},
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
         )
 
 
@@ -159,6 +190,10 @@ def test_frozen_value_with_wrong_shape_raises():
             statespace=level_statespace(["alpha"]),
             rv_names=["alpha"],
             frozen={"beta": np.ones(3), "sigma": np.ones(2)},
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
         )
 
 
@@ -174,6 +209,10 @@ def test_frozen_value_may_be_symbolic():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={"sigma": sigma_value},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -197,6 +236,10 @@ def test_positive_rv_state_is_log_scale():
         statespace=level_statespace(["sigma", "alpha"]),
         rv_names=["alpha", "sigma"],
         frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(2,))
@@ -220,6 +263,10 @@ def test_transform_depending_on_another_rv():
         statespace=level_statespace(["alpha", "beta"]),
         rv_names=["alpha", "beta"],
         frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(2,))
@@ -244,6 +291,10 @@ def test_transform_that_changes_shape_raises():
             statespace=level_statespace(names["weights"]),
             rv_names=["weights"],
             frozen={},
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
         )
 
 
@@ -255,7 +306,14 @@ def test_observed_length_follows_data():
         pm.Normal("y", alpha * x, 1, observed=y_data, dims="obs")
 
     fused = FusedStateSpace(
-        model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+        model=model,
+        statespace=level_statespace(["alpha"]),
+        rv_names=["alpha"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -276,7 +334,14 @@ def test_raw_numpy_observed_is_replaced():
         pm.MvNormal("w", mu=alpha + np.zeros(2), cov=np.eye(2), observed=np.zeros((4, 2)))
 
     fused = FusedStateSpace(
-        model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+        model=model,
+        statespace=level_statespace(["alpha"]),
+        rv_names=["alpha"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -296,7 +361,14 @@ def test_data_with_other_names_raises():
         pm.Normal("y", alpha * x, 1, observed=np.zeros(3))
 
     fused = FusedStateSpace(
-        model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+        model=model,
+        statespace=level_statespace(["alpha"]),
+        rv_names=["alpha"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     with pytest.raises(ValueError, match=r"missing: \['y'\], unexpected: \['z'\]"):
@@ -320,6 +392,10 @@ def test_deterministics_are_inlined():
         statespace=level_statespace(["sigma", "alpha"]),
         rv_names=["alpha", "sigma"],
         frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(2,))
@@ -346,6 +422,10 @@ def test_distribution_parameters_are_those_that_depend_on_theta():
         statespace=level_statespace(["alpha"]),
         rv_names=["alpha"],
         frozen={"sigma": 2.0},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -371,7 +451,14 @@ def test_opaque_likelihood_has_no_distribution_parameters():
         pm.Censored("y", pm.Normal.dist(alpha, 1), lower=-1, upper=1, observed=np.zeros(2))
 
     fused = FusedStateSpace(
-        model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+        model=model,
+        statespace=level_statespace(["alpha"]),
+        rv_names=["alpha"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -395,6 +482,10 @@ def test_each_observed_rv_gets_its_own_logp():
         statespace=level_statespace(["alpha", "sigma"]),
         rv_names=["alpha", "sigma"],
         frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(2,))
@@ -425,7 +516,16 @@ def test_statespace_matrices_at_given_parameters():
     statespace = st.Autoregressive(order=2, name="ar", observed_state_names=["alpha"]).build(
         verbose=False
     )
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["alpha"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["alpha"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
 
     initial_covariance = [[2.0, 0.3], [0.3, 1.0]]
     x0, P0, c, d, T, Z, R, H, Q = fused.statespace_matrices(
@@ -451,7 +551,16 @@ def test_statespace_matrices_accept_symbolic_parameters():
     statespace = st.Autoregressive(order=1, name="ar", observed_state_names=["alpha"]).build(
         verbose=False
     )
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["alpha"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["alpha"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
 
     rho = pt.vector("rho", shape=(1,))
     x0, P0, c, d, T, Z, R, H, Q = fused.statespace_matrices(
@@ -469,7 +578,16 @@ def test_statespace_matrices_with_other_names_raise():
     statespace = st.Autoregressive(order=1, name="ar", observed_state_names=["alpha"]).build(
         verbose=False
     )
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["alpha"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["alpha"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
 
     with pytest.raises(ValueError, match=r"missing: \['P0'\], unexpected: \['rho'\]"):
         fused.statespace_matrices(
@@ -486,7 +604,16 @@ def test_statespace_matrices_take_statespace_data():
     statespace = st.Regression(
         name="exog", state_names=["x1"], observed_state_names=["alpha"]
     ).build(verbose=False)
-    fused = FusedStateSpace(model=model, statespace=statespace, rv_names=["alpha"], frozen={})
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["alpha"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
+    )
 
     exog = pt.matrix("exog", shape=(None, 1))
     x0, P0, c, d, T, Z, R, H, Q = fused.statespace_matrices(
@@ -508,7 +635,14 @@ def test_observations_without_scalar_parameters_or_vector_batch_have_none():
         pm.Categorical("choice", p=pm.math.softmax(pt.stack([alpha, 0.0])), observed=np.zeros(3))
 
     fused = FusedStateSpace(
-        model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+        model=model,
+        statespace=level_statespace(["alpha"]),
+        rv_names=["alpha"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=10,
     )
 
     theta = pt.vector("theta", shape=(1,))
@@ -536,7 +670,14 @@ def test_potentials_raise():
 
     with pytest.raises(ValueError, match=r"Potentials \['penalty'\]"):
         FusedStateSpace(
-            model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+            model=model,
+            statespace=level_statespace(["alpha"]),
+            rv_names=["alpha"],
+            frozen={},
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
         )
 
 
@@ -548,7 +689,14 @@ def test_observed_rv_depending_on_another_raises():
 
     with pytest.raises(ValueError, match=r"\{'share': \['total'\]\}"):
         FusedStateSpace(
-            model=model, statespace=level_statespace(["alpha"]), rv_names=["alpha"], frozen={}
+            model=model,
+            statespace=level_statespace(["alpha"]),
+            rv_names=["alpha"],
+            frozen={},
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
         )
 
 
@@ -563,4 +711,8 @@ def test_imputed_observations_raise():
             statespace=level_statespace(["alpha"]),
             rv_names=["alpha"],
             frozen={"y_unobserved": np.zeros(1)},
+            curvature="gauss_newton",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
         )

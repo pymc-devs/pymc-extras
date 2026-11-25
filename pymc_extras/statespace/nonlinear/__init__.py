@@ -1,7 +1,6 @@
 from pymc_extras.statespace.nonlinear.cubature import cubature_points
 from pymc_extras.statespace.nonlinear.filter import (
     filter_step,
-    register_fused_likelihood,
     run_filter,
     scan_filter,
 )
@@ -28,7 +27,6 @@ __all__ = [
     "newton_site",
     "observed_state_names",
     "parameter_posterior",
-    "register_fused_likelihood",
     "run_filter",
     "scan_filter",
     "state_posterior",
