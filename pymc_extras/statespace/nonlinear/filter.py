@@ -9,7 +9,7 @@ import xarray as xr
 
 from numpy.typing import ArrayLike
 from pymc.model import modelcontext
-from pytensor.gradient import disconnected_grad, hessian
+from pytensor.gradient import hessian
 from pytensor.tensor import TensorLike
 from pytensor.tensor.variable import TensorVariable
 from pytensor_ml.optim.line_search import LineSearch
@@ -26,6 +26,7 @@ from pymc_extras.statespace.nonlinear.laplace_update import (
     newton_site,
     state_posterior,
     stationary_state_posterior,
+    stop_gradient,
 )
 from pymc_extras.statespace.utils.constants import (
     ALL_STATE_AUX_DIM,
@@ -607,7 +608,7 @@ def _date_update(
 
 def _value_with_gradient_of(*, value: TensorVariable, gradient: TensorVariable) -> TensorVariable:
     """Return the value of ``value`` with the gradient of ``gradient``."""
-    return gradient + disconnected_grad(value - gradient)
+    return gradient + stop_gradient(value - gradient)
 
 
 def _curvature(

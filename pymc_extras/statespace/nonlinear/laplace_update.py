@@ -5,8 +5,8 @@ import pytensor
 import pytensor.tensor as pt
 
 from pytensor.assumptions import assume
+from pytensor.compile.builders import OpFromGraph
 from pytensor.gradient import (
-    disconnected_grad,
     grad,
     hessian,
     hessian_vector_product,
@@ -20,6 +20,30 @@ from pytensor_ml.optim.line_search import LineSearch, search_along
 
 from pymc_extras.statespace.filters.utilities import quad_form_sym
 from pymc_extras.statespace.nonlinear.cubature import cubature_points
+
+
+def stop_gradient(variable: TensorVariable) -> TensorVariable:
+    """
+    Return ``variable`` with no gradient, in a form that rewrites cannot remove.
+
+    ``disconnected_grad`` is an identity op that canonicalization deletes, so a gradient taken
+    after rewriting, as PyMC takes model gradients, flows through it. This op is inlined only when
+    a function is compiled.
+
+    Parameters
+    ----------
+    variable : TensorVariable
+        The value to pass through.
+
+    Returns
+    -------
+    stopped : TensorVariable
+        The value of ``variable``, disconnected from the gradient.
+    """
+    placeholder = variable.type()
+    return OpFromGraph([placeholder], [placeholder], connection_pattern=[[False]], inline=True)(
+        variable
+    )
 
 
 class NewtonSite(NamedTuple):
@@ -235,9 +259,9 @@ def newton_site(
     )
 
     return NewtonSite(
-        whitened=disconnected_grad(whitened_trace[-1]),
-        predictive_factor=disconnected_grad(predictive_factor),
-        whitened_curvature=disconnected_grad(assume(curvature_trace[-1], positive_definite=True)),
+        whitened=stop_gradient(whitened_trace[-1]),
+        predictive_factor=stop_gradient(predictive_factor),
+        whitened_curvature=stop_gradient(assume(curvature_trace[-1], positive_definite=True)),
         iterations=whitened_trace.shape[0],
         evaluations=evaluations.sum(),
         search_failed=failures.any(),
@@ -297,18 +321,16 @@ def implicit_mode(
            F. Pedregosa, and J.-P. Vert. Efficient and modular implicit differentiation.
            Advances in Neural Information Processing Systems 35, 2022.
     """
-    fixed_mode = disconnected_grad(mode)
+    fixed_mode = stop_gradient(mode)
     gradient_at, hessian_at = graph_replace(
         [grad(logp, parameters), hessian(cost=logp, wrt=parameters)], {parameters: fixed_mode}
     )
     residual = fixed_mode - predictive_mean - predictive_covariance @ gradient_at
-    residual_jacobian = disconnected_grad(
-        pt.eye(mode.shape[0]) - predictive_covariance @ hessian_at
-    )
+    residual_jacobian = stop_gradient(pt.eye(mode.shape[0]) - predictive_covariance @ hessian_at)
 
     # The correction is zero in value, and its gradient is the implicit function's.
     correction = -pt.linalg.solve(residual_jacobian, residual)
-    return fixed_mode + correction - disconnected_grad(correction)
+    return fixed_mode + correction - stop_gradient(correction)
 
 
 def laplace_log_likelihood(
