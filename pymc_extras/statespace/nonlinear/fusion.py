@@ -159,18 +159,19 @@ class FusedStateSpace(PyMCStateSpace):
                 f"depends on): {dependent_observations}."
             )
 
-        free_names = [rv.name for rv in model.free_RVs]
-        observed_names = [rv.name for rv in model.observed_RVs]
+        # PyMC imputes missing observations by joining the observed and the unobserved part in a
+        # Deterministic, so a Deterministic that reads an observed variable marks an imputation.
         imputed = [
-            name
-            for name in free_names
-            if name.endswith("_unobserved")
-            and f"{name.removesuffix('_unobserved')}_observed" in observed_names
+            deterministic.name
+            for deterministic in model.deterministics
+            if set(model.observed_RVs) & set(ancestors([deterministic]))
         ]
         if imputed:
             raise ValueError(
                 f"{imputed} impute missing observations, whose number is fixed by the model's data."
             )
+
+        free_names = [rv.name for rv in model.free_RVs]
 
         not_free = [name for name in [*self.rv_names, *frozen] if name not in free_names]
         if not_free:

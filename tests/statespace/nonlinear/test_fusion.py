@@ -705,7 +705,7 @@ def test_imputed_observations_raise():
         alpha = pm.Normal("alpha")
         pm.Normal("y", alpha, 1, observed=np.array([1.0, np.nan, 2.0]))
 
-    with pytest.raises(ValueError, match=r"\['y_unobserved'\] impute missing observations"):
+    with pytest.raises(ValueError, match=r"\['y'\] impute missing observations"):
         FusedStateSpace(
             model=model,
             statespace=level_statespace(["alpha"]),
