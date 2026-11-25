@@ -68,7 +68,7 @@ def test_step_matches_standard_filter_linear_case():
 
     predicted_mean = pt.vector("predicted_mean", shape=(4,))
     predicted_covariance = pt.matrix("predicted_covariance", shape=(4, 4))
-    filtered_mean, filtered_covariance, next_mean, next_covariance, mode, _ = filter_step(
+    step = filter_step(
         logp=pointwise_logp.sum(),
         curvature=fisher_curvature(
             information=fisher_terms.information,
@@ -114,11 +114,11 @@ def test_step_matches_standard_filter_linear_case():
     evaluate = pytensor.function(
         list(point),
         [
-            mode.converged,
-            filtered_mean,
-            filtered_covariance,
-            next_mean,
-            next_covariance,
+            step.site.converged,
+            step.filtered_mean,
+            step.filtered_covariance,
+            step.next_predicted_mean,
+            step.next_predicted_covariance,
             reference_filtered_mean,
             reference_filtered_covariance,
             reference_next_mean,

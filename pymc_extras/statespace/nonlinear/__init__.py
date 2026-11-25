@@ -1,5 +1,6 @@
 from pymc_extras.statespace.nonlinear.cubature import cubature_points
 from pymc_extras.statespace.nonlinear.filter import (
+    FilterStep,
     filter_step,
     run_filter,
     scan_filter,
@@ -17,6 +18,7 @@ from pymc_extras.statespace.nonlinear.laplace_update import (
 )
 
 __all__ = [
+    "FilterStep",
     "FusedStateSpace",
     "NewtonSite",
     "cubature_points",

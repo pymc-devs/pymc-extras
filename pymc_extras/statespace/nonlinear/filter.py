@@ -1,5 +1,5 @@
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import numpy as np
 import pytensor
@@ -39,6 +39,19 @@ if TYPE_CHECKING:
     from pymc_extras.statespace.nonlinear.fusion import FisherTerms, FusedStateSpace
 
 
+class FilterStep(NamedTuple):
+    """The moments of one date's update and prediction, with the parameters' Laplace site."""
+
+    filtered_mean: TensorVariable
+    filtered_covariance: TensorVariable
+    next_predicted_mean: TensorVariable
+    next_predicted_covariance: TensorVariable
+    parameter_mean: TensorVariable
+    parameter_covariance: TensorVariable
+    site: NewtonSite
+    parameter_mode: TensorVariable
+
+
 def filter_step(
     *,
     logp: TensorVariable,
@@ -56,9 +69,7 @@ def filter_step(
     line_search: LineSearch,
     tolerance: float,
     max_iterations: int,
-) -> tuple[
-    TensorVariable, TensorVariable, TensorVariable, TensorVariable, NewtonSite, TensorVariable
-]:
+) -> FilterStep:
     r"""
     Update the state on one date's observations by the Laplace approximation, then predict the next.
 
@@ -94,18 +105,10 @@ def filter_step(
 
     Returns
     -------
-    filtered_mean : TensorVariable
-        Filtered state mean, shape ``(m,)``.
-    filtered_covariance : TensorVariable
-        Filtered state covariance, shape ``(m, m)``.
-    next_predicted_mean : TensorVariable
-        State mean predicted for the next date, shape ``(m,)``.
-    next_predicted_covariance : TensorVariable
-        State covariance predicted for the next date, shape ``(m, m)``.
-    site : NewtonSite
-        The parameters' Laplace site and the iteration diagnostics.
-    parameter_mode : TensorVariable
-        The parameters' mode from :func:`implicit_mode`, shape ``(k,)``.
+    step : FilterStep
+        The filtered state moments, the state moments predicted for the next date, the parameter
+        predictive moments :math:`Z a + d` and :math:`Z P Z^\top + H`, the parameters' Laplace
+        site with its iteration diagnostics, and the parameters' mode from :func:`implicit_mode`.
     """
     parameter_mean = Z @ predicted_mean + d
     parameter_covariance = quad_form_sym(Z, predicted_covariance) + H
@@ -154,13 +157,15 @@ def filter_step(
     next_predicted_mean, next_predicted_covariance = BaseFilter.predict(
         a=filtered_mean, P=filtered_covariance, c=c, T=T, R=R, Q=Q
     )
-    return (
-        filtered_mean,
-        filtered_covariance,
-        next_predicted_mean,
-        next_predicted_covariance,
-        site,
-        parameter_mode,
+    return FilterStep(
+        filtered_mean=filtered_mean,
+        filtered_covariance=filtered_covariance,
+        next_predicted_mean=next_predicted_mean,
+        next_predicted_covariance=next_predicted_covariance,
+        parameter_mean=parameter_mean,
+        parameter_covariance=parameter_covariance,
+        site=site,
+        parameter_mode=parameter_mode,
     )
 
 
@@ -527,34 +532,31 @@ def _date_update(
         prior_logp=prior_logp,
         parameters=parameters,
     )
-    filtered_mean, filtered_covariance, next_mean, next_covariance, site, parameter_mode = (
-        filter_step(
-            logp=logp,
-            curvature=curvature_matrix,
-            parameters=parameters,
-            predicted_mean=predicted_mean,
-            predicted_covariance=predicted_covariance,
-            **matrices,
-            line_search=line_search,
-            tolerance=tolerance,
-            max_iterations=max_iterations,
-        )
-    )
-
-    parameter_mean = matrices["Z"] @ predicted_mean + matrices["d"]
-    parameter_covariance = quad_form_sym(matrices["Z"], predicted_covariance) + matrices["H"]
-    loglike = laplace_log_likelihood(
-        mode=parameter_mode,
+    step = filter_step(
         logp=logp,
         curvature=curvature_matrix,
         parameters=parameters,
-        predictive_covariance=parameter_covariance,
+        predicted_mean=predicted_mean,
+        predicted_covariance=predicted_covariance,
+        **matrices,
+        line_search=line_search,
+        tolerance=tolerance,
+        max_iterations=max_iterations,
     )
+
+    loglike = laplace_log_likelihood(
+        mode=step.parameter_mode,
+        logp=logp,
+        curvature=curvature_matrix,
+        parameters=parameters,
+        predictive_covariance=step.parameter_covariance,
+    )
+    site = step.site
     recorded = [
-        filtered_mean,
-        filtered_covariance,
-        parameter_mean,
-        parameter_covariance,
+        step.filtered_mean,
+        step.filtered_covariance,
+        step.parameter_mean,
+        step.parameter_covariance,
         loglike,
         site.iterations,
         site.evaluations,
@@ -562,7 +564,11 @@ def _date_update(
         site.invalid_direction,
         site.converged,
     ]
-    return next_mean, next_covariance, dict(zip(_RECORDED_NAMES, recorded, strict=True))
+    return (
+        step.next_predicted_mean,
+        step.next_predicted_covariance,
+        dict(zip(_RECORDED_NAMES, recorded, strict=True)),
+    )
 
 
 def _masked_fisher_terms(
