@@ -23,14 +23,14 @@ from pymc.model.fgraph import (
 from pymc.pytensorf import toposort_replace
 from pytensor.graph.basic import Apply
 from pytensor.graph.fg import FunctionGraph
-from pytensor.graph.replace import clone_replace, graph_replace
+from pytensor.graph.replace import clone_replace, graph_replace, vectorize_graph
 from pytensor.graph.traversal import ancestors
 from pytensor.tensor import TensorLike
 from pytensor.tensor.random.basic import multivariate_normal
 from pytensor.tensor.random.op import RandomVariable
 from pytensor.tensor.variable import TensorConstant, TensorVariable
 from pytensor_ml.optim.line_search import LineSearch
-from xarray import DataTree
+from xarray import Dataset, DataTree
 
 from pymc_extras.statespace.core import dummy_graph
 from pymc_extras.statespace.core.properties import Coord, Data, Parameter, Shock, State
@@ -375,6 +375,83 @@ class FusedStateSpace(PyMCStateSpace):
             f"{type(self).__name__} draws its filter outputs with run_filter or "
             "sample_conditional_posterior."
         )
+
+    def sample_conditional_observations(
+        self,
+        *,
+        idata: DataTree,
+        conditional: DataTree,
+        kind: Literal["predicted", "filtered", "smoothed"],
+        random_seed: int | np.random.Generator | None,
+    ) -> Dataset:
+        r"""
+        Draw the model's observations at conditional draws of :math:`\theta`.
+
+        On each date, every draw of the ``kind`` observed states takes the place of the variables in
+        ``rv_names``, the frozen variables keep their values, and each observed variable is drawn
+        with that date's data.
+
+        Parameters
+        ----------
+        idata : DataTree
+            Inference data holding the ``constant_data`` and ``observed_data`` of a model built by
+            :meth:`build_statespace_graph`.
+        conditional : DataTree
+            Draws from :meth:`sample_conditional_posterior` or :meth:`sample_conditional_prior`.
+        kind : {"predicted", "filtered", "smoothed"}
+            The observed states that supply :math:`\theta`.
+        random_seed : int, Generator or None
+            Seed for the draws.
+
+        Returns
+        -------
+        observations : Dataset
+            For each observed variable, its draws over ``chain``, ``draw``, the dates and its batch
+            shape, NaN where an observation is missing.
+        """
+        fit_data = self._fit_data(idata)
+        data, masks = fit_data.data, fit_data.masks
+        states = conditional[f"{kind}_posterior_observed"]
+
+        parameters = pt.vector("parameters", shape=(states.shape[-1],))
+        placeholders = {
+            name: pt.tensor(
+                name=name, shape=(None,) * (values.ndim - 1), dtype=self.model[name].dtype
+            )
+            for name, values in data.items()
+        }
+        rng = pytensor.shared(np.random.default_rng(random_seed))
+        draws, _ = self._observation_draws(parameters=parameters, data=placeholders, rng=rng)
+
+        # Vectorizing over the draws only leaves each observed variable's size, which depends on the
+        # date's data, untouched; the dates then run through the same compiled function.
+        state_draws = pt.tensor(
+            "state_draws", shape=(None,) * (states.ndim - 1), dtype=parameters.dtype
+        )
+        batched_draws = vectorize_graph(list(draws.values()), replace={parameters: state_draws})
+        draw_function = pytensor.function(
+            [state_draws, *placeholders.values()], batched_draws, mode=self.mode
+        )
+        date_draws = [
+            draw_function(
+                states.values[:, :, date],
+                *(values[date].astype(placeholders[name].dtype) for name, values in data.items()),
+            )
+            for date in range(states.shape[2])
+        ]
+
+        observations = {}
+        for index, observed in enumerate(draws):
+            values = np.stack([draws_on_date[index] for draws_on_date in date_draws], axis=2)
+            mask = masks[observed].reshape(
+                masks[observed].shape + (1,) * (values.ndim - 2 - masks[observed].ndim)
+            )
+            observations[observed] = (
+                ("chain", "draw", *_padded_dims(name=observed, ndim=values.ndim - 2)),
+                np.where(mask, values.astype(float), np.nan),
+            )
+        coords = {name: states.coords[name] for name in ("chain", "draw", TIME_DIM)}
+        return Dataset(observations, coords=coords)
 
     def _fit_data(self, idata: DataTree) -> FusedFitData:
         constant_data = idata["constant_data"]

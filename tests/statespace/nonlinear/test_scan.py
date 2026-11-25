@@ -395,6 +395,107 @@ def test_conditional_posterior_draws_match_run_filter():
         assert_allclose(draws.std(axis=0), sd, rtol=0.05)
 
 
+def test_conditional_observations_follow_the_observation_model_at_each_draw():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        sigma = pm.HalfNormal("sigma")
+        pm.Normal("y", mu=X @ beta, sigma=sigma, observed=np.zeros(4))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={"sigma": 1e-8},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=20,
+        prior_weight=0.0,
+    )
+
+    rng = np.random.default_rng(0)
+    sizes = [3, 1, 2]
+    data = {
+        "X": [rng.normal(size=(size, 2)) for size in sizes],
+        "y": [rng.normal(size=size) for size in sizes],
+    }
+    with pm.Model(coords=fused.coords):
+        pm.Normal("initial_level_trend", dims=fused.param_dims["initial_level_trend"])
+        pm.HalfNormal("sigma_level_trend", dims=fused.param_dims["sigma_level_trend"])
+        pm.Deterministic("P0", pt.eye(2), dims=fused.param_dims["P0"])
+        fused.build_statespace_graph(data=data, dates=np.arange(3))
+        idata = pm.sample_prior_predictive(draws=1, random_seed=0)
+
+    theta = rng.normal(size=(1, 5, 3, 2))
+    conditional = xr.Dataset(
+        {"smoothed_posterior_observed": (("chain", "draw", "time", "observed_state"), theta)},
+        coords={"chain": [0], "draw": np.arange(5), "time": np.arange(3)},
+    )
+    draws = fused.sample_conditional_observations(
+        idata=idata, conditional=conditional, kind="smoothed", random_seed=1
+    )["y"].values
+
+    for date, (X_date, size) in enumerate(zip(data["X"], sizes, strict=True)):
+        assert_allclose(draws[:, :, date, :size], theta[:, :, date] @ X_date.T, atol=1e-6)
+        assert np.isnan(draws[:, :, date, size:]).all()
+
+
+def test_conditional_observations_carry_the_observation_noise():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        sigma = pm.HalfNormal("sigma")
+        pm.Normal("y", mu=X @ beta, sigma=sigma, observed=np.zeros(4))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={"sigma": 0.5},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=20,
+        prior_weight=0.0,
+    )
+
+    rng = np.random.default_rng(0)
+    data = {"X": [rng.normal(size=(2, 2))], "y": [rng.normal(size=2)]}
+    with pm.Model(coords=fused.coords):
+        pm.Normal("initial_level_trend", dims=fused.param_dims["initial_level_trend"])
+        pm.HalfNormal("sigma_level_trend", dims=fused.param_dims["sigma_level_trend"])
+        pm.Deterministic("P0", pt.eye(2), dims=fused.param_dims["P0"])
+        fused.build_statespace_graph(data=data, dates=np.arange(1))
+        idata = pm.sample_prior_predictive(draws=1, random_seed=0)
+
+    n_draws = 20000
+    theta = np.array([0.4, -0.7])
+    conditional = xr.Dataset(
+        {
+            "smoothed_posterior_observed": (
+                ("chain", "draw", "time", "observed_state"),
+                np.broadcast_to(theta, (1, n_draws, 1, 2)),
+            )
+        },
+        coords={"chain": [0], "draw": np.arange(n_draws), "time": np.arange(1)},
+    )
+    draws = fused.sample_conditional_observations(
+        idata=idata, conditional=conditional, kind="smoothed", random_seed=1
+    )["y"].values[0, :, 0]
+
+    assert np.all(np.abs(draws.mean(axis=0) - data["X"][0] @ theta) < 4 * 0.5 / np.sqrt(n_draws))
+    assert_allclose(draws.std(axis=0), 0.5, rtol=0.03)
+
+
 @pytest.mark.xfail(
     reason="statespace_matrices cannot convert float32 parameter values to the statespace's types",
     raises=TypeError,
