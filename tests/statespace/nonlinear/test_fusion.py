@@ -1088,6 +1088,129 @@ def test_conditional_observations_carry_independent_observation_noise_on_each_da
     assert np.abs(across_dates) < 4 / np.sqrt(n_draws)
 
 
+def test_forecast_propagates_the_smoothed_moments_through_the_dynamics():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        pm.Poisson("y", mu=pm.math.exp(X @ beta), observed=np.zeros(4, dtype=int))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=20,
+        prior_weight=0.0,
+    )
+
+    rng = np.random.default_rng(0)
+    sizes = [3, 1, 0, 4]
+    data = {
+        "X": [rng.normal(size=(size, 2)) for size in sizes],
+        "y": [rng.poisson(lam=2.0, size=size) for size in sizes],
+    }
+    parameters = {
+        "initial_level_trend": np.array([[0.3], [-0.1]]),
+        "sigma_level_trend": np.array([[0.3], [0.2]]),
+        "P0": np.eye(2),
+    }
+    with pm.Model(coords=fused.coords):
+        pm.Normal("initial_level_trend", dims=fused.param_dims["initial_level_trend"])
+        pm.HalfNormal("sigma_level_trend", dims=fused.param_dims["sigma_level_trend"])
+        pm.Deterministic("P0", pt.eye(2), dims=fused.param_dims["P0"])
+        fused.build_statespace_graph(data=data, dates=np.arange(4))
+        idata = pm.sample_prior_predictive(draws=1, random_seed=0)
+
+    n_draws = 4000
+    idata["posterior"] = xr.Dataset(
+        {
+            name: (
+                ("chain", "draw", *fused.param_dims[name]),
+                np.broadcast_to(value, (1, n_draws, *value.shape)),
+            )
+            for name, value in parameters.items()
+        }
+    )
+    forecasts = fused.forecast(idata, start=3, periods=2, random_seed=1, progressbar=False)
+    reference = run_filter(
+        fused=fused,
+        statespace_parameters=parameters,
+        statespace_data={},
+        data=data,
+        dates=np.arange(4),
+    )["posterior_predictive"].isel(chain=0, draw=0)
+
+    mean = reference["smoothed_states"].values[-1]
+    covariance = reference["smoothed_covariances"].values[-1]
+    innovation_covariance = np.diag(parameters["sigma_level_trend"].ravel() ** 2)
+    for horizon in range(2):
+        covariance = covariance + innovation_covariance
+        draws = forecasts["forecast_observed"].values[0, :, horizon]
+        sd = np.sqrt(np.diag(covariance))
+        assert np.all(np.abs(draws.mean(axis=0) - mean) < 4 * sd / np.sqrt(n_draws))
+        assert_allclose(draws.std(axis=0), sd, rtol=0.05)
+
+
+def test_forecast_observations_follow_the_observation_model_with_the_scenario_data():
+    with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
+        X = pm.Data("X", np.zeros((4, 2)))
+        beta = pm.Normal("beta", dims="coef")
+        sigma = pm.HalfNormal("sigma")
+        pm.Normal("y", mu=X @ beta, sigma=sigma, observed=np.zeros(4))
+
+    names = observed_state_names(model=model, rv_names=["beta"])
+    statespace = st.LevelTrend(
+        order=1, innovations_order=1, observed_state_names=names["beta"]
+    ).build(verbose=False)
+    fused = FusedStateSpace(
+        model=model,
+        statespace=statespace,
+        rv_names=["beta"],
+        frozen={"sigma": 1e-8},
+        curvature="gauss_newton",
+        line_search=zoom_line_search(),
+        tolerance=1e-10,
+        max_iterations=20,
+        prior_weight=0.0,
+    )
+
+    rng = np.random.default_rng(0)
+    data = {
+        "X": [rng.normal(size=(size, 2)) for size in [3, 2]],
+        "y": [rng.normal(size=size) for size in [3, 2]],
+    }
+    with pm.Model(coords=fused.coords):
+        pm.Normal("initial_level_trend", dims=fused.param_dims["initial_level_trend"])
+        pm.HalfNormal("sigma_level_trend", dims=fused.param_dims["sigma_level_trend"])
+        pm.Deterministic("P0", pt.eye(2), dims=fused.param_dims["P0"])
+        fused.build_statespace_graph(data=data, dates=np.arange(2))
+        idata = pm.sample_prior_predictive(draws=5, random_seed=0)
+    idata["posterior"] = idata["prior"]
+
+    future_sizes = [4, 1, 2]
+    future_X = [rng.normal(size=(size, 2)) for size in future_sizes]
+    forecasts = fused.forecast(
+        idata, start=1, periods=3, scenario={"X": future_X}, random_seed=1, progressbar=False
+    )
+    theta = forecasts["forecast_observed"].values
+    draws = forecasts["forecast_y"].values
+
+    assert draws.shape == (1, 5, 3, 4)
+    for date, (X_date, size) in enumerate(zip(future_X, future_sizes, strict=True)):
+        assert_allclose(draws[:, :, date, :size], theta[:, :, date] @ X_date.T, atol=1e-6)
+        assert np.isnan(draws[:, :, date, size:]).all()
+
+    with pytest.raises(ValueError, match="exactly"):
+        fused.forecast(idata, start=1, periods=3, scenario={"y": future_X}, progressbar=False)
+
+
 @pytest.mark.xfail(
     reason="statespace_matrices cannot convert float32 parameter values to the statespace's types",
     raises=TypeError,

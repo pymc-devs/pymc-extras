@@ -21,6 +21,7 @@ from pymc.model.fgraph import (
     fgraph_from_model,
 )
 from pymc.pytensorf import toposort_replace
+from pytensor.compile import Function
 from pytensor.graph.basic import Apply
 from pytensor.graph.fg import FunctionGraph
 from pytensor.graph.replace import clone_replace, graph_replace, vectorize_graph
@@ -30,7 +31,7 @@ from pytensor.tensor.random.basic import multivariate_normal
 from pytensor.tensor.random.op import RandomVariable
 from pytensor.tensor.variable import TensorConstant, TensorVariable
 from pytensor_ml.optim.line_search import LineSearch
-from xarray import Dataset, DataTree
+from xarray import DataArray, Dataset, DataTree
 
 from pymc_extras.statespace.core import dummy_graph
 from pymc_extras.statespace.core.properties import Coord, Data, Parameter, Shock, State
@@ -38,6 +39,7 @@ from pymc_extras.statespace.core.statespace import PyMCStateSpace
 from pymc_extras.statespace.nonlinear.filter import scan_filter, validated_data
 from pymc_extras.statespace.utils.constants import (
     FILTER_OUTPUT_TYPES,
+    OBS_STATE_DIM,
     OBSERVED_LIKELIHOOD_NAME,
     TIME_DIM,
 )
@@ -369,6 +371,127 @@ class FusedStateSpace(PyMCStateSpace):
             dims=(TIME_DIM, f"{OBSERVED_LIKELIHOOD_NAME}_dim_1"),
         )
 
+    def forecast(
+        self,
+        idata: DataTree,
+        start: int | None = None,
+        periods: int | None = None,
+        end: int | None = None,
+        scenario: Mapping[str, Sequence[ArrayLike]] | None = None,
+        filter_output: Literal["predicted", "filtered", "smoothed"] = "smoothed",
+        random_seed: int | np.random.Generator | None = None,
+        verbose: bool = True,
+        mvn_method: Literal["cholesky", "eigh", "svd"] = "svd",
+        group: str = "posterior",
+        **kwargs,
+    ) -> DataTree:
+        r"""
+        Forecast :math:`\theta`, and the model's observations given the data in ``scenario``.
+
+        The statespace runs forward from the ``filter_output`` states at ``start`` as in
+        :meth:`PyMCStateSpace.forecast`. With a ``scenario``, each forecast draw of :math:`\theta`
+        takes the place of the variables in ``rv_names`` on its date, the frozen variables keep
+        their values, and each observed variable is drawn with that date's scenario data, at the
+        size its parameters take from that data.
+
+        Parameters
+        ----------
+        idata : DataTree
+            Inference data of a model built by :meth:`build_statespace_graph`.
+        start : int, optional
+            Date the forecast starts from. Default is the last fitted date.
+        periods : int, optional
+            Number of forecast dates. Give this or ``end``.
+        end : int, optional
+            Last forecast date. Give this or ``periods``.
+        scenario : mapping of str to sequence of ArrayLike, optional
+            For each data variable of the model that is not an observation, its value on each
+            forecast date. Without it only :math:`\theta` is forecast.
+        filter_output : {"predicted", "filtered", "smoothed"}, optional
+            The states the forecast starts from. Default ``"smoothed"``.
+        random_seed : int, Generator or None, optional
+            Seed for the draws.
+        verbose : bool, optional
+            Whether to log warnings about the forecast's dates. Default True.
+        mvn_method : {"cholesky", "eigh", "svd"}, optional
+            Factorization for the forecast's multivariate normal draws. Default ``"svd"``.
+        group : str, optional
+            Group of ``idata`` holding the statespace's parameters. Default ``"posterior"``.
+        **kwargs
+            Passed to :func:`pymc.sample_posterior_predictive`.
+
+        Returns
+        -------
+        forecasts : DataTree
+            ``forecast_latent`` and ``forecast_observed``, the forecast states and :math:`\theta`,
+            and with a ``scenario`` each observed variable's draws as ``forecast_`` followed by its
+            name, over ``chain``, ``draw``, the forecast dates and its batch shape, padded with NaN
+            to the largest size on any date.
+        """
+        theta_seed, observation_seed = np.random.default_rng(random_seed).spawn(2)
+        forecasts = super().forecast(
+            idata,
+            start=start,
+            periods=periods,
+            end=end,
+            filter_output=filter_output,
+            random_seed=theta_seed,
+            verbose=verbose,
+            mvn_method=mvn_method,
+            group=group,
+            **kwargs,
+        )
+        if scenario is None:
+            return forecasts
+
+        sources = self._observation_sources()
+        covariate_names = [
+            name for name in self._filter_data_names() if name not in sources.values()
+        ]
+        if set(scenario) != set(covariate_names):
+            raise ValueError(
+                f"scenario has to give a value for exactly {sorted(covariate_names)}, not "
+                f"{sorted(scenario)}."
+            )
+        theta = forecasts["forecast_observed"]
+        scenario = validated_data(fused=self, data=scenario, n_dates=theta.sizes[TIME_DIM])
+
+        inputs = {
+            name: pt.tensor(name=name, shape=(None,) * values[0].ndim, dtype=self.model[name].dtype)
+            for name, values in scenario.items()
+        }
+        empty_observations = {
+            source: pt.zeros((0, *self._support_shape(observed)), dtype=self.model[observed].dtype)
+            for observed, source in sources.items()
+        }
+        observed_names, draw_function = self._observation_draw_function(
+            inputs=inputs,
+            constants=empty_observations,
+            size_from="parameters",
+            n_states=theta.sizes[OBS_STATE_DIM],
+            random_seed=observation_seed,
+        )
+        date_draws = [
+            draw_function(theta.values[:, :, date], *(values[date] for values in scenario.values()))
+            for date in range(theta.sizes[TIME_DIM])
+        ]
+
+        observations = {}
+        for index, observed in enumerate(observed_names):
+            per_date = [draws_on_date[index] for draws_on_date in date_draws]
+            width = max(values.shape[2] for values in per_date)
+            padded = np.full(
+                (*per_date[0].shape[:2], len(per_date), width, *per_date[0].shape[3:]), np.nan
+            )
+            for date, values in enumerate(per_date):
+                padded[:, :, date, : values.shape[2]] = values
+            observations[f"forecast_{observed}"] = DataArray(
+                padded,
+                dims=("chain", "draw", *_padded_dims(name=observed, ndim=padded.ndim - 2)),
+                coords={name: theta.coords[name] for name in ("chain", "draw", TIME_DIM)},
+            )
+        return forecasts.assign(observations)
+
     def sample_filter_outputs(self, *args, **kwargs) -> NoReturn:
         """Raise, because the filter outputs come from :func:`run_filter` or the conditional samplers."""
         raise NotImplementedError(
@@ -413,30 +536,18 @@ class FusedStateSpace(PyMCStateSpace):
         data, masks = fit_data.data, fit_data.masks
         states = conditional[f"{kind}_posterior_observed"]
 
-        parameters = pt.vector("parameters", shape=(states.shape[-1],))
         placeholders = {
             name: pt.tensor(
                 name=name, shape=(None,) * (values.ndim - 1), dtype=self.model[name].dtype
             )
             for name, values in data.items()
         }
-        rng = pytensor.shared(np.random.default_rng(random_seed))
-        draws, next_rng = self._observation_draws(parameters=parameters, data=placeholders, rng=rng)
-
-        # Vectorizing over the draws only leaves each observed variable's size, which depends on the
-        # date's data, untouched; the dates then run through the same compiled function, whose
-        # generator advances on every call.
-        state_draws = pt.tensor(
-            "state_draws", shape=(None,) * (states.ndim - 1), dtype=parameters.dtype
-        )
-        *batched_draws, batched_rng = vectorize_graph(
-            [*draws.values(), next_rng], replace={parameters: state_draws}
-        )
-        draw_function = pytensor.function(
-            [state_draws, *placeholders.values()],
-            batched_draws,
-            updates={rng: batched_rng},
-            mode=self.mode,
+        observed_names, draw_function = self._observation_draw_function(
+            inputs=placeholders,
+            constants={},
+            size_from="observations",
+            n_states=states.shape[-1],
+            random_seed=random_seed,
         )
         date_draws = [
             draw_function(
@@ -447,7 +558,7 @@ class FusedStateSpace(PyMCStateSpace):
         ]
 
         observations = {}
-        for index, observed in enumerate(draws):
+        for index, observed in enumerate(observed_names):
             values = np.stack([draws_on_date[index] for draws_on_date in date_draws], axis=2)
             mask = masks[observed].reshape(
                 masks[observed].shape + (1,) * (values.ndim - 2 - masks[observed].ndim)
@@ -458,6 +569,37 @@ class FusedStateSpace(PyMCStateSpace):
             )
         coords = {name: states.coords[name] for name in ("chain", "draw", TIME_DIM)}
         return Dataset(observations, coords=coords)
+
+    def _observation_draw_function(
+        self,
+        *,
+        inputs: Mapping[str, TensorVariable],
+        constants: Mapping[str, TensorVariable],
+        size_from: Literal["observations", "parameters"],
+        n_states: int,
+        random_seed: int | np.random.Generator | None,
+    ) -> tuple[list[str], Function]:
+        """Return the observed variables' names and a function drawing them for draws of theta."""
+        parameters = pt.vector("parameters", shape=(n_states,))
+        rng = pytensor.shared(np.random.default_rng(random_seed))
+        draws, next_rng = self._observation_draws(
+            parameters=parameters, data={**inputs, **constants}, rng=rng, size_from=size_from
+        )
+
+        # Vectorizing over the draws only leaves each observed variable's size, which depends on the
+        # date's data, untouched; the dates then run through the same compiled function, whose
+        # generator advances on every call.
+        state_draws = pt.tensor("state_draws", shape=(None, None, n_states), dtype=parameters.dtype)
+        *batched_draws, batched_rng = vectorize_graph(
+            [*draws.values(), next_rng], replace={parameters: state_draws}
+        )
+        draw_function = pytensor.function(
+            [state_draws, *inputs.values()],
+            batched_draws,
+            updates={rng: batched_rng},
+            mode=self.mode,
+        )
+        return list(draws), draw_function
 
     def _fit_data(self, idata: DataTree) -> FusedFitData:
         constant_data = idata["constant_data"]
@@ -581,7 +723,10 @@ class FusedStateSpace(PyMCStateSpace):
                 for observed, source in sources.items()
             }
             draws, rng = self._observation_draws(
-                parameters=parameters, data={**date_data, **placeholders}, rng=rng
+                parameters=parameters,
+                data={**date_data, **placeholders},
+                rng=rng,
+                size_from="observations",
             )
             observations = pt.concatenate(
                 [pt.cast(draws[observed], "float64").ravel() for observed in sources]
@@ -607,8 +752,30 @@ class FusedStateSpace(PyMCStateSpace):
         parameters: TensorVariable,
         data: Mapping[str, TensorVariable],
         rng: TensorVariable,
+        size_from: Literal["observations", "parameters"],
     ) -> tuple[dict[str, TensorVariable], TensorVariable]:
-        """Return a draw of each observed variable at the parameters, and the generator after."""
+        r"""
+        Return a draw of each observed variable at the parameters, and the generator after.
+
+        Parameters
+        ----------
+        parameters : TensorVariable
+            Vector laid out like :math:`\theta`.
+        data : mapping of str to TensorVariable
+            Value of each name the filter takes per-date values for.
+        rng : TensorVariable
+            Generator for the draws.
+        size_from : {"observations", "parameters"}
+            Whether each observed variable takes its size from its value in ``data`` or from the
+            broadcast shape of its parameters.
+
+        Returns
+        -------
+        draws : dict of str to TensorVariable
+            A draw of each observed variable.
+        rng : TensorVariable
+            The generator after the draws.
+        """
         fgraph = self._rewrite(parameters=parameters, data=data)
         draws = {}
         for node in fgraph.toposort():
@@ -620,7 +787,12 @@ class FusedStateSpace(PyMCStateSpace):
                     f"Observed variable {node.op.name} is not a RandomVariable, so it cannot be "
                     "drawn on a given generator."
                 )
-            redrawn = rv.owner.op.make_node(rng, *rv.owner.inputs[1:])
+            size = rv.owner.inputs[1] if size_from == "observations" else None
+            redrawn = rv.owner.op.make_node(rng, size, *rv.owner.inputs[2:])
+            if redrawn.outputs[1].ndim != rv.ndim:
+                raise ValueError(
+                    f"The parameters of observed variable {node.op.name} do not set its size."
+                )
             rng, draws[node.op.name] = redrawn.outputs
         return draws, rng
 
