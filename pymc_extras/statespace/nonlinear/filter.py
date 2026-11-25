@@ -447,6 +447,14 @@ def validated_data(
         raise ValueError(
             f"data has to give a value on each of the {n_dates} dates for each name: {date_counts}."
         )
+    scalars = sorted(
+        {name for name, values in data.items() for value in values if np.ndim(value) == 0}
+    )
+    if scalars:
+        raise ValueError(
+            f"data values of {scalars} are scalars. Each date's value has to list that date's "
+            "entries along its first axis."
+        )
     non_finite = [
         (name, date)
         for name, values in data.items()
