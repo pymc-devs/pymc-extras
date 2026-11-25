@@ -1031,7 +1031,7 @@ def test_conditional_observations_follow_the_observation_model_at_each_draw():
         assert np.isnan(draws[:, :, date, size:]).all()
 
 
-def test_conditional_observations_carry_the_observation_noise():
+def test_conditional_observations_carry_independent_observation_noise_on_each_date():
     with pm.Model(coords={"coef": ["x1", "x2"]}) as model:
         X = pm.Data("X", np.zeros((4, 2)))
         beta = pm.Normal("beta", dims="coef")
@@ -1055,12 +1055,13 @@ def test_conditional_observations_carry_the_observation_noise():
     )
 
     rng = np.random.default_rng(0)
-    data = {"X": [rng.normal(size=(2, 2))], "y": [rng.normal(size=2)]}
+    X_date = rng.normal(size=(2, 2))
+    data = {"X": [X_date, X_date], "y": [rng.normal(size=2), rng.normal(size=2)]}
     with pm.Model(coords=fused.coords):
         pm.Normal("initial_level_trend", dims=fused.param_dims["initial_level_trend"])
         pm.HalfNormal("sigma_level_trend", dims=fused.param_dims["sigma_level_trend"])
         pm.Deterministic("P0", pt.eye(2), dims=fused.param_dims["P0"])
-        fused.build_statespace_graph(data=data, dates=np.arange(1))
+        fused.build_statespace_graph(data=data, dates=np.arange(2))
         idata = pm.sample_prior_predictive(draws=1, random_seed=0)
 
     n_draws = 20000
@@ -1069,17 +1070,22 @@ def test_conditional_observations_carry_the_observation_noise():
         {
             "smoothed_posterior_observed": (
                 ("chain", "draw", "time", "observed_state"),
-                np.broadcast_to(theta, (1, n_draws, 1, 2)),
+                np.broadcast_to(theta, (1, n_draws, 2, 2)),
             )
         },
-        coords={"chain": [0], "draw": np.arange(n_draws), "time": np.arange(1)},
+        coords={"chain": [0], "draw": np.arange(n_draws), "time": np.arange(2)},
     )
     draws = fused.sample_conditional_observations(
         idata=idata, conditional=conditional, kind="smoothed", random_seed=1
-    )["y"].values[0, :, 0]
+    )["y"].values[0]
 
-    assert np.all(np.abs(draws.mean(axis=0) - data["X"][0] @ theta) < 4 * 0.5 / np.sqrt(n_draws))
-    assert_allclose(draws.std(axis=0), 0.5, rtol=0.03)
+    for date in range(2):
+        assert np.all(
+            np.abs(draws[:, date].mean(axis=0) - X_date @ theta) < 4 * 0.5 / np.sqrt(n_draws)
+        )
+        assert_allclose(draws[:, date].std(axis=0), 0.5, rtol=0.03)
+    across_dates = np.corrcoef(draws[:, 0, 0], draws[:, 1, 0])[0, 1]
+    assert np.abs(across_dates) < 4 / np.sqrt(n_draws)
 
 
 @pytest.mark.xfail(

@@ -421,16 +421,22 @@ class FusedStateSpace(PyMCStateSpace):
             for name, values in data.items()
         }
         rng = pytensor.shared(np.random.default_rng(random_seed))
-        draws, _ = self._observation_draws(parameters=parameters, data=placeholders, rng=rng)
+        draws, next_rng = self._observation_draws(parameters=parameters, data=placeholders, rng=rng)
 
         # Vectorizing over the draws only leaves each observed variable's size, which depends on the
-        # date's data, untouched; the dates then run through the same compiled function.
+        # date's data, untouched; the dates then run through the same compiled function, whose
+        # generator advances on every call.
         state_draws = pt.tensor(
             "state_draws", shape=(None,) * (states.ndim - 1), dtype=parameters.dtype
         )
-        batched_draws = vectorize_graph(list(draws.values()), replace={parameters: state_draws})
+        *batched_draws, batched_rng = vectorize_graph(
+            [*draws.values(), next_rng], replace={parameters: state_draws}
+        )
         draw_function = pytensor.function(
-            [state_draws, *placeholders.values()], batched_draws, mode=self.mode
+            [state_draws, *placeholders.values()],
+            batched_draws,
+            updates={rng: batched_rng},
+            mode=self.mode,
         )
         date_draws = [
             draw_function(
