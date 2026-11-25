@@ -211,6 +211,21 @@ class FusedStateSpace(PyMCStateSpace):
                 f"Free random variables {unlisted} are neither in rv_names nor frozen."
             )
 
+        data_priors = {
+            name: [
+                variable.name
+                for variable in model.data_vars
+                if variable in ancestors([model[name]])
+            ]
+            for name in self.rv_names
+        }
+        data_priors = {name: names for name, names in data_priors.items() if names}
+        if data_priors:
+            raise ValueError(
+                "The priors of rv_names depend on data variables, which take a value on each date "
+                f"(variable: its data): {data_priors}."
+            )
+
         reshaping = [
             name
             for name in self.rv_names

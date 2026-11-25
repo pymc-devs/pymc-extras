@@ -206,6 +206,26 @@ def test_unknown_curvature_raises():
         )
 
 
+def test_prior_depending_on_data_raises():
+    with pm.Model() as model:
+        prior_mean = pm.Data("prior_mean", np.zeros(3))
+        alpha = pm.Normal("alpha", prior_mean.mean())
+        pm.Normal("y", alpha, 1, observed=np.zeros(3))
+
+    with pytest.raises(ValueError, match=r"\{'alpha': \['prior_mean'\]\}"):
+        FusedStateSpace(
+            model=model,
+            statespace=level_statespace(["alpha"]),
+            rv_names=["alpha"],
+            frozen={},
+            curvature="fisher",
+            line_search=zoom_line_search(),
+            tolerance=1e-10,
+            max_iterations=10,
+            prior_weight=0.0,
+        )
+
+
 def test_frozen_value_with_wrong_shape_raises():
     with pm.Model(coords={"group": ["a", "b"]}) as model:
         alpha = pm.Normal("alpha")
