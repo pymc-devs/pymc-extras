@@ -195,7 +195,7 @@ def newton_site(
         direction = pt.linalg.solve(next_curvature, -objective_gradient)
         return objective, objective_gradient, next_curvature, direction
 
-    def iterate(whitened, direction, whitened_curvature):
+    def iterate(whitened, direction, whitened_curvature, start_gradient):
         objective, objective_gradient, *_ = newton_terms_at(whitened, whitened_curvature)
         search = search_along(
             loss=objective,
@@ -203,6 +203,7 @@ def newton_site(
             gradients=[objective_gradient],
             directions=[direction],
             line_search=line_search,
+            start_gradients=[start_gradient],
         )
         moving = pt.max(pt.abs(direction)) > tolerance
         next_whitened = pt.switch(moving, whitened + search.step_size * direction, whitened)
@@ -223,6 +224,7 @@ def newton_site(
             next_whitened,
             next_direction,
             next_curvature,
+            next_gradient,
             search.evaluations,
             failed,
             invalid,
@@ -232,12 +234,13 @@ def newton_site(
 
     initial_whitened = pt.zeros_like(predictive_mean)
     _, _, initial_curvature, _ = newton_terms_at(initial_whitened, pt.eye(predictive_mean.shape[0]))
-    *_, initial_direction = newton_terms_at(initial_whitened, initial_curvature)
+    _, initial_gradient, _, initial_direction = newton_terms_at(initial_whitened, initial_curvature)
 
     (
         whitened_trace,
         direction_trace,
         curvature_trace,
+        _,
         evaluations,
         failures,
         invalid_directions,
@@ -248,6 +251,7 @@ def newton_site(
             initial_whitened,
             initial_direction,
             initial_curvature,
+            initial_gradient,
             None,
             None,
             None,
