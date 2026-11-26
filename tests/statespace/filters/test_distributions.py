@@ -594,6 +594,55 @@ def test_simulation_smoother_with_time_varying_matrix(small_lgssm):
     assert_allclose(shifted, unshifted, atol=ATOL, rtol=RTOL)
 
 
+def test_simulation_smoother_with_time_varying_state_intercept(small_lgssm):
+    """Adding a per-step ``delta`` to a time-varying ``c`` moves a draw from the same rng state
+    by the state path that ``delta`` implies.
+
+    That path is ``e_0 = 0, e_{t+1} = T e_t + delta_t``, and the data move by ``Z e_t``. The
+    smoother's single pass runs with the intercepts zeroed, which must keep ``c``'s time axis.
+    """
+    params = small_lgssm
+    n_steps, k_states = params["n_steps"], params["c"].shape[0]
+    a0, P0, d, T, Z, R, H, Q = (
+        pt.as_tensor_variable(params[name]) for name in ("a0", "P0", "d", "T", "Z", "R", "H", "Q")
+    )
+    y = pt.tensor("y", dtype=floatX, shape=(n_steps, params["d"].shape[0]))
+    c = pt.tensor("c", dtype=floatX, shape=(n_steps, k_states))
+    rng = pytensor.shared(np.random.default_rng(7), name="rng")
+
+    sample = SimulationSmoother.dist(
+        y,
+        a0,
+        P0,
+        c,
+        d,
+        T,
+        Z,
+        R,
+        H,
+        Q,
+        kalman_filter=StandardFilter(time_varying_names=["state_intercept"]),
+        kalman_smoother=RTSSmoother(time_varying_names=["state_intercept"]),
+        sequence_names=("c",),
+        rng=rng,
+    )
+    draw = pm.compile([y, c], sample)
+
+    c_value = np.tile(params["c"], (n_steps, 1)).astype(floatX)
+    delta = np.sin(np.arange(n_steps * k_states, dtype=floatX)).reshape(n_steps, k_states)
+    path = np.zeros((n_steps, k_states), dtype=floatX)
+    for t in range(n_steps - 1):
+        path[t + 1] = params["T"] @ path[t] + delta[t]
+    y_value = np.asarray(params["y"], dtype=floatX)
+
+    rng.set_value(np.random.default_rng(7))
+    unshifted = draw(y_value, c_value)
+    rng.set_value(np.random.default_rng(7))
+    shifted = draw(y_value + path @ params["Z"].T, c_value + delta)
+
+    assert_allclose(shifted, unshifted + path, atol=ATOL, rtol=RTOL)
+
+
 def _var_parameters(rng, k_endog, order, k_exog):
     """Draw a stationary ``A``, a ``B``, and a positive-definite ``Q``.
 

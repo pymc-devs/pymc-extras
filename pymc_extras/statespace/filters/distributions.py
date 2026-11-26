@@ -664,10 +664,24 @@ class SimulationSmoother(Continuous):
         # intercepts zeroed, rather than one pass over each. A missing entry arrives as the fill
         # sentinel, and sentinel - y_plus is no longer recognized as missing, so the sentinel is
         # written back into the difference to keep those periods masked.
-        zero_state, zero_obs = pt.zeros_like(x0_), pt.zeros_like(d_)
+        zero_state, zero_state_intercept, zero_obs_intercept = (
+            pt.zeros_like(x0_),
+            pt.zeros_like(c_),
+            pt.zeros_like(d_),
+        )
         sentinel = kalman_filter.missing_fill_value
         delta = pt.where(missing_mask(data_, sentinel), sentinel, data_ - y_plus)
-        delta_matrices = (zero_state, P0_, zero_state, zero_obs, T_, Z_, R_, H_, Q_)
+        delta_matrices = (
+            zero_state,
+            P0_,
+            zero_state_intercept,
+            zero_obs_intercept,
+            T_,
+            Z_,
+            R_,
+            H_,
+            Q_,
+        )
         filter_outputs = kalman_filter.build_graph(delta, *delta_matrices)
 
         a_smooth_delta, _ = kalman_smoother.build_graph(delta, delta_matrices, filter_outputs)
