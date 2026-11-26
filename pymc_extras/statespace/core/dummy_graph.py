@@ -141,7 +141,7 @@ def kalman_filter_outputs_from_dummy_graph(
     filtered_states, predicted_states, _ = states
     filtered_covariances, predicted_covariances, _ = covariances
 
-    [smoothed_states, smoothed_covariances] = kalman_smoother.build_graph(
+    smoothed_states, smoothed_covariances, *_ = kalman_smoother.build_graph(
         data, (x0, P0, c, d, T, Z, R, H, Q), filter_outputs
     )
 
