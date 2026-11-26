@@ -18,7 +18,11 @@ import pymc as pm
 from pymc.distributions.dist_math import betaln, check_parameters, factln, logpow
 from pymc.distributions.shape_utils import rv_size_is_none
 from pytensor import tensor as pt
+from pytensor.tensor.random.basic import ScipyRandomVariable
 from pytensor.tensor.random.op import RandomVariable
+from pytensor.utils import lazy_scipy_module
+
+stats = lazy_scipy_module("stats")
 
 
 def log1mexp(x):
@@ -181,6 +185,198 @@ class GeneralizedPoisson(pm.distributions.Discrete):
             pt.abs(lam) <= 1,
             (-mu / 4) <= lam,
             msg="0 < mu, max(-1, -mu/4)) <= lam <= 1",
+        )
+
+
+class FisherNoncentralHypergeometricRV(ScipyRandomVariable):
+    name = "fisher_noncentral_hypergeometric"
+    signature = "(),(),(),()->()"
+    dtype = "int64"
+    _print_name = (
+        "FisherNoncentralHypergeometric",
+        "\\operatorname{FisherNoncentralHypergeometric}",
+    )
+
+    @classmethod
+    def rng_fn_scipy(cls, rng, good, bad, n, odds, size=None):
+        return stats.nchypergeom_fisher.rvs(
+            good + bad,
+            good,
+            n,
+            odds,
+            size=size,
+            random_state=rng,
+        )
+
+
+fisher_noncentral_hypergeometric = FisherNoncentralHypergeometricRV()
+
+
+class FisherNoncentralHypergeometric(pm.distributions.Discrete):
+    R"""
+    Fisher noncentral hypergeometric distribution.
+
+    The Fisher noncentral hypergeometric distribution is a generalization
+    of the standard hypergeometric distribution and models the number of
+    successful draws from a finite population when the sampling odds are
+    biased by a noncentrality parameter. The probability mass function is
+
+    .. math::
+
+        f(x \mid N, k, n, \theta) =
+        \frac{\binom{k}{x}\binom{N-k}{n-x}\theta^{x}}
+             {\sum_{j=\max(0, n-(N-k))}^{\min(n, k)}
+              \binom{k}{j}\binom{N-k}{n-j}\theta^{j}}
+
+    for
+    :math:`x \in \{\max(0, n-(N-k)), \ldots, \min(n, k)\}`.
+    For more information, see [1]_.
+
+    .. plot::
+        :context: close-figs
+
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from scipy.stats import nchypergeom_fisher
+
+        plt.style.use("arviz-darkgrid")
+        x = np.arange(0, 12)
+        params = [
+            (30, 10, 8, 1.0),
+            (30, 10, 8, 3.0),
+            (30, 10, 8, 10.0),
+        ]
+        for N, k, n, odds in params:
+            pmf = nchypergeom_fisher.pmf(x, N, k, n, odds)
+            plt.plot(x, pmf, "-o", label=r"$N$ = {}, $k$ = {}, $n$ = {}, $\theta$ = {}".format(N, k, n, odds))
+        plt.xlabel("x", fontsize=12)
+        plt.ylabel("f(x)", fontsize=12)
+        plt.legend(loc=1)
+        plt.show()
+
+    .. list-table::
+       :widths: 15 85
+
+       * - Support
+         - :math:`x \in \{\max(0, n-(N-k)), \ldots, \min(n, k)\}`
+       * - Mean
+         - :math:`\mathrm{E}[X]`
+       * - Variance
+         - :math:`\mathrm{Var}[X]`
+       * - Median
+         - No closed form; computed numerically
+
+    Parameters
+    ----------
+    N : tensor_like of int
+        Total population size (N > 0)
+    k : tensor_like of int
+        Number of successful items in the population (0 <= k <= N)
+    n : tensor_like of int
+        Number of draws from the population (0 <= n <= N)
+    odds : tensor_like of float
+        Odds ratio for selecting a successful item (odds > 0)
+
+    References
+    ----------
+    .. [1] "Fisher's noncentral hypergeometric distribution."
+       https://en.wikipedia.org/wiki/Fisher%27s_noncentral_hypergeometric_distribution
+    """
+
+    rv_op = fisher_noncentral_hypergeometric
+
+    @classmethod
+    def dist(cls, N, k, n, odds, *args, **kwargs):
+        N = pt.as_tensor_variable(N, dtype=int)
+        good = pt.as_tensor_variable(k, dtype=int)
+        bad = N - k
+        n = pt.as_tensor_variable(n, dtype=int)
+        odds = pt.as_tensor_variable(odds)
+        return super().dist([good, bad, n, odds], *args, **kwargs)
+
+    def support_point(rv, size, good, bad, n, odds):
+        A = odds - 1
+        B = n - bad - (good + n + 2) * odds
+        C = (good + 1) * (n + 1) * odds
+        mode = pt.floor(-2 * C / (B - pt.sqrt(B**2 - 4 * A * C)))
+        if not rv_size_is_none(size):
+            mode = pt.full(size, mode)
+        return mode
+
+    def _norm(good, bad, n, odds):
+        mode = FisherNoncentralHypergeometric.support_point(None, None, good, bad, n, odds)
+        mode_scale = FisherNoncentralHypergeometric._logweight(mode, good, bad, n, odds)
+        max_draws = pt.max(n) + 1
+        arange = pt.arange(max_draws).reshape((max_draws, 1))
+        log_weights = FisherNoncentralHypergeometric._logweight(arange, good, bad, n, odds)
+        scaled_log_sum = pt.logsumexp(log_weights - mode_scale, axis=0)
+        return mode_scale + scaled_log_sum
+
+    def logp(value, good, bad, n, odds):
+        return FisherNoncentralHypergeometric._logweight(
+            value, good, bad, n, odds
+        ) - FisherNoncentralHypergeometric._norm(good, bad, n, odds)
+
+    def _logweight(value, good, bad, n, odds):
+        fails_value = n - value
+        result = (
+            logpow(odds, value)
+            - factln(value)
+            - factln(good - value)
+            - factln(fails_value)
+            - factln(bad - fails_value)
+        )
+
+        lower_bound = n - bad
+        lower = pt.switch(pt.gt(lower_bound, 0), lower_bound, 0)
+        upper = pt.switch(pt.lt(good, n), good, n)
+        res = pt.switch(
+            pt.lt(value, lower),
+            -np.inf,
+            pt.switch(
+                pt.le(value, upper),
+                result,
+                -np.inf,
+            ),
+        )
+
+        return check_parameters(
+            res,
+            0 <= good,
+            0 <= bad,
+            0 <= n,
+            n <= good + bad,
+            odds > 0,
+            msg="N > 0, 0 <= k <= N, 0 <= n <= N, odds > 0",
+        )
+
+    def logcdf(value, good, bad, n, odds):
+        if np.ndim(value):
+            raise TypeError(
+                f"FisherNoncentralHypergeometric.logcdf expects a scalar value but received a {np.ndim(value)}-dimensional object."
+            )
+
+        res = pt.switch(
+            pt.lt(value, 0),
+            -np.inf,
+            pt.switch(
+                pt.lt(value, n),
+                pt.logsumexp(
+                    FisherNoncentralHypergeometric.logp(pt.arange(value + 1), good, bad, n, odds),
+                    axis=0,
+                ),
+                0,
+            ),
+        )
+
+        return check_parameters(
+            res,
+            0 <= good,
+            0 <= bad,
+            0 <= n,
+            n <= good + bad,
+            odds > 0,
+            msg="N > 0, 0 <= k <= N, 0 <= n <= N, odds > 0",
         )
 
 
