@@ -841,12 +841,17 @@ def test_stationary_var_rejects_inconsistent_arguments(coefficients, kwargs, mes
         StationaryVAR.dist(coefficients, np.eye(2), np.zeros((10, 2)), **kwargs)
 
 
-@pytest.mark.parametrize("time_varying", [False, True], ids=["constant", "time_varying"])
+@pytest.mark.parametrize(
+    "time_varying", [None, "T", "H"], ids=["constant", "time_varying_T", "time_varying_H"]
+)
 def test_lgss_dist_splits_states_and_observations_like_the_named_version(time_varying):
     steps = 10
     T = np.diag([0.9, 0.8])
-    if time_varying:
+    H = 0.1 * np.eye(2)
+    if time_varying == "T":
         T = np.stack([T] * 6 + [np.diag([0.5, 0.6])] * 5)
+    if time_varying == "H":
+        H = np.stack([H] * (steps + 1))
     system = dict(
         a0=pt.zeros(2),
         P0=pt.eye(2),
@@ -855,10 +860,10 @@ def test_lgss_dist_splits_states_and_observations_like_the_named_version(time_va
         T=pt.as_tensor(T),
         Z=pt.eye(2),
         R=pt.eye(2),
-        H=0.1 * pt.eye(2),
+        H=pt.as_tensor(H),
         Q=pt.eye(2),
     )
-    sequence_names = ["T"] if time_varying else []
+    sequence_names = [time_varying] if time_varying else []
 
     with pm.Model():
         named = LinearGaussianStateSpace("x", **system, steps=steps, sequence_names=sequence_names)
