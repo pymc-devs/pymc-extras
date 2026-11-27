@@ -839,3 +839,30 @@ def test_stationary_var_logp_follows_the_observed_data():
 def test_stationary_var_rejects_inconsistent_arguments(coefficients, kwargs, message):
     with pytest.raises(ValueError, match=message):
         StationaryVAR.dist(coefficients, np.eye(2), np.zeros((10, 2)), **kwargs)
+
+
+@pytest.mark.parametrize("time_varying", [False, True], ids=["constant", "time_varying"])
+def test_lgss_dist_splits_states_and_observations_like_the_named_version(time_varying):
+    steps = 10
+    T = np.diag([0.9, 0.8])
+    if time_varying:
+        T = np.stack([T] * 6 + [np.diag([0.5, 0.6])] * 5)
+    system = dict(
+        a0=pt.zeros(2),
+        P0=pt.eye(2),
+        c=pt.zeros(2),
+        d=pt.zeros(2),
+        T=pt.as_tensor(T),
+        Z=pt.eye(2),
+        R=pt.eye(2),
+        H=0.1 * pt.eye(2),
+        Q=pt.eye(2),
+    )
+    sequence_names = ["T"] if time_varying else []
+
+    with pm.Model():
+        named = LinearGaussianStateSpace("x", **system, steps=steps, sequence_names=sequence_names)
+    unnamed = LinearGaussianStateSpace.dist(**system, steps=steps, sequence_names=sequence_names)
+
+    for named_part, unnamed_part in zip(named, unnamed):
+        assert pm.draw(unnamed_part).shape == pm.draw(named_part).shape == (steps + 1, 2)

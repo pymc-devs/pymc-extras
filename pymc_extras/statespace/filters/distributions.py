@@ -427,7 +427,7 @@ class LinearGaussianStateSpace(Continuous):
         latent_obs_combined = _LinearGaussianStateSpace.dist(
             a0, P0, c, d, T, Z, R, H, Q, steps=steps, **kwargs
         )
-        k_states = T.type.shape[0]
+        k_states = T.type.shape[-1]
 
         latent_states = latent_obs_combined[..., :k_states]
         obs_states = latent_obs_combined[..., k_states:]
