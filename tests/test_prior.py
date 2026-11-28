@@ -626,6 +626,115 @@ def test_deepcopy_keeps_core_dims() -> None:
     assert model["x"].dims == ("country", "city")
 
 
+def test_deepcopy_keeps_model_parameters() -> None:
+    with pm.Model() as model:
+        mu = pm.Normal("mu")
+        sigma = pm.Data("sigma", 1.0)
+        prior = Prior("Normal", mu=mu, sigma=sigma)
+        copied = prior.deepcopy()
+        x = copied.create_variable("x")
+        logp = model.compile_logp(vars=[x])
+        pm.set_data({"sigma": 2.0})
+
+    np.testing.assert_allclose(logp({"mu": 1.0, "x": 3.0}), scipy.stats.norm.logpdf(3, 1, 2))
+    assert copied == prior
+
+
+def test_deepcopy_shared_nested_prior() -> None:
+    sigma = Prior("HalfNormal", sigma=np.array([1.0, 2.0]))
+    first, second = deepcopy([Prior("Normal", sigma=sigma), Prior("Normal", sigma=sigma)])
+
+    assert first["sigma"] is second["sigma"]
+    assert first["sigma"] is not sigma
+    first["sigma"]["sigma"][0] = 3
+    assert sigma["sigma"][0] == 1
+
+
+def test_deepcopy_parameter_already_copied_outside_prior() -> None:
+    with pm.Model():
+        data = pm.Data("sigma", 1.0)
+        raw, prior, repeated = deepcopy([data, Prior("Normal", sigma=data), data])
+
+    assert prior["sigma"] is data
+    assert raw is repeated
+
+
+def test_deepcopy_prior_with_backreference() -> None:
+    scaled = Scaled(Prior("HalfNormal"), factor=2)
+    prior = Prior("Normal", sigma=scaled)
+    scaled.parent = prior
+
+    copied = prior.deepcopy()
+    assert copied["sigma"].parent is copied
+
+
+def test_deepcopy_wrapped_priors() -> None:
+    normal = Prior("Normal")
+    lower = pt.scalar("lower")
+    upper = pt.scalar("upper")
+    censored, scaled = deepcopy([Censored(normal, lower=lower, upper=upper), Scaled(normal, lower)])
+
+    assert censored.lower is lower
+    assert censored.upper is upper
+    assert scaled.factor is lower
+    assert censored.distribution is scaled.dist
+    assert scaled.dist is not normal
+
+
+def test_deepcopy_scaled_array_factor() -> None:
+    factor = np.array([1.0, 2.0])
+    scaled = Scaled(Prior("Normal"), factor=factor)
+    copied = deepcopy(scaled)
+
+    copied.factor[0] = 3
+    np.testing.assert_array_equal(factor, [1, 2])
+
+
+@pytest.mark.parametrize("sequence", [list, tuple])
+def test_deepcopy_scaled_sequence_factor(sequence) -> None:
+    with pm.Model() as model:
+        data = pm.Data("scale", 2.0)
+        scaled = Scaled(Prior("Normal"), factor=sequence([data]))
+        copied = deepcopy(scaled)
+        x = copied.create_variable("x")
+        evaluate = pytensor.function([model["x_unscaled"]], x)
+        pm.set_data({"scale": 5.0})
+
+    np.testing.assert_array_equal(evaluate(1.0), [5.0])
+
+
+def test_deepcopy_scaled_subclass_slots() -> None:
+    class TaggedScaled(Scaled):
+        __slots__ = ("tags",)
+
+    scaled = TaggedScaled(Prior("Normal"), factor=2)
+    scaled.tags = ["a"]
+    copied = deepcopy(scaled)
+    copied.tags.append("b")
+
+    assert scaled.tags == ["a"]
+
+
+def test_deepcopy_scaled_subclass_state() -> None:
+    from threading import Lock
+
+    class LockedScaled(Scaled):
+        def __getstate__(self):
+            return {"dist": self.dist, "factor": self.factor}
+
+        def __setstate__(self, state):
+            self.__dict__.update(state)
+            self.lock = Lock()
+
+    scale = pt.scalar("scale")
+    scaled = LockedScaled(Prior("Normal"), factor=scale)
+    scaled.lock = Lock()
+    copied = deepcopy(scaled)
+
+    assert copied.lock is not scaled.lock
+    assert copied.factor is scale
+
+
 def test_create_likelihood_variable() -> None:
     distribution = Prior("Normal", sigma=Prior("HalfNormal"))
 

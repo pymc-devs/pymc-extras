@@ -551,6 +551,13 @@ def _param_value_with_dims(param: str, value, dims: Dims | None):
     return value
 
 
+def _deepcopy_parameter(value, memo):
+    """Keep symbolic inputs connected to the model that owns them."""
+    if isinstance(value, Variable):
+        return value
+    return copy.deepcopy(value, memo)
+
+
 def _serialize_value(value):
     """Encode a value for the dictionary form of a distribution.
 
@@ -1341,15 +1348,16 @@ class Prior:
         if id(self) in memo:
             return memo[id(self)]
 
-        copy_obj = Prior(
+        copy_obj = Prior.__new__(Prior)
+        memo[id(self)] = copy_obj
+        copy_obj.__init__(
             self.distribution,
             dims=copy.copy(self.dims),
             centered=self.centered,
             transform=self.transform,
             core_dims=self.core_dims,
-            **copy.deepcopy(self.parameters),
+            **{name: _deepcopy_parameter(value, memo) for name, value in self.parameters.items()},
         )
-        memo[id(self)] = copy_obj
         return copy_obj
 
     def deepcopy(self) -> Prior:
@@ -1469,6 +1477,44 @@ def _remove_random_variable(var: pt.TensorVariable) -> None:
     model.named_vars.pop(var.name)
 
 
+def _deepcopy_wrapper(wrapper, memo, *inputs):
+    """Use the wrapper's normal copy protocol with its model inputs bound to the original graph."""
+
+    class WrapperCopy:
+        def __reduce_ex__(self, protocol):
+            constructor, args, *state = wrapper.__reduce_ex__(protocol)
+
+            def allocate(*args):
+                copied = constructor(*args)
+                memo[id(wrapper)] = copied
+                return copied
+
+            return allocate, args, *state
+
+    bindings = {}
+    for value in inputs:
+        if isinstance(value, Variable):
+            bindings[id(value)] = value
+        elif isinstance(value, (list, tuple)) and any(isinstance(item, Variable) for item in value):
+            # The caller may also have copied the bare sequence with ordinary PyTensor semantics.
+            sequences = memo.setdefault(_deepcopy_wrapper, {})
+            sequences.update((id(item), _deepcopy_parameter(item, memo)) for item in value)
+            bindings[id(value)] = copy.deepcopy(value, sequences)
+
+    previous = {key: memo[key] for key in bindings if key in memo}
+    # The raw instance dictionary may already have been copied without these bindings.
+    state_id = id(vars(wrapper))
+    if state_id in memo:
+        previous[state_id] = memo.pop(state_id)
+    memo.update(bindings)
+    try:
+        return copy.deepcopy(WrapperCopy(), memo)
+    finally:
+        for key in bindings:
+            del memo[key]
+        memo.update(previous)
+
+
 @dataclass
 class Censored:
     """Create censored random variable.
@@ -1506,6 +1552,9 @@ class Censored:
     distribution: InstanceOf[Prior]
     lower: float | InstanceOf[pt.TensorVariable] = -np.inf
     upper: float | InstanceOf[pt.TensorVariable] = np.inf
+
+    def __deepcopy__(self, memo) -> Censored:
+        return _deepcopy_wrapper(self, memo, self.lower, self.upper)
 
     def __post_init__(self) -> None:
         """Check validity at initialization."""
@@ -1745,6 +1794,9 @@ class Scaled:
     def __init__(self, dist: Prior, factor: XTensorLike) -> None:
         self.dist = dist
         self.factor = factor
+
+    def __deepcopy__(self, memo) -> Scaled:
+        return _deepcopy_wrapper(self, memo, self.factor)
 
     @property
     def dims(self) -> Dims | None:
