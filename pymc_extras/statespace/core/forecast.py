@@ -15,7 +15,6 @@ from xarray import DataTree
 
 from pymc_extras.statespace.core.fit_recovery import (
     coords_from_idata,
-    data_from_idata,
     dims_from_idata,
     exog_from_idata,
     verify_group,
@@ -464,7 +463,7 @@ def _build_forecast_model(
 
     with pm.Model(coords=temp_coords) as forecast_model:
         unpinned_matrices, grouped_outputs = ss_mod._kalman_filter_outputs_from_dummy_graph(
-            data_from_idata(idata, "constant_data"),
+            ss_mod._fit_data(idata),
             coords=fit_coords,
             dims=fit_dims,
             exog=fit_exog,
@@ -480,7 +479,7 @@ def _build_forecast_model(
         }
 
         missing_data_vars = np.setdiff1d(
-            ar1=[*ss_mod.data_names, "data"], ar2=[k.name for k, _ in sub_dict.items()]
+            ar1=ss_mod.data_names, ar2=[k.name for k, _ in sub_dict.items()]
         )
         if missing_data_vars.size > 0:
             raise ValueError(f"{missing_data_vars} data used for fitting not found!")

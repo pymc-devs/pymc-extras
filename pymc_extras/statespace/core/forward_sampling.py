@@ -94,11 +94,10 @@ def _sample_conditional(
     fit_coords = coords_from_idata(ss_mod, idata, "observed_data")
     fit_dims = dims_from_idata(ss_mod, idata, group)
     if data is None:
-        data = data_from_idata(idata, "constant_data")
+        data = ss_mod._fit_data(idata)
 
     with pm.Model(coords=fit_coords) as forward_model:
-        matrices, grouped_outputs = dummy_graph.kalman_filter_outputs_from_dummy_graph(
-            ss_mod,
+        matrices, grouped_outputs = ss_mod._kalman_filter_outputs_from_dummy_graph(
             data,
             coords=fit_coords,
             dims=fit_dims,
